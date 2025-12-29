@@ -1,17 +1,19 @@
 """
-Document-aware dataset for byte-level language modeling.
+Document-aware dataset for language modeling with streaming tokenization.
 
 Data format: Raw bytes with 0x1e (ASCII record separator) as document delimiter.
 
-Two modes:
-1. DocumentStreamDataset - Single stream, advances on each __getitem__
-2. BatchedStreamDataset - batch_size independent streams for TBPTT
+Modes:
+1. DocumentStreamDataset - Single stream for byte-level, advances on each __getitem__
+2. BatchedStreamDataset - batch_size independent streams for byte-level TBPTT
+3. TokenizedStreamDataset - Streaming tokenization (tiktoken, etc.) on-the-fly
 """
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import mmap
+from typing import Optional, List
 
 
 class DocumentStreamDataset(Dataset):
@@ -292,3 +294,174 @@ def create_dataloader(data_path: str, batch_size: int, chunk_size: int,
     )
 
     return dataloader
+
+
+class TokenizedStreamDataset:
+    """
+    Streaming tokenization dataset for TBPTT training with subword tokenizers.
+
+    Reads raw text, tokenizes on-the-fly with configurable tokenizer (tiktoken, etc.).
+    Each batch element has its own independent data stream that persists across calls.
+
+    Like gruboros: buffer raw bytes, periodically flush to text and tokenize,
+    accumulate tokens in separate buffer, return fixed-size chunks.
+
+    Args:
+        data_path: Path to training data file (raw text with 0x1e doc delimiters)
+        tokenizer: Tokenizer object with encode(text) -> List[int] method
+        batch_size: Number of independent streams
+        chunk_size: Sequence length per chunk
+        rank: DDP rank (for data sharding)
+        world_size: Total number of DDP processes
+        seed: Random seed for reproducibility
+        text_buffer_size: Bytes to accumulate before tokenizing (default 4096)
+    """
+
+    def __init__(
+        self,
+        data_path: str,
+        tokenizer,
+        batch_size: int,
+        chunk_size: int,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: int = 42,
+        text_buffer_size: int = 4096,
+    ):
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.chunk_size = chunk_size
+        self.text_buffer_size = text_buffer_size
+
+        # Open the data file with memory mapping
+        self.data_file = open(data_path, 'rb')
+        self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
+        self.file_size = len(self.mmap)
+
+        # Each batch element has its own stream state
+        rng = np.random.RandomState(seed + rank * 1000)
+        total_streams = batch_size * world_size
+        stream_offset = rank * batch_size
+
+        self.positions = []      # File positions per stream
+        self.byte_buffers = []   # Raw byte buffers per stream
+        self.token_buffers = []  # Token buffers per stream
+
+        for i in range(batch_size):
+            # Evenly spaced starting positions + jitter
+            base_pos = (stream_offset + i) * self.file_size // total_streams
+            jitter = rng.randint(0, max(1, self.file_size // (total_streams * 10)))
+            pos = (base_pos + jitter) % self.file_size
+            self.positions.append(pos)
+            self.byte_buffers.append([])
+            self.token_buffers.append([])
+
+        # Scan each stream to next document boundary
+        for i in range(batch_size):
+            self._scan_to_next_document(i)
+
+    def _scan_to_next_document(self, stream_idx: int):
+        """Scan stream to the start of the next document."""
+        while self.positions[stream_idx] < self.file_size:
+            if self.mmap[self.positions[stream_idx]] == 0x1e:
+                self.positions[stream_idx] = (self.positions[stream_idx] + 1) % self.file_size
+                return
+            self.positions[stream_idx] += 1
+        self.positions[stream_idx] = 0
+
+    def _flush_bytes_to_tokens(self, stream_idx: int):
+        """Convert accumulated bytes to tokens."""
+        if not self.byte_buffers[stream_idx]:
+            return
+
+        try:
+            text = bytes(self.byte_buffers[stream_idx]).decode('utf-8', errors='ignore')
+            if text:
+                tokens = self.tokenizer.encode(text)
+                self.token_buffers[stream_idx].extend(tokens)
+        except Exception:
+            pass  # Skip malformed text
+
+        self.byte_buffers[stream_idx] = []
+
+    def _get_chunk(self, stream_idx: int):
+        """Get next chunk from a specific stream."""
+        doc_ended = False
+
+        # Fill token buffer until we have enough
+        while len(self.token_buffers[stream_idx]) < self.chunk_size:
+            # Accumulate bytes
+            bytes_read = 0
+            while bytes_read < self.text_buffer_size:
+                pos = self.positions[stream_idx]
+                if pos >= self.file_size:
+                    self.positions[stream_idx] = 0
+                    pos = 0
+
+                byte_val = self.mmap[pos]
+                self.positions[stream_idx] = pos + 1
+
+                if byte_val == 0x1e:
+                    # Document boundary - flush and mark
+                    self._flush_bytes_to_tokens(stream_idx)
+                    doc_ended = True
+                    if self.token_buffers[stream_idx]:
+                        break
+                    continue
+                else:
+                    self.byte_buffers[stream_idx].append(byte_val)
+                    bytes_read += 1
+
+            # Flush accumulated bytes to tokens
+            self._flush_bytes_to_tokens(stream_idx)
+
+            # If doc ended and we have tokens, return partial
+            if doc_ended and self.token_buffers[stream_idx]:
+                break
+
+        # Build chunk
+        buf = self.token_buffers[stream_idx]
+        actual_len = min(len(buf), self.chunk_size)
+
+        if actual_len < self.chunk_size:
+            # Partial chunk - pad with zeros
+            chunk = torch.zeros(self.chunk_size, dtype=torch.long)
+            chunk[:actual_len] = torch.tensor(buf[:actual_len], dtype=torch.long)
+            is_doc_end = True
+        else:
+            chunk = torch.tensor(buf[:self.chunk_size], dtype=torch.long)
+            is_doc_end = doc_ended
+
+        self.token_buffers[stream_idx] = buf[self.chunk_size:]
+        return chunk, is_doc_end, actual_len
+
+    def get_batch(self, device=None):
+        """
+        Get one batch where each element continues its own stream.
+
+        Returns:
+            chunks: [batch_size, chunk_size] tensor of token IDs
+            is_doc_end: [batch_size] boolean tensor
+        """
+        chunks = []
+        is_doc_ends = []
+
+        for i in range(self.batch_size):
+            chunk, is_doc_end, _ = self._get_chunk(i)
+            chunks.append(chunk)
+            is_doc_ends.append(is_doc_end)
+
+        chunks = torch.stack(chunks)
+        is_doc_end = torch.tensor(is_doc_ends, dtype=torch.bool)
+
+        if device is not None:
+            chunks = chunks.to(device)
+            is_doc_end = is_doc_end.to(device)
+
+        return chunks, is_doc_end
+
+    def __del__(self):
+        if hasattr(self, 'mmap'):
+            self.mmap.close()
+        if hasattr(self, 'data_file'):
+            self.data_file.close()

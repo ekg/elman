@@ -1,7 +1,9 @@
 """
 Language Model wrapper for Elman Ablation Ladder.
 
-Uses any of the 4 working ladder levels (0-3) as the recurrent layer.
+Supports:
+- Linear-space levels 0-3: Stock Elman through Diagonal Selective
+- Log-space levels: 'log_0' = LogSpacePolynomial (input-dependent α, polynomial activation)
 """
 
 import torch
@@ -12,13 +14,14 @@ from .stock_elman import StockElman
 from .gated_elman import GatedElman
 from .selective_elman import SelectiveElman
 from .diagonal_selective import DiagonalSelective
+from .logspace_polynomial import LogSpacePolynomial
 
 
 def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer (0-3)
+        level: Integer (0-3) or string ('log_0', etc.)
 
     Returns:
         Layer class
@@ -28,10 +31,12 @@ def get_ladder_level(level):
         1: ("Gated Elman", GatedElman),
         2: ("Selective Elman", SelectiveElman),
         3: ("Diagonal Selective", DiagonalSelective),
+        # Log-space levels
+        'log_0': ("Log-Space Polynomial", LogSpacePolynomial),
     }
 
     if level not in levels:
-        raise ValueError(f"Invalid level {level}. Must be 0-3.")
+        raise ValueError(f"Invalid level {level}. Must be 0-3 or 'log_0'.")
 
     name, cls = levels[level]
     return cls
@@ -197,6 +202,7 @@ class LadderLM(nn.Module):
             1: "Gated Elman",
             2: "Selective Elman",
             3: "Diagonal Selective",
+            'log_0': "Log-Space Polynomial",
         }
         return f'level={self.level} ({level_names.get(self.level, "Unknown")}), dim={self.dim}, depth={self.depth}'
 

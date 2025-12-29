@@ -307,33 +307,76 @@ class LogSpacePolynomial(nn.Module):
     This is the first level that operates entirely in log-space with bounded gradients.
     Uses polynomial activation with input-dependent exponent for nonlinearity.
 
+    Matches interface of StockElman/GatedElman/etc for drop-in use in LadderLM.
+
     Args:
-        input_size: Dimension of input features
-        hidden_size: Dimension of hidden state
+        dim: Model dimension
+        expansion: Hidden state expansion factor (d_inner = dim * expansion)
         alpha_init: Initial value for alpha bias
         delta_init: Initial bias for delta gate
+        dropout: Dropout rate (applied after output projection)
+        **kwargs: Ignored (for API compatibility with other levels)
     """
 
-    def __init__(self, input_size, hidden_size, alpha_init=0.0, delta_init=-2.0):
+    def __init__(self, dim, expansion=1.0, alpha_init=0.0, delta_init=-2.0,
+                 dropout=0.0, **kwargs):
         super().__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.dim = dim
+        self.d_inner = int(dim * expansion)
 
+        # Input projection
+        self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
+
+        # Log-space polynomial cell
         self.cell = LogSpacePolynomialCell(
-            hidden_size, alpha_init=alpha_init, delta_init=delta_init
+            self.d_inner, alpha_init=alpha_init, delta_init=delta_init
         )
+
+        # Output projection
+        self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
+
+        # Optional dropout
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.in_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
 
     def forward(self, x, h0=None):
         """
         Args:
-            x: [T, B, D] input sequence
+            x: [B, T, dim] input sequence (note: B, T order for LadderLM compatibility)
             h0: tuple of (log_h0, sign_h0) or None
 
         Returns:
-            h_linear: [T, B, D] hidden states for output projection
+            output: [B, T, dim] output for residual connection
+            h_final: [B, d_inner] final hidden state for TBPTT
         """
-        log_h, sign_h, h_linear = self.cell(x, h0)
-        return h_linear
+        B, T, D = x.shape
+
+        # Input projection
+        x_proj = self.in_proj(x)  # [B, T, d_inner]
+
+        # Transpose to [T, B, d_inner] for cell
+        x_proj = x_proj.transpose(0, 1).contiguous()
+
+        # Run cell
+        log_h, sign_h, h_linear = self.cell(x_proj, h0)
+        # log_h: [T+1, B, d_inner], h_linear: [T, B, d_inner]
+
+        # Transpose back to [B, T, d_inner]
+        h_linear = h_linear.transpose(0, 1).contiguous()
+
+        # Output projection
+        output = self.out_proj(h_linear)  # [B, T, dim]
+        output = self.dropout(output)
+
+        # Final hidden state for TBPTT (last timestep)
+        h_final = h_linear[:, -1, :]  # [B, d_inner]
+
+        return output, h_final
 
 
 __all__ = [

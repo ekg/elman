@@ -28,16 +28,23 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from elman.models import LadderLM, create_ladder_model, get_available_levels
-from elman.data import DocumentStreamDataset, BatchedStreamDataset
+from elman.data import DocumentStreamDataset, BatchedStreamDataset, TokenizedStreamDataset
 from elman.data.tokenizers import get_tokenizer, ByteTokenizer, TikTokenTokenizer
+
+
+def parse_level(value):
+    """Parse level argument - can be int (0-6) or string ('log_0', etc.)"""
+    if value.startswith('log_'):
+        return value  # Return string for log-space levels
+    return int(value)
 
 
 def get_args():
     parser = argparse.ArgumentParser(description="Train Elman Ablation Ladder models")
 
     # Model
-    parser.add_argument("--level", type=int, default=0, choices=range(7),
-                        help="Ablation ladder level (0-6)")
+    parser.add_argument("--level", type=parse_level, default=0,
+                        help="Ablation ladder level (0-3 or 'log_0' for log-space polynomial)")
     parser.add_argument("--params", type=str, default="100m",
                         help="Target parameter count (e.g., 100m, 500m, 1b)")
     parser.add_argument("--expansion", type=float, default=1.0,
@@ -185,13 +192,27 @@ def train(args):
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
     # Create dataset (each rank gets different data stream)
+    use_subword = args.tokenizer != "byte"
     if is_main:
         print(f"Loading data from {args.data}...")
         if args.tbptt:
-            print("TBPTT enabled: using BatchedStreamDataset (persistent streams)")
+            print("TBPTT enabled: using persistent streams")
+        if use_subword:
+            print(f"Using streaming {args.tokenizer} tokenization")
 
-    if args.tbptt:
-        # BatchedStreamDataset: each batch element has its own persistent stream
+    if use_subword:
+        # Use TokenizedStreamDataset for subword tokenizers (tiktoken, etc.)
+        dataset = TokenizedStreamDataset(
+            data_path=args.data,
+            tokenizer=tokenizer,
+            batch_size=args.batch_size,
+            chunk_size=args.chunk_size + 1,  # +1 for targets
+            rank=rank,
+            world_size=world_size,
+            seed=42,
+        )
+    elif args.tbptt:
+        # BatchedStreamDataset: each batch element has its own persistent stream (byte-level)
         dataset = BatchedStreamDataset(
             data_path=args.data,
             batch_size=args.batch_size,
@@ -257,9 +278,9 @@ def train(args):
     optimizer.zero_grad()
 
     while step < args.max_steps:
-        # Get batch - different methods for TBPTT vs non-TBPTT
-        if args.tbptt:
-            # BatchedStreamDataset: each batch element has its own persistent stream
+        # Get batch - different methods based on dataset type
+        if use_subword or args.tbptt:
+            # TokenizedStreamDataset and BatchedStreamDataset: use get_batch()
             batch, is_doc_end = dataset.get_batch(device=device)
         else:
             # DocumentStreamDataset: single stream, no hidden state persistence
@@ -272,10 +293,10 @@ def train(args):
             batch = torch.stack(batch_chunks).to(device)
             is_doc_end = torch.tensor(batch_doc_ends, dtype=torch.bool, device=device)
 
-        # Reset hidden state at document boundaries (only if TBPTT enabled)
-        if args.tbptt and hidden_state is not None:
+        # Reset hidden state at document boundaries (TBPTT or streaming tokenization)
+        if (args.tbptt or use_subword) and hidden_state is not None:
             reset_mask = is_doc_end.view(-1, 1)
-            hidden_state = [h * (~reset_mask) if h is not None else None for h in hidden_state]
+            hidden_state = [h * (~reset_mask).to(h.dtype) if h is not None else None for h in hidden_state]
 
         # Learning rate schedule
         lr = get_lr(step, args.warmup_steps, args.lr, args.max_steps)
@@ -287,7 +308,7 @@ def train(args):
         y = batch[:, 1:]   # Target tokens
 
         with torch.amp.autocast('cuda', dtype=dtype, enabled=args.bf16):
-            if args.tbptt:
+            if args.tbptt or use_subword:
                 logits, (next_hidden, _) = model(x, return_prev_hiddens=True, prev_hiddens=hidden_state)
             else:
                 logits, _ = model(x, return_prev_hiddens=True)
@@ -298,8 +319,8 @@ def train(args):
         loss_scaled = loss / args.grad_accum
         loss_scaled.backward()
 
-        # Update hidden state for TBPTT (detach from graph)
-        if args.tbptt and next_hidden is not None:
+        # Update hidden state for TBPTT/streaming (detach from graph)
+        if (args.tbptt or use_subword) and next_hidden is not None:
             hidden_state = [h.detach() if h is not None else None for h in next_hidden]
 
         # Update
