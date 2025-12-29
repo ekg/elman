@@ -62,7 +62,8 @@ CUDA_OBJS := \
 	lib/diagonal_selective_gpu.o \
 	lib/log_storage_diagonal_gpu.o \
 	lib/log_compute_full_gpu.o \
-	lib/logspace_triple_r_gpu.o
+	lib/logspace_triple_r_gpu.o \
+	lib/logspace_polynomial_gpu.o
 
 .PHONY: all haste haste_tf haste_pytorch libhaste_tf examples benchmarks clean
 

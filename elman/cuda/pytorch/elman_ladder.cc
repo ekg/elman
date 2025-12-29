@@ -942,6 +942,175 @@ std::vector<Tensor> logspace_triple_r_backward(
     return {dx, dR_h, dR_x, dR_delta, dW_delta, dW_out, db, db_delta};
 }
 
+// =============================================================================
+// Log-Space Polynomial Elman (Log-Space Level 0)
+// Input-dependent alpha with polynomial activation
+// =============================================================================
+
+std::vector<Tensor> logspace_polynomial_forward(
+    bool training,
+    Tensor x,
+    Tensor log_h0,
+    Tensor sign_h0,
+    Tensor W_x,
+    Tensor log_r_h,     // [dim] log|r_h| diagonal
+    Tensor sign_r_h,    // [dim] sign(r_h)
+    Tensor W_alpha,     // [dim, dim] for input-dependent alpha
+    Tensor b_alpha,     // [dim]
+    Tensor W_delta,
+    Tensor b,
+    Tensor b_delta) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(log_h0);
+    CHECK_INPUT(sign_h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(log_r_h);
+    CHECK_INPUT(sign_r_h);
+    CHECK_INPUT(W_alpha);
+    CHECK_INPUT(b_alpha);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor h_linear = torch::empty({time_steps, batch_size, dim}, options);
+
+    // Caches for backward
+    Tensor log_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor sign_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                   : torch::empty({0}, options);
+    Tensor alpha_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor log_h_unbounded_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                            : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor weight_rh_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                      : torch::empty({0}, options);
+    Tensor alpha_raw_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                      : torch::empty({0}, options);
+
+    log_h[0] = log_h0;
+    sign_h[0] = sign_h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_polynomial_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogPolyElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(log_r_h),
+            ptr<scalar_t>(sign_r_h),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(b_alpha),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(h_linear),
+            training ? ptr<scalar_t>(log_v_cache) : nullptr,
+            training ? ptr<scalar_t>(sign_v_cache) : nullptr,
+            training ? ptr<scalar_t>(alpha_cache) : nullptr,
+            training ? ptr<scalar_t>(log_h_unbounded_cache) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(weight_rh_cache) : nullptr,
+            training ? ptr<scalar_t>(alpha_raw_cache) : nullptr);
+    }));
+
+    return {log_h, sign_h, h_linear, log_v_cache, sign_v_cache, alpha_cache,
+            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache};
+}
+
+std::vector<Tensor> logspace_polynomial_backward(
+    Tensor W_x,
+    Tensor log_r_h,
+    Tensor sign_r_h,
+    Tensor W_alpha,
+    Tensor W_delta,
+    Tensor x,
+    Tensor log_h,
+    Tensor sign_h,
+    Tensor log_v_cache,
+    Tensor sign_v_cache,
+    Tensor alpha_cache,
+    Tensor alpha_raw_cache,
+    Tensor log_h_unbounded_cache,
+    Tensor delta_cache,
+    Tensor weight_rh_cache,
+    Tensor d_h_linear) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor d_log_r_h = torch::zeros({dim}, options);
+    Tensor dW_alpha = torch::zeros({dim, dim}, options);
+    Tensor db_alpha = torch::zeros({dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_polynomial_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogPolyElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(log_r_h),
+            ptr<scalar_t>(sign_r_h),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(log_v_cache),
+            ptr<scalar_t>(sign_v_cache),
+            ptr<scalar_t>(alpha_cache),
+            ptr<scalar_t>(alpha_raw_cache),
+            ptr<scalar_t>(log_h_unbounded_cache),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(weight_rh_cache),
+            ptr<scalar_t>(d_h_linear),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(d_log_r_h),
+            ptr<scalar_t>(dW_alpha),
+            ptr<scalar_t>(db_alpha),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta};
+}
+
 }  // anonymous namespace
 
 
@@ -980,4 +1149,9 @@ void elman_ladder_init(py::module& m) {
           "Level 6: Log-Space Triple R forward");
     m.def("logspace_triple_r_backward", &logspace_triple_r_backward,
           "Level 6: Log-Space Triple R backward");
+
+    m.def("logspace_polynomial_forward", &logspace_polynomial_forward,
+          "Log-Space Level 0: Polynomial Elman forward");
+    m.def("logspace_polynomial_backward", &logspace_polynomial_backward,
+          "Log-Space Level 0: Polynomial Elman backward");
 }

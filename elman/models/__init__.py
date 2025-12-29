@@ -1,19 +1,22 @@
 """
-Elman Ablation Ladder - Linear-Space Levels (0-3)
+Elman Ablation Ladder - Linear-Space Levels (0-3) and Log-Space Levels
 
-This module implements the first four levels of the systematic ablation
-from stock Elman to more complex architectures.
+This module implements the systematic ablation from stock Elman to more
+complex architectures, including true log-space implementations.
 
-Ablation Ladder:
+Linear-Space Ablation Ladder:
     Level 0: Stock Elman - Basic tanh recurrence
     Level 1: Gated Elman - + Input-dependent delta gate
     Level 2: Selective Elman - + compete x silu output
     Level 3: Diagonal Selective - Diagonal r_h (like Mamba2's diagonal A)
 
-Log-space levels (4-6) are documented in docs/logspace.md but not yet implemented.
+Log-Space Ablation Ladder:
+    Log Level 0: Polynomial Elman - Input-dependent α, polynomial activation
+                 Bounded gradients throughout (no vanishing from saturation!)
 
 Usage:
     from elman.models import StockElman, GatedElman, SelectiveElman, DiagonalSelective
+    from elman.models import LogSpacePolynomial
     from elman.models import LadderLM, create_ladder_model
 
     # Create a model at a specific level
@@ -49,6 +52,16 @@ except ImportError:
     DiagonalSelectiveCell = None
     LEVEL_3_AVAILABLE = False
 
+# Log-space levels
+try:
+    from .logspace_polynomial import (
+        LogSpacePolynomial, LogSpacePolynomialCell, LOGSPACE_LEVEL_0_AVAILABLE
+    )
+except ImportError:
+    LogSpacePolynomial = None
+    LogSpacePolynomialCell = None
+    LOGSPACE_LEVEL_0_AVAILABLE = False
+
 # Language model wrapper
 try:
     from .ladder_lm import LadderLM, create_ladder_model
@@ -60,10 +73,13 @@ except ImportError:
 def get_available_levels():
     """Return dict of available ladder levels."""
     levels = {
+        # Linear-space levels
         0: ("Stock Elman", LEVEL_0_AVAILABLE, StockElman),
         1: ("Gated Elman", LEVEL_1_AVAILABLE, GatedElman),
         2: ("Selective Elman", LEVEL_2_AVAILABLE, SelectiveElman),
         3: ("Diagonal Selective", LEVEL_3_AVAILABLE, DiagonalSelective),
+        # Log-space levels (prefixed with 'log_')
+        'log_0': ("Log-Space Polynomial", LOGSPACE_LEVEL_0_AVAILABLE, LogSpacePolynomial),
     }
     return levels
 
@@ -80,13 +96,16 @@ def get_ladder_level(level):
 
 
 __all__ = [
-    # Level classes
+    # Linear-space level classes
     'StockElman', 'StockElmanCell',
     'GatedElman', 'GatedElmanCell',
     'SelectiveElman', 'SelectiveElmanCell',
     'DiagonalSelective', 'DiagonalSelectiveCell',
+    # Log-space level classes
+    'LogSpacePolynomial', 'LogSpacePolynomialCell',
     # Availability flags
     'LEVEL_0_AVAILABLE', 'LEVEL_1_AVAILABLE', 'LEVEL_2_AVAILABLE', 'LEVEL_3_AVAILABLE',
+    'LOGSPACE_LEVEL_0_AVAILABLE',
     # Language model
     'LadderLM', 'create_ladder_model',
     # Helpers
