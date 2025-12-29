@@ -1,0 +1,983 @@
+// Copyright 2025 Erik Garrison. Apache 2.0 License.
+//
+// PyTorch bindings for Elman Ablation Ladder kernels.
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <torch/extension.h>
+#include <vector>
+
+#include "haste.h"
+#include "support.h"
+
+namespace {
+
+using torch::Tensor;
+
+// =============================================================================
+// Level 0: Stock Elman
+// =============================================================================
+
+std::vector<Tensor> stock_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "stock_elman_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        StockElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            training ? ptr<scalar_t>(v) : nullptr);
+    }));
+
+    return {h, v};
+}
+
+std::vector<Tensor> stock_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor x,
+    Tensor h,
+    Tensor v,
+    Tensor dh_out) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(dh_out);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "stock_elman_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        StockElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(dh_out),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db));
+    }));
+
+    return {dx, dW_x, dW_h, db};
+}
+
+// =============================================================================
+// Level 1: Gated Elman
+// =============================================================================
+
+std::vector<Tensor> gated_elman_forward(
+    bool training,
+    Tensor x,
+    Tensor h0,
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_delta,
+    Tensor b,
+    Tensor b_delta) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "gated_elman_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        GatedElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr);
+    }));
+
+    return {h, v, delta_cache};
+}
+
+std::vector<Tensor> gated_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_delta,
+    Tensor x,
+    Tensor h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor dh_out) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "gated_elman_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        GatedElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(dh_out),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, dW_h, dW_delta, db, db_delta};
+}
+
+// =============================================================================
+// Level 2: Selective Elman
+// =============================================================================
+
+std::vector<Tensor> selective_elman_forward(
+    bool training,
+    Tensor x,
+    Tensor h0,
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_elman_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        SelectiveElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr);
+    }));
+
+    return {h, output, v, delta_cache, compete_cache};
+}
+
+std::vector<Tensor> selective_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_elman_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        SelectiveElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, dW_h, dW_delta, dW_out, db, db_delta};
+}
+
+// =============================================================================
+// Level 3: Diagonal Selective Elman
+// =============================================================================
+
+std::vector<Tensor> diagonal_selective_forward(
+    bool training,
+    Tensor x,
+    Tensor h0,
+    Tensor W_x,
+    Tensor r_h,         // [dim] diagonal, not matrix
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(r_h);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_selective_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        DiagonalSelectiveElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr);
+    }));
+
+    return {h, output, v, delta_cache, compete_cache};
+}
+
+std::vector<Tensor> diagonal_selective_backward(
+    Tensor W_x,
+    Tensor r_h,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dr_h = torch::zeros({dim}, options);  // Diagonal gradient
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_selective_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        DiagonalSelectiveElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dr_h),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta};
+}
+
+// =============================================================================
+// Level 4: Log-Storage Diagonal Elman (TRUE LOG-SPACE BACKWARD)
+// Stores hidden state as (log|h|, sign(h)) pairs
+// Uses softmax weights from logaddexp for bounded gradients!
+// =============================================================================
+
+std::vector<Tensor> log_storage_diagonal_forward(
+    bool training,
+    Tensor x,
+    Tensor log_h0,      // [B, dim] log|h0|
+    Tensor sign_h0,     // [B, dim] sign(h0)
+    Tensor W_x,
+    Tensor r_h,         // [dim] diagonal
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(log_h0);
+    CHECK_INPUT(sign_h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(r_h);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+    // NEW: Caches for true log-space backward
+    Tensor weight1_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+    Tensor log_term1_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                      : torch::empty({0}, options);
+    Tensor log_term2_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                      : torch::empty({0}, options);
+
+    log_h[0] = log_h0;
+    sign_h[0] = sign_h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "log_storage_diagonal_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogStorageDiagonalElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr,
+            training ? ptr<scalar_t>(weight1_cache) : nullptr,
+            training ? ptr<scalar_t>(log_term1_cache) : nullptr,
+            training ? ptr<scalar_t>(log_term2_cache) : nullptr);
+    }));
+
+    return {log_h, sign_h, output, v, delta_cache, compete_cache,
+            weight1_cache, log_term1_cache, log_term2_cache};
+}
+
+std::vector<Tensor> log_storage_diagonal_backward(
+    Tensor W_x,
+    Tensor r_h,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor log_h,
+    Tensor sign_h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor weight1_cache,       // NEW: softmax weights for log-space backward
+    Tensor log_term1_cache,     // NEW: log|(1-δ)*h_prev|
+    Tensor log_term2_cache,     // NEW: log|δ*candidate|
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dr_h = torch::zeros({dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "log_storage_diagonal_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogStorageDiagonalElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(weight1_cache),
+            ptr<scalar_t>(log_term1_cache),
+            ptr<scalar_t>(log_term2_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dr_h),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta};
+}
+
+// =============================================================================
+// Level 5: Log-Compute Full Elman
+// Full R matrix with log-space computation
+// =============================================================================
+
+std::vector<Tensor> log_compute_full_forward(
+    bool training,
+    Tensor x,
+    Tensor log_h0,
+    Tensor sign_h0,
+    Tensor W_x,
+    Tensor R_h,         // [dim, dim] full matrix
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(log_h0);
+    CHECK_INPUT(sign_h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(R_h);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+    // Workspace for R decomposition
+    Tensor log_R_pos = torch::empty({dim, dim}, options);
+    Tensor log_R_neg = torch::empty({dim, dim}, options);
+
+    log_h[0] = log_h0;
+    sign_h[0] = sign_h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "log_compute_full_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogComputeFullElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(R_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr,
+            ptr<scalar_t>(log_R_pos),
+            ptr<scalar_t>(log_R_neg));
+    }));
+
+    return {log_h, sign_h, output, v, delta_cache, compete_cache};
+}
+
+std::vector<Tensor> log_compute_full_backward(
+    Tensor W_x,
+    Tensor R_h,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor log_h,
+    Tensor sign_h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dR_h = torch::zeros({dim, dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    // Workspace for R decomposition
+    Tensor log_R_pos = torch::empty({dim, dim}, options);
+    Tensor log_R_neg = torch::empty({dim, dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "log_compute_full_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogComputeFullElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(R_h),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(log_R_pos),
+            ptr<scalar_t>(log_R_neg),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dR_h),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dW_x, dR_h, dW_delta, dW_out, db, db_delta};
+}
+
+// =============================================================================
+// Level 6: Log-Space Triple R
+// Three R matrices with full log-space computation
+// =============================================================================
+
+std::vector<Tensor> logspace_triple_r_forward(
+    bool training,
+    Tensor x,
+    Tensor log_h0,
+    Tensor sign_h0,
+    Tensor R_h,         // [dim, dim] hidden recurrence
+    Tensor R_x,         // [dim, dim] input transformation
+    Tensor R_delta,     // [dim, dim] delta modulation
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(log_h0);
+    CHECK_INPUT(sign_h0);
+    CHECK_INPUT(R_h);
+    CHECK_INPUT(R_x);
+    CHECK_INPUT(R_delta);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+
+    log_h[0] = log_h0;
+    sign_h[0] = sign_h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_triple_r_forward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogSpaceTripleRForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(R_h),
+            ptr<scalar_t>(R_x),
+            ptr<scalar_t>(R_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr);
+    }));
+
+    return {log_h, sign_h, output, v, delta_cache, compete_cache};
+}
+
+std::vector<Tensor> logspace_triple_r_backward(
+    Tensor R_h,
+    Tensor R_x,
+    Tensor R_delta,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor log_h,
+    Tensor sign_h,
+    Tensor v,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dR_h = torch::zeros({dim, dim}, options);
+    Tensor dR_x = torch::zeros({dim, dim}, options);
+    Tensor dR_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_triple_r_backward", ([&] {
+        using namespace haste::v0::elman_ladder;
+        LogSpaceTripleRBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(R_h),
+            ptr<scalar_t>(R_x),
+            ptr<scalar_t>(R_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dR_h),
+            ptr<scalar_t>(dR_x),
+            ptr<scalar_t>(dR_delta),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta));
+    }));
+
+    return {dx, dR_h, dR_x, dR_delta, dW_delta, dW_out, db, db_delta};
+}
+
+}  // anonymous namespace
+
+
+void elman_ladder_init(py::module& m) {
+    m.def("stock_elman_forward", &stock_elman_forward,
+          "Level 0: Stock Elman forward");
+    m.def("stock_elman_backward", &stock_elman_backward,
+          "Level 0: Stock Elman backward");
+
+    m.def("gated_elman_forward", &gated_elman_forward,
+          "Level 1: Gated Elman forward");
+    m.def("gated_elman_backward", &gated_elman_backward,
+          "Level 1: Gated Elman backward");
+
+    m.def("selective_elman_forward", &selective_elman_forward,
+          "Level 2: Selective Elman forward");
+    m.def("selective_elman_backward", &selective_elman_backward,
+          "Level 2: Selective Elman backward");
+
+    m.def("diagonal_selective_forward", &diagonal_selective_forward,
+          "Level 3: Diagonal Selective forward");
+    m.def("diagonal_selective_backward", &diagonal_selective_backward,
+          "Level 3: Diagonal Selective backward");
+
+    m.def("log_storage_diagonal_forward", &log_storage_diagonal_forward,
+          "Level 4: Log-Storage Diagonal forward");
+    m.def("log_storage_diagonal_backward", &log_storage_diagonal_backward,
+          "Level 4: Log-Storage Diagonal backward");
+
+    m.def("log_compute_full_forward", &log_compute_full_forward,
+          "Level 5: Log-Compute Full forward");
+    m.def("log_compute_full_backward", &log_compute_full_backward,
+          "Level 5: Log-Compute Full backward");
+
+    m.def("logspace_triple_r_forward", &logspace_triple_r_forward,
+          "Level 6: Log-Space Triple R forward");
+    m.def("logspace_triple_r_backward", &logspace_triple_r_backward,
+          "Level 6: Log-Space Triple R backward");
+}

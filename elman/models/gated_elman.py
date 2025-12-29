@@ -1,0 +1,227 @@
+"""
+Level 1: Gated Elman - Input-dependent delta gate
+
+delta = sigmoid(W_delta @ x_t + b_delta)
+h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+
+This adds a discretization gate to control memory/update tradeoff per position.
+The gate decides how much to keep from previous state vs new candidate.
+
+Note: This is NOT a GRU (which has 3 gates). It's a simple discretization.
+
+Key question: Does input-dependent gating help compared to stock Elman?
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# Try to import Haste CUDA kernel
+try:
+    import haste_pytorch_lib
+    HASTE_AVAILABLE = hasattr(haste_pytorch_lib, 'gated_elman_forward')
+except ImportError:
+    HASTE_AVAILABLE = False
+
+LEVEL_1_AVAILABLE = True  # PyTorch fallback always available
+
+
+class GatedElmanFunction(torch.autograd.Function):
+    """Autograd function for Gated Elman (Haste kernel)."""
+
+    @staticmethod
+    def forward(ctx, training, x, h0, W_x, W_h, W_delta, b, b_delta):
+        h, v, delta_cache = haste_pytorch_lib.gated_elman_forward(
+            training,
+            x.contiguous(),
+            h0.contiguous(),
+            W_x.contiguous(),
+            W_h.contiguous(),
+            W_delta.contiguous(),
+            b.contiguous(),
+            b_delta.contiguous()
+        )
+        if training:
+            ctx.save_for_backward(x, W_x, W_h, W_delta, h, v, delta_cache)
+        return h
+
+    @staticmethod
+    def backward(ctx, dh_out):
+        x, W_x, W_h, W_delta, h, v, delta_cache = ctx.saved_tensors
+        dh = dh_out[1:].contiguous()
+        dx, dW_x, dW_h, dW_delta, db, db_delta = haste_pytorch_lib.gated_elman_backward(
+            W_x, W_h, W_delta, x, h, v, delta_cache, dh
+        )
+        return None, dx, None, dW_x, dW_h, dW_delta, db, db_delta
+
+
+class GatedElmanCell(nn.Module):
+    """
+    Gated Elman cell - Level 1 of ablation ladder.
+
+    delta = sigmoid(W_delta @ x_t + b_delta)
+    h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+
+    Args:
+        dim: Hidden dimension
+        delta_init: Initial bias for delta gate (negative = keep more state)
+    """
+
+    def __init__(self, dim, delta_init=-2.0):
+        super().__init__()
+        self.dim = dim
+
+        # Candidate computation weights
+        self.W_x = nn.Parameter(torch.empty(dim, dim))
+        self.W_h = nn.Parameter(torch.empty(dim, dim))
+        self.b = nn.Parameter(torch.zeros(dim))
+
+        # Delta (gate) computation
+        self.W_delta = nn.Parameter(torch.empty(dim, dim))
+        self.b_delta = nn.Parameter(torch.full((dim,), delta_init))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.W_x)
+        nn.init.xavier_uniform_(self.W_h)
+        nn.init.xavier_uniform_(self.W_delta, gain=0.1)  # Small init for gate
+
+    def forward(self, x, h0=None):
+        """
+        Args:
+            x: [T, B, dim] input sequence
+            h0: [B, dim] initial hidden state
+
+        Returns:
+            h: [T+1, B, dim] all hidden states including h0
+        """
+        T, B, D = x.shape
+
+        if h0 is None:
+            h0 = torch.zeros(B, self.dim, device=x.device, dtype=x.dtype)
+
+        # Use Haste kernel if available
+        if HASTE_AVAILABLE and x.is_cuda:
+            return GatedElmanFunction.apply(
+                self.training, x, h0,
+                self.W_x, self.W_h, self.W_delta,
+                self.b, self.b_delta
+            )
+
+        # PyTorch fallback
+        return self._forward_pytorch(x, h0)
+
+    def _forward_pytorch(self, x, h0):
+        """Pure PyTorch implementation."""
+        T, B, D = x.shape
+        h_list = [h0]
+
+        for t in range(T):
+            h_prev = h_list[-1]
+            x_t = x[t]
+
+            # Delta gate: sigmoid(W_delta @ x + b_delta)
+            delta_raw = x_t @ self.W_delta.T + self.b_delta
+            delta = torch.sigmoid(delta_raw)
+
+            # Candidate: tanh(W_x @ x + W_h @ h + b)
+            candidate_raw = x_t @ self.W_x.T + h_prev @ self.W_h.T + self.b
+            candidate = torch.tanh(candidate_raw)
+
+            # State update: interpolation between h_prev and candidate
+            h_new = (1 - delta) * h_prev + delta * candidate
+            h_list.append(h_new)
+
+        return torch.stack(h_list, dim=0)
+
+
+class GatedElman(nn.Module):
+    """
+    Gated Elman layer - Level 1 with projections.
+
+    Adds input-dependent gating to stock Elman.
+    NO output selectivity - just gated recurrence.
+    """
+
+    def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0, **kwargs):
+        super().__init__()
+        self.dim = dim
+        self.d_inner = int(dim * expansion)
+
+        # Input projection
+        self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
+
+        # Gated Elman cell
+        self.cell = GatedElmanCell(self.d_inner, delta_init=delta_init)
+
+        # Output projection
+        self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
+
+        # Optional dropout
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.in_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+
+    def forward(self, x, h0=None, **kwargs):
+        """
+        Args:
+            x: [B, T, dim] input sequence
+            h0: [B, d_inner] initial hidden state
+
+        Returns:
+            output: [B, T, dim] output sequence
+            h_final: [B, d_inner] final hidden state
+        """
+        B, T, D = x.shape
+
+        # Project input
+        x_proj = self.in_proj(x)  # [B, T, d_inner]
+
+        # Transpose for cell: [T, B, d_inner]
+        x_rnn = x_proj.permute(1, 0, 2).contiguous()
+
+        # Run cell
+        h_all = self.cell(x_rnn, h0)  # [T+1, B, d_inner]
+        h_out = h_all[1:]  # [T, B, d_inner]
+        h_final = h_all[-1]  # [B, d_inner]
+
+        # Transpose back: [B, T, d_inner]
+        h_out = h_out.permute(1, 0, 2).contiguous()
+
+        # Apply dropout and project
+        h_out = self.dropout(h_out)
+        output = self.out_proj(h_out)
+
+        return output, h_final
+
+    def extra_repr(self):
+        return f'dim={self.dim}, d_inner={self.d_inner}, LEVEL=1_GATED'
+
+
+if __name__ == "__main__":
+    print("Testing GatedElman (Level 1)...")
+    print("=" * 60)
+    print(f"Haste CUDA kernel available: {HASTE_AVAILABLE}")
+
+    # Test layer
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = GatedElman(dim=512, expansion=2.0).to(device).bfloat16()
+    x = torch.randn(2, 32, 512, device=device, dtype=torch.bfloat16)
+
+    print("Testing forward...")
+    out, h = model(x)
+    print(f"Input: {x.shape}, Output: {out.shape}, Hidden: {h.shape}")
+
+    print("Testing backward...")
+    loss = out.sum()
+    loss.backward()
+    print("Backward passed!")
+
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {params:,}")
+    print("Level 1 (Gated Elman) test passed!")

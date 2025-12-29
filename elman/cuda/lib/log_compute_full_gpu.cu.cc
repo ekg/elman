@@ -1,0 +1,873 @@
+// Copyright 2025 Erik Garrison. Apache 2.0 License.
+//
+// Level 5: Log-Compute Full Elman - Full R via logsumexp decomposition
+// Implements true log-space matrix multiplication for numerical stability.
+//
+// Key algorithm:
+// 1. Decompose R into log_R_pos = log(max(R,0)) and log_R_neg = log(max(-R,0))
+// 2. For R @ h where h is (log|h|, sign(h)):
+//    - Compute contribution logs: log|R_ij| + log|h_j|
+//    - Determine contribution signs: sign(R_ij) * sign(h_j)
+//    - Use logsumexp over positive and negative contributions
+//    - Combine using signed log addition
+
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <cublas_v2.h>
+#include <cfloat>
+
+#include "haste/elman_ladder.h"
+#include "blas.h"
+#include "inline_ops.h"
+
+namespace {
+
+// Constants for log-space computation
+constexpr float LOG_ZERO = -1e10f;  // Represents log(0)
+constexpr float LOG_EPS = 1e-10f;   // Small epsilon for log stability
+
+// =============================================================================
+// Device functions for signed log arithmetic
+// =============================================================================
+
+// Convert linear value to log space
+__device__ __forceinline__ void to_log_space(float x, float& log_x, float& sign_x) {
+    sign_x = (x >= 0) ? 1.0f : -1.0f;
+    float abs_x = fabsf(x);
+    log_x = (abs_x > LOG_EPS) ? logf(abs_x) : LOG_ZERO;
+}
+
+// Convert log space to linear value
+__device__ __forceinline__ float from_log_space(float log_x, float sign_x) {
+    if (log_x <= LOG_ZERO + 1.0f) return 0.0f;
+    return sign_x * expf(log_x);
+}
+
+// Signed log addition: compute (log|a+b|, sign(a+b))
+__device__ __forceinline__ void signed_log_add(
+    float log_a, float sign_a,
+    float log_b, float sign_b,
+    float& log_result, float& sign_result) {
+
+    // Handle cases where one input is effectively zero
+    if (log_a <= LOG_ZERO + 1.0f) {
+        log_result = log_b;
+        sign_result = sign_b;
+        return;
+    }
+    if (log_b <= LOG_ZERO + 1.0f) {
+        log_result = log_a;
+        sign_result = sign_a;
+        return;
+    }
+
+    float max_log = fmaxf(log_a, log_b);
+    float min_log = fminf(log_a, log_b);
+    float diff = min_log - max_log;  // Always <= 0
+
+    // Determine which has max log
+    bool a_is_max = log_a >= log_b;
+    float sign_max = a_is_max ? sign_a : sign_b;
+    float sign_min = a_is_max ? sign_b : sign_a;
+
+    bool same_sign = sign_max * sign_min > 0;
+
+    if (same_sign) {
+        // log(exp(max) + exp(min)) = max + log(1 + exp(diff))
+        log_result = max_log + log1pf(expf(diff));
+        sign_result = sign_max;
+    } else {
+        // log(exp(max) - exp(min)) = max + log(1 - exp(diff))
+        float exp_diff = expf(diff);
+        if (exp_diff >= 0.9999999f) {
+            // Complete cancellation
+            log_result = LOG_ZERO;
+            sign_result = 1.0f;
+        } else {
+            log_result = max_log + log1pf(-exp_diff);
+            sign_result = sign_max;
+        }
+    }
+}
+
+// Warp-level logsumexp reduction using shuffle
+__device__ __forceinline__ float warp_logsumexp(float val, unsigned mask = 0xffffffff) {
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+        float other = __shfl_xor_sync(mask, val, offset);
+        if (other > LOG_ZERO + 1.0f && val > LOG_ZERO + 1.0f) {
+            float max_val = fmaxf(val, other);
+            float min_val = fminf(val, other);
+            val = max_val + log1pf(expf(min_val - max_val));
+        } else if (other > LOG_ZERO + 1.0f) {
+            val = other;
+        }
+        // else keep val
+    }
+    return val;
+}
+
+// =============================================================================
+// Kernel: Decompose R matrix into log positive and negative parts
+// =============================================================================
+
+template<typename T>
+__global__ void DecomposeRKernel(
+    const int dim,
+    const T* __restrict__ R,        // [dim, dim]
+    T* __restrict__ log_R_pos,      // [dim, dim]
+    T* __restrict__ log_R_neg) {    // [dim, dim]
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = dim * dim;
+
+    if (idx < total) {
+        float r_val = static_cast<float>(R[idx]);
+
+        if (r_val > LOG_EPS) {
+            log_R_pos[idx] = static_cast<T>(logf(r_val));
+            log_R_neg[idx] = static_cast<T>(LOG_ZERO);
+        } else if (r_val < -LOG_EPS) {
+            log_R_pos[idx] = static_cast<T>(LOG_ZERO);
+            log_R_neg[idx] = static_cast<T>(logf(-r_val));
+        } else {
+            log_R_pos[idx] = static_cast<T>(LOG_ZERO);
+            log_R_neg[idx] = static_cast<T>(LOG_ZERO);
+        }
+    }
+}
+
+// =============================================================================
+// Kernel: Log-space matrix-vector multiplication
+// Computes result = R @ h where h is stored as (log_h, sign_h)
+// =============================================================================
+
+template<typename T>
+__global__ void LogSpaceMatVecKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ log_R_pos,   // [dim, dim] log of positive R elements
+    const T* __restrict__ log_R_neg,   // [dim, dim] log of negative R elements
+    const T* __restrict__ log_h,       // [batch, dim]
+    const T* __restrict__ sign_h,      // [batch, dim]
+    T* __restrict__ log_out,           // [batch, dim]
+    T* __restrict__ sign_out) {        // [batch, dim]
+
+    // One block per (batch, output_dim) pair
+    const int b = blockIdx.x;
+    const int i = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int block_size = blockDim.x;
+
+    if (b >= batch_size || i >= dim) return;
+
+    extern __shared__ float smem[];
+    float* pos_contrib = smem;                    // [block_size]
+    float* neg_contrib = smem + block_size;       // [block_size]
+
+    // Initialize accumulators
+    float local_log_pos = LOG_ZERO;
+    float local_log_neg = LOG_ZERO;
+
+    // Each thread processes multiple input dimensions
+    for (int j = tid; j < dim; j += block_size) {
+        float log_R_p = static_cast<float>(log_R_pos[i * dim + j]);
+        float log_R_n = static_cast<float>(log_R_neg[i * dim + j]);
+        float log_h_j = static_cast<float>(log_h[b * dim + j]);
+        float sign_h_j = static_cast<float>(sign_h[b * dim + j]);
+
+        // Contribution from positive R: sign = sign_h_j
+        if (log_R_p > LOG_ZERO + 1.0f) {
+            float log_contrib = log_R_p + log_h_j;
+            if (sign_h_j > 0) {
+                // Positive contribution
+                float max_val = fmaxf(local_log_pos, log_contrib);
+                float min_val = fminf(local_log_pos, log_contrib);
+                local_log_pos = max_val + log1pf(expf(min_val - max_val));
+            } else {
+                // Negative contribution
+                float max_val = fmaxf(local_log_neg, log_contrib);
+                float min_val = fminf(local_log_neg, log_contrib);
+                local_log_neg = max_val + log1pf(expf(min_val - max_val));
+            }
+        }
+
+        // Contribution from negative R: sign = -sign_h_j
+        if (log_R_n > LOG_ZERO + 1.0f) {
+            float log_contrib = log_R_n + log_h_j;
+            if (sign_h_j < 0) {  // -1 * -1 = +1
+                // Positive contribution
+                float max_val = fmaxf(local_log_pos, log_contrib);
+                float min_val = fminf(local_log_pos, log_contrib);
+                local_log_pos = max_val + log1pf(expf(min_val - max_val));
+            } else {  // -1 * +1 = -1
+                // Negative contribution
+                float max_val = fmaxf(local_log_neg, log_contrib);
+                float min_val = fminf(local_log_neg, log_contrib);
+                local_log_neg = max_val + log1pf(expf(min_val - max_val));
+            }
+        }
+    }
+
+    // Store in shared memory
+    pos_contrib[tid] = local_log_pos;
+    neg_contrib[tid] = local_log_neg;
+    __syncthreads();
+
+    // Block-level reduction for s > 32 (uses shared memory)
+    for (int s = block_size / 2; s > 32; s >>= 1) {
+        if (tid < s) {
+            float a = pos_contrib[tid];
+            float b_val = pos_contrib[tid + s];
+            float max_val = fmaxf(a, b_val);
+            float min_val = fminf(a, b_val);
+            pos_contrib[tid] = max_val + log1pf(expf(min_val - max_val));
+
+            a = neg_contrib[tid];
+            b_val = neg_contrib[tid + s];
+            max_val = fmaxf(a, b_val);
+            min_val = fminf(a, b_val);
+            neg_contrib[tid] = max_val + log1pf(expf(min_val - max_val));
+        }
+        __syncthreads();
+    }
+
+    // Final warp reduction using shuffles (no sync needed within warp)
+    if (tid < 32) {
+        // Load from shared memory for warp 0
+        float pos_val = pos_contrib[tid];
+        float neg_val = neg_contrib[tid];
+
+        // Also grab values from upper half if block_size > 32
+        if (block_size >= 64) {
+            float other_pos = pos_contrib[tid + 32];
+            float other_neg = neg_contrib[tid + 32];
+            float max_val = fmaxf(pos_val, other_pos);
+            float min_val = fminf(pos_val, other_pos);
+            pos_val = max_val + log1pf(expf(min_val - max_val));
+            max_val = fmaxf(neg_val, other_neg);
+            min_val = fminf(neg_val, other_neg);
+            neg_val = max_val + log1pf(expf(min_val - max_val));
+        }
+
+        // Warp shuffle reduction
+        pos_val = warp_logsumexp(pos_val);
+        neg_val = warp_logsumexp(neg_val);
+
+        // Thread 0 combines positive and negative sums
+        if (tid == 0) {
+            float log_result, sign_result;
+            signed_log_add(pos_val, 1.0f, neg_val, -1.0f, log_result, sign_result);
+
+            log_out[b * dim + i] = static_cast<T>(log_result);
+            sign_out[b * dim + i] = static_cast<T>(sign_result);
+        }
+    }
+}
+
+// =============================================================================
+// Kernel: Log-space gated update
+// h_new = (1 - delta) * h_prev + delta * tanh(W_x @ x + R_h @ h_prev + b)
+// =============================================================================
+
+template<typename T>
+__global__ void LogSpaceGatedUpdateKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ log_h_prev,  // [B, dim]
+    const T* __restrict__ sign_h_prev, // [B, dim]
+    const T* __restrict__ wx_x,        // [B, dim] W_x @ x (linear)
+    const T* __restrict__ log_Rh_h,    // [B, dim] log|R_h @ h_prev| (from log matmul)
+    const T* __restrict__ sign_Rh_h,   // [B, dim] sign(R_h @ h_prev)
+    const T* __restrict__ delta_raw,   // [B, dim] W_delta @ x (linear)
+    const T* __restrict__ b,           // [dim]
+    const T* __restrict__ b_delta,     // [dim]
+    T* __restrict__ log_h_out,         // [B, dim]
+    T* __restrict__ sign_h_out,        // [B, dim]
+    T* __restrict__ v_cache,           // [B, dim]
+    T* __restrict__ delta_cache) {     // [B, dim]
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        // Delta gate: sigmoid(delta_raw + b_delta)
+        float delta_in = static_cast<float>(delta_raw[idx]) + static_cast<float>(b_delta[d]);
+        float delta_f = 1.0f / (1.0f + expf(-delta_in));
+        if (delta_cache) delta_cache[idx] = static_cast<T>(delta_f);
+
+        // Convert R_h @ h_prev to linear for tanh computation
+        float Rh_h_linear = from_log_space(
+            static_cast<float>(log_Rh_h[idx]),
+            static_cast<float>(sign_Rh_h[idx]));
+
+        // Candidate: tanh(W_x @ x + R_h @ h_prev + b)
+        float v_f = static_cast<float>(wx_x[idx]) + Rh_h_linear + static_cast<float>(b[d]);
+        if (v_cache) v_cache[idx] = static_cast<T>(v_f);
+        float candidate = tanhf(v_f);
+
+        // Convert h_prev from log space
+        float h_prev_linear = from_log_space(
+            static_cast<float>(log_h_prev[idx]),
+            static_cast<float>(sign_h_prev[idx]));
+
+        // Gated update: h_new = (1 - delta) * h_prev + delta * candidate
+        float term1 = (1.0f - delta_f) * h_prev_linear;
+        float term2 = delta_f * candidate;
+        float h_new = term1 + term2;
+
+        // Convert result to log space
+        float log_h_new, sign_h_new;
+        to_log_space(h_new, log_h_new, sign_h_new);
+
+        log_h_out[idx] = static_cast<T>(log_h_new);
+        sign_h_out[idx] = static_cast<T>(sign_h_new);
+    }
+}
+
+// =============================================================================
+// Kernel: Selective output (compete x silu)
+// =============================================================================
+
+template<typename T>
+__global__ void LogSpaceSelectiveOutputKernel(
+    const int batch_size,
+    const int dim,
+    const int n_groups,
+    const int group_size,
+    const T* __restrict__ log_h,
+    const T* __restrict__ sign_h,
+    const T* __restrict__ w_out_h,     // W_out @ h (linear)
+    T* __restrict__ output,
+    T* __restrict__ compete_cache) {
+
+    extern __shared__ float smem[];
+
+    const int b = blockIdx.x;
+    const int g = blockIdx.y;
+
+    if (b >= batch_size || g >= n_groups) return;
+
+    const int base = b * dim + g * group_size;
+
+    // Convert to linear for softmax
+    float max_val = -FLT_MAX;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float h_linear = from_log_space(
+            static_cast<float>(log_h[base + i]),
+            static_cast<float>(sign_h[base + i]));
+        max_val = fmaxf(max_val, h_linear);
+    }
+    smem[threadIdx.x] = max_val;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x + s]);
+        __syncthreads();
+    }
+    max_val = smem[0];
+    __syncthreads();
+
+    // Compute exp sum
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float h_linear = from_log_space(
+            static_cast<float>(log_h[base + i]),
+            static_cast<float>(sign_h[base + i]));
+        sum += expf(h_linear - max_val);
+    }
+    float* sum_smem = smem + blockDim.x;
+    sum_smem[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sum_smem[threadIdx.x] += sum_smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    sum = sum_smem[0];
+
+    // Compute output
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float h_linear = from_log_space(
+            static_cast<float>(log_h[base + i]),
+            static_cast<float>(sign_h[base + i]));
+        float compete = expf(h_linear - max_val) / sum;
+        if (compete_cache) compete_cache[base + i] = static_cast<T>(compete);
+
+        float w = static_cast<float>(w_out_h[base + i]);
+        float silu_val = w / (1.0f + expf(-w));
+        output[base + i] = static_cast<T>(compete * silu_val);
+    }
+}
+
+// =============================================================================
+// Kernel: Initialize log_h and sign_h from linear h0
+// =============================================================================
+
+template<typename T>
+__global__ void LinearToLogKernel(
+    const int n,
+    const T* __restrict__ h_linear,
+    T* __restrict__ log_h,
+    T* __restrict__ sign_h) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float h = static_cast<float>(h_linear[idx]);
+        float log_val, sign_val;
+        to_log_space(h, log_val, sign_val);
+        log_h[idx] = static_cast<T>(log_val);
+        sign_h[idx] = static_cast<T>(sign_val);
+    }
+}
+
+// =============================================================================
+// Kernel: Convert log_h and sign_h to linear h
+// =============================================================================
+
+template<typename T>
+__global__ void LogToLinearKernel(
+    const int n,
+    const T* __restrict__ log_h,
+    const T* __restrict__ sign_h,
+    T* __restrict__ h_linear) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float log_val = static_cast<float>(log_h[idx]);
+        float sign_val = static_cast<float>(sign_h[idx]);
+        h_linear[idx] = static_cast<T>(from_log_space(log_val, sign_val));
+    }
+}
+
+// =============================================================================
+// Backward kernels
+// =============================================================================
+
+// Backward through selective output
+template<typename T>
+__global__ void LogComputeSelectiveOutputBackward(
+    const int batch_size,
+    const int dim,
+    const int n_groups,
+    const int group_size,
+    const T* __restrict__ log_h,
+    const T* __restrict__ sign_h,
+    const T* __restrict__ w_out_h,
+    const T* __restrict__ compete,
+    const T* __restrict__ d_output,
+    T* __restrict__ dh_linear,
+    T* __restrict__ d_w_out_h) {
+
+    extern __shared__ float smem[];
+
+    const int b = blockIdx.x;
+    const int g = blockIdx.y;
+
+    if (b >= batch_size || g >= n_groups) return;
+
+    const int base = b * dim + g * group_size;
+
+    float sum_compete_dcompete = 0.0f;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float dout = static_cast<float>(d_output[base + i]);
+        float w = static_cast<float>(w_out_h[base + i]);
+        float sig = 1.0f / (1.0f + expf(-w));
+        float silu_val = w * sig;
+        float dsilu_dw = sig * (1.0f + w * (1.0f - sig));
+        float comp = static_cast<float>(compete[base + i]);
+
+        d_w_out_h[base + i] = static_cast<T>(dout * comp * dsilu_dw);
+        sum_compete_dcompete += comp * dout * silu_val;
+    }
+
+    smem[threadIdx.x] = sum_compete_dcompete;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    sum_compete_dcompete = smem[0];
+
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float dout = static_cast<float>(d_output[base + i]);
+        float w = static_cast<float>(w_out_h[base + i]);
+        float sig = 1.0f / (1.0f + expf(-w));
+        float silu_val = w * sig;
+        float comp = static_cast<float>(compete[base + i]);
+        float d_comp = dout * silu_val;
+        dh_linear[base + i] = static_cast<T>(comp * (d_comp - sum_compete_dcompete));
+    }
+}
+
+// Backward through gated update with full R
+template<typename T>
+__global__ void LogComputeGatedBackward(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ log_h_prev,
+    const T* __restrict__ sign_h_prev,
+    const T* __restrict__ v,
+    const T* __restrict__ delta,
+    const T* __restrict__ dh,
+    const T* __restrict__ dh_recurrent,
+    T* __restrict__ dv,
+    T* __restrict__ d_delta_raw,
+    T* __restrict__ dh_prev_linear,
+    float* __restrict__ db,
+    float* __restrict__ db_delta) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        // Convert h_prev from log to linear
+        float h_prev_linear = from_log_space(
+            static_cast<float>(log_h_prev[idx]),
+            static_cast<float>(sign_h_prev[idx]));
+
+        float grad_h = static_cast<float>(dh[idx]);
+        if (dh_recurrent) grad_h += static_cast<float>(dh_recurrent[idx]);
+
+        float cand = tanhf(static_cast<float>(v[idx]));
+        float del = static_cast<float>(delta[idx]);
+        float one_minus_del = 1.0f - del;
+
+        // d_candidate
+        float d_cand = grad_h * del;
+        float dtanh = 1.0f - cand * cand;
+        float dv_val = d_cand * dtanh;
+        dv[idx] = static_cast<T>(dv_val);
+
+        // d_delta
+        float d_delta = grad_h * (cand - h_prev_linear);
+        float dsigmoid = del * one_minus_del;
+        float d_delta_raw_val = d_delta * dsigmoid;
+        d_delta_raw[idx] = static_cast<T>(d_delta_raw_val);
+
+        // dh_prev from gated path only (R_h path handled separately via gemm)
+        float dh_prev_gated = one_minus_del * grad_h;
+        dh_prev_linear[idx] = static_cast<T>(dh_prev_gated);
+
+        atomicAdd(&db[d], dv_val);
+        atomicAdd(&db_delta[d], d_delta_raw_val);
+    }
+}
+
+}  // anonymous namespace
+
+
+namespace haste {
+namespace v0 {
+namespace elman_ladder {
+
+// =============================================================================
+// Log-Compute Full Elman Forward
+// =============================================================================
+
+template<typename T>
+LogComputeFullElmanForward<T>::LogComputeFullElmanForward(
+    bool training,
+    int batch_size,
+    int dim,
+    int n_groups,
+    const cublasHandle_t& blas_handle,
+    const cudaStream_t& stream)
+    : training_(training),
+      batch_size_(batch_size),
+      dim_(dim),
+      n_groups_(n_groups),
+      blas_handle_(blas_handle),
+      stream_(stream) {}
+
+template<typename T>
+void LogComputeFullElmanForward<T>::Run(
+    int steps,
+    const T* W_x,
+    const T* R_h,
+    const T* W_delta,
+    const T* W_out,
+    const T* b,
+    const T* b_delta,
+    const T* x,
+    T* log_h,
+    T* sign_h,
+    T* output,
+    T* v,
+    T* delta_cache,
+    T* compete_cache,
+    T* log_R_pos,
+    T* log_R_neg) {
+
+    static const T alpha = static_cast<T>(1.0);
+    static const T beta_zero = static_cast<T>(0.0);
+
+    const int BD = batch_size_ * dim_;
+    const int block_size = 256;
+    const int num_blocks = (BD + block_size - 1) / block_size;
+    const int group_size = dim_ / n_groups_;
+
+    // Decompose R_h matrix
+    const int R_blocks = (dim_ * dim_ + block_size - 1) / block_size;
+    DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(
+        dim_, R_h, log_R_pos, log_R_neg);
+
+    // Workspace for linear computations
+    T *wx_x, *delta_tmp, *w_out_h, *log_Rh_h, *sign_Rh_h, *h_linear;
+    cudaMalloc(&wx_x, BD * sizeof(T));
+    cudaMalloc(&delta_tmp, BD * sizeof(T));
+    cudaMalloc(&w_out_h, BD * sizeof(T));
+    cudaMalloc(&log_Rh_h, BD * sizeof(T));
+    cudaMalloc(&sign_Rh_h, BD * sizeof(T));
+    cudaMalloc(&h_linear, BD * sizeof(T));
+
+    // Initial h is assumed to be zero (log_h[0] and sign_h[0] should be set by caller)
+    // If caller provides linear h0, they should convert it first
+
+    for (int t = 0; t < steps; ++t) {
+        const T* x_t = x + t * BD;
+        const T* log_h_prev = log_h + t * BD;
+        const T* sign_h_prev = sign_h + t * BD;
+        T* log_h_t = log_h + (t + 1) * BD;
+        T* sign_h_t = sign_h + (t + 1) * BD;
+        T* out_t = output + t * BD;
+        T* v_t = training_ ? (v + t * BD) : nullptr;
+        T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
+        T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
+
+        // W_x @ x_t (linear matmul using cuBLAS)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
+
+        // W_delta @ x_t (linear matmul)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
+
+        // R_h @ h_prev in log space
+        dim3 matmul_grid(batch_size_, dim_);
+        int smem_size = 2 * block_size * sizeof(float);
+        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
+            batch_size_, dim_, log_R_pos, log_R_neg,
+            log_h_prev, sign_h_prev, log_Rh_h, sign_Rh_h);
+
+        // Gated update
+        LogSpaceGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, log_h_prev, sign_h_prev,
+            wx_x, log_Rh_h, sign_Rh_h, delta_tmp,
+            b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
+
+        // Convert h to linear for W_out multiplication using GPU kernel
+        LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            BD, log_h_t, sign_h_t, h_linear);
+
+        // W_out @ h_linear
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
+
+        // Selective output
+        dim3 out_grid(batch_size_, n_groups_);
+        int out_smem_size = 2 * block_size * sizeof(float);
+        LogSpaceSelectiveOutputKernel<T><<<out_grid, block_size, out_smem_size, stream_>>>(
+            batch_size_, dim_, n_groups_, group_size,
+            log_h_t, sign_h_t, w_out_h, out_t, compete_t);
+    }
+
+    cudaFree(wx_x);
+    cudaFree(delta_tmp);
+    cudaFree(w_out_h);
+    cudaFree(log_Rh_h);
+    cudaFree(sign_Rh_h);
+    cudaFree(h_linear);
+}
+
+// =============================================================================
+// Log-Compute Full Elman Backward
+// =============================================================================
+
+template<typename T>
+LogComputeFullElmanBackward<T>::LogComputeFullElmanBackward(
+    int batch_size,
+    int dim,
+    int n_groups,
+    const cublasHandle_t& blas_handle,
+    const cudaStream_t& stream)
+    : batch_size_(batch_size),
+      dim_(dim),
+      n_groups_(n_groups),
+      blas_handle_(blas_handle),
+      stream_(stream) {}
+
+template<typename T>
+void LogComputeFullElmanBackward<T>::Run(
+    int steps,
+    const T* W_x,
+    const T* R_h,
+    const T* W_delta,
+    const T* W_out,
+    const T* x,
+    const T* log_h,
+    const T* sign_h,
+    const T* v,
+    const T* delta_cache,
+    const T* compete_cache,
+    const T* log_R_pos,
+    const T* log_R_neg,
+    const T* d_output,
+    T* dx,
+    T* dW_x,
+    T* dR_h,
+    T* dW_delta,
+    T* dW_out,
+    T* db,
+    T* db_delta) {
+
+    static const T alpha = static_cast<T>(1.0);
+    static const T beta_zero = static_cast<T>(0.0);
+
+    const int BD = batch_size_ * dim_;
+    const int block_size = 256;
+    const int num_blocks = (BD + block_size - 1) / block_size;
+    const int group_size = dim_ / n_groups_;
+
+    // Workspace
+    T *dv, *d_delta_raw, *dh_recurrent, *dh_prev_linear, *dh_prev_from_R;
+    T *dh_linear, *d_w_out_h, *w_out_h, *h_linear, *h_prev_linear;
+    cudaMalloc(&dv, BD * sizeof(T));
+    cudaMalloc(&d_delta_raw, BD * sizeof(T));
+    cudaMalloc(&dh_recurrent, BD * sizeof(T));
+    cudaMalloc(&dh_prev_linear, BD * sizeof(T));
+    cudaMalloc(&dh_prev_from_R, BD * sizeof(T));
+    cudaMalloc(&dh_linear, BD * sizeof(T));
+    cudaMalloc(&d_w_out_h, BD * sizeof(T));
+    cudaMalloc(&w_out_h, BD * sizeof(T));
+    cudaMalloc(&h_linear, BD * sizeof(T));
+    cudaMalloc(&h_prev_linear, BD * sizeof(T));
+    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+
+    // Float buffers for atomic gradients
+    float *db_float, *db_delta_float;
+    cudaMalloc(&db_float, dim_ * sizeof(float));
+    cudaMalloc(&db_delta_float, dim_ * sizeof(float));
+    cudaMemset(db_float, 0, dim_ * sizeof(float));
+    cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
+
+    // Zero weight gradients
+    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
+    cudaMemset(dR_h, 0, dim_ * dim_ * sizeof(T));
+    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
+    cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+
+    for (int t = steps - 1; t >= 0; --t) {
+        const T* x_t = x + t * BD;
+        const T* log_h_prev = log_h + t * BD;
+        const T* sign_h_prev = sign_h + t * BD;
+        const T* log_h_t = log_h + (t + 1) * BD;
+        const T* sign_h_t = sign_h + (t + 1) * BD;
+        const T* v_t = v + t * BD;
+        const T* delta_t = delta_cache + t * BD;
+        const T* compete_t = compete_cache + t * BD;
+        const T* d_out_t = d_output + t * BD;
+        T* dx_t = dx + t * BD;
+
+        // Convert h_t and h_prev from log to linear
+        LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            BD, log_h_t, sign_h_t, h_linear);
+        LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            BD, log_h_prev, sign_h_prev, h_prev_linear);
+
+        // Recompute w_out_h
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
+
+        // Backward through selective output
+        dim3 grid(batch_size_, n_groups_);
+        int smem_size = block_size * sizeof(float);
+        LogComputeSelectiveOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
+            batch_size_, dim_, n_groups_, group_size, log_h_t, sign_h_t, w_out_h, compete_t,
+            d_out_t, dh_linear, d_w_out_h);
+
+        // dW_out += d_w_out_h @ h_linear^T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
+
+        // dh_linear += W_out^T @ d_w_out_h
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
+
+        // Backward through gated update
+        LogComputeGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, log_h_prev, sign_h_prev, v_t, delta_t, dh_linear,
+            (t < steps - 1) ? dh_recurrent : nullptr,
+            dv, d_delta_raw, dh_prev_linear, db_float, db_delta_float);
+
+        // dh_prev += R_h^T @ dv (for the R_h @ h term in candidate)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_h, dim_, dv, dim_, &alpha, dh_prev_linear, dim_);
+
+        // dR_h += dv @ h_prev^T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, dv, dim_, h_prev_linear, dim_, &alpha, dR_h, dim_);
+
+        // dx = W_x^T @ dv + W_delta^T @ d_delta_raw
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
+
+        // dh_recurrent for next iteration
+        cudaMemcpy(dh_recurrent, dh_prev_linear, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+
+        // Weight gradients
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, dv, dim_, x_t, dim_, &alpha, dW_x, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_t, dim_, &alpha, dW_delta, dim_);
+    }
+
+    // Copy float gradients to output type
+    cudaMemset(db, 0, dim_ * sizeof(T));
+    cudaMemset(db_delta, 0, dim_ * sizeof(T));
+
+    auto copy_float_to_T = [&](float* src, T* dst, int n) {
+        for (int i = 0; i < n; ++i) {
+            float val;
+            cudaMemcpy(&val, src + i, sizeof(float), cudaMemcpyDeviceToHost);
+            T tval = static_cast<T>(val);
+            cudaMemcpy(dst + i, &tval, sizeof(T), cudaMemcpyHostToDevice);
+        }
+    };
+    copy_float_to_T(db_float, db, dim_);
+    copy_float_to_T(db_delta_float, db_delta, dim_);
+
+    cudaFree(dv);
+    cudaFree(d_delta_raw);
+    cudaFree(dh_recurrent);
+    cudaFree(dh_prev_linear);
+    cudaFree(dh_prev_from_R);
+    cudaFree(dh_linear);
+    cudaFree(d_w_out_h);
+    cudaFree(w_out_h);
+    cudaFree(h_linear);
+    cudaFree(h_prev_linear);
+    cudaFree(db_float);
+    cudaFree(db_delta_float);
+}
+
+// Explicit template instantiations
+template struct LogComputeFullElmanForward<__half>;
+template struct LogComputeFullElmanForward<__nv_bfloat16>;
+template struct LogComputeFullElmanForward<float>;
+template struct LogComputeFullElmanForward<double>;
+
+template struct LogComputeFullElmanBackward<__half>;
+template struct LogComputeFullElmanBackward<__nv_bfloat16>;
+template struct LogComputeFullElmanBackward<float>;
+template struct LogComputeFullElmanBackward<double>;
+
+}  // namespace elman_ladder
+}  // namespace v0
+}  // namespace haste
