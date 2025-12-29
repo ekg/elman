@@ -14,48 +14,15 @@ LIBHASTE := libhaste.a
 CUDA_HOME ?= /usr/local/cuda
 AR ?= ar
 AR_FLAGS := -crv $(LIBHASTE)
-NVCC_FLAGS := -std=c++11 -x cu -Xcompiler -fPIC
+NVCC_FLAGS := -std=c++17 -x cu -Xcompiler -fPIC
 endif
 
 LOCAL_CFLAGS := -I/usr/include/eigen3 -I$(CUDA_HOME)/include -Ilib -O3
 LOCAL_LDFLAGS := -L$(CUDA_HOME)/lib64 -L. -lcudart -lcublas
 GPU_ARCH_FLAGS := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,code=sm_89
 
-# All CUDA object files
+# Elman Ladder CUDA object files (only files that exist in this repo)
 CUDA_OBJS := \
-	lib/elman_forward_gpu.o \
-	lib/elman_backward_gpu.o \
-	lib/elman_silu_forward_gpu.o \
-	lib/elman_silu_backward_gpu.o \
-	lib/elman_variants_gpu.o \
-	lib/lstm_forward_gpu.o \
-	lib/lstm_backward_gpu.o \
-	lib/lstm_silu_forward_gpu.o \
-	lib/lstm_silu_backward_gpu.o \
-	lib/gru_forward_gpu.o \
-	lib/gru_backward_gpu.o \
-	lib/gru_silu_forward_gpu.o \
-	lib/gru_silu_backward_gpu.o \
-	lib/skip_elman_forward_gpu.o \
-	lib/skip_elman_backward_gpu.o \
-	lib/layer_norm_forward_gpu.o \
-	lib/layer_norm_backward_gpu.o \
-	lib/layer_norm_lstm_forward_gpu.o \
-	lib/layer_norm_lstm_backward_gpu.o \
-	lib/layer_norm_gru_forward_gpu.o \
-	lib/layer_norm_gru_backward_gpu.o \
-	lib/indrnn_backward_gpu.o \
-	lib/indrnn_forward_gpu.o \
-	lib/layer_norm_indrnn_forward_gpu.o \
-	lib/layer_norm_indrnn_backward_gpu.o \
-	lib/multihead_elman_forward_gpu.o \
-	lib/multihead_elman_backward_gpu.o \
-	lib/elman_triple_r_gpu.o \
-	lib/elman_selective_triple_r_gpu.o \
-	lib/elman_neural_memory_gpu.o \
-	lib/elman_lowrank_r_gpu.o \
-	lib/multihead_triple_r_gpu.o \
-	lib/diagonal_mhtr_gpu.o \
 	lib/stock_elman_gpu.o \
 	lib/gated_elman_gpu.o \
 	lib/selective_elman_gpu.o \

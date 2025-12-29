@@ -1,4 +1,5 @@
 // Copyright 2020 LMNT, Inc. All Rights Reserved.
+// Copyright 2025 Erik Garrison. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,24 +26,6 @@
 //     H = hidden size
 // and the rightmost dimension changes the fastest.
 
-#include "haste/elman.h"
-#include "haste/elman_silu.h"
-#include "haste/elman_variants.h"
-#include "haste/gru.h"
-#include "haste/gru_silu.h"
-#include "haste/skip_elman.h"
-#include "haste/indrnn.h"
-#include "haste/layer_norm.h"
-#include "haste/layer_norm_gru.h"
-#include "haste/layer_norm_indrnn.h"
-#include "haste/layer_norm_lstm.h"
-#include "haste/lstm.h"
-#include "haste/lstm_silu.h"
-#include "haste/multihead_elman.h"
-#include "haste/elman_triple_r.h"
-#include "haste/elman_selective_triple_r.h"
-#include "haste/elman_neural_memory.h"
-#include "haste/elman_lowrank_r.h"
-#include "haste/multihead_triple_r.h"
-#include "haste/diagonal_mhtr.h"
+// Elman Ladder - Log-space RNN research framework
+// This is a standalone version for the Elman Ablation Ladder research.
 #include "haste/elman_ladder.h"

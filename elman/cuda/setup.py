@@ -75,21 +75,33 @@ else:
   CUDA_HOME = os.environ.get('CUDA_HOME', '/usr/local/cuda')
   extra_args = ['-Wno-sign-compare']
 
-with open(f'frameworks/pytorch/_version.py', 'wt') as f:
+with open(f'pytorch/_version.py', 'wt') as f:
   f.write(f'__version__ = "{VERSION}"')
 
+# Only include the sources we actually need for Elman Ladder
+ladder_sources = [
+    'pytorch/elman_ladder.cc',
+    'pytorch/support.cc',
+]
 extension = cpp_extension.CUDAExtension(
     'haste_pytorch_lib',
-    sources = glob('frameworks/pytorch/*.cc'),
+    sources = ladder_sources,
     extra_compile_args = extra_args,
     include_dirs = [os.path.join(base_path, 'lib'), os.path.join(CUDA_HOME, 'include')],
     libraries = ['haste'],
     library_dirs = ['.'])
 
+# Try to read README if it exists
+long_description = 'Elman Ladder: Log-space RNN research framework'
+readme_path = os.path.join(base_path, 'README.md')
+if os.path.exists(readme_path):
+    with open(readme_path, 'r', encoding='utf-8') as f:
+        long_description = f.read()
+
 setup(name = 'haste_pytorch',
     version = VERSION,
     description = DESCRIPTION,
-    long_description = open('README.md', 'r',encoding='utf-8').read(),
+    long_description = long_description,
     long_description_content_type = 'text/markdown',
     author = AUTHOR,
     author_email = AUTHOR_EMAIL,
@@ -97,7 +109,7 @@ setup(name = 'haste_pytorch',
     license = LICENSE,
     keywords = 'pytorch machine learning rnn lstm gru custom op',
     packages = ['haste_pytorch'],
-    package_dir = { 'haste_pytorch': 'frameworks/pytorch' },
+    package_dir = { 'haste_pytorch': 'pytorch' },
     install_requires = [],
     ext_modules = [extension],
     cmdclass = { 'build_ext': BuildHaste },
