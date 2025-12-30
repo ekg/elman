@@ -23,6 +23,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from pathlib import Path
+from schedulefree import AdamWScheduleFree
 
 # Add elman package to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -57,11 +58,11 @@ def get_args():
                         help="Path to training data (text file)")
     parser.add_argument("--chunk_size", type=int, default=512,
                         help="Sequence length for training")
-    parser.add_argument("--tokenizer", type=str, default="byte",
+    parser.add_argument("--tokenizer", type=str, default="tiktoken",
                         choices=["byte", "tiktoken", "sentencepiece", "huggingface"],
-                        help="Tokenizer type")
+                        help="Tokenizer type (default: tiktoken)")
     parser.add_argument("--tokenizer_name", type=str, default="p50k_base",
-                        help="Tokenizer name (for tiktoken: p50k_base, cl100k_base, etc.)")
+                        help="Tokenizer name (default: p50k_base ~50k vocab)")
 
     # Training
     parser.add_argument("--batch_size", type=int, default=32,
@@ -78,6 +79,14 @@ def get_args():
                         help="Weight decay")
     parser.add_argument("--grad_clip", type=float, default=1.0,
                         help="Gradient clipping")
+    parser.add_argument("--schedulefree", action="store_true", default=True,
+                        help="Use AdamWScheduleFree optimizer (default: True)")
+    parser.add_argument("--no-schedulefree", dest="schedulefree", action="store_false",
+                        help="Use regular AdamW optimizer")
+    parser.add_argument("--sf_beta", type=float, default=0.9,
+                        help="Schedule-free beta1")
+    parser.add_argument("--sf_beta2", type=float, default=0.999,
+                        help="Schedule-free beta2")
 
     # Output
     parser.add_argument("--output", type=str, default="outputs/ladder",
@@ -88,14 +97,20 @@ def get_args():
                         help="Save checkpoint every N steps")
 
     # Hardware
-    parser.add_argument("--cuda", action="store_true",
-                        help="Use CUDA")
-    parser.add_argument("--bf16", action="store_true",
-                        help="Use bfloat16")
+    parser.add_argument("--cuda", action="store_true", default=True,
+                        help="Use CUDA (default: True)")
+    parser.add_argument("--no-cuda", dest="cuda", action="store_false",
+                        help="Disable CUDA")
+    parser.add_argument("--bf16", action="store_true", default=True,
+                        help="Use bfloat16 (default: True)")
+    parser.add_argument("--no-bf16", dest="bf16", action="store_false",
+                        help="Use float32")
     parser.add_argument("--compile", action="store_true",
                         help="Use torch.compile")
-    parser.add_argument("--ddp", action="store_true",
-                        help="Use DistributedDataParallel")
+    parser.add_argument("--ddp", action="store_true", default=True,
+                        help="Use DistributedDataParallel (default: True)")
+    parser.add_argument("--no-ddp", dest="ddp", action="store_false",
+                        help="Disable DDP (single GPU)")
     parser.add_argument("--tbptt", action="store_true",
                         help="Enable TBPTT (carry hidden state across chunks)")
 
@@ -189,7 +204,7 @@ def train(args):
         model = torch.compile(model)
 
     if args.ddp:
-        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
 
     # Create dataset (each rank gets different data stream)
     use_subword = args.tokenizer != "byte"
@@ -231,12 +246,24 @@ def train(args):
         )
 
     # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        betas=(0.9, 0.95),
-    )
+    if args.schedulefree:
+        optimizer = AdamWScheduleFree(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            betas=(args.sf_beta, args.sf_beta2),
+        )
+        if is_main:
+            print("Using AdamWScheduleFree optimizer")
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.95),
+        )
+        if is_main:
+            print("Using AdamW optimizer")
 
     # Output directory
     output_dir = Path(args.output)
@@ -275,6 +302,8 @@ def train(args):
     hidden_state = None
 
     model.train()
+    if args.schedulefree:
+        optimizer.train()  # Set optimizer to train mode for schedule-free
     optimizer.zero_grad()
 
     while step < args.max_steps:
@@ -294,14 +323,26 @@ def train(args):
             is_doc_end = torch.tensor(batch_doc_ends, dtype=torch.bool, device=device)
 
         # Reset hidden state at document boundaries (TBPTT or streaming tokenization)
+        # Handle both tensor and tuple (log_h, sign_h) hidden states
+        def reset_hidden(h, reset_mask):
+            if h is None:
+                return None
+            if isinstance(h, tuple):
+                # Log-space layers return (log_h, sign_h) tuple
+                return tuple(elem * (~reset_mask).to(elem.dtype) for elem in h)
+            return h * (~reset_mask).to(h.dtype)
+
         if (args.tbptt or use_subword) and hidden_state is not None:
             reset_mask = is_doc_end.view(-1, 1)
-            hidden_state = [h * (~reset_mask).to(h.dtype) if h is not None else None for h in hidden_state]
+            hidden_state = [reset_hidden(h, reset_mask) for h in hidden_state]
 
-        # Learning rate schedule
-        lr = get_lr(step, args.warmup_steps, args.lr, args.max_steps)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        # Learning rate schedule (only for regular AdamW, not schedule-free)
+        if not args.schedulefree:
+            lr = get_lr(step, args.warmup_steps, args.lr, args.max_steps)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            lr = args.lr  # For logging purposes
 
         # Forward pass
         x = batch[:, :-1]  # Input tokens
@@ -320,15 +361,24 @@ def train(args):
         loss_scaled.backward()
 
         # Update hidden state for TBPTT/streaming (detach from graph)
+        # Handle both tensor and tuple (log_h, sign_h) hidden states
+        def detach_hidden(h):
+            if h is None:
+                return None
+            if isinstance(h, tuple):
+                return tuple(elem.detach() for elem in h)
+            return h.detach()
+
         if (args.tbptt or use_subword) and next_hidden is not None:
-            hidden_state = [h.detach() if h is not None else None for h in next_hidden]
+            hidden_state = [detach_hidden(h) for h in next_hidden]
 
         # Update
         if (step + 1) % args.grad_accum == 0:
+            # Always compute gradient norm for monitoring
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+            # Only clip if grad_clip > 0
             if args.grad_clip > 0:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            else:
-                grad_norm = 0.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
             optimizer.zero_grad()
 

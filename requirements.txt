@@ -23,7 +23,7 @@ fonttools==4.61.0
 fsspec==2025.12.0
 gmpy2 @ file:///home/conda/feedstock_root/build_artifacts/gmpy2_1733462545272/work
 h2 @ file:///home/conda/feedstock_root/build_artifacts/h2_1738578511449/work
-haste_pytorch @ file:///home/erikg/haste_src
+hasty_pytorch @ file:///home/erikg/elman/elman/cuda
 hf-xet==1.2.0
 hjson==3.1.0
 hpack @ file:///home/conda/feedstock_root/build_artifacts/hpack_1737618293087/work

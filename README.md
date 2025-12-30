@@ -24,15 +24,27 @@ This repository implements the "Elman Ladder" - a 7-level ablation study that pr
 
 ## The Elman Ladder
 
+### Linear-Space Levels (0-3)
 | Level | Name | Key Change | Associative? | Parallel? |
 |-------|------|------------|--------------|-----------|
 | 0 | Stock Elman | Pure `h = tanh(W_x @ x + W_h @ h + b)` | No | No |
 | 1 | Gated Elman | Add discretization: `h = (1-δ)*h + δ*cand` | No | No |
 | 2 | Selective Elman | Add compete softmax output | No | No |
 | 3 | Diagonal Selective | Diagonal `r_h` instead of full `W_h` | No | No |
-| 4 | Log-Storage | Store h as (log\|h\|, sign(h)) | No | No |
-| 5 | Log-Compute | Log-space matrix multiply | No | No |
-| 6 | Log-Space Triple R | Full log-space with polynomial activation | Partial | Partial |
+
+### Log-Space Polynomial Levels (log_0, log_1, log_2) - **RECOMMENDED**
+| Level | Name | Key Change | Gradient Stability |
+|-------|------|------------|-------------------|
+| log_0 | Log-Space Polynomial | Polynomial activation `α*log\|v\|` with input-dependent α | Bounded |
+| log_1 | Log-Space Selective | + compete×silu output | Bounded |
+| log_2 | Log-Space Diagonal Selective | + diagonal r_h in log-space | Bounded |
+
+### Experimental Levels (4-6)
+| Level | Name | Key Change |
+|-------|------|------------|
+| 4 | Log-Storage | Store h as (log\|h\|, sign(h)) |
+| 5 | Log-Compute | Log-space matrix multiply |
+| 6 | Log-Space Triple R | Full log-space with Triple R |
 
 See [docs/ladder.md](docs/ladder.md) for detailed documentation.
 
@@ -57,29 +69,38 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### Training (without TBPTT - recommended for comparison)
+### Training (8 GPU DDP with tiktoken - default)
 
 ```bash
-# Single GPU
-python train.py --data /path/to/data.txt --level 3 --params 100m --bf16
+# Set library path
+export LD_LIBRARY_PATH=$HOME/.local/lib/python3.12/site-packages/torch/lib:$LD_LIBRARY_PATH
 
-# Multi-GPU DDP
-torchrun --nproc_per_node=8 train_ladder.py --level 3 --params 500m --data /path/to/data.txt --ddp --bf16
+# Train log-space polynomial (recommended)
+torchrun --nproc_per_node=8 train_ladder.py --level log_0 --params 100m --data /path/to/data.txt
+
+# Train stock Elman baseline
+torchrun --nproc_per_node=8 train_ladder.py --level 0 --params 100m --data /path/to/data.txt
 ```
 
-### Training (with TBPTT)
+**Default settings**: DDP, CUDA, bf16, tiktoken (p50k_base ~50k vocab), AdamWScheduleFree
 
-TBPTT is **opt-in** via `--tbptt` flag. Only use when needed:
+### Single GPU (for debugging)
 
 ```bash
-python train.py --data /path/to/data.txt --level 3 --params 100m --bf16 --tbptt
+python train_ladder.py --level log_0 --params 10m --data /path/to/data.txt --no-ddp
 ```
 
-**Note**: TBPTT requires `BatchedStreamDataset` which maintains persistent per-batch-element streams. Without TBPTT, hidden states are not carried across chunks.
+### Training with TBPTT
+
+TBPTT is **opt-in** via `--tbptt` flag:
+
+```bash
+torchrun --nproc_per_node=8 train_ladder.py --level log_0 --params 100m --data /path/to/data.txt --tbptt
+```
 
 ### Data Format
 
-Raw bytes with `0x1e` (ASCII record separator) as document delimiter.
+Raw text file. Documents separated by `0x1e` (ASCII record separator).
 
 ## Repository Structure
 
@@ -97,38 +118,43 @@ elman/
 
 ## Key Files
 
-**Models (Levels 0-3 implemented, 4-6 documented):**
+**Models:**
 - `elman/models/stock_elman.py` - Level 0: Pure Elman
 - `elman/models/gated_elman.py` - Level 1: Discretized Elman
 - `elman/models/selective_elman.py` - Level 2: With compete softmax
 - `elman/models/diagonal_selective.py` - Level 3: Diagonal hidden weight
+- `elman/models/logspace_polynomial.py` - Level log_0: Log-space polynomial **(RECOMMENDED)**
+- `elman/models/logspace_selective.py` - Level log_1: + compete×silu
+- `elman/models/logspace_diagonal_selective.py` - Level log_2: + diagonal r_h
 - `elman/models/ladder_lm.py` - Language model wrapper for all levels
-- `elman/models/mamba2_baseline.py` - Mamba2 baseline for comparison
 
 **Data:**
 - `elman/data/dataset.py` - Document-aware streaming datasets
-  - `DocumentStreamDataset` - Single stream (no TBPTT)
-  - `BatchedStreamDataset` - Per-batch-element streams (for TBPTT)
 - `elman/data/tokenizers.py` - Byte-level and tiktoken tokenizers
 
 **Training:**
-- `train.py` - Single GPU training
-- `train_ladder.py` - DDP multi-GPU training
+- `train_ladder.py` - Main training script (DDP, schedule-free, tiktoken defaults)
 
 **CUDA Kernels:**
-- `elman/cuda/` - Haste-based CUDA kernels (build with `make && pip install -e .`)
+- `elman/cuda/` - Haste-based CUDA kernels
+
+Build CUDA kernels:
+```bash
+cd elman/cuda
+make
+pip install -e .
+```
 
 ## Current Status
 
-### Working (Linear-space)
-- Levels 0-3: Fully functional with CUDA kernels
-- Training verified up to 1B parameters
+### Production Ready
+- **Levels 0-3**: Linear-space, CUDA kernels, verified to 1B params
+- **Levels log_0, log_1, log_2**: Log-space polynomial with CUDA kernels, bounded gradients
 
-### Research Frontier (Log-space)
-- Level 4: Forward works, backward has gradient issues
-- Level 5-6: Theoretical framework, implementation in progress
+### Experimental
+- Levels 4-6: Theoretical framework, implementation in progress
 
-See [docs/logspace.md](docs/logspace.md) for the log-space research frontier.
+See [docs/logspace.md](docs/logspace.md) for log-space implementation details.
 
 ## Related Work
 

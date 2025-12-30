@@ -84,7 +84,7 @@ For long-range memory (small updates), log-space is much better.
 
 ## Implementation Status
 
-**IMPLEMENTED** in `/home/erikg/haste_src/lib/log_storage_diagonal_gpu.cu.cc`:
+**IMPLEMENTED** in `elman/cuda/lib/log_storage_diagonal_gpu.cu.cc`:
 - `LogStorageSelectiveOutput`: Now computes softmax(log_h) instead of softmax(exp(log_h))
 - `LogStorageSelectiveOutputBackward`: Gradient flows directly to log_h (no * h factor)
 - `Forward::Run`: Computes W_out @ log_h instead of W_out @ h

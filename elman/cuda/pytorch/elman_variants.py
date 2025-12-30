@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Function
 
-import haste_pytorch_lib as lib
+import hasty_pytorch_lib as lib
 
 __all__ = [
     'ElmanTanh',

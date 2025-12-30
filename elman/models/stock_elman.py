@@ -16,8 +16,8 @@ import torch.nn.functional as F
 
 # Try to import Haste CUDA kernel
 try:
-    import haste_pytorch_lib
-    HASTE_AVAILABLE = hasattr(haste_pytorch_lib, 'stock_elman_forward')
+    import hasty_pytorch_lib
+    HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'stock_elman_forward')
 except ImportError:
     HASTE_AVAILABLE = False
 
@@ -29,7 +29,7 @@ class StockElmanFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, training, x, h0, W_x, W_h, b):
-        h, v = haste_pytorch_lib.stock_elman_forward(
+        h, v = hasty_pytorch_lib.stock_elman_forward(
             training,
             x.contiguous(),
             h0.contiguous(),
@@ -45,7 +45,7 @@ class StockElmanFunction(torch.autograd.Function):
     def backward(ctx, dh_out):
         x, W_x, W_h, h, v = ctx.saved_tensors
         dh = dh_out[1:].contiguous()
-        dx, dW_x, dW_h, db = haste_pytorch_lib.stock_elman_backward(
+        dx, dW_x, dW_h, db = hasty_pytorch_lib.stock_elman_backward(
             W_x, W_h, x, h, v, dh
         )
         return None, dx, None, dW_x, dW_h, db

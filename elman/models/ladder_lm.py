@@ -15,13 +15,15 @@ from .gated_elman import GatedElman
 from .selective_elman import SelectiveElman
 from .diagonal_selective import DiagonalSelective
 from .logspace_polynomial import LogSpacePolynomial
+from .logspace_selective import LogSpaceSelective
+from .logspace_diagonal_selective import LogSpaceDiagonalSelective
 
 
 def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer (0-3) or string ('log_0', etc.)
+        level: Integer (0-3) or string ('log_0', 'log_1', 'log_2')
 
     Returns:
         Layer class
@@ -33,10 +35,12 @@ def get_ladder_level(level):
         3: ("Diagonal Selective", DiagonalSelective),
         # Log-space levels
         'log_0': ("Log-Space Polynomial", LogSpacePolynomial),
+        'log_1': ("Log-Space Selective", LogSpaceSelective),
+        'log_2': ("Log-Space Diagonal Selective", LogSpaceDiagonalSelective),
     }
 
     if level not in levels:
-        raise ValueError(f"Invalid level {level}. Must be 0-3 or 'log_0'.")
+        raise ValueError(f"Invalid level {level}. Must be 0-3 or 'log_0'/'log_1'/'log_2'.")
 
     name, cls = levels[level]
     return cls
@@ -203,6 +207,8 @@ class LadderLM(nn.Module):
             2: "Selective Elman",
             3: "Diagonal Selective",
             'log_0': "Log-Space Polynomial",
+            'log_1': "Log-Space Selective",
+            'log_2': "Log-Space Diagonal Selective",
         }
         return f'level={self.level} ({level_names.get(self.level, "Unknown")}), dim={self.dim}, depth={self.depth}'
 

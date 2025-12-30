@@ -18,7 +18,7 @@
 #include <cublas_v2.h>
 #include <cfloat>
 
-#include "haste/elman_ladder.h"
+#include "hasty/elman_ladder.h"
 #include "blas.h"
 #include "inline_ops.h"
 
@@ -561,7 +561,7 @@ __global__ void LogComputeGatedBackward(
 }  // anonymous namespace
 
 
-namespace haste {
+namespace hasty {
 namespace v0 {
 namespace elman_ladder {
 
@@ -870,4 +870,4 @@ template struct LogComputeFullElmanBackward<double>;
 
 }  // namespace elman_ladder
 }  // namespace v0
-}  // namespace haste
+}  // namespace hasty

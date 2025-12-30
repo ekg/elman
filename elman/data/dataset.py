@@ -307,7 +307,7 @@ class TokenizedStreamDataset:
     accumulate tokens in separate buffer, return fixed-size chunks.
 
     Args:
-        data_path: Path to training data file (raw text with 0x1e doc delimiters)
+        data_path: Path to training data file
         tokenizer: Tokenizer object with encode(text) -> List[int] method
         batch_size: Number of independent streams
         chunk_size: Sequence length per chunk
@@ -315,6 +315,7 @@ class TokenizedStreamDataset:
         world_size: Total number of DDP processes
         seed: Random seed for reproducibility
         text_buffer_size: Bytes to accumulate before tokenizing (default 4096)
+        doc_delimiter: Document delimiter byte (default 0x1e, use None for no delimiter)
     """
 
     def __init__(
@@ -327,11 +328,13 @@ class TokenizedStreamDataset:
         world_size: int = 1,
         seed: int = 42,
         text_buffer_size: int = 4096,
+        doc_delimiter: int = 0x1e,  # ASCII record separator
     ):
         self.tokenizer = tokenizer
         self.batch_size = batch_size
         self.chunk_size = chunk_size
         self.text_buffer_size = text_buffer_size
+        self.doc_delimiter = doc_delimiter
 
         # Open the data file with memory mapping
         self.data_file = open(data_path, 'rb')
@@ -356,14 +359,17 @@ class TokenizedStreamDataset:
             self.byte_buffers.append([])
             self.token_buffers.append([])
 
-        # Scan each stream to next document boundary
-        for i in range(batch_size):
-            self._scan_to_next_document(i)
+        # Scan each stream to next document boundary (only if delimiter is set)
+        if self.doc_delimiter is not None:
+            for i in range(batch_size):
+                self._scan_to_next_document(i)
 
     def _scan_to_next_document(self, stream_idx: int):
         """Scan stream to the start of the next document."""
+        if self.doc_delimiter is None:
+            return
         while self.positions[stream_idx] < self.file_size:
-            if self.mmap[self.positions[stream_idx]] == 0x1e:
+            if self.mmap[self.positions[stream_idx]] == self.doc_delimiter:
                 self.positions[stream_idx] = (self.positions[stream_idx] + 1) % self.file_size
                 return
             self.positions[stream_idx] += 1
@@ -401,7 +407,7 @@ class TokenizedStreamDataset:
                 byte_val = self.mmap[pos]
                 self.positions[stream_idx] = pos + 1
 
-                if byte_val == 0x1e:
+                if self.doc_delimiter is not None and byte_val == self.doc_delimiter:
                     # Document boundary - flush and mark
                     self._flush_bytes_to_tokens(stream_idx)
                     doc_ended = True

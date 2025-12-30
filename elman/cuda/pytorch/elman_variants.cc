@@ -7,7 +7,7 @@
 #include <torch/extension.h>
 #include <vector>
 
-#include "haste.h"
+#include "hasty.h"
 #include "support.h"
 
 namespace {
@@ -19,9 +19,9 @@ using torch::Tensor;
 // ============================================================================
 
 template<typename T>
-using ElmanTanhForward = haste::v0::elman_tanh::ForwardPass<T>;
+using ElmanTanhForward = hasty::v0::elman_tanh::ForwardPass<T>;
 template<typename T>
-using ElmanTanhBackward = haste::v0::elman_tanh::BackwardPass<T>;
+using ElmanTanhBackward = hasty::v0::elman_tanh::BackwardPass<T>;
 
 std::vector<Tensor> elman_tanh_forward(
     bool training,
@@ -140,9 +140,9 @@ std::vector<Tensor> elman_tanh_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanSigmoidForward = haste::v0::elman_sigmoid::ForwardPass<T>;
+using ElmanSigmoidForward = hasty::v0::elman_sigmoid::ForwardPass<T>;
 template<typename T>
-using ElmanSigmoidBackward = haste::v0::elman_sigmoid::BackwardPass<T>;
+using ElmanSigmoidBackward = hasty::v0::elman_sigmoid::BackwardPass<T>;
 
 std::vector<Tensor> elman_sigmoid_forward(
     bool training,
@@ -261,9 +261,9 @@ std::vector<Tensor> elman_sigmoid_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanSwishForward = haste::v0::elman_swish::ForwardPass<T>;
+using ElmanSwishForward = hasty::v0::elman_swish::ForwardPass<T>;
 template<typename T>
-using ElmanSwishBackward = haste::v0::elman_swish::BackwardPass<T>;
+using ElmanSwishBackward = hasty::v0::elman_swish::BackwardPass<T>;
 
 std::vector<Tensor> elman_swish_forward(
     bool training,
@@ -382,9 +382,9 @@ std::vector<Tensor> elman_swish_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanGeluForward = haste::v0::elman_gelu::ForwardPass<T>;
+using ElmanGeluForward = hasty::v0::elman_gelu::ForwardPass<T>;
 template<typename T>
-using ElmanGeluBackward = haste::v0::elman_gelu::BackwardPass<T>;
+using ElmanGeluBackward = hasty::v0::elman_gelu::BackwardPass<T>;
 
 std::vector<Tensor> elman_gelu_forward(
     bool training,
@@ -503,9 +503,9 @@ std::vector<Tensor> elman_gelu_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanNoGateForward = haste::v0::elman_nogate::ForwardPass<T>;
+using ElmanNoGateForward = hasty::v0::elman_nogate::ForwardPass<T>;
 template<typename T>
-using ElmanNoGateBackward = haste::v0::elman_nogate::BackwardPass<T>;
+using ElmanNoGateBackward = hasty::v0::elman_nogate::BackwardPass<T>;
 
 std::vector<Tensor> elman_nogate_forward(
     bool training,
@@ -622,9 +622,9 @@ std::vector<Tensor> elman_nogate_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanLeakyForward = haste::v0::elman_leaky::ForwardPass<T>;
+using ElmanLeakyForward = hasty::v0::elman_leaky::ForwardPass<T>;
 template<typename T>
-using ElmanLeakyBackward = haste::v0::elman_leaky::BackwardPass<T>;
+using ElmanLeakyBackward = hasty::v0::elman_leaky::BackwardPass<T>;
 
 std::vector<Tensor> elman_leaky_forward(
     bool training,
@@ -757,9 +757,9 @@ std::vector<Tensor> elman_leaky_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanLeakyMamba2DeltaForward = haste::v0::elman_leaky_mamba2_delta::ForwardPass<T>;
+using ElmanLeakyMamba2DeltaForward = hasty::v0::elman_leaky_mamba2_delta::ForwardPass<T>;
 template<typename T>
-using ElmanLeakyMamba2DeltaBackward = haste::v0::elman_leaky_mamba2_delta::BackwardPass<T>;
+using ElmanLeakyMamba2DeltaBackward = hasty::v0::elman_leaky_mamba2_delta::BackwardPass<T>;
 
 std::vector<Tensor> elman_leaky_mamba2_delta_forward(
     bool training,
@@ -897,9 +897,9 @@ std::vector<Tensor> elman_leaky_mamba2_delta_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanNoDeltaForward = haste::v0::elman_no_delta::ForwardPass<T>;
+using ElmanNoDeltaForward = hasty::v0::elman_no_delta::ForwardPass<T>;
 template<typename T>
-using ElmanNoDeltaBackward = haste::v0::elman_no_delta::BackwardPass<T>;
+using ElmanNoDeltaBackward = hasty::v0::elman_no_delta::BackwardPass<T>;
 
 std::vector<Tensor> elman_no_delta_forward(
     bool training,
@@ -1021,9 +1021,9 @@ std::vector<Tensor> elman_no_delta_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanMamba2Forward = haste::v0::elman_mamba2::ForwardPass<T>;
+using ElmanMamba2Forward = hasty::v0::elman_mamba2::ForwardPass<T>;
 template<typename T>
-using ElmanMamba2Backward = haste::v0::elman_mamba2::BackwardPass<T>;
+using ElmanMamba2Backward = hasty::v0::elman_mamba2::BackwardPass<T>;
 
 std::vector<Tensor> elman_mamba2_forward(
     bool training,
@@ -1156,9 +1156,9 @@ std::vector<Tensor> elman_mamba2_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanMamba2SiluForward = haste::v0::elman_mamba2_silu::ForwardPass<T>;
+using ElmanMamba2SiluForward = hasty::v0::elman_mamba2_silu::ForwardPass<T>;
 template<typename T>
-using ElmanMamba2SiluBackward = haste::v0::elman_mamba2_silu::BackwardPass<T>;
+using ElmanMamba2SiluBackward = hasty::v0::elman_mamba2_silu::BackwardPass<T>;
 
 std::vector<Tensor> elman_mamba2_silu_forward(
     bool training,
@@ -1291,9 +1291,9 @@ std::vector<Tensor> elman_mamba2_silu_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanLeakySiluForward = haste::v0::elman_leaky_silu::ForwardPass<T>;
+using ElmanLeakySiluForward = hasty::v0::elman_leaky_silu::ForwardPass<T>;
 template<typename T>
-using ElmanLeakySiluBackward = haste::v0::elman_leaky_silu::BackwardPass<T>;
+using ElmanLeakySiluBackward = hasty::v0::elman_leaky_silu::BackwardPass<T>;
 
 std::vector<Tensor> elman_leaky_silu_forward(
     bool training,
@@ -1424,9 +1424,9 @@ std::vector<Tensor> elman_leaky_silu_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanLeakyDiagForward = haste::v0::elman_leaky_diag::ForwardPass<T>;
+using ElmanLeakyDiagForward = hasty::v0::elman_leaky_diag::ForwardPass<T>;
 template<typename T>
-using ElmanLeakyDiagBackward = haste::v0::elman_leaky_diag::BackwardPass<T>;
+using ElmanLeakyDiagBackward = hasty::v0::elman_leaky_diag::BackwardPass<T>;
 
 std::vector<Tensor> elman_leaky_diag_forward(
     bool training,
@@ -1555,9 +1555,9 @@ std::vector<Tensor> elman_leaky_diag_backward(
 // ============================================================================
 
 template<typename T>
-using ElmanLeakySelectiveForward = haste::v0::elman_leaky_selective::ForwardPass<T>;
+using ElmanLeakySelectiveForward = hasty::v0::elman_leaky_selective::ForwardPass<T>;
 template<typename T>
-using ElmanLeakySelectiveBackward = haste::v0::elman_leaky_selective::BackwardPass<T>;
+using ElmanLeakySelectiveBackward = hasty::v0::elman_leaky_selective::BackwardPass<T>;
 
 std::vector<Tensor> elman_leaky_selective_forward(
     bool training,

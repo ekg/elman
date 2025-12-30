@@ -13,18 +13,15 @@
 // Level 5: Log-Compute Full - Full R via logsumexp decomposition
 // Level 6: Triple R - + R_delta modulation
 //
-// Log-Space Levels (new architecture):
-// Log Level 0: Polynomial Elman - Input-dependent α, polynomial activation
-//
 // Key insight: Test each modification incrementally to find what matches Mamba2.
 
-#ifndef HASTE_ELMAN_LADDER_H
-#define HASTE_ELMAN_LADDER_H
+#ifndef HASTY_ELMAN_LADDER_H
+#define HASTY_ELMAN_LADDER_H
 
 #include <cuda.h>
 #include <cublas_v2.h>
 
-namespace haste {
+namespace hasty {
 namespace v0 {
 namespace elman_ladder {
 
@@ -572,13 +569,16 @@ private:
 };
 
 // =============================================================================
-// Log Level 0: Polynomial Elman with Input-Dependent Alpha
-// Key innovations:
-// - INPUT-DEPENDENT alpha: α_t = 1 + softplus(W_α @ x_t + b_α)  (guaranteed > 1)
-// - Polynomial activation: log|h| = α * log|v|  (gradient = α, constant)
-// - Soft bounding: log_bounded = -softplus(-log_h)  (magnitude ≤ 1, gradient ∈ [0,1])
-// - All operations stay in log-space with bounded gradients
+// Log-Space Polynomial Levels (log_0, log_1, log_2)
+// True log-space RNN with polynomial activation
 // =============================================================================
+
+// Log-Space Level 0 (log_0): Log-Space Polynomial
+// α_t = 1 + softplus(W_α @ x_t + b_α)
+// v = r_h * h_prev + W_x @ x + b
+// log|h_cand| = α_t * log|v|
+// log|h_bounded| = -softplus(-log|h_cand|)
+// h_new = (1-δ) * h_prev + δ * h_bounded
 
 template<typename T>
 struct LogPolyElmanForward {
@@ -591,26 +591,27 @@ struct LogPolyElmanForward {
 
     void Run(
         int steps,
-        const T* W_x,           // [dim, dim] input projection
-        const T* log_r_h,       // [dim] log(|r_h|) diagonal recurrence
-        const T* sign_r_h,      // [dim] sign(r_h)
-        const T* W_alpha,       // [dim, dim] for input-dependent alpha
-        const T* b_alpha,       // [dim] bias for alpha
-        const T* W_delta,       // [dim, dim] gate projection
-        const T* b,             // [dim] main bias
-        const T* b_delta,       // [dim] gate bias
-        const T* x,             // [T, B, dim] input sequence
-        T* log_h,               // [T+1, B, dim] output log|h| (h[0] should be set before calling)
-        T* sign_h,              // [T+1, B, dim] output sign(h) (h[0] should be set before calling)
-        T* h_linear,            // [T, B, dim] linear-space h for output
-        // Cache tensors for backward (can be nullptr if not training)
-        T* log_v_cache,         // [T, B, dim] pre-activation log|v|
-        T* sign_v_cache,        // [T, B, dim] pre-activation sign(v)
-        T* alpha_cache,         // [T, B, dim] computed alpha values
-        T* log_h_unbounded_cache,  // [T, B, dim] before soft bound
-        T* delta_cache,         // [T, B, dim] delta gate values
-        T* weight_rh_cache,     // [T, B, dim] softmax weight for r_h*h_prev term
-        T* alpha_raw_cache);    // [T, B, dim] raw alpha before softplus
+        const T* W_x,           // [dim, dim]
+        const T* log_r_h,       // [dim]
+        const T* sign_r_h,      // [dim]
+        const T* W_alpha,       // [dim, dim]
+        const T* b_alpha,       // [dim]
+        const T* W_delta,       // [dim, dim]
+        const T* b,             // [dim]
+        const T* b_delta,       // [dim]
+        const T* log_gamma,     // [dim] RMSNorm scale in log-space
+        const T* x,             // [T, B, dim]
+        T* log_h,               // [T+1, B, dim]
+        T* sign_h,              // [T+1, B, dim]
+        T* h_linear,            // [T, B, dim] NORMALIZED output
+        T* log_v_cache,
+        T* sign_v_cache,
+        T* alpha_cache,
+        T* log_h_unbounded_cache,
+        T* delta_cache,
+        T* weight_rh_cache,
+        T* alpha_raw_cache,
+        T* log_rms_cache);      // [T, B] cache for backward
 
 private:
     bool training_;
@@ -635,6 +636,7 @@ struct LogPolyElmanBackward {
         const T* sign_r_h,
         const T* W_alpha,
         const T* W_delta,
+        const T* log_gamma,         // [dim] RMSNorm scale
         const T* x,
         const T* log_h,
         const T* sign_h,
@@ -645,15 +647,17 @@ struct LogPolyElmanBackward {
         const T* log_h_unbounded_cache,
         const T* delta_cache,
         const T* weight_rh_cache,
-        const T* d_h_linear,    // [T, B, dim] gradient from output
-        T* dx,                  // [T, B, dim]
-        T* dW_x,                // [dim, dim]
-        T* d_log_r_h,           // [dim]
-        T* dW_alpha,            // [dim, dim]
-        T* db_alpha,            // [dim]
-        T* dW_delta,            // [dim, dim]
-        T* db,                  // [dim]
-        T* db_delta);           // [dim]
+        const T* log_rms_cache,     // [T, B] cached from forward
+        const T* d_h_linear,
+        T* dx,
+        T* dW_x,
+        T* d_log_r_h,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_delta,
+        T* db,
+        T* db_delta,
+        T* d_log_gamma);            // [dim] gradient for RMSNorm scale
 
 private:
     int batch_size_;
@@ -662,8 +666,208 @@ private:
     cudaStream_t stream_;
 };
 
+// Log-Space Level 1 (log_1): Selective Log-Space Polynomial
+// Same as log_0 but with compete×silu output
+
+template<typename T>
+struct LogSelectiveElmanForward {
+    LogSelectiveElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* log_r_h,
+        const T* sign_r_h,
+        const T* W_alpha,
+        const T* b_alpha,
+        const T* W_delta,
+        const T* W_out,
+        const T* b,
+        const T* b_delta,
+        const T* log_gamma,         // [dim] RMSNorm scale in log-space
+        const T* x,
+        T* log_h,
+        T* sign_h,
+        T* output,
+        T* log_v_cache,
+        T* sign_v_cache,
+        T* alpha_cache,
+        T* log_h_unbounded_cache,
+        T* delta_cache,
+        T* weight_rh_cache,
+        T* alpha_raw_cache,
+        T* h_linear_cache,
+        T* compete_cache,
+        T* log_rms_cache);          // [T, B] cache for backward
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LogSelectiveElmanBackward {
+    LogSelectiveElmanBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* log_r_h,
+        const T* sign_r_h,
+        const T* W_alpha,
+        const T* W_delta,
+        const T* W_out,
+        const T* log_gamma,         // [dim] RMSNorm scale
+        const T* x,
+        const T* log_h,
+        const T* sign_h,
+        const T* log_v_cache,
+        const T* sign_v_cache,
+        const T* alpha_cache,
+        const T* alpha_raw_cache,
+        const T* log_h_unbounded_cache,
+        const T* delta_cache,
+        const T* weight_rh_cache,
+        const T* h_linear_cache,
+        const T* compete_cache,
+        const T* log_rms_cache,     // [T, B] cached from forward
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* d_log_r_h,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta,
+        T* d_log_gamma);            // [dim] gradient for RMSNorm scale
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// Log-Space Level 2 (log_2): Diagonal Selective Log-Space Polynomial
+// Like log_1 but with diagonal r_h stored in log space
+
+template<typename T>
+struct LogDiagSelectiveElmanForward {
+    LogDiagSelectiveElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* log_r_h,       // [dim] diagonal in log space
+        const T* sign_r_h,      // [dim]
+        const T* W_alpha,
+        const T* b_alpha,
+        const T* W_delta,
+        const T* W_out,
+        const T* b,
+        const T* b_delta,
+        const T* log_gamma,     // [dim] RMSNorm scale in log-space
+        const T* x,
+        T* log_h,
+        T* sign_h,
+        T* output,
+        T* log_v_cache,
+        T* sign_v_cache,
+        T* alpha_cache,
+        T* log_h_unbounded_cache,
+        T* delta_cache,
+        T* weight_rh_cache,
+        T* alpha_raw_cache,
+        T* h_linear_cache,
+        T* compete_cache,
+        T* log_rms_cache);      // [T, B] cache for backward
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LogDiagSelectiveElmanBackward {
+    LogDiagSelectiveElmanBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* log_r_h,
+        const T* sign_r_h,
+        const T* W_alpha,
+        const T* W_delta,
+        const T* W_out,
+        const T* log_gamma,     // [dim] RMSNorm scale
+        const T* x,
+        const T* log_h,
+        const T* sign_h,
+        const T* log_v_cache,
+        const T* sign_v_cache,
+        const T* alpha_cache,
+        const T* alpha_raw_cache,
+        const T* log_h_unbounded_cache,
+        const T* delta_cache,
+        const T* weight_rh_cache,
+        const T* h_linear_cache,
+        const T* compete_cache,
+        const T* log_rms_cache, // [T, B] cached from forward
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* d_log_r_h,           // [dim] gradient for diagonal
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta,
+        T* d_log_gamma);        // [dim] gradient for RMSNorm scale
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
-}  // namespace haste
+}  // namespace hasty
 
-#endif  // HASTE_ELMAN_LADDER_H
+#endif  // HASTY_ELMAN_LADDER_H

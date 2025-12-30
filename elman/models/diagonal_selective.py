@@ -22,8 +22,8 @@ import torch.nn.functional as F
 
 # Try to import Haste CUDA kernel
 try:
-    import haste_pytorch_lib
-    HASTE_AVAILABLE = hasattr(haste_pytorch_lib, 'diagonal_selective_forward')
+    import hasty_pytorch_lib
+    HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'diagonal_selective_forward')
 except ImportError:
     HASTE_AVAILABLE = False
 
@@ -35,7 +35,7 @@ class DiagonalSelectiveFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, training, x, h0, W_x, r_h, W_delta, W_out, b, b_delta, n_groups):
-        h, output, v, delta_cache, compete_cache = haste_pytorch_lib.diagonal_selective_forward(
+        h, output, v, delta_cache, compete_cache = hasty_pytorch_lib.diagonal_selective_forward(
             training,
             x.contiguous(),
             h0.contiguous(),
@@ -55,7 +55,7 @@ class DiagonalSelectiveFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dh_out, d_output):
         x, W_x, r_h, W_delta, W_out, h, v, delta_cache, compete_cache = ctx.saved_tensors
-        dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta = haste_pytorch_lib.diagonal_selective_backward(
+        dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta = hasty_pytorch_lib.diagonal_selective_backward(
             W_x, r_h, W_delta, W_out, x, h, v, delta_cache, compete_cache,
             d_output.contiguous(), ctx.n_groups
         )

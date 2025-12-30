@@ -28,4 +28,4 @@
 
 // Elman Ladder - Log-space RNN research framework
 // This is a standalone version for the Elman Ablation Ladder research.
-#include "haste/elman_ladder.h"
+#include "hasty/elman_ladder.h"

@@ -15,10 +15,10 @@
 
 
 VERSION = '0.5.0-rc0'
-DESCRIPTION = 'Haste: a fast, simple, and open RNN library.'
+DESCRIPTION = 'Hasty: CUDA kernels for Elman Ladder RNNs.'
 AUTHOR = 'LMNT, Inc.'
 AUTHOR_EMAIL = 'haste@lmnt.com'
-URL = 'https://haste.lmnt.com'
+URL = 'https://github.com/lmnt-com/haste'
 LICENSE = 'Apache 2.0'
 CLASSIFIERS = [
   'Development Status :: 4 - Beta',
@@ -35,21 +35,6 @@ CLASSIFIERS = [
 ]
 
 
-# Copyright 2020 LMNT, Inc. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
 import os
 import sys
 
@@ -60,10 +45,10 @@ from setuptools import setup
 from setuptools.dist import Distribution
 
 
-class BuildHaste(cpp_extension.BuildExtension):
+class BuildHashy(cpp_extension.BuildExtension):
   def run(self):
     # Use parallel make with 12 jobs
-    os.system('make -j12 haste')
+    os.system('make -j12 hasty')
     super().run()
 
 
@@ -84,11 +69,11 @@ ladder_sources = [
     'pytorch/support.cc',
 ]
 extension = cpp_extension.CUDAExtension(
-    'haste_pytorch_lib',
+    'hasty_pytorch_lib',
     sources = ladder_sources,
     extra_compile_args = extra_args,
     include_dirs = [os.path.join(base_path, 'lib'), os.path.join(CUDA_HOME, 'include')],
-    libraries = ['haste'],
+    libraries = ['hasty'],
     library_dirs = ['.'])
 
 # Try to read README if it exists
@@ -98,7 +83,7 @@ if os.path.exists(readme_path):
     with open(readme_path, 'r', encoding='utf-8') as f:
         long_description = f.read()
 
-setup(name = 'haste_pytorch',
+setup(name = 'hasty_pytorch',
     version = VERSION,
     description = DESCRIPTION,
     long_description = long_description,
@@ -108,9 +93,9 @@ setup(name = 'haste_pytorch',
     url = URL,
     license = LICENSE,
     keywords = 'pytorch machine learning rnn lstm gru custom op',
-    packages = ['haste_pytorch'],
-    package_dir = { 'haste_pytorch': 'pytorch' },
+    packages = ['hasty_pytorch'],
+    package_dir = { 'hasty_pytorch': 'pytorch' },
     install_requires = [],
     ext_modules = [extension],
-    cmdclass = { 'build_ext': BuildHaste },
+    cmdclass = { 'build_ext': BuildHashy },
     classifiers = CLASSIFIERS)

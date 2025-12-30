@@ -62,6 +62,24 @@ except ImportError:
     LogSpacePolynomialCell = None
     LOGSPACE_LEVEL_0_AVAILABLE = False
 
+try:
+    from .logspace_selective import (
+        LogSpaceSelective, LogSpaceSelectiveCell, LOGSPACE_LEVEL_1_AVAILABLE
+    )
+except ImportError:
+    LogSpaceSelective = None
+    LogSpaceSelectiveCell = None
+    LOGSPACE_LEVEL_1_AVAILABLE = False
+
+try:
+    from .logspace_diagonal_selective import (
+        LogSpaceDiagonalSelective, LogSpaceDiagonalSelectiveCell, LOGSPACE_LEVEL_2_AVAILABLE
+    )
+except ImportError:
+    LogSpaceDiagonalSelective = None
+    LogSpaceDiagonalSelectiveCell = None
+    LOGSPACE_LEVEL_2_AVAILABLE = False
+
 # Language model wrapper
 try:
     from .ladder_lm import LadderLM, create_ladder_model
@@ -80,6 +98,8 @@ def get_available_levels():
         3: ("Diagonal Selective", LEVEL_3_AVAILABLE, DiagonalSelective),
         # Log-space levels (prefixed with 'log_')
         'log_0': ("Log-Space Polynomial", LOGSPACE_LEVEL_0_AVAILABLE, LogSpacePolynomial),
+        'log_1': ("Log-Space Selective", LOGSPACE_LEVEL_1_AVAILABLE, LogSpaceSelective),
+        'log_2': ("Log-Space Diagonal Selective", LOGSPACE_LEVEL_2_AVAILABLE, LogSpaceDiagonalSelective),
     }
     return levels
 
@@ -103,9 +123,11 @@ __all__ = [
     'DiagonalSelective', 'DiagonalSelectiveCell',
     # Log-space level classes
     'LogSpacePolynomial', 'LogSpacePolynomialCell',
+    'LogSpaceSelective', 'LogSpaceSelectiveCell',
+    'LogSpaceDiagonalSelective', 'LogSpaceDiagonalSelectiveCell',
     # Availability flags
     'LEVEL_0_AVAILABLE', 'LEVEL_1_AVAILABLE', 'LEVEL_2_AVAILABLE', 'LEVEL_3_AVAILABLE',
-    'LOGSPACE_LEVEL_0_AVAILABLE',
+    'LOGSPACE_LEVEL_0_AVAILABLE', 'LOGSPACE_LEVEL_1_AVAILABLE', 'LOGSPACE_LEVEL_2_AVAILABLE',
     # Language model
     'LadderLM', 'create_ladder_model',
     # Helpers

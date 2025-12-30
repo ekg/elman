@@ -4,16 +4,16 @@ NVCC ?= nvcc -ccbin $(CXX)
 PYTHON ?= python
 
 ifeq ($(OS),Windows_NT)
-LIBHASTE := haste.lib
+LIBHASTY := hasty.lib
 CUDA_HOME ?= $(CUDA_PATH)
 AR := lib
-AR_FLAGS := /nologo /out:$(LIBHASTE)
+AR_FLAGS := /nologo /out:$(LIBHASTY)
 NVCC_FLAGS := -x cu -Xcompiler "/MD"
 else
-LIBHASTE := libhaste.a
+LIBHASTY := libhasty.a
 CUDA_HOME ?= /usr/local/cuda
 AR ?= ar
-AR_FLAGS := -crv $(LIBHASTE)
+AR_FLAGS := -crv $(LIBHASTY)
 NVCC_FLAGS := -std=c++17 -x cu -Xcompiler -fPIC
 endif
 
@@ -30,21 +30,23 @@ CUDA_OBJS := \
 	lib/log_storage_diagonal_gpu.o \
 	lib/log_compute_full_gpu.o \
 	lib/logspace_triple_r_gpu.o \
-	lib/logspace_polynomial_gpu.o
+	lib/logspace_polynomial_gpu.o \
+	lib/logspace_selective_gpu.o \
+	lib/logspace_diagonal_selective_gpu.o
 
-.PHONY: all haste haste_tf haste_pytorch libhaste_tf examples benchmarks clean
+.PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
-all: haste haste_tf haste_pytorch examples benchmarks
+all: hasty hasty_tf hasty_pytorch examples benchmarks
 
 # Pattern rule for compiling CUDA files - enables parallel builds with make -j
 lib/%.o: lib/%.cu.cc
 	$(NVCC) $(GPU_ARCH_FLAGS) -c $< -o $@ $(NVCC_FLAGS) $(LOCAL_CFLAGS)
 
-# haste target now depends on object files and just creates archive
-haste: $(CUDA_OBJS)
+# hasty target now depends on object files and just creates archive
+hasty: $(CUDA_OBJS)
 	$(AR) $(AR_FLAGS) $(CUDA_OBJS)
 
-libhaste_tf: haste
+libhasty_tf: hasty
 	$(eval TF_CFLAGS := $(shell $(PYTHON) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))'))
 	$(eval TF_LDFLAGS := $(shell $(PYTHON) -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_link_flags()))'))
 	$(CXX) -std=c++11 -c frameworks/tf/lstm.cc -o frameworks/tf/lstm.o $(LOCAL_CFLAGS) $(TF_CFLAGS) -fPIC
@@ -55,10 +57,10 @@ libhaste_tf: haste
 	$(CXX) -std=c++11 -c frameworks/tf/layer_norm_lstm.cc -o frameworks/tf/layer_norm_lstm.o $(LOCAL_CFLAGS) $(TF_CFLAGS) -fPIC
 	$(CXX) -std=c++11 -c frameworks/tf/indrnn.cc -o frameworks/tf/indrnn.o $(LOCAL_CFLAGS) $(TF_CFLAGS) -fPIC
 	$(CXX) -std=c++11 -c frameworks/tf/support.cc -o frameworks/tf/support.o $(LOCAL_CFLAGS) $(TF_CFLAGS) -fPIC
-	$(CXX) -shared frameworks/tf/*.o libhaste.a -o frameworks/tf/libhaste_tf.so $(LOCAL_LDFLAGS) $(TF_LDFLAGS) -fPIC
+	$(CXX) -shared frameworks/tf/*.o libhasty.a -o frameworks/tf/libhasty_tf.so $(LOCAL_LDFLAGS) $(TF_LDFLAGS) -fPIC
 
 # Dependencies handled by setup.py
-haste_tf:
+hasty_tf:
 	@$(eval TMP := $(shell mktemp -d))
 	@cp -r . $(TMP)
 	@cat build/common.py build/setup.tf.py > $(TMP)/setup.py
@@ -67,7 +69,7 @@ haste_tf:
 	@rm -rf $(TMP)
 
 # Dependencies handled by setup.py
-haste_pytorch:
+hasty_pytorch:
 	@$(eval TMP := $(shell mktemp -d))
 	@cp -r . $(TMP)
 	@cat build/common.py build/setup.pytorch.py > $(TMP)/setup.py
@@ -91,14 +93,14 @@ dist:
 	@cp $(TMP)/dist/*.tar.gz .
 	@rm -rf $(TMP)
 
-examples: haste
-	$(CXX) -std=c++11 examples/lstm.cc $(LIBHASTE) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o haste_lstm -Wno-ignored-attributes
-	$(CXX) -std=c++11 examples/gru.cc $(LIBHASTE) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o haste_gru -Wno-ignored-attributes
+examples: hasty
+	$(CXX) -std=c++11 examples/lstm.cc $(LIBHASTY) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o hasty_lstm -Wno-ignored-attributes
+	$(CXX) -std=c++11 examples/gru.cc $(LIBHASTY) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o hasty_gru -Wno-ignored-attributes
 
-benchmarks: haste
-	$(CXX) -std=c++11 benchmarks/benchmark_lstm.cc $(LIBHASTE) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o benchmark_lstm -Wno-ignored-attributes -lcudnn
-	$(CXX) -std=c++11 benchmarks/benchmark_gru.cc $(LIBHASTE) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o benchmark_gru -Wno-ignored-attributes -lcudnn
+benchmarks: hasty
+	$(CXX) -std=c++11 benchmarks/benchmark_lstm.cc $(LIBHASTY) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o benchmark_lstm -Wno-ignored-attributes -lcudnn
+	$(CXX) -std=c++11 benchmarks/benchmark_gru.cc $(LIBHASTY) $(LOCAL_CFLAGS) $(LOCAL_LDFLAGS) -o benchmark_gru -Wno-ignored-attributes -lcudnn
 
 clean:
-	rm -fr benchmark_lstm benchmark_gru haste_lstm haste_gru haste_*.whl haste_*.tar.gz
+	rm -fr benchmark_lstm benchmark_gru hasty_lstm hasty_gru hasty_*.whl hasty_*.tar.gz
 	find . \( -iname '*.o' -o -iname '*.so' -o -iname '*.a' -o -iname '*.lib' \) -delete

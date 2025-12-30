@@ -44,8 +44,8 @@ import torch.nn.functional as F
 
 # Try to import Haste CUDA kernel
 try:
-    import haste_pytorch_lib
-    HASTE_AVAILABLE = hasattr(haste_pytorch_lib, 'logspace_polynomial_forward')
+    import hasty_pytorch_lib
+    HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'logspace_polynomial_forward')
 except ImportError:
     HASTE_AVAILABLE = False
 
@@ -65,10 +65,29 @@ def to_log_space(x):
     return log_x, sign_x
 
 
+class _GradScale(torch.autograd.Function):
+    """Scale gradients by a fixed factor during backward pass."""
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output * ctx.scale, None
+
+
+def grad_scale(x, scale=0.01):
+    """Scale gradients during backward pass."""
+    return _GradScale.apply(x, scale)
+
+
 def from_log_space(log_x, sign_x):
-    """Convert (log|x|, sign(x)) back to linear tensor."""
+    """Convert (log|x|, sign(x)) back to linear tensor with gradient scaling."""
     mask = log_x > LOG_ZERO + 1.0
-    result = sign_x * torch.exp(torch.clamp(log_x, max=20.0))
+    # Apply gradient scaling to stabilize backward pass
+    log_x_scaled = grad_scale(log_x, 0.01)  # Scale down gradients by 100x
+    result = sign_x * torch.exp(torch.clamp(log_x_scaled, max=20.0))
     return torch.where(mask, result, torch.zeros_like(result))
 
 
@@ -115,13 +134,63 @@ def soft_bound_log(log_h):
     return -F.softplus(-log_h)
 
 
+class LogSpaceRMSNorm(nn.Module):
+    """
+    RMSNorm computed entirely in log-space using logsumexp for bounded gradients.
+
+    Standard RMSNorm: y = x / rms(x) * gamma
+    where rms(x) = sqrt(mean(x^2))
+
+    In log-space:
+    - log(x^2) = 2 * log|x|
+    - log(mean(x^2)) = logsumexp(2 * log|x|) - log(n)
+    - log(rms) = log(mean(x^2)) / 2
+    - log|y| = log|x| - log(rms)
+
+    This keeps gradients bounded through logsumexp's softmax-like jacobian.
+    """
+
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        # Learnable scale in log-space
+        self.log_gamma = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, log_x, sign_x):
+        """
+        Args:
+            log_x: [*, dim] log magnitudes
+            sign_x: [*, dim] signs
+
+        Returns:
+            log_y: [*, dim] normalized log magnitudes
+            sign_y: [*, dim] signs (unchanged)
+        """
+        # Compute log(x^2) = 2 * log|x|
+        log_x2 = 2 * log_x
+
+        # log(mean(x^2)) = logsumexp(log(x^2)) - log(n)
+        # logsumexp gives bounded gradients!
+        log_mean_x2 = torch.logsumexp(log_x2, dim=-1, keepdim=True) - torch.log(torch.tensor(self.dim, dtype=log_x.dtype, device=log_x.device))
+
+        # log(rms) = log(mean(x^2)) / 2
+        log_rms = log_mean_x2 / 2
+
+        # Normalize: log|y| = log|x| - log(rms) + log(gamma)
+        log_y = log_x - log_rms + self.log_gamma
+
+        # Signs unchanged by normalization
+        return log_y, sign_x
+
+
 class LogSpacePolynomialFunction(torch.autograd.Function):
-    """Autograd function for Log-Space Polynomial Elman (Haste kernel)."""
+    """Autograd function for Log-Space Polynomial Elman (Haste kernel with fused RMSNorm)."""
 
     @staticmethod
     def forward(ctx, training, x, log_h0, sign_h0, W_x, log_r_h, sign_r_h,
-                W_alpha, b_alpha, W_delta, b, b_delta):
-        results = haste_pytorch_lib.logspace_polynomial_forward(
+                W_alpha, b_alpha, W_delta, b, b_delta, log_gamma):
+        results = hasty_pytorch_lib.logspace_polynomial_forward(
             training,
             x.contiguous(),
             log_h0.contiguous(),
@@ -133,36 +202,37 @@ class LogSpacePolynomialFunction(torch.autograd.Function):
             b_alpha.contiguous(),
             W_delta.contiguous(),
             b.contiguous(),
-            b_delta.contiguous()
+            b_delta.contiguous(),
+            log_gamma.contiguous()
         )
         log_h, sign_h, h_linear, log_v_cache, sign_v_cache, alpha_cache, \
-            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache = results
+            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache, log_rms_cache = results
 
         if training:
             ctx.save_for_backward(
-                x, W_x, log_r_h, sign_r_h, W_alpha, W_delta,
+                x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
                 log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache
             )
 
         return log_h, sign_h, h_linear
 
     @staticmethod
     def backward(ctx, d_log_h, d_sign_h, d_h_linear):
-        (x, W_x, log_r_h, sign_r_h, W_alpha, W_delta,
+        (x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
          log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache) = ctx.saved_tensors
+         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache) = ctx.saved_tensors
 
-        dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta = \
-            haste_pytorch_lib.logspace_polynomial_backward(
-                W_x, log_r_h, sign_r_h, W_alpha, W_delta,
+        dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma = \
+            hasty_pytorch_lib.logspace_polynomial_backward(
+                W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
                 x, log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache,
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache,
                 d_h_linear.contiguous()
             )
 
         return (None, dx, None, None, dW_x, d_log_r_h, None,
-                dW_alpha, db_alpha, dW_delta, db, db_delta)
+                dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma)
 
 
 class LogSpacePolynomialCell(nn.Module):
@@ -171,6 +241,7 @@ class LogSpacePolynomialCell(nn.Module):
 
     Stores hidden state as (log|h|, sign(h)) pairs.
     Uses polynomial activation with input-dependent exponent.
+    Includes fused RMSNorm with logsumexp for bounded gradients.
 
     Args:
         dim: Hidden dimension
@@ -199,10 +270,14 @@ class LogSpacePolynomialCell(nn.Module):
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
         self.b_delta = nn.Parameter(torch.full((dim,), delta_init))
 
+        # Fused RMSNorm scale in log-space (learned)
+        self.log_gamma = nn.Parameter(torch.zeros(dim))
+
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.W_x)
+        # Smaller initialization for gradient stability in log-space
+        nn.init.xavier_uniform_(self.W_x, gain=0.5)
         nn.init.xavier_uniform_(self.W_alpha, gain=0.1)  # Small init for alpha
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
 
@@ -215,7 +290,7 @@ class LogSpacePolynomialCell(nn.Module):
         Returns:
             log_h: [T+1, B, dim] log magnitudes including initial state
             sign_h: [T+1, B, dim] signs including initial state
-            h_linear: [T, B, dim] hidden states in linear space for output
+            h_linear: [T, B, dim] NORMALIZED hidden states in linear space for output
         """
         T, B, D = x.shape
 
@@ -226,17 +301,23 @@ class LogSpacePolynomialCell(nn.Module):
         else:
             log_h0, sign_h0 = h0
 
-        # Use Haste kernel if available
-        if HASTE_AVAILABLE and x.is_cuda:
-            return LogSpacePolynomialFunction.apply(
-                self.training, x, log_h0, sign_h0,
-                self.W_x, self.log_r_h, self.sign_r_h,
-                self.W_alpha, self.b_alpha, self.W_delta,
-                self.b, self.b_delta
+        # Require CUDA kernel
+        if not HASTE_AVAILABLE:
+            raise RuntimeError(
+                "LogSpacePolynomial requires hasty_pytorch_lib with logspace_polynomial_forward. "
+                "Install hasty_pytorch from ~/elman/elman/cuda/"
+            )
+        if not x.is_cuda:
+            raise RuntimeError(
+                "LogSpacePolynomial requires CUDA. Input must be on GPU."
             )
 
-        # PyTorch fallback
-        return self._forward_pytorch(x, log_h0, sign_h0)
+        return LogSpacePolynomialFunction.apply(
+            self.training, x, log_h0, sign_h0,
+            self.W_x, self.log_r_h, self.sign_r_h,
+            self.W_alpha, self.b_alpha, self.W_delta,
+            self.b, self.b_delta, self.log_gamma
+        )
 
     def _forward_pytorch(self, x, log_h0, sign_h0):
         """Pure PyTorch implementation for testing."""
@@ -306,6 +387,7 @@ class LogSpacePolynomial(nn.Module):
 
     This is the first level that operates entirely in log-space with bounded gradients.
     Uses polynomial activation with input-dependent exponent for nonlinearity.
+    Uses FUSED LogSpaceRMSNorm in CUDA kernel for bounded gradient flow.
 
     Matches interface of StockElman/GatedElman/etc for drop-in use in LadderLM.
 
@@ -327,7 +409,7 @@ class LogSpacePolynomial(nn.Module):
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
-        # Log-space polynomial cell
+        # Log-space polynomial cell (now includes fused RMSNorm)
         self.cell = LogSpacePolynomialCell(
             self.d_inner, alpha_init=alpha_init, delta_init=delta_init
         )
@@ -362,19 +444,22 @@ class LogSpacePolynomial(nn.Module):
         # Transpose to [T, B, d_inner] for cell
         x_proj = x_proj.transpose(0, 1).contiguous()
 
-        # Run cell
+        # Run cell - returns log-space hidden states and NORMALIZED h_linear
         log_h, sign_h, h_linear = self.cell(x_proj, h0)
-        # log_h: [T+1, B, d_inner], h_linear: [T, B, d_inner]
+        # log_h: [T+1, B, d_inner], h_linear: [T, B, d_inner] already normalized by fused RMSNorm
 
         # Transpose back to [B, T, d_inner]
-        h_linear = h_linear.transpose(0, 1).contiguous()
+        h_normed = h_linear.transpose(0, 1).contiguous()
 
         # Output projection
-        output = self.out_proj(h_linear)  # [B, T, dim]
+        output = self.out_proj(h_normed)  # [B, T, dim]
         output = self.dropout(output)
 
         # Final hidden state for TBPTT (last timestep)
-        h_final = h_linear[:, -1, :]  # [B, d_inner]
+        # Return as (log_h, sign_h) tuple so it can be used directly by cell
+        log_h_final = log_h[-1]   # [B, d_inner]
+        sign_h_final = sign_h[-1]  # [B, d_inner]
+        h_final = (log_h_final, sign_h_final)
 
         return output, h_final
 
@@ -382,6 +467,7 @@ class LogSpacePolynomial(nn.Module):
 __all__ = [
     'LogSpacePolynomialCell',
     'LogSpacePolynomial',
+    'LogSpaceRMSNorm',
     'LOGSPACE_LEVEL_0_AVAILABLE',
     'HASTE_AVAILABLE',
     'to_log_space',
