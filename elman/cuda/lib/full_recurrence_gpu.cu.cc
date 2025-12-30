@@ -282,15 +282,27 @@ void FullRecurrenceElmanForward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *wx_x, *rh_h, *delta_tmp, *w_out_h;
-    cudaMalloc(&wx_x, BD * sizeof(T));
+    // =========================================================================
+    // HASTE PATTERN: Pre-compute input projections for ALL timesteps
+    // =========================================================================
+    T *all_wx_x, *all_delta_raw, *rh_h, *w_out_h;
+    cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
+    cudaMalloc(&all_delta_raw, steps * BD * sizeof(T));
     cudaMalloc(&rh_h, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
 
+    // Pre-compute W_x @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
+
+    // Per-step: R_h @ h_prev and W_out @ h_t
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        const T* wx_x_t = all_wx_x + t * BD;
+        const T* delta_raw_t = all_delta_raw + t * BD;
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
@@ -298,21 +310,13 @@ void FullRecurrenceElmanForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // wx_x = x_t @ W_x.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
-
-        // rh_h = h_prev @ R_h.T (FULL matrix multiplication)
+        // rh_h = h_prev @ R_h.T (FULL matrix - per step)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev, dim_, &beta_zero, rh_h, dim_);
 
-        // delta_tmp = x_t @ W_delta.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
-
-        // Full recurrence gated update
+        // Full recurrence gated update (kernel already takes wx_x and rh_h separately)
         FullRecurrenceGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, wx_x, rh_h, delta_tmp, b, b_delta, h_t, v_t, delta_t);
+            batch_size_, dim_, h_prev, wx_x_t, rh_h, delta_raw_t, b, b_delta, h_t, v_t, delta_t);
 
         // w_out_h = h_t @ W_out.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -325,9 +329,9 @@ void FullRecurrenceElmanForward<T>::Run(
             batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(wx_x);
+    cudaFree(all_wx_x);
+    cudaFree(all_delta_raw);
     cudaFree(rh_h);
-    cudaFree(delta_tmp);
     cudaFree(w_out_h);
 }
 

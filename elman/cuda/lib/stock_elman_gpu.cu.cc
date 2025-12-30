@@ -16,7 +16,7 @@
 
 namespace {
 
-// Kernel: Apply tanh activation and add bias
+// Kernel: Apply tanh activation and add bias (original version)
 template<typename T>
 __global__ void PointwiseTanhBias(
     const int batch_size,
@@ -32,6 +32,29 @@ __global__ void PointwiseTanhBias(
     if (idx < total) {
         const int d = idx % dim;
         float val = static_cast<float>(v_in[idx]) + static_cast<float>(b[d]);
+        if (v_cache) v_cache[idx] = static_cast<T>(val);
+        h_out[idx] = static_cast<T>(tanhf(val));
+    }
+}
+
+// Kernel: Fused Wx + Rh + bias + tanh (HASTE pattern)
+// Combines pre-computed input projection with recurrent result
+template<typename T>
+__global__ void FusedTanhKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ Wx,        // [B, dim] pre-computed W_x @ x
+    const T* __restrict__ Rh,        // [B, dim] W_h @ h_prev (just computed)
+    const T* __restrict__ b,         // [dim] bias
+    T* __restrict__ h_out,           // [B, dim] output
+    T* __restrict__ v_cache) {       // [B, dim] pre-activation cache (optional)
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+        float val = static_cast<float>(Wx[idx]) + static_cast<float>(Rh[idx]) + static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(val);
         h_out[idx] = static_cast<T>(tanhf(val));
     }
@@ -110,29 +133,37 @@ void StockElmanForward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
-    // Set initial hidden state (h[0]) - assumed already set by caller
-    // Process each timestep
+    // =========================================================================
+    // HASTE PATTERN: Pre-compute W_x @ x for ALL timesteps in ONE big GEMM!
+    // This is much more efficient than T separate GEMMs.
+    // x is [T, B, dim] treated as [T*B, dim]
+    // tmp_Wx is [T, B, dim] = [T*B, dim]
+    // =========================================================================
+    T* tmp_Wx;
+    T* tmp_Rh;
+    cudaMalloc(&tmp_Wx, steps * BD * sizeof(T));
+    cudaMalloc(&tmp_Rh, BD * sizeof(T));  // Only need one buffer, reused each step
+
+    // One big GEMM: tmp_Wx = x @ W_x.T for all T*B rows at once
+    // x: [T*B, dim], W_x: [dim, dim], tmp_Wx: [T*B, dim]
+    blas<T>::gemm(
+        blas_handle_,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_,
+        &alpha,
+        W_x, dim_,
+        x, dim_,
+        &beta_zero,
+        tmp_Wx, dim_);
+
+    // Now process each timestep - only need recurrence GEMM per step
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        const T* Wx_t = tmp_Wx + t * BD;  // Pre-computed W_x @ x_t
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
 
-        // Temporary for W_x @ x_t + W_h @ h_prev
-        // We'll compute directly into h_t, then apply tanh+bias
-
-        // h_t = x_t @ W_x.T (matching PyTorch convention)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_x, dim_,
-            x_t, dim_,
-            &beta_zero,
-            h_t, dim_);
-
-        // h_t += h_prev @ W_h.T (matching PyTorch convention)
+        // tmp_Rh = h_prev @ W_h.T (only recurrence GEMM per step)
         blas<T>::gemm(
             blas_handle_,
             CUBLAS_OP_T, CUBLAS_OP_N,
@@ -140,13 +171,16 @@ void StockElmanForward<T>::Run(
             &alpha,
             W_h, dim_,
             h_prev, dim_,
-            &alpha,
-            h_t, dim_);
+            &beta_zero,
+            tmp_Rh, dim_);
 
-        // h_t = tanh(h_t + b), cache pre-activation in v_t
-        PointwiseTanhBias<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_t, b, h_t, v_t);
+        // h_t = tanh(Wx_t + tmp_Rh + b), cache pre-activation in v_t
+        FusedTanhKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, Wx_t, tmp_Rh, b, h_t, v_t);
     }
+
+    cudaFree(tmp_Wx);
+    cudaFree(tmp_Rh);
 }
 
 // =============================================================================

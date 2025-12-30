@@ -11,7 +11,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 DATA="${1:-/mnt/nvme2n1/erikg/pile.txt}"
 OUTPUT_BASE="${2:-/mnt/nvme2n1/erikg/minlms/elman_500m_$(date +%Y%m%d_%H%M%S)}"
 MAX_STEPS="${3:-3000}"
-BATCH_SIZE="${4:-2}"  # Per GPU, effective = 2*8 = 16
+BATCH_SIZE="${4:-16}"  # Per GPU, effective = 16*8 = 128
 CHUNK_SIZE="${5:-512}"
 
 # All 13 levels

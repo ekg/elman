@@ -56,6 +56,44 @@ __global__ void GatedElmanPointwise(
     }
 }
 
+// HASTE PATTERN: Fused kernel with separate wx_x and wh_h inputs
+template<typename T>
+__global__ void GatedElmanPointwiseFused(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h_prev,      // [B, dim]
+    const T* __restrict__ wx_x,        // [B, dim] W_x @ x (pre-computed)
+    const T* __restrict__ wh_h,        // [B, dim] W_h @ h_prev (just computed)
+    const T* __restrict__ delta_raw,   // [B, dim] W_delta @ x (pre-computed)
+    const T* __restrict__ b,           // [dim]
+    const T* __restrict__ b_delta,     // [dim]
+    T* __restrict__ h_out,             // [B, dim]
+    T* __restrict__ v_cache,           // [B, dim] pre-activation
+    T* __restrict__ delta_cache) {     // [B, dim] cached delta
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        // Delta gate: sigmoid(delta_raw + b_delta)
+        float delta_in = static_cast<float>(delta_raw[idx]) + static_cast<float>(b_delta[d]);
+        float delta = 1.0f / (1.0f + expf(-delta_in));
+        if (delta_cache) delta_cache[idx] = static_cast<T>(delta);
+
+        // Candidate: tanh(wx_x + wh_h + b)
+        float v = static_cast<float>(wx_x[idx]) + static_cast<float>(wh_h[idx]) + static_cast<float>(b[d]);
+        if (v_cache) v_cache[idx] = static_cast<T>(v);
+        float candidate = tanhf(v);
+
+        // Gated update: h = (1 - delta) * h_prev + delta * candidate
+        float h_p = static_cast<float>(h_prev[idx]);
+        float h_new = (1.0f - delta) * h_p + delta * candidate;
+        h_out[idx] = static_cast<T>(h_new);
+    }
+}
+
 // Backward kernel for gated update
 template<typename T>
 __global__ void GatedElmanBackwardKernel(
@@ -159,60 +197,45 @@ void GatedElmanForward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
-    // Workspace for intermediate results
-    T* v_tmp;
-    T* delta_tmp;
-    cudaMalloc(&v_tmp, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
+    // =========================================================================
+    // HASTE PATTERN: Pre-compute input projections for ALL timesteps
+    // Reduces from 2*T GEMMs to 2 big GEMMs
+    // =========================================================================
+    T *all_wx_x, *all_delta_raw, *wh_h;
+    cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
+    cudaMalloc(&all_delta_raw, steps * BD * sizeof(T));
+    cudaMalloc(&wh_h, BD * sizeof(T));
 
+    // Pre-compute W_x @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
+
+    // Only W_h @ h_prev per step (depends on h)
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        const T* wx_x_t = all_wx_x + t * BD;
+        const T* delta_raw_t = all_delta_raw + t * BD;
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
 
-        // v_tmp = x_t @ W_x.T (matching PyTorch convention)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_x, dim_,
-            x_t, dim_,
-            &beta_zero,
-            v_tmp, dim_);
+        // wh_h = h_prev @ W_h.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_h, dim_, h_prev, dim_, &beta_zero, wh_h, dim_);
 
-        // v_tmp += h_prev @ W_h.T (matching PyTorch convention)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_h, dim_,
-            h_prev, dim_,
-            &alpha,
-            v_tmp, dim_);
-
-        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_delta, dim_,
-            x_t, dim_,
-            &beta_zero,
-            delta_tmp, dim_);
-
-        // Apply gated update
-        GatedElmanPointwise<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, v_tmp, delta_tmp,
+        // Apply gated update with fused kernel (no memcpy needed)
+        GatedElmanPointwiseFused<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_prev, wx_x_t, wh_h, delta_raw_t,
             b, b_delta, h_t, v_t, delta_t);
     }
 
-    cudaFree(v_tmp);
-    cudaFree(delta_tmp);
+    cudaFree(all_wx_x);
+    cudaFree(all_delta_raw);
+    cudaFree(wh_h);
 }
 
 // =============================================================================

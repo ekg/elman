@@ -594,9 +594,11 @@ void LogSpaceTripleRForward<T>::Run(
     static const T beta_zero = static_cast<T>(0.0);
 
     const int BD = batch_size_ * dim_;
+    const int TBD = steps * BD;  // Total batch*dim for all timesteps
     const int DD = dim_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
+    const int total_blocks = (TBD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
     // Decompose all three R matrices
@@ -617,27 +619,52 @@ void LogSpaceTripleRForward<T>::Run(
     DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(DD, R_x, log_Rx_pos, log_Rx_neg);
     DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(DD, R_delta, log_Rdelta_pos, log_Rdelta_neg);
 
-    // Workspace
-    T *log_x_t, *sign_x_t;
-    T *log_Rx_x, *sign_Rx_x;
+    // =========================================================================
+    // Haste pattern: Pre-compute ALL input projections
+    // =========================================================================
+
+    // Workspace for pre-computed projections (all timesteps)
+    T *all_log_x, *all_sign_x;
+    T *all_log_Rx_x, *all_sign_Rx_x;
+    T *all_Wdelta_x;
     T *log_Rh_h, *sign_Rh_h;
     T *log_Rdelta_h, *sign_Rdelta_h;
-    T *Wdelta_x, *w_out_h, *h_linear;
+    T *w_out_h, *h_linear;
 
-    cudaMalloc(&log_x_t, BD * sizeof(T));
-    cudaMalloc(&sign_x_t, BD * sizeof(T));
-    cudaMalloc(&log_Rx_x, BD * sizeof(T));
-    cudaMalloc(&sign_Rx_x, BD * sizeof(T));
+    cudaMalloc(&all_log_x, TBD * sizeof(T));
+    cudaMalloc(&all_sign_x, TBD * sizeof(T));
+    cudaMalloc(&all_log_Rx_x, TBD * sizeof(T));
+    cudaMalloc(&all_sign_Rx_x, TBD * sizeof(T));
+    cudaMalloc(&all_Wdelta_x, TBD * sizeof(T));
     cudaMalloc(&log_Rh_h, BD * sizeof(T));
     cudaMalloc(&sign_Rh_h, BD * sizeof(T));
     cudaMalloc(&log_Rdelta_h, BD * sizeof(T));
     cudaMalloc(&sign_Rdelta_h, BD * sizeof(T));
-    cudaMalloc(&Wdelta_x, BD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
     cudaMalloc(&h_linear, BD * sizeof(T));
 
+    // Pre-compute W_delta @ x for ALL timesteps in one GEMM
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_Wdelta_x, dim_);
+
+    // Pre-compute log(x), sign(x) for ALL timesteps
+    LinearToLogKernel<T><<<total_blocks, block_size, 0, stream_>>>(TBD, x, all_log_x, all_sign_x);
+
+    // Pre-compute R_x @ x in log space for ALL timesteps
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        dim3 matmul_grid(batch_size_, dim_);
+        int smem_size = 2 * block_size * sizeof(float);
+        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
+            batch_size_, dim_, log_Rx_pos, log_Rx_neg,
+            all_log_x + t * BD, all_sign_x + t * BD,
+            all_log_Rx_x + t * BD, all_sign_Rx_x + t * BD);
+    }
+
+    // =========================================================================
+    // Sequential loop: Only recurrent operations (no input GEMMs per step)
+    // =========================================================================
+
+    for (int t = 0; t < steps; ++t) {
         const T* log_h_prev = log_h + t * BD;
         const T* sign_h_prev = sign_h + t * BD;
         T* log_h_t = log_h + (t + 1) * BD;
@@ -647,41 +674,34 @@ void LogSpaceTripleRForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // Convert x_t to log space for R_x multiplication
-        LinearToLogKernel<T><<<num_blocks, block_size, 0, stream_>>>(BD, x_t, log_x_t, sign_x_t);
+        // Get pre-computed projections for this timestep
+        const T* log_Rx_x_t = all_log_Rx_x + t * BD;
+        const T* sign_Rx_x_t = all_sign_Rx_x + t * BD;
+        const T* Wdelta_x_t = all_Wdelta_x + t * BD;
 
-        // x_t @ W_delta.T (matching PyTorch convention)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, Wdelta_x, dim_);
-
-        // R_x @ x in log space
+        // R_h @ h_{t-1} in log space (recurrent - can't pre-compute)
         dim3 matmul_grid(batch_size_, dim_);
         int smem_size = 2 * block_size * sizeof(float);
-        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, log_Rx_pos, log_Rx_neg,
-            log_x_t, sign_x_t, log_Rx_x, sign_Rx_x);
-
-        // R_h @ h_{t-1} in log space
         LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
             batch_size_, dim_, log_Rh_pos, log_Rh_neg,
             log_h_prev, sign_h_prev, log_Rh_h, sign_Rh_h);
 
-        // R_delta @ h_{t-1} in log space
+        // R_delta @ h_{t-1} in log space (recurrent - can't pre-compute)
         LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
             batch_size_, dim_, log_Rdelta_pos, log_Rdelta_neg,
             log_h_prev, sign_h_prev, log_Rdelta_h, sign_Rdelta_h);
 
-        // Gated update
+        // Gated update (no input projection needed - already pre-computed)
         TripleRGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev,
-            log_Rx_x, sign_Rx_x, log_Rh_h, sign_Rh_h,
-            Wdelta_x, log_Rdelta_h, sign_Rdelta_h,
+            log_Rx_x_t, sign_Rx_x_t, log_Rh_h, sign_Rh_h,
+            Wdelta_x_t, log_Rdelta_h, sign_Rdelta_h,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
         // Convert h_t to linear for W_out
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(BD, log_h_t, sign_h_t, h_linear);
 
-        // h_linear @ W_out.T (matching PyTorch convention)
+        // h_linear @ W_out.T (depends on h_t, can't pre-compute)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
@@ -700,15 +720,15 @@ void LogSpaceTripleRForward<T>::Run(
     cudaFree(log_Rx_neg);
     cudaFree(log_Rdelta_pos);
     cudaFree(log_Rdelta_neg);
-    cudaFree(log_x_t);
-    cudaFree(sign_x_t);
-    cudaFree(log_Rx_x);
-    cudaFree(sign_Rx_x);
+    cudaFree(all_log_x);
+    cudaFree(all_sign_x);
+    cudaFree(all_log_Rx_x);
+    cudaFree(all_sign_Rx_x);
+    cudaFree(all_Wdelta_x);
     cudaFree(log_Rh_h);
     cudaFree(sign_Rh_h);
     cudaFree(log_Rdelta_h);
     cudaFree(sign_Rdelta_h);
-    cudaFree(Wdelta_x);
     cudaFree(w_out_h);
     cudaFree(h_linear);
 }

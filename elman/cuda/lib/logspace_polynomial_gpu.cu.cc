@@ -657,17 +657,44 @@ struct LogPolyElmanForward {
         static const T beta_zero = static_cast<T>(0.0);
 
         const int BD = batch_size_ * dim_;
+        const int TBD = steps * BD;  // Total batch*dim for all timesteps
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
 
-        // Workspace for GEMM results
-        T *wx_x, *alpha_raw, *delta_tmp;
-        cudaMalloc(&wx_x, BD * sizeof(T));
-        cudaMalloc(&alpha_raw, BD * sizeof(T));
-        cudaMalloc(&delta_tmp, BD * sizeof(T));
+        // =========================================================================
+        // Haste pattern: Pre-compute ALL input projections in big GEMMs
+        // =========================================================================
+
+        T *all_wx_x, *all_alpha_raw, *all_delta_tmp;
+        cudaMalloc(&all_wx_x, TBD * sizeof(T));
+        cudaMalloc(&all_alpha_raw, TBD * sizeof(T));
+        cudaMalloc(&all_delta_tmp, TBD * sizeof(T));
+
+        // Pre-compute W_x @ x for ALL timesteps in one GEMM
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, steps * batch_size_, dim_, &alpha_one, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+        // Pre-compute W_alpha @ x for ALL timesteps
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, steps * batch_size_, dim_, &alpha_one, W_alpha, dim_, x, dim_, &beta_zero, all_alpha_raw, dim_);
+
+        // Pre-compute W_delta @ x for ALL timesteps
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, steps * batch_size_, dim_, &alpha_one, W_delta, dim_, x, dim_, &beta_zero, all_delta_tmp, dim_);
+
+        // Add biases to alpha_raw and delta_tmp for all timesteps
+        for (int t = 0; t < steps; ++t) {
+            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                batch_size_, dim_, all_alpha_raw + t * BD, b_alpha, all_alpha_raw + t * BD);
+            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                batch_size_, dim_, all_delta_tmp + t * BD, b_delta, all_delta_tmp + t * BD);
+        }
+
+        // =========================================================================
+        // Sequential loop: Only recurrent operations (no input GEMMs per step)
+        // =========================================================================
 
         for (int t = 0; t < steps; ++t) {
-            const T* x_t = x + t * BD;
             const T* log_h_prev = log_h + t * BD;
             const T* sign_h_prev = sign_h + t * BD;
             T* log_h_t = log_h + (t + 1) * BD;
@@ -682,44 +709,26 @@ struct LogPolyElmanForward {
             T* weight_t = training_ ? (weight_rh_cache + t * BD) : nullptr;
             T* alpha_raw_t = training_ ? (alpha_raw_cache + t * BD) : nullptr;
 
-            // wx_x = x_t @ W_x.T (matching PyTorch: linear_input = x_t @ self.W_x.T)
-            // Using CUBLAS_OP_T to transpose W_x since CUBLAS is column-major
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-                dim_, batch_size_, dim_, &alpha_one, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
-
-            // alpha_raw = x_t @ W_alpha.T (matching PyTorch: alpha_raw = x_t @ self.W_alpha.T + self.b_alpha)
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-                dim_, batch_size_, dim_, &alpha_one, W_alpha, dim_, x_t, dim_, &beta_zero, alpha_raw, dim_);
-            cudaDeviceSynchronize();  // Sync all CUDA operations before AddBiasKernel
-            // Add b_alpha bias
-            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
-                batch_size_, dim_, alpha_raw, b_alpha, alpha_raw);
-
-            // delta_tmp = x_t @ W_delta.T (matching PyTorch: delta_raw = x_t @ self.W_delta.T + self.b_delta)
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-                dim_, batch_size_, dim_, &alpha_one, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
-            cudaDeviceSynchronize();  // Sync all CUDA operations before AddBiasKernel
-            // Add b_delta bias
-            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
-                batch_size_, dim_, delta_tmp, b_delta, delta_tmp);
+            // Get pre-computed projections for this timestep
+            const T* wx_x_t = all_wx_x + t * BD;
+            const T* alpha_raw_in = all_alpha_raw + t * BD;
+            const T* delta_tmp_t = all_delta_tmp + t * BD;
 
             // Store alpha_raw for backward
             if (alpha_raw_t) {
-                cudaMemcpyAsync(alpha_raw_t, alpha_raw, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
+                cudaMemcpyAsync(alpha_raw_t, alpha_raw_in, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
             }
 
-            // Main update kernel (biases added inside)
+            // Main update kernel (no input GEMM needed - already pre-computed)
             LogPolyGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
                 batch_size_, dim_,
                 log_h_prev, sign_h_prev,
-                wx_x, alpha_raw, log_r_h, sign_r_h, b, delta_tmp,
+                wx_x_t, alpha_raw_in, log_r_h, sign_r_h, b, delta_tmp_t,
                 log_h_t, sign_h_t,
                 log_v_t, sign_v_t, alpha_t, log_h_unb_t, delta_t, weight_t);
 
             // Apply RMSNorm and convert to linear for output
             if (h_linear) {
-                // Use fused logsumexp RMSNorm kernel
-                // Each block handles one batch element
                 const int rmsnorm_block = 256;
                 size_t smem_size = rmsnorm_block * sizeof(float);
                 T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
@@ -731,9 +740,9 @@ struct LogPolyElmanForward {
             }
         }
 
-        cudaFree(wx_x);
-        cudaFree(alpha_raw);
-        cudaFree(delta_tmp);
+        cudaFree(all_wx_x);
+        cudaFree(all_alpha_raw);
+        cudaFree(all_delta_tmp);
     }
 };
 

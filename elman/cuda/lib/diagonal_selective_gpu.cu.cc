@@ -283,14 +283,28 @@ void DiagonalSelectiveElmanForward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *wx_x, *delta_tmp, *w_out_h;
-    cudaMalloc(&wx_x, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
+    // =========================================================================
+    // HASTE PATTERN: Pre-compute input projections for ALL timesteps
+    // Reduces from 2*T GEMMs to 2 big GEMMs (much more efficient)
+    // =========================================================================
+    T *all_wx_x, *all_delta_raw, *w_out_h;
+    cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
+    cudaMalloc(&all_delta_raw, steps * BD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
 
+    // Pre-compute W_x @ x for ALL timesteps in one GEMM
+    // x: [T*B, dim], W_x: [dim, dim], result: [T*B, dim]
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps in one GEMM
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
+
+    // Now only W_out @ h needs per-timestep GEMM (h depends on h_prev)
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        const T* wx_x_t = all_wx_x + t * BD;           // Pre-computed
+        const T* delta_raw_t = all_delta_raw + t * BD; // Pre-computed
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
@@ -298,19 +312,11 @@ void DiagonalSelectiveElmanForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // wx_x = x_t @ W_x.T (matching PyTorch convention)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
-
-        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
-
         // Diagonal gated update (r_h is element-wise, not matrix)
         DiagonalSelectiveGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, wx_x, r_h, delta_tmp, b, b_delta, h_t, v_t, delta_t);
+            batch_size_, dim_, h_prev, wx_x_t, r_h, delta_raw_t, b, b_delta, h_t, v_t, delta_t);
 
-        // w_out_h = h_t @ W_out.T (matching PyTorch convention)
+        // w_out_h = h_t @ W_out.T (only this GEMM per step - h depends on h_prev)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
@@ -321,8 +327,8 @@ void DiagonalSelectiveElmanForward<T>::Run(
             batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(wx_x);
-    cudaFree(delta_tmp);
+    cudaFree(all_wx_x);
+    cudaFree(all_delta_raw);
     cudaFree(w_out_h);
 }
 

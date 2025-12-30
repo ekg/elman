@@ -286,16 +286,27 @@ void LinearTripleRForward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *rx_x, *rh_h, *wdelta_x, *rdelta_h, *w_out_h;
-    cudaMalloc(&rx_x, BD * sizeof(T));
+    // =========================================================================
+    // HASTE PATTERN: Pre-compute input projections for ALL timesteps
+    // =========================================================================
+    T *all_rx_x, *all_wdelta_x, *rh_h, *rdelta_h, *w_out_h;
+    cudaMalloc(&all_rx_x, steps * BD * sizeof(T));
+    cudaMalloc(&all_wdelta_x, steps * BD * sizeof(T));
     cudaMalloc(&rh_h, BD * sizeof(T));
-    cudaMalloc(&wdelta_x, BD * sizeof(T));
     cudaMalloc(&rdelta_h, BD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
 
+    // Pre-compute R_x @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, R_x, dim_, x, dim_, &beta_zero, all_rx_x, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_wdelta_x, dim_);
+
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        const T* rx_x_t = all_rx_x + t * BD;
+        const T* wdelta_x_t = all_wdelta_x + t * BD;
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
@@ -303,25 +314,17 @@ void LinearTripleRForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // rx_x = x_t @ R_x.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, R_x, dim_, x_t, dim_, &beta_zero, rx_x, dim_);
-
-        // rh_h = h_prev @ R_h.T
+        // rh_h = h_prev @ R_h.T (per-step)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev, dim_, &beta_zero, rh_h, dim_);
 
-        // wdelta_x = x_t @ W_delta.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, wdelta_x, dim_);
-
-        // rdelta_h = h_prev @ R_delta.T
+        // rdelta_h = h_prev @ R_delta.T (per-step)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_delta, dim_, h_prev, dim_, &beta_zero, rdelta_h, dim_);
 
         // Triple R gated update
         LinearTripleRGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, rx_x, rh_h, wdelta_x, rdelta_h, b, b_delta, h_t, v_t, delta_t);
+            batch_size_, dim_, h_prev, rx_x_t, rh_h, wdelta_x_t, rdelta_h, b, b_delta, h_t, v_t, delta_t);
 
         // w_out_h = h_t @ W_out.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -334,9 +337,9 @@ void LinearTripleRForward<T>::Run(
             batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(rx_x);
+    cudaFree(all_rx_x);
+    cudaFree(all_wdelta_x);
     cudaFree(rh_h);
-    cudaFree(wdelta_x);
     cudaFree(rdelta_h);
     cudaFree(w_out_h);
 }

@@ -666,19 +666,35 @@ void LogStorageDiagonalElmanForward<T>::Run(
     static const T beta_zero = static_cast<T>(0.0);
 
     const int BD = batch_size_ * dim_;
+    const int TBD = steps * BD;  // Total batch*dim for all timesteps
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace - need h_linear for output computation (same as Level 3)
-    T *wx_x, *delta_tmp, *w_out_h, *h_linear;
-    cudaMalloc(&wx_x, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));  // W_out @ h_linear (LINEAR space projection)
-    cudaMalloc(&h_linear, BD * sizeof(T)); // Hidden state in linear space for output
+    // =========================================================================
+    // Haste pattern: Pre-compute ALL input projections in big GEMMs
+    // =========================================================================
+
+    // Workspace for pre-computed projections (all timesteps)
+    T *all_wx_x, *all_delta_tmp, *w_out_h, *h_linear;
+    cudaMalloc(&all_wx_x, TBD * sizeof(T));
+    cudaMalloc(&all_delta_tmp, TBD * sizeof(T));
+    cudaMalloc(&w_out_h, BD * sizeof(T));
+    cudaMalloc(&h_linear, BD * sizeof(T));
+
+    // Pre-compute W_x @ x for ALL timesteps in one GEMM
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_tmp, dim_);
+
+    // =========================================================================
+    // Sequential loop: Only recurrent operations (no input GEMMs per step)
+    // =========================================================================
 
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
         const T* log_h_prev = log_h + t * BD;
         const T* sign_h_prev = sign_h + t * BD;
         T* log_h_t = log_h + (t + 1) * BD;
@@ -691,39 +707,32 @@ void LogStorageDiagonalElmanForward<T>::Run(
         T* log_term1_t = training_ ? (log_term1_cache + t * BD) : nullptr;
         T* log_term2_t = training_ ? (log_term2_cache + t * BD) : nullptr;
 
-        // wx_x = x_t @ W_x.T (matching PyTorch convention)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
+        // Get pre-computed projections for this timestep
+        const T* wx_x_t = all_wx_x + t * BD;
+        const T* delta_tmp_t = all_delta_tmp + t * BD;
 
-        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
-
-        // Log-space gated update (stores softmax weights for backward)
+        // Log-space gated update (no input GEMM needed - already pre-computed)
         LogStorageGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, log_h_prev, sign_h_prev, wx_x, r_h, delta_tmp,
+            batch_size_, dim_, log_h_prev, sign_h_prev, wx_x_t, r_h, delta_tmp_t,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t, weight1_t, log_term1_t, log_term2_t);
 
-        // CONVERT TO LINEAR SPACE for output computation (same as Level 3!)
-        // The log-space storage is for numerical stability in the recurrence,
-        // but output should be computed on h, not log_h.
+        // CONVERT TO LINEAR SPACE for output computation
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_t, sign_h_t, h_linear);
 
-        // w_out_h = h_linear @ W_out.T (LINEAR space, like Level 3)
+        // w_out_h = h_linear @ W_out.T (depends on h_t, can't pre-compute)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
-        // Selective output in LINEAR space: softmax(h) * silu(W_out @ h)
-        // Same as Level 3 - log storage only affects recurrence, not output
+        // Selective output in LINEAR space
         dim3 grid(batch_size_, n_groups_);
         int smem_size = 2 * block_size * sizeof(float);
         LogStorageSelectiveOutputLinear<T><<<grid, block_size, smem_size, stream_>>>(
             batch_size_, dim_, n_groups_, group_size, h_linear, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(wx_x);
-    cudaFree(delta_tmp);
+    cudaFree(all_wx_x);
+    cudaFree(all_delta_tmp);
     cudaFree(w_out_h);
     cudaFree(h_linear);
 }

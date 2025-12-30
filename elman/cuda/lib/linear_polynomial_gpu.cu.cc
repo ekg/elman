@@ -31,6 +31,18 @@ __global__ void VectorAdd(const int n, const T* __restrict__ x, T* __restrict__ 
     }
 }
 
+// Kernel: Add bias to each row (batch_size rows, dim columns)
+template<typename T>
+__global__ void AddBiasKernel(const int batch_size, const int dim,
+                              T* __restrict__ data, const T* __restrict__ bias) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+    if (idx < total) {
+        const int d = idx % dim;
+        data[idx] = static_cast<T>(static_cast<float>(data[idx]) + static_cast<float>(bias[d]));
+    }
+}
+
 // Kernel: Compute polynomial gated update
 template<typename T>
 __global__ void LinearPolynomialGatedUpdate(
@@ -335,19 +347,50 @@ void LinearPolynomialForward<T>::Run(
     static const T beta_zero = static_cast<T>(0.0);
 
     const int BD = batch_size_ * dim_;
+    const int TBD = steps * BD;  // Total batch*dim for all timesteps
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
+    const int total_blocks = (TBD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *wx_x, *alpha_tmp, *delta_tmp, *w_out_h;
-    cudaMalloc(&wx_x, BD * sizeof(T));
-    cudaMalloc(&alpha_tmp, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
+    // =========================================================================
+    // Haste pattern: Pre-compute ALL input projections in big GEMMs
+    // =========================================================================
+
+    // Workspace for pre-computed projections (all timesteps)
+    T *all_wx_x, *all_alpha_raw, *all_delta_raw, *w_out_h;
+    cudaMalloc(&all_wx_x, TBD * sizeof(T));
+    cudaMalloc(&all_alpha_raw, TBD * sizeof(T));
+    cudaMalloc(&all_delta_raw, TBD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
 
+    // Pre-compute W_x @ x for ALL timesteps in one GEMM
+    // x is [T, B, dim], treat as [T*B, dim]
+    // Result all_wx_x is [T*B, dim]
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_x, dim_, x, dim_, &beta_zero, all_wx_x, dim_);
+
+    // Pre-compute W_alpha @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_alpha, dim_, x, dim_, &beta_zero, all_alpha_raw, dim_);
+
+    // Pre-compute W_delta @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
+
+    // Add biases to alpha_raw and delta_raw using GPU kernel (for all timesteps)
     for (int t = 0; t < steps; ++t) {
-        const T* x_t = x + t * BD;
+        AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, all_alpha_raw + t * BD, b_alpha);
+        AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, all_delta_raw + t * BD, b_delta);
+    }
+
+    // =========================================================================
+    // Sequential loop: Only recurrent operations (no input GEMMs per step)
+    // =========================================================================
+
+    for (int t = 0; t < steps; ++t) {
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
@@ -356,83 +399,29 @@ void LinearPolynomialForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // wx_x = x_t @ W_x.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
+        // Get pre-computed projections for this timestep
+        const T* wx_x_t = all_wx_x + t * BD;
+        const T* alpha_raw_t = all_alpha_raw + t * BD;
+        const T* delta_raw_t = all_delta_raw + t * BD;
 
-        // alpha_tmp = x_t @ W_alpha.T + b_alpha (compute raw, add bias in kernel)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_alpha, dim_, x_t, dim_, &beta_zero, alpha_tmp, dim_);
-        // Add b_alpha via simple kernel or fused
-        // For simplicity, we'll add it in the update kernel by passing b_alpha
-
-        // delta_tmp = x_t @ W_delta.T + b_delta (compute raw, add bias in kernel)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
-
-        // Add biases to alpha_tmp and delta_tmp (element-wise)
-        // Simple kernel to add bias
-        {
-            auto add_bias = [&](T* data, const T* bias) {
-                for (int i = 0; i < BD; ++i) {
-                    int d = i % dim_;
-                    // CPU version for simplicity - in practice fuse into kernel
-                }
-            };
-            // Actually, we'll handle this in the gated update kernel by passing b_alpha through alpha_tmp
-            // For now, just add biases on device
-        }
-
-        // For now, pass b_alpha and b_delta separately to kernel (they're added there)
-        // Actually the kernel expects alpha_raw = W_alpha @ x + b_alpha already added
-        // Let me add a simple bias add kernel
-
-        // Polynomial gated update (handles bias addition internally for b)
-        // Note: alpha_tmp doesn't have b_alpha yet, delta_tmp doesn't have b_delta yet
-        // The kernel will handle adding them
-
-        // Actually let's add biases here
-        {
-            // Add b_alpha to alpha_tmp
-            // Add b_delta to delta_tmp
-            // Using a simple element-wise kernel
-            auto add_bias_kernel = [](const int N, const int dim, T* data, const T* bias, cudaStream_t stream) {
-                // Simple implementation - in practice fuse
-                T* h_data;
-                T* h_bias;
-                cudaMallocHost(&h_data, N * sizeof(T));
-                cudaMallocHost(&h_bias, dim * sizeof(T));
-                cudaMemcpy(h_data, data, N * sizeof(T), cudaMemcpyDeviceToHost);
-                cudaMemcpy(h_bias, bias, dim * sizeof(T), cudaMemcpyDeviceToHost);
-                for (int i = 0; i < N; ++i) {
-                    h_data[i] = static_cast<T>(static_cast<float>(h_data[i]) + static_cast<float>(h_bias[i % dim]));
-                }
-                cudaMemcpy(data, h_data, N * sizeof(T), cudaMemcpyHostToDevice);
-                cudaFreeHost(h_data);
-                cudaFreeHost(h_bias);
-            };
-            add_bias_kernel(BD, dim_, alpha_tmp, b_alpha, stream_);
-            add_bias_kernel(BD, dim_, delta_tmp, b_delta, stream_);
-        }
-
-        // Polynomial gated update
+        // Polynomial gated update (no input GEMM needed - already pre-computed)
         LinearPolynomialGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, wx_x, r_h, alpha_tmp, delta_tmp, b, h_t, v_t, alpha_t, delta_t);
+            batch_size_, dim_, h_prev, wx_x_t, r_h, alpha_raw_t, delta_raw_t, b, h_t, v_t, alpha_t, delta_t);
 
-        // w_out_h = h_t @ W_out.T
+        // w_out_h = h_t @ W_out.T (output projection - depends on h_t so can't pre-compute)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
-        // Selective output
+        // Selective output with compete mechanism
         dim3 grid(batch_size_, n_groups_);
         int smem_size = 2 * block_size * sizeof(float);
         LinearPolynomialOutput<T><<<grid, block_size, smem_size, stream_>>>(
             batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(wx_x);
-    cudaFree(alpha_tmp);
-    cudaFree(delta_tmp);
+    cudaFree(all_wx_x);
+    cudaFree(all_alpha_raw);
+    cudaFree(all_delta_raw);
     cudaFree(w_out_h);
 }
 
