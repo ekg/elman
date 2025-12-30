@@ -35,6 +35,7 @@ from .logspace_polynomial import (
 # Try to import Haste CUDA kernel
 try:
     import hasty_pytorch_lib
+    # Re-enabled: GEMM transpose and gradient scaling now fixed
     HASTE_DIAG_SELECTIVE_AVAILABLE = hasattr(hasty_pytorch_lib, 'logspace_diag_selective_forward')
 except ImportError:
     hasty_pytorch_lib = None
@@ -125,9 +126,10 @@ class LogSpaceDiagonalSelectiveCell(nn.Module):
 
         assert dim % n_groups == 0, f"dim {dim} must be divisible by n_groups {n_groups}"
 
-        # Input projection (NO W_h - using diagonal r_h instead)
+        # Input projection (no learnable bias - adding in linear space causes gradient explosion)
         self.W_x = nn.Parameter(torch.empty(dim, dim))
-        self.b = nn.Parameter(torch.zeros(dim))
+        # Register zero bias as buffer (not trainable) for CUDA kernel compatibility
+        self.register_buffer('b', torch.zeros(dim))
 
         # Diagonal recurrence (stored as log|r_h|, sign(r_h))
         # This replaces the full W_h matrix with a learnable diagonal
@@ -210,8 +212,8 @@ class LogSpaceDiagonalSelectiveCell(nn.Module):
             log_rh_hp = self.log_r_h + log_h_prev  # [B, dim] broadcasting
             sign_rh_hp = self.sign_r_h * sign_h_prev
 
-            # W_x @ x + b (no W_h since we use diagonal r_h)
-            linear_input = x_t @ self.W_x.T + self.b
+            # W_x @ x (no bias - causes gradient explosion, no W_h since we use diagonal r_h)
+            linear_input = x_t @ self.W_x.T
             log_input, sign_input = to_log_space(linear_input)
 
             # Add: v = r_h * h_prev + input
@@ -239,8 +241,15 @@ class LogSpaceDiagonalSelectiveCell(nn.Module):
 
             log_h_new, sign_h_new = signed_log_add(log_term1, sign_term1, log_term2, sign_term2)
 
-            # Convert to linear for output
-            h_linear = from_log_space(log_h_new, sign_h_new)
+            # Apply RMSNorm in log-space (logsumexp for bounded gradients)
+            log_h2 = 2 * log_h_new  # log(h^2)
+            log_mean_h2 = torch.logsumexp(log_h2, dim=-1, keepdim=True) - torch.log(
+                torch.tensor(self.dim, dtype=x.dtype, device=x.device))
+            log_rms = log_mean_h2 / 2
+            log_h_normed = log_h_new - log_rms + self.log_gamma
+
+            # Convert normalized log to linear for output
+            h_linear = from_log_space(log_h_normed, sign_h_new)
 
             # Selective output: compete × silu
             h_reshaped = h_linear.view(B, self.n_groups, self.group_size)

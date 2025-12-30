@@ -1,0 +1,362 @@
+W1230 00:16:50.888000 1806593 torch/distributed/run.py:803] 
+W1230 00:16:50.888000 1806593 torch/distributed/run.py:803] *****************************************
+W1230 00:16:50.888000 1806593 torch/distributed/run.py:803] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1230 00:16:50.888000 1806593 torch/distributed/run.py:803] *****************************************
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman ✓
+  Level 1: Gated Elman ✓
+  Level 2: Selective Elman ✓
+  Level 3: Diagonal Selective ✓
+  Level log_0: Log-Space Polynomial ✓ <-- TRAINING
+  Level log_1: Log-Space Selective ✓
+  Level log_2: Log-Space Diagonal Selective ✓
+======================================================================
+Tokenizer: TikTokenTokenizer(encoding=p50k_base, vocab_size=50281) (vocab_size=50,281)
+Device: cuda:0, dtype: torch.bfloat16, world_size: 8
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+Created Level log_0 model: dim=1280, depth=24, params=261,185,280
+
+Model Parameters: 261,185,280 (261.19M)
+  Embedding: 64,359,680
+  Layers: 24 x 1280d
+  Layer 0: 8,198,400 params
+
+Loading data from /mnt/nvme2n1/erikg/pile.txt...
+TBPTT enabled: using persistent streams
+Using streaming tiktoken tokenization
+
+Starting training for 3000 steps...
+Batch size per GPU: 16, World size: 8
+Effective batch size: 128
+Tokens per step: 65,536
+
+[rank7]:[W1230 00:17:00.060114693 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank3]:[W1230 00:17:00.067490313 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank4]:[W1230 00:17:00.070819113 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank0]:[W1230 00:17:00.071962653 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank1]:[W1230 00:17:00.077606593 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank2]:[W1230 00:17:00.078242573 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank5]:[W1230 00:17:00.080854553 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+[rank6]:[W1230 00:17:00.081189203 reducer.cpp:1431] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+Step     10 | Loss 21.8905 | LR 4.50e-06 | Grad 6455296.00 | Tok/s 34,305 | Elapsed 19.1s
+Step     20 | Loss 22.5343 | LR 9.50e-06 | Grad 8847360.00 | Tok/s 35,655 | Elapsed 36.8s
+Step     30 | Loss 22.2311 | LR 1.45e-05 | Grad 66584576.00 | Tok/s 36,079 | Elapsed 54.5s
+Step     40 | Loss 13.0133 | LR 1.95e-05 | Grad 56623104.00 | Tok/s 36,526 | Elapsed 71.8s
+Step     50 | Loss 9.6719 | LR 2.45e-05 | Grad 3735552.00 | Tok/s 36,563 | Elapsed 89.6s
+Step     60 | Loss 9.7626 | LR 2.95e-05 | Grad 24903680.00 | Tok/s 36,724 | Elapsed 107.1s
+Step     70 | Loss 9.8980 | LR 3.45e-05 | Grad 14221312.00 | Tok/s 36,984 | Elapsed 124.0s
+Step     80 | Loss 9.8835 | LR 3.95e-05 | Grad 22937600.00 | Tok/s 37,162 | Elapsed 141.1s
+Step     90 | Loss 9.6382 | LR 4.45e-05 | Grad 21102592.00 | Tok/s 37,376 | Elapsed 157.8s
+Step    100 | Loss 10.3573 | LR 4.95e-05 | Grad 10027008.00 | Tok/s 37,167 | Elapsed 176.3s
+Step    110 | Loss 10.1346 | LR 5.45e-05 | Grad 19398656.00 | Tok/s 37,336 | Elapsed 193.1s
+Step    120 | Loss 11.2079 | LR 5.95e-05 | Grad 7405568.00 | Tok/s 37,251 | Elapsed 211.1s
+Step    130 | Loss 11.6849 | LR 6.45e-05 | Grad 48234496.00 | Tok/s 37,224 | Elapsed 228.9s
+Step    140 | Loss 13.0548 | LR 6.95e-05 | Grad 20054016.00 | Tok/s 37,221 | Elapsed 246.5s
+Step    150 | Loss 11.9118 | LR 7.45e-05 | Grad 4947968.00 | Tok/s 37,293 | Elapsed 263.6s
+Step    160 | Loss 12.3296 | LR 7.95e-05 | Grad 3883008.00 | Tok/s 37,265 | Elapsed 281.4s
+Step    170 | Loss 12.3049 | LR 8.45e-05 | Grad 7241728.00 | Tok/s 37,204 | Elapsed 299.5s
+Step    180 | Loss 11.9097 | LR 8.95e-05 | Grad 13697024.00 | Tok/s 37,149 | Elapsed 317.5s
+Step    190 | Loss 11.5792 | LR 9.45e-05 | Grad 26869760.00 | Tok/s 37,094 | Elapsed 335.7s
+Step    200 | Loss 11.5441 | LR 9.95e-05 | Grad 12189696.00 | Tok/s 37,140 | Elapsed 352.9s
+Step    210 | Loss 11.2193 | LR 1.00e-04 | Grad 3112960.00 | Tok/s 37,080 | Elapsed 371.2s
+Step    220 | Loss 11.4010 | LR 1.00e-04 | Grad 11599872.00 | Tok/s 37,082 | Elapsed 388.8s
+Step    230 | Loss 11.2172 | LR 1.00e-04 | Grad 27525120.00 | Tok/s 37,083 | Elapsed 406.5s
+Step    240 | Loss 11.3491 | LR 1.00e-04 | Grad 19136512.00 | Tok/s 36,823 | Elapsed 427.1s
+Step    250 | Loss 11.3825 | LR 9.99e-05 | Grad 37224448.00 | Tok/s 36,727 | Elapsed 446.1s
+Step    260 | Loss 11.5474 | LR 9.99e-05 | Grad 27131904.00 | Tok/s 36,730 | Elapsed 463.9s
+Step    270 | Loss 11.9608 | LR 9.99e-05 | Grad 16252928.00 | Tok/s 36,612 | Elapsed 483.3s
+Step    280 | Loss 11.9308 | LR 9.98e-05 | Grad 24379392.00 | Tok/s 36,663 | Elapsed 500.5s
+Step    290 | Loss 11.2024 | LR 9.98e-05 | Grad 30277632.00 | Tok/s 36,641 | Elapsed 518.7s
+Step    300 | Loss 11.0306 | LR 9.97e-05 | Grad 79167488.00 | Tok/s 36,663 | Elapsed 536.3s
+Step    310 | Loss 11.0380 | LR 9.96e-05 | Grad 65011712.00 | Tok/s 36,659 | Elapsed 554.2s
+Step    320 | Loss 11.2635 | LR 9.96e-05 | Grad 15597568.00 | Tok/s 36,690 | Elapsed 571.6s
+Step    330 | Loss 10.9050 | LR 9.95e-05 | Grad 63963136.00 | Tok/s 36,688 | Elapsed 589.5s
+Step    340 | Loss 10.9237 | LR 9.94e-05 | Grad 28573696.00 | Tok/s 36,744 | Elapsed 606.4s
+Step    350 | Loss 10.7434 | LR 9.93e-05 | Grad 74448896.00 | Tok/s 36,736 | Elapsed 624.4s
+Step    360 | Loss 10.6778 | LR 9.92e-05 | Grad 25821184.00 | Tok/s 36,746 | Elapsed 642.1s
+Step    370 | Loss 10.5086 | LR 9.91e-05 | Grad 49807360.00 | Tok/s 36,787 | Elapsed 659.2s
+Step    380 | Loss 10.3726 | LR 9.90e-05 | Grad 40108032.00 | Tok/s 36,803 | Elapsed 676.7s
+Step    390 | Loss 10.2298 | LR 9.89e-05 | Grad 18874368.00 | Tok/s 36,814 | Elapsed 694.3s
+Step    400 | Loss 10.1483 | LR 9.88e-05 | Grad 22151168.00 | Tok/s 36,836 | Elapsed 711.7s
+Step    410 | Loss 10.1685 | LR 9.86e-05 | Grad 46137344.00 | Tok/s 36,827 | Elapsed 729.6s
+Step    420 | Loss 10.1917 | LR 9.85e-05 | Grad 28573696.00 | Tok/s 36,853 | Elapsed 746.9s
+Step    430 | Loss 10.1196 | LR 9.84e-05 | Grad 33423360.00 | Tok/s 36,860 | Elapsed 764.5s
+Step    440 | Loss 9.9861 | LR 9.82e-05 | Grad 33816576.00 | Tok/s 36,818 | Elapsed 783.2s
+Step    450 | Loss 10.0696 | LR 9.81e-05 | Grad 70254592.00 | Tok/s 36,797 | Elapsed 801.5s
+Step    460 | Loss 10.2983 | LR 9.79e-05 | Grad 53477376.00 | Tok/s 36,785 | Elapsed 819.5s
+Step    470 | Loss 9.9710 | LR 9.77e-05 | Grad 44302336.00 | Tok/s 36,807 | Elapsed 836.9s
+Step    480 | Loss 10.0614 | LR 9.76e-05 | Grad 11468800.00 | Tok/s 36,792 | Elapsed 855.0s
+Step    490 | Loss 10.2319 | LR 9.74e-05 | Grad 23986176.00 | Tok/s 36,785 | Elapsed 873.0s
+Step    500 | Loss 10.5796 | LR 9.72e-05 | Grad 40370176.00 | Tok/s 36,777 | Elapsed 891.0s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step000500_loss10.5796.pt
+Step    510 | Loss 10.7415 | LR 9.70e-05 | Grad 21233664.00 | Tok/s 36,685 | Elapsed 911.1s
+Step    520 | Loss 10.5599 | LR 9.68e-05 | Grad 29491200.00 | Tok/s 36,697 | Elapsed 928.6s
+Step    530 | Loss 10.5844 | LR 9.66e-05 | Grad 30146560.00 | Tok/s 36,698 | Elapsed 946.5s
+Step    540 | Loss 10.4413 | LR 9.64e-05 | Grad 18612224.00 | Tok/s 36,719 | Elapsed 963.8s
+Step    550 | Loss 10.0738 | LR 9.62e-05 | Grad 123731968.00 | Tok/s 36,726 | Elapsed 981.5s
+Step    560 | Loss 9.9116 | LR 9.60e-05 | Grad 143654912.00 | Tok/s 36,751 | Elapsed 998.6s
+Step    570 | Loss 9.9651 | LR 9.58e-05 | Grad 19398656.00 | Tok/s 36,768 | Elapsed 1016.0s
+Step    580 | Loss 10.1756 | LR 9.55e-05 | Grad 38535168.00 | Tok/s 36,780 | Elapsed 1033.5s
+Step    590 | Loss 10.1460 | LR 9.53e-05 | Grad 30277632.00 | Tok/s 36,788 | Elapsed 1051.0s
+Step    600 | Loss 10.2485 | LR 9.51e-05 | Grad 27918336.00 | Tok/s 36,788 | Elapsed 1068.9s
+Step    610 | Loss 10.1792 | LR 9.48e-05 | Grad 55574528.00 | Tok/s 36,789 | Elapsed 1086.6s
+Step    620 | Loss 10.4439 | LR 9.46e-05 | Grad 15728640.00 | Tok/s 36,728 | Elapsed 1106.3s
+Step    630 | Loss 10.3961 | LR 9.43e-05 | Grad 58982400.00 | Tok/s 36,674 | Elapsed 1125.8s
+Step    640 | Loss 10.3608 | LR 9.41e-05 | Grad 24379392.00 | Tok/s 36,592 | Elapsed 1146.2s
+Step    650 | Loss 10.8090 | LR 9.38e-05 | Grad 55312384.00 | Tok/s 36,554 | Elapsed 1165.4s
+Step    660 | Loss 10.4008 | LR 9.35e-05 | Grad 65011712.00 | Tok/s 36,511 | Elapsed 1184.7s
+Step    670 | Loss 10.5068 | LR 9.32e-05 | Grad 46137344.00 | Tok/s 36,476 | Elapsed 1203.8s
+Step    680 | Loss 10.5351 | LR 9.30e-05 | Grad 30801920.00 | Tok/s 36,438 | Elapsed 1223.0s
+Step    690 | Loss 10.5835 | LR 9.27e-05 | Grad 79167488.00 | Tok/s 36,445 | Elapsed 1240.8s
+Step    700 | Loss 10.5192 | LR 9.24e-05 | Grad 32112640.00 | Tok/s 36,447 | Elapsed 1258.7s
+Step    710 | Loss 10.5823 | LR 9.21e-05 | Grad 47448064.00 | Tok/s 36,439 | Elapsed 1277.0s
+Step    720 | Loss 11.0560 | LR 9.18e-05 | Grad 51904512.00 | Tok/s 36,468 | Elapsed 1293.9s
+Step    730 | Loss 11.2664 | LR 9.14e-05 | Grad 40108032.00 | Tok/s 36,545 | Elapsed 1309.1s
+Step    740 | Loss 10.5682 | LR 9.11e-05 | Grad 58982400.00 | Tok/s 36,630 | Elapsed 1324.0s
+Step    750 | Loss 10.6411 | LR 9.08e-05 | Grad 67108864.00 | Tok/s 36,605 | Elapsed 1342.8s
+Step    760 | Loss 10.5666 | LR 9.05e-05 | Grad 50331648.00 | Tok/s 36,512 | Elapsed 1364.1s
+Step    770 | Loss 10.3629 | LR 9.02e-05 | Grad 55836672.00 | Tok/s 36,422 | Elapsed 1385.5s
+Step    780 | Loss 10.3412 | LR 8.98e-05 | Grad 40370176.00 | Tok/s 36,335 | Elapsed 1406.9s
+Step    790 | Loss 10.3105 | LR 8.95e-05 | Grad 225443840.00 | Tok/s 36,281 | Elapsed 1427.0s
+Step    800 | Loss 10.3866 | LR 8.91e-05 | Grad 139460608.00 | Tok/s 36,285 | Elapsed 1444.9s
+Step    810 | Loss 10.2828 | LR 8.88e-05 | Grad 90177536.00 | Tok/s 36,199 | Elapsed 1466.4s
+Step    820 | Loss 10.2607 | LR 8.84e-05 | Grad 82837504.00 | Tok/s 36,160 | Elapsed 1486.2s
+Step    830 | Loss 10.3651 | LR 8.81e-05 | Grad 124256256.00 | Tok/s 36,163 | Elapsed 1504.2s
+Step    840 | Loss 10.4261 | LR 8.77e-05 | Grad 252706816.00 | Tok/s 36,149 | Elapsed 1522.9s
+Step    850 | Loss 10.2468 | LR 8.73e-05 | Grad 241172480.00 | Tok/s 36,084 | Elapsed 1543.8s
+Step    860 | Loss 10.3645 | LR 8.69e-05 | Grad 141557760.00 | Tok/s 36,083 | Elapsed 1562.0s
+Step    870 | Loss 10.2212 | LR 8.66e-05 | Grad 126877696.00 | Tok/s 36,088 | Elapsed 1579.9s
+Step    880 | Loss 10.1167 | LR 8.62e-05 | Grad 116391936.00 | Tok/s 36,028 | Elapsed 1600.8s
+Step    890 | Loss 10.6212 | LR 8.58e-05 | Grad 93323264.00 | Tok/s 35,996 | Elapsed 1620.4s
+Step    900 | Loss 10.2612 | LR 8.54e-05 | Grad 158334976.00 | Tok/s 35,998 | Elapsed 1638.5s
+Step    910 | Loss 9.9890 | LR 8.50e-05 | Grad 160432128.00 | Tok/s 36,009 | Elapsed 1656.2s
+Step    920 | Loss 10.3420 | LR 8.46e-05 | Grad 119013376.00 | Tok/s 36,001 | Elapsed 1674.8s
+Step    930 | Loss 10.5536 | LR 8.42e-05 | Grad 110100480.00 | Tok/s 35,958 | Elapsed 1695.0s
+Step    940 | Loss 10.8299 | LR 8.38e-05 | Grad 65011712.00 | Tok/s 35,968 | Elapsed 1712.8s
+Step    950 | Loss 10.7740 | LR 8.34e-05 | Grad 99090432.00 | Tok/s 35,976 | Elapsed 1730.6s
+Step    960 | Loss 10.8079 | LR 8.29e-05 | Grad 104333312.00 | Tok/s 35,987 | Elapsed 1748.3s
+Step    970 | Loss 10.8109 | LR 8.25e-05 | Grad 61079552.00 | Tok/s 35,980 | Elapsed 1766.8s
+Step    980 | Loss 10.8932 | LR 8.21e-05 | Grad 87031808.00 | Tok/s 35,923 | Elapsed 1787.9s
+Step    990 | Loss 10.7731 | LR 8.17e-05 | Grad 48234496.00 | Tok/s 35,923 | Elapsed 1806.1s
+Step   1000 | Loss 10.7110 | LR 8.12e-05 | Grad 93847552.00 | Tok/s 35,925 | Elapsed 1824.2s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step001000_loss10.7110.pt
+Step   1010 | Loss 10.9353 | LR 8.08e-05 | Grad 165675008.00 | Tok/s 35,849 | Elapsed 1846.4s
+Step   1020 | Loss 10.9953 | LR 8.03e-05 | Grad 119013376.00 | Tok/s 35,829 | Elapsed 1865.7s
+Step   1030 | Loss 11.1805 | LR 7.99e-05 | Grad 310378496.00 | Tok/s 35,806 | Elapsed 1885.2s
+Step   1040 | Loss 10.9389 | LR 7.94e-05 | Grad 199229440.00 | Tok/s 35,772 | Elapsed 1905.3s
+Step   1050 | Loss 11.0374 | LR 7.90e-05 | Grad 55574528.00 | Tok/s 35,778 | Elapsed 1923.3s
+Step   1060 | Loss 11.6574 | LR 7.85e-05 | Grad 89128960.00 | Tok/s 35,777 | Elapsed 1941.7s
+Step   1070 | Loss 11.6200 | LR 7.81e-05 | Grad 126877696.00 | Tok/s 35,746 | Elapsed 1961.7s
+Step   1080 | Loss 11.5826 | LR 7.76e-05 | Grad 142606336.00 | Tok/s 35,744 | Elapsed 1980.2s
+Step   1090 | Loss 11.4610 | LR 7.71e-05 | Grad 105381888.00 | Tok/s 35,749 | Elapsed 1998.2s
+Step   1100 | Loss 11.2979 | LR 7.66e-05 | Grad 59244544.00 | Tok/s 35,740 | Elapsed 2017.0s
+Step   1110 | Loss 11.2362 | LR 7.62e-05 | Grad 16908288.00 | Tok/s 35,709 | Elapsed 2037.2s
+Step   1120 | Loss 11.2936 | LR 7.57e-05 | Grad 179306496.00 | Tok/s 35,714 | Elapsed 2055.2s
+Step   1130 | Loss 11.2788 | LR 7.52e-05 | Grad 180355072.00 | Tok/s 35,729 | Elapsed 2072.7s
+Step   1140 | Loss 11.3517 | LR 7.47e-05 | Grad 82837504.00 | Tok/s 35,697 | Elapsed 2092.9s
+Step   1150 | Loss 11.4327 | LR 7.42e-05 | Grad 145752064.00 | Tok/s 35,667 | Elapsed 2113.0s
+Step   1160 | Loss 11.4044 | LR 7.37e-05 | Grad 45875200.00 | Tok/s 35,674 | Elapsed 2131.0s
+Step   1170 | Loss 11.4353 | LR 7.32e-05 | Grad 77594624.00 | Tok/s 35,637 | Elapsed 2151.6s
+Step   1180 | Loss 11.4669 | LR 7.27e-05 | Grad 74973184.00 | Tok/s 35,625 | Elapsed 2170.7s
+Step   1190 | Loss 11.2297 | LR 7.22e-05 | Grad 90177536.00 | Tok/s 35,630 | Elapsed 2188.8s
+Step   1200 | Loss 11.2851 | LR 7.17e-05 | Grad 281018368.00 | Tok/s 35,600 | Elapsed 2209.1s
+Step   1210 | Loss 11.6021 | LR 7.12e-05 | Grad 177209344.00 | Tok/s 35,573 | Elapsed 2229.2s
+Step   1220 | Loss 11.5580 | LR 7.07e-05 | Grad 117964800.00 | Tok/s 35,578 | Elapsed 2247.3s
+Step   1230 | Loss 11.2158 | LR 7.02e-05 | Grad 179306496.00 | Tok/s 35,567 | Elapsed 2266.4s
+Step   1240 | Loss 11.1698 | LR 6.97e-05 | Grad 274726912.00 | Tok/s 35,546 | Elapsed 2286.2s
+Step   1250 | Loss 11.4075 | LR 6.92e-05 | Grad 220200960.00 | Tok/s 35,515 | Elapsed 2306.6s
+Step   1260 | Loss 11.3606 | LR 6.87e-05 | Grad 162529280.00 | Tok/s 35,508 | Elapsed 2325.5s
+Step   1270 | Loss 11.1557 | LR 6.81e-05 | Grad 189792256.00 | Tok/s 35,519 | Elapsed 2343.3s
+Step   1280 | Loss 11.2185 | LR 6.76e-05 | Grad 139460608.00 | Tok/s 35,528 | Elapsed 2361.1s
+Step   1290 | Loss 11.2359 | LR 6.71e-05 | Grad 42205184.00 | Tok/s 35,508 | Elapsed 2380.9s
+Step   1300 | Loss 11.3695 | LR 6.66e-05 | Grad 199229440.00 | Tok/s 35,483 | Elapsed 2401.1s
+Step   1310 | Loss 11.5680 | LR 6.60e-05 | Grad 404750336.00 | Tok/s 35,492 | Elapsed 2418.9s
+Step   1320 | Loss 11.7643 | LR 6.55e-05 | Grad 574619648.00 | Tok/s 35,493 | Elapsed 2437.3s
+Step   1330 | Loss 11.1083 | LR 6.50e-05 | Grad 106954752.00 | Tok/s 35,465 | Elapsed 2457.7s
+Step   1340 | Loss 10.6881 | LR 6.44e-05 | Grad 82313216.00 | Tok/s 35,450 | Elapsed 2477.2s
+Step   1350 | Loss 10.9632 | LR 6.39e-05 | Grad 156237824.00 | Tok/s 35,459 | Elapsed 2495.1s
+Step   1360 | Loss 10.7631 | LR 6.34e-05 | Grad 167772160.00 | Tok/s 35,467 | Elapsed 2513.0s
+Step   1370 | Loss 10.9080 | LR 6.28e-05 | Grad 137363456.00 | Tok/s 35,459 | Elapsed 2532.1s
+Step   1380 | Loss 10.7828 | LR 6.23e-05 | Grad 497025024.00 | Tok/s 35,457 | Elapsed 2550.7s
+Step   1390 | Loss 10.5782 | LR 6.17e-05 | Grad 112721920.00 | Tok/s 35,465 | Elapsed 2568.6s
+Step   1400 | Loss 10.7171 | LR 6.12e-05 | Grad 650117120.00 | Tok/s 35,470 | Elapsed 2586.7s
+Step   1410 | Loss 10.6431 | LR 6.06e-05 | Grad 566231040.00 | Tok/s 35,449 | Elapsed 2606.7s
+Step   1420 | Loss 10.5827 | LR 6.01e-05 | Grad 780140544.00 | Tok/s 35,435 | Elapsed 2626.2s
+Step   1430 | Loss 10.5807 | LR 5.95e-05 | Grad 227540992.00 | Tok/s 35,437 | Elapsed 2644.6s
+Step   1440 | Loss 10.5256 | LR 5.90e-05 | Grad 394264576.00 | Tok/s 35,402 | Elapsed 2665.7s
+Step   1450 | Loss 10.5257 | LR 5.84e-05 | Grad 331350016.00 | Tok/s 35,392 | Elapsed 2685.0s
+Step   1460 | Loss 10.3861 | LR 5.79e-05 | Grad 320864256.00 | Tok/s 35,396 | Elapsed 2703.2s
+Step   1470 | Loss 10.4216 | LR 5.73e-05 | Grad 595591168.00 | Tok/s 35,393 | Elapsed 2722.0s
+Step   1480 | Loss 10.4879 | LR 5.68e-05 | Grad 499122176.00 | Tok/s 35,373 | Elapsed 2742.0s
+Step   1490 | Loss 10.5422 | LR 5.62e-05 | Grad 320864256.00 | Tok/s 35,360 | Elapsed 2761.5s
+Step   1500 | Loss 10.5978 | LR 5.57e-05 | Grad 392167424.00 | Tok/s 35,363 | Elapsed 2779.9s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step001500_loss10.5978.pt
+Step   1510 | Loss 10.6844 | LR 5.51e-05 | Grad 352321536.00 | Tok/s 35,334 | Elapsed 2800.7s
+Step   1520 | Loss 10.5626 | LR 5.45e-05 | Grad 482344960.00 | Tok/s 35,323 | Elapsed 2820.1s
+Step   1530 | Loss 10.7519 | LR 5.40e-05 | Grad 809500672.00 | Tok/s 35,329 | Elapsed 2838.2s
+Step   1540 | Loss 10.8548 | LR 5.34e-05 | Grad 675282944.00 | Tok/s 35,331 | Elapsed 2856.6s
+Step   1550 | Loss 10.7066 | LR 5.29e-05 | Grad 612368384.00 | Tok/s 35,315 | Elapsed 2876.4s
+Step   1560 | Loss 10.4616 | LR 5.23e-05 | Grad 876609536.00 | Tok/s 35,321 | Elapsed 2894.5s
+Step   1570 | Loss 10.4495 | LR 5.17e-05 | Grad 1015021568.00 | Tok/s 35,329 | Elapsed 2912.4s
+Step   1580 | Loss 10.4238 | LR 5.12e-05 | Grad 893386752.00 | Tok/s 35,328 | Elapsed 2931.0s
+Step   1590 | Loss 10.4386 | LR 5.06e-05 | Grad 939524096.00 | Tok/s 35,305 | Elapsed 2951.4s
+Step   1600 | Loss 10.4363 | LR 5.01e-05 | Grad 876609536.00 | Tok/s 35,299 | Elapsed 2970.5s
+Step   1610 | Loss 10.4413 | LR 4.95e-05 | Grad 847249408.00 | Tok/s 35,308 | Elapsed 2988.4s
+Step   1620 | Loss 10.4627 | LR 4.89e-05 | Grad 662700032.00 | Tok/s 35,315 | Elapsed 3006.3s
+Step   1630 | Loss 10.4893 | LR 4.84e-05 | Grad 973078528.00 | Tok/s 35,290 | Elapsed 3027.0s
+Step   1640 | Loss 10.5113 | LR 4.78e-05 | Grad 1044381696.00 | Tok/s 35,297 | Elapsed 3045.0s
+Step   1650 | Loss 10.4553 | LR 4.73e-05 | Grad 1061158912.00 | Tok/s 35,297 | Elapsed 3063.6s
+Step   1660 | Loss 10.4215 | LR 4.67e-05 | Grad 1216348160.00 | Tok/s 35,287 | Elapsed 3083.0s
+Step   1670 | Loss 10.4434 | LR 4.61e-05 | Grad 1308622848.00 | Tok/s 35,293 | Elapsed 3101.0s
+Step   1680 | Loss 10.4712 | LR 4.56e-05 | Grad 1409286144.00 | Tok/s 35,295 | Elapsed 3119.4s
+Step   1690 | Loss 10.4058 | LR 4.50e-05 | Grad 1442840576.00 | Tok/s 35,280 | Elapsed 3139.4s
+Step   1700 | Loss 10.3646 | LR 4.45e-05 | Grad 788529152.00 | Tok/s 35,275 | Elapsed 3158.4s
+Step   1710 | Loss 10.3814 | LR 4.39e-05 | Grad 1069547520.00 | Tok/s 35,280 | Elapsed 3176.5s
+Step   1720 | Loss 10.4220 | LR 4.33e-05 | Grad 935329792.00 | Tok/s 35,286 | Elapsed 3194.5s
+Step   1730 | Loss 10.4329 | LR 4.28e-05 | Grad 855638016.00 | Tok/s 35,295 | Elapsed 3212.3s
+Step   1740 | Loss 10.4275 | LR 4.22e-05 | Grad 398458880.00 | Tok/s 35,304 | Elapsed 3230.1s
+Step   1750 | Loss 10.4109 | LR 4.17e-05 | Grad 524288000.00 | Tok/s 35,295 | Elapsed 3249.4s
+Step   1760 | Loss 10.3882 | LR 4.11e-05 | Grad 513802240.00 | Tok/s 35,277 | Elapsed 3269.6s
+Step   1770 | Loss 10.3809 | LR 4.06e-05 | Grad 838860800.00 | Tok/s 35,254 | Elapsed 3290.3s
+Step   1780 | Loss 10.3387 | LR 4.00e-05 | Grad 1224736768.00 | Tok/s 35,251 | Elapsed 3309.2s
+Step   1790 | Loss 10.3080 | LR 3.95e-05 | Grad 509607936.00 | Tok/s 35,260 | Elapsed 3327.0s
+Step   1800 | Loss 10.3279 | LR 3.89e-05 | Grad 208666624.00 | Tok/s 35,250 | Elapsed 3346.5s
+Step   1810 | Loss 10.3394 | LR 3.84e-05 | Grad 406847488.00 | Tok/s 35,243 | Elapsed 3365.8s
+Step   1820 | Loss 10.3451 | LR 3.78e-05 | Grad 329252864.00 | Tok/s 35,246 | Elapsed 3384.1s
+Step   1830 | Loss 10.4124 | LR 3.73e-05 | Grad 671088640.00 | Tok/s 35,228 | Elapsed 3404.4s
+Step   1840 | Loss 10.5417 | LR 3.68e-05 | Grad 2063597568.00 | Tok/s 35,222 | Elapsed 3423.6s
+Step   1850 | Loss 10.7706 | LR 3.62e-05 | Grad 880803840.00 | Tok/s 35,229 | Elapsed 3441.5s
+Step   1860 | Loss 11.2508 | LR 3.57e-05 | Grad 226492416.00 | Tok/s 35,228 | Elapsed 3460.2s
+Step   1870 | Loss 11.4287 | LR 3.51e-05 | Grad 379584512.00 | Tok/s 35,207 | Elapsed 3480.9s
+Step   1880 | Loss 11.2532 | LR 3.46e-05 | Grad 346030080.00 | Tok/s 35,212 | Elapsed 3499.1s
+Step   1890 | Loss 11.0840 | LR 3.41e-05 | Grad 452984832.00 | Tok/s 35,218 | Elapsed 3517.0s
+Step   1900 | Loss 11.1618 | LR 3.35e-05 | Grad 206569472.00 | Tok/s 35,210 | Elapsed 3536.4s
+Step   1910 | Loss 11.1007 | LR 3.30e-05 | Grad 901775360.00 | Tok/s 35,201 | Elapsed 3556.0s
+Step   1920 | Loss 11.1601 | LR 3.25e-05 | Grad 343932928.00 | Tok/s 35,202 | Elapsed 3574.5s
+Step   1930 | Loss 11.2488 | LR 3.20e-05 | Grad 260046848.00 | Tok/s 35,188 | Elapsed 3594.6s
+Step   1940 | Loss 11.1137 | LR 3.14e-05 | Grad 187695104.00 | Tok/s 35,179 | Elapsed 3614.1s
+Step   1950 | Loss 11.1090 | LR 3.09e-05 | Grad 191889408.00 | Tok/s 35,181 | Elapsed 3632.5s
+Step   1960 | Loss 11.2777 | LR 3.04e-05 | Grad 115343360.00 | Tok/s 35,163 | Elapsed 3653.0s
+Step   1970 | Loss 11.2313 | LR 2.99e-05 | Grad 170917888.00 | Tok/s 35,164 | Elapsed 3671.6s
+Step   1980 | Loss 11.3505 | LR 2.94e-05 | Grad 169869312.00 | Tok/s 35,169 | Elapsed 3689.7s
+Step   1990 | Loss 11.3725 | LR 2.89e-05 | Grad 299892736.00 | Tok/s 35,175 | Elapsed 3707.6s
+Step   2000 | Loss 11.5122 | LR 2.84e-05 | Grad 838860800.00 | Tok/s 35,169 | Elapsed 3726.9s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step002000_loss11.5122.pt
+Step   2010 | Loss 11.5743 | LR 2.79e-05 | Grad 122683392.00 | Tok/s 35,151 | Elapsed 3747.4s
+Step   2020 | Loss 11.7033 | LR 2.74e-05 | Grad 131596288.00 | Tok/s 35,155 | Elapsed 3765.7s
+Step   2030 | Loss 11.5165 | LR 2.69e-05 | Grad 637534208.00 | Tok/s 35,151 | Elapsed 3784.8s
+Step   2040 | Loss 11.6042 | LR 2.64e-05 | Grad 160432128.00 | Tok/s 35,144 | Elapsed 3804.2s
+Step   2050 | Loss 11.7873 | LR 2.59e-05 | Grad 310378496.00 | Tok/s 35,151 | Elapsed 3822.1s
+Step   2060 | Loss 11.7599 | LR 2.54e-05 | Grad 381681664.00 | Tok/s 35,148 | Elapsed 3841.0s
+Step   2070 | Loss 11.5357 | LR 2.49e-05 | Grad 116391936.00 | Tok/s 35,139 | Elapsed 3860.7s
+Step   2080 | Loss 11.6696 | LR 2.44e-05 | Grad 98041856.00 | Tok/s 35,142 | Elapsed 3878.9s
+Step   2090 | Loss 11.7995 | LR 2.39e-05 | Grad 139460608.00 | Tok/s 35,150 | Elapsed 3896.8s
+Step   2100 | Loss 11.7851 | LR 2.34e-05 | Grad 146800640.00 | Tok/s 35,145 | Elapsed 3916.0s
+Step   2110 | Loss 11.6330 | LR 2.30e-05 | Grad 199229440.00 | Tok/s 35,131 | Elapsed 3936.1s
+Step   2120 | Loss 11.7053 | LR 2.25e-05 | Grad 202375168.00 | Tok/s 35,138 | Elapsed 3954.0s
+Step   2130 | Loss 11.6657 | LR 2.20e-05 | Grad 371195904.00 | Tok/s 35,147 | Elapsed 3971.7s
+Step   2140 | Loss 11.5655 | LR 2.16e-05 | Grad 81788928.00 | Tok/s 35,132 | Elapsed 3992.0s
+Step   2150 | Loss 11.4946 | LR 2.11e-05 | Grad 197132288.00 | Tok/s 35,127 | Elapsed 4011.3s
+Step   2160 | Loss 11.6447 | LR 2.07e-05 | Grad 247463936.00 | Tok/s 35,133 | Elapsed 4029.2s
+Step   2170 | Loss 11.4956 | LR 2.02e-05 | Grad 308281344.00 | Tok/s 35,141 | Elapsed 4047.0s
+Step   2180 | Loss 11.5348 | LR 1.98e-05 | Grad 425721856.00 | Tok/s 35,120 | Elapsed 4068.1s
+Step   2190 | Loss 11.3870 | LR 1.93e-05 | Grad 114294784.00 | Tok/s 35,115 | Elapsed 4087.3s
+Step   2200 | Loss 11.3870 | LR 1.89e-05 | Grad 235929600.00 | Tok/s 35,119 | Elapsed 4105.4s
+Step   2210 | Loss 11.4249 | LR 1.84e-05 | Grad 159383552.00 | Tok/s 35,126 | Elapsed 4123.3s
+Step   2220 | Loss 11.5883 | LR 1.80e-05 | Grad 114819072.00 | Tok/s 35,107 | Elapsed 4144.1s
+Step   2230 | Loss 11.5796 | LR 1.76e-05 | Grad 190840832.00 | Tok/s 35,097 | Elapsed 4164.0s
+Step   2240 | Loss 11.5275 | LR 1.71e-05 | Grad 256901120.00 | Tok/s 35,087 | Elapsed 4183.9s
+Step   2250 | Loss 11.3593 | LR 1.67e-05 | Grad 122683392.00 | Tok/s 35,073 | Elapsed 4204.2s
+Step   2260 | Loss 11.5819 | LR 1.63e-05 | Grad 120586240.00 | Tok/s 35,080 | Elapsed 4222.1s
+Step   2270 | Loss 11.6305 | LR 1.59e-05 | Grad 119013376.00 | Tok/s 35,083 | Elapsed 4240.4s
+Step   2280 | Loss 11.6009 | LR 1.55e-05 | Grad 81264640.00 | Tok/s 35,070 | Elapsed 4260.7s
+Step   2290 | Loss 11.4311 | LR 1.51e-05 | Grad 74448896.00 | Tok/s 35,071 | Elapsed 4279.3s
+Step   2300 | Loss 11.2867 | LR 1.47e-05 | Grad 81788928.00 | Tok/s 35,074 | Elapsed 4297.6s
+Step   2310 | Loss 11.4232 | LR 1.43e-05 | Grad 99090432.00 | Tok/s 35,080 | Elapsed 4315.5s
+Step   2320 | Loss 11.2355 | LR 1.39e-05 | Grad 88080384.00 | Tok/s 35,077 | Elapsed 4334.5s
+Step   2330 | Loss 11.5201 | LR 1.35e-05 | Grad 74448896.00 | Tok/s 35,067 | Elapsed 4354.5s
+Step   2340 | Loss 11.2647 | LR 1.31e-05 | Grad 192937984.00 | Tok/s 35,073 | Elapsed 4372.5s
+Step   2350 | Loss 11.3069 | LR 1.28e-05 | Grad 102236160.00 | Tok/s 35,058 | Elapsed 4393.0s
+Step   2360 | Loss 11.3104 | LR 1.24e-05 | Grad 94896128.00 | Tok/s 35,056 | Elapsed 4411.9s
+Step   2370 | Loss 11.1529 | LR 1.20e-05 | Grad 85458944.00 | Tok/s 35,062 | Elapsed 4429.9s
+Step   2380 | Loss 11.2905 | LR 1.17e-05 | Grad 121110528.00 | Tok/s 35,064 | Elapsed 4448.3s
+Step   2390 | Loss 11.2327 | LR 1.13e-05 | Grad 106430464.00 | Tok/s 35,058 | Elapsed 4467.8s
+Step   2400 | Loss 11.1963 | LR 1.09e-05 | Grad 98041856.00 | Tok/s 35,061 | Elapsed 4486.1s
+Step   2410 | Loss 11.1355 | LR 1.06e-05 | Grad 128450560.00 | Tok/s 35,069 | Elapsed 4503.8s
+Step   2420 | Loss 11.1563 | LR 1.03e-05 | Grad 61603840.00 | Tok/s 35,064 | Elapsed 4523.1s
+Step   2430 | Loss 11.1380 | LR 9.91e-06 | Grad 86507520.00 | Tok/s 35,054 | Elapsed 4543.1s
+Step   2440 | Loss 11.1128 | LR 9.58e-06 | Grad 92274688.00 | Tok/s 35,060 | Elapsed 4561.0s
+Step   2450 | Loss 11.2100 | LR 9.25e-06 | Grad 58982400.00 | Tok/s 35,068 | Elapsed 4578.6s
+Step   2460 | Loss 11.1788 | LR 8.93e-06 | Grad 65798144.00 | Tok/s 35,056 | Elapsed 4598.9s
+Step   2470 | Loss 11.1446 | LR 8.61e-06 | Grad 69730304.00 | Tok/s 35,051 | Elapsed 4618.3s
+Step   2480 | Loss 11.2386 | LR 8.30e-06 | Grad 175112192.00 | Tok/s 35,054 | Elapsed 4636.6s
+Step   2490 | Loss 11.2904 | LR 8.00e-06 | Grad 90177536.00 | Tok/s 35,057 | Elapsed 4654.9s
+Step   2500 | Loss 11.4053 | LR 7.69e-06 | Grad 196083712.00 | Tok/s 35,043 | Elapsed 4675.5s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step002500_loss11.4053.pt
+Step   2510 | Loss 11.2777 | LR 7.40e-06 | Grad 74973184.00 | Tok/s 35,027 | Elapsed 4696.3s
+Step   2520 | Loss 11.2165 | LR 7.11e-06 | Grad 89653248.00 | Tok/s 35,034 | Elapsed 4714.1s
+Step   2530 | Loss 11.1220 | LR 6.82e-06 | Grad 102760448.00 | Tok/s 35,023 | Elapsed 4734.2s
+Step   2540 | Loss 11.1600 | LR 6.54e-06 | Grad 79691776.00 | Tok/s 35,024 | Elapsed 4752.8s
+Step   2550 | Loss 11.1906 | LR 6.27e-06 | Grad 55312384.00 | Tok/s 35,031 | Elapsed 4770.6s
+Step   2560 | Loss 11.1531 | LR 6.00e-06 | Grad 85983232.00 | Tok/s 35,038 | Elapsed 4788.2s
+Step   2570 | Loss 11.1446 | LR 5.73e-06 | Grad 142606336.00 | Tok/s 35,035 | Elapsed 4807.3s
+Step   2580 | Loss 11.1735 | LR 5.48e-06 | Grad 56623104.00 | Tok/s 35,034 | Elapsed 4826.3s
+Step   2590 | Loss 11.3008 | LR 5.22e-06 | Grad 143654912.00 | Tok/s 35,037 | Elapsed 4844.5s
+Step   2600 | Loss 11.3802 | LR 4.98e-06 | Grad 116391936.00 | Tok/s 35,039 | Elapsed 4863.0s
+Step   2610 | Loss 11.2951 | LR 4.73e-06 | Grad 111149056.00 | Tok/s 35,035 | Elapsed 4882.3s
+Step   2620 | Loss 11.1081 | LR 4.50e-06 | Grad 54525952.00 | Tok/s 35,040 | Elapsed 4900.3s
+Step   2630 | Loss 11.1710 | LR 4.27e-06 | Grad 76021760.00 | Tok/s 35,047 | Elapsed 4918.0s
+Step   2640 | Loss 11.2199 | LR 4.05e-06 | Grad 126353408.00 | Tok/s 35,050 | Elapsed 4936.3s
+Step   2650 | Loss 11.2958 | LR 3.83e-06 | Grad 49020928.00 | Tok/s 35,041 | Elapsed 4956.3s
+Step   2660 | Loss 11.2498 | LR 3.62e-06 | Grad 56623104.00 | Tok/s 35,033 | Elapsed 4976.0s
+Step   2670 | Loss 11.3579 | LR 3.41e-06 | Grad 152043520.00 | Tok/s 35,037 | Elapsed 4994.2s
+Step   2680 | Loss 11.3112 | LR 3.21e-06 | Grad 69206016.00 | Tok/s 35,039 | Elapsed 5012.5s
+Step   2690 | Loss 11.1323 | LR 3.01e-06 | Grad 68681728.00 | Tok/s 35,028 | Elapsed 5032.9s
+Step   2700 | Loss 11.2676 | LR 2.82e-06 | Grad 126353408.00 | Tok/s 35,022 | Elapsed 5052.4s
+Step   2710 | Loss 11.1490 | LR 2.64e-06 | Grad 147849216.00 | Tok/s 35,022 | Elapsed 5071.2s
+Step   2720 | Loss 11.2422 | LR 2.46e-06 | Grad 72351744.00 | Tok/s 35,029 | Elapsed 5088.9s
+Step   2730 | Loss 11.1950 | LR 2.29e-06 | Grad 82313216.00 | Tok/s 35,033 | Elapsed 5107.0s
+Step   2740 | Loss 11.1892 | LR 2.13e-06 | Grad 69730304.00 | Tok/s 35,038 | Elapsed 5125.0s
+Step   2750 | Loss 11.2408 | LR 1.97e-06 | Grad 81788928.00 | Tok/s 35,027 | Elapsed 5145.3s
+Step   2760 | Loss 11.2317 | LR 1.82e-06 | Grad 55574528.00 | Tok/s 35,020 | Elapsed 5165.1s
+Step   2770 | Loss 11.3377 | LR 1.67e-06 | Grad 97517568.00 | Tok/s 35,003 | Elapsed 5186.3s
+Step   2780 | Loss 11.3370 | LR 1.53e-06 | Grad 56360960.00 | Tok/s 35,005 | Elapsed 5204.7s
+Step   2790 | Loss 11.3467 | LR 1.39e-06 | Grad 127926272.00 | Tok/s 35,011 | Elapsed 5222.5s
+Step   2800 | Loss 11.3249 | LR 1.27e-06 | Grad 63700992.00 | Tok/s 35,010 | Elapsed 5241.4s
+Step   2810 | Loss 11.3120 | LR 1.14e-06 | Grad 65011712.00 | Tok/s 34,995 | Elapsed 5262.4s
+Step   2820 | Loss 11.3303 | LR 1.03e-06 | Grad 86507520.00 | Tok/s 34,993 | Elapsed 5281.4s
+Step   2830 | Loss 11.3712 | LR 9.17e-07 | Grad 105381888.00 | Tok/s 34,996 | Elapsed 5299.7s
+Step   2840 | Loss 11.3038 | LR 8.14e-07 | Grad 88080384.00 | Tok/s 34,994 | Elapsed 5318.7s
+Step   2850 | Loss 11.2902 | LR 7.16e-07 | Grad 78118912.00 | Tok/s 34,990 | Elapsed 5338.0s
+Step   2860 | Loss 11.3069 | LR 6.24e-07 | Grad 82313216.00 | Tok/s 34,985 | Elapsed 5357.6s
+Step   2870 | Loss 11.3566 | LR 5.39e-07 | Grad 71827456.00 | Tok/s 34,983 | Elapsed 5376.6s
+Step   2880 | Loss 11.3345 | LR 4.60e-07 | Grad 77594624.00 | Tok/s 34,986 | Elapsed 5394.8s
+Step   2890 | Loss 11.2378 | LR 3.87e-07 | Grad 73400320.00 | Tok/s 34,979 | Elapsed 5414.6s
+Step   2900 | Loss 11.3494 | LR 3.21e-07 | Grad 76546048.00 | Tok/s 34,983 | Elapsed 5432.7s
+Step   2910 | Loss 11.2671 | LR 2.60e-07 | Grad 127926272.00 | Tok/s 34,987 | Elapsed 5450.9s
+Step   2920 | Loss 11.2988 | LR 2.06e-07 | Grad 81264640.00 | Tok/s 34,970 | Elapsed 5472.2s
+Step   2930 | Loss 11.5164 | LR 1.59e-07 | Grad 64749568.00 | Tok/s 34,969 | Elapsed 5491.2s
+Step   2940 | Loss 11.2138 | LR 1.17e-07 | Grad 116391936.00 | Tok/s 34,965 | Elapsed 5510.5s
+Step   2950 | Loss 11.2172 | LR 8.18e-08 | Grad 56098816.00 | Tok/s 34,964 | Elapsed 5529.5s
+Step   2960 | Loss 11.1755 | LR 5.29e-08 | Grad 76021760.00 | Tok/s 34,970 | Elapsed 5547.2s
+Step   2970 | Loss 11.3031 | LR 3.02e-08 | Grad 101187584.00 | Tok/s 34,969 | Elapsed 5566.1s
+Step   2980 | Loss 11.2347 | LR 1.39e-08 | Grad 62652416.00 | Tok/s 34,965 | Elapsed 5585.6s
+Step   2990 | Loss 11.1412 | LR 3.81e-09 | Grad 84410368.00 | Tok/s 34,969 | Elapsed 5603.7s
+Step   3000 | Loss 11.1811 | LR 3.15e-11 | Grad 101711872.00 | Tok/s 34,957 | Elapsed 5624.3s
+  >>> Saved: outputs/log_0_3k_lowgrad/levellog_0_step003000_loss11.1811.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 11.1811
+Total tokens: 196,608,000
+Total time: 5627.5s
+Parameters: 261,185,280 (261.19M)

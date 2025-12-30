@@ -261,13 +261,15 @@ __global__ void LogDiagRMSNormBackward(
         float h_norm = from_log_space(log_h_norm, sign_h_val);
 
         // Gradient w.r.t. log_gamma: d_out * h_norm (through exp)
-        float d_log_gamma_val = d_out * h_norm;
+        // Scaled by 0.0001 to match Python grad_scale and stabilize training
+        float d_log_gamma_val = d_out * h_norm * 0.0001f;
         atomicAdd(&d_log_gamma[d], d_log_gamma_val);
 
         // Gradient w.r.t. log_h (simplified for bounded gradients)
         // d_log_h = d_out * h_norm * (1 - h_norm^2 / sum_h2)
         // Approximated as: d_out * h_norm - mean_dout_hnorm * h_norm
-        float d_log_h_val = (d_out - mean_dout_hnorm) * fabsf(h_norm + 1e-6f);
+        // Scaled by 0.0001 to match Python grad_scale and stabilize training
+        float d_log_h_val = (d_out - mean_dout_hnorm) * fabsf(h_norm + 1e-6f) * 0.0001f;
         d_log_h[base + d] = static_cast<T>(fminf(fmaxf(d_log_h_val, -GRAD_CLIP), GRAD_CLIP));
     }
 }
@@ -666,14 +668,16 @@ struct LogDiagSelectiveElmanForward {
             T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
             T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
 
-            // wx_x = W_x @ x_t (no W_h - diagonal recurrence handled in kernel)
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // wx_x = x_t @ W_x.T (matching PyTorch convention)
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
 
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // alpha_raw = x_t @ W_alpha.T
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_alpha, dim_, x_t, dim_, &beta_zero, alpha_raw, dim_);
 
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // delta_tmp = x_t @ W_delta.T
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
 
             if (alpha_raw_t) {
@@ -695,8 +699,8 @@ struct LogDiagSelectiveElmanForward {
                 h_linear_t,        // normalized h_linear (cached)
                 log_rms_t);        // cache log_rms for backward
 
-            // w_out_h = W_out @ h_linear_normed
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // w_out_h = h_linear_normed @ W_out.T (matching PyTorch convention)
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_out, dim_, h_linear_t, dim_, &beta_zero, w_out_h, dim_);
 
             // Selective output using NORMALIZED h_linear

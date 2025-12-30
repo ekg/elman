@@ -650,8 +650,8 @@ void LogSpaceTripleRForward<T>::Run(
         // Convert x_t to log space for R_x multiplication
         LinearToLogKernel<T><<<num_blocks, block_size, 0, stream_>>>(BD, x_t, log_x_t, sign_x_t);
 
-        // W_delta @ x_t (linear matmul, used for delta gate)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // x_t @ W_delta.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, Wdelta_x, dim_);
 
         // R_x @ x in log space
@@ -681,8 +681,8 @@ void LogSpaceTripleRForward<T>::Run(
         // Convert h_t to linear for W_out
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(BD, log_h_t, sign_h_t, h_linear);
 
-        // W_out @ h_linear
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // h_linear @ W_out.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Selective output
@@ -812,8 +812,8 @@ void LogSpaceTripleRBackward<T>::Run(
         // Copy x_t to workspace (already linear)
         cudaMemcpy(x_linear, x_t, BD * sizeof(T), cudaMemcpyDeviceToDevice);
 
-        // Recompute w_out_h
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // Recompute w_out_h = h_linear @ W_out.T (matching forward)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Backward through selective output

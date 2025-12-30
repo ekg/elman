@@ -1,3 +1,5 @@
 # Ignore large data files
 *.txt
+# But allow tiny test file
+!tinystories_test.txt
 !README.md

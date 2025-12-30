@@ -45,8 +45,10 @@ import torch.nn.functional as F
 # Try to import Haste CUDA kernel
 try:
     import hasty_pytorch_lib
+    # Re-enabled: Fused logsumexp RMSNorm backward now implemented
     HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'logspace_polynomial_forward')
 except ImportError:
+    hasty_pytorch_lib = None
     HASTE_AVAILABLE = False
 
 LOGSPACE_LEVEL_0_AVAILABLE = True  # PyTorch fallback always available
@@ -56,12 +58,18 @@ LOG_ZERO = -40.0
 LOG_EPS = 1e-10
 
 
-def to_log_space(x):
-    """Convert linear tensor to (log|x|, sign(x)) representation."""
+def to_log_space(x, soft_eps=1e-6):
+    """
+    Convert linear tensor to (log|x|, sign(x)) representation.
+
+    Uses soft-abs: sqrt(x^2 + eps^2) to bound gradients near zero.
+    The gradient d/dx sqrt(x^2 + eps^2) = x / sqrt(x^2 + eps^2) is bounded by 1.
+    """
     sign_x = torch.sign(x)
     sign_x = torch.where(sign_x == 0, torch.ones_like(sign_x), sign_x)
-    abs_x = torch.abs(x)
-    log_x = torch.where(abs_x > LOG_EPS, torch.log(abs_x), torch.full_like(abs_x, LOG_ZERO))
+    # Soft-abs: sqrt(x^2 + eps^2) bounds gradient to 1 near zero
+    soft_abs_x = torch.sqrt(x * x + soft_eps * soft_eps)
+    log_x = torch.log(soft_abs_x)
     return log_x, sign_x
 
 
@@ -209,10 +217,11 @@ class LogSpacePolynomialFunction(torch.autograd.Function):
             log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache, log_rms_cache = results
 
         if training:
+            # Save h_linear for RMSNorm backward (fused logsumexp gradient)
             ctx.save_for_backward(
                 x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
                 log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear
             )
 
         return log_h, sign_h, h_linear
@@ -221,13 +230,13 @@ class LogSpacePolynomialFunction(torch.autograd.Function):
     def backward(ctx, d_log_h, d_sign_h, d_h_linear):
         (x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
          log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache) = ctx.saved_tensors
+         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear_cache) = ctx.saved_tensors
 
         dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma = \
             hasty_pytorch_lib.logspace_polynomial_backward(
                 W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
                 x, log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, log_rms_cache,
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear_cache,
                 d_h_linear.contiguous()
             )
 
@@ -253,9 +262,10 @@ class LogSpacePolynomialCell(nn.Module):
         super().__init__()
         self.dim = dim
 
-        # Input projection
+        # Input projection (no learnable bias - adding in linear space causes gradient explosion)
         self.W_x = nn.Parameter(torch.empty(dim, dim))
-        self.b = nn.Parameter(torch.zeros(dim))
+        # Register zero bias as buffer (not trainable) for CUDA kernel compatibility
+        self.register_buffer('b', torch.zeros(dim))
 
         # Diagonal recurrence (stored as log|r_h|, sign(r_h))
         # Initialize r_h to small positive values -> log_r_h ~ -2, sign = +1
@@ -333,8 +343,8 @@ class LogSpacePolynomialCell(nn.Module):
             log_rh_hp = self.log_r_h + log_h_prev
             sign_rh_hp = self.sign_r_h * sign_h_prev
 
-            # W_x @ x + b in linear space, then convert to log
-            linear_input = x_t @ self.W_x.T + self.b
+            # W_x @ x in linear space, then convert to log (no bias - causes gradient explosion)
+            linear_input = x_t @ self.W_x.T
             log_input, sign_input = to_log_space(linear_input)
 
             # Add: v = r_h * h_prev + input (signed log addition)
