@@ -691,12 +691,12 @@ void LogStorageDiagonalElmanForward<T>::Run(
         T* log_term1_t = training_ ? (log_term1_cache + t * BD) : nullptr;
         T* log_term2_t = training_ ? (log_term2_cache + t * BD) : nullptr;
 
-        // wx_x = W_x @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // wx_x = x_t @ W_x.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
 
-        // delta_tmp = W_delta @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
 
         // Log-space gated update (stores softmax weights for backward)
@@ -710,8 +710,8 @@ void LogStorageDiagonalElmanForward<T>::Run(
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_t, sign_h_t, h_linear);
 
-        // W_out @ h_linear (LINEAR space, like Level 3)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // w_out_h = h_linear @ W_out.T (LINEAR space, like Level 3)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Selective output in LINEAR space: softmax(h) * silu(W_out @ h)
@@ -825,8 +825,8 @@ void LogStorageDiagonalElmanBackward<T>::Run(
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_prev, sign_h_prev, h_prev_linear);
 
-        // Recompute w_out_h = W_out @ h_linear
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // Recompute w_out_h = h_linear @ W_out.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Backward through selective output (LINEAR space, same as Level 3)
@@ -840,8 +840,8 @@ void LogStorageDiagonalElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
 
-        // dh_linear += W_out^T @ d_w_out_h (LINEAR gradient)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dh_linear += d_w_out_h @ W_out (backward of h @ W_out.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
 
         // LINEAR-SPACE backward through gated update (exactly like Level 3!)
@@ -853,10 +853,10 @@ void LogStorageDiagonalElmanBackward<T>::Run(
             dv, d_delta_raw, dh_recurrent,  // output: LINEAR gradient for h_prev!
             dr_h_float, db_float, db_delta_float);
 
-        // dx = W_x^T @ dv + W_delta^T @ d_delta_raw
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dx = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
         // Weight gradients

@@ -314,22 +314,22 @@ void SelectiveElmanForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // v_tmp = W_x @ x_t + W_h @ h_prev
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // v_tmp = x_t @ W_x.T + h_prev @ W_h.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, v_tmp, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_h, dim_, h_prev, dim_, &alpha, v_tmp, dim_);
 
-        // delta_tmp = W_delta @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
 
         // Gated update
         SelectiveElmanGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_prev, v_tmp, delta_tmp, b, b_delta, h_t, v_t, delta_t);
 
-        // w_out_h = W_out @ h_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // w_out_h = h_t @ W_out.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
         // Selective output: compete × silu
@@ -425,8 +425,8 @@ void SelectiveElmanBackward<T>::Run(
         const T* d_out_t = d_output + t * BD;
         T* dx_t = dx + t * BD;
 
-        // Recompute w_out_h = W_out @ h_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // Recompute w_out_h = h_t @ W_out.T (matching forward)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
         // Backward through selective output
@@ -440,9 +440,8 @@ void SelectiveElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_t, dim_, &alpha, dW_out, dim_);
 
-        // dh from W_out path: W_out^T @ d_w_out_h
-        // This gets added to dh_compete for total dh_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dh from W_out path: d_w_out_h @ W_out (backward of h @ W.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_compete, dim_);
 
         // Now backward through gated update
@@ -451,14 +450,14 @@ void SelectiveElmanBackward<T>::Run(
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv, d_delta_raw, dh_prev, db_float, db_delta_float);
 
-        // dx = W_x^T @ dv + W_delta^T @ d_delta_raw
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dx = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
-        // dh_recurrent = W_h^T @ dv + dh_prev
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dh_recurrent = dv @ W_h + dh_prev (backward of h @ W_h.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_h, dim_, dv, dim_, &beta_zero, dh_recurrent, dim_);
         cudaMemcpy(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice);
 

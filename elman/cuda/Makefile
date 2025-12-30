@@ -27,6 +27,9 @@ CUDA_OBJS := \
 	lib/gated_elman_gpu.o \
 	lib/selective_elman_gpu.o \
 	lib/diagonal_selective_gpu.o \
+	lib/full_recurrence_gpu.o \
+	lib/linear_triple_r_gpu.o \
+	lib/linear_polynomial_gpu.o \
 	lib/log_storage_diagonal_gpu.o \
 	lib/log_compute_full_gpu.o \
 	lib/logspace_triple_r_gpu.o \

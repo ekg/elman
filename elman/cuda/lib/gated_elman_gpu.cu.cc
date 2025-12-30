@@ -172,10 +172,10 @@ void GatedElmanForward<T>::Run(
         T* v_t = training_ ? (v + t * BD) : nullptr;
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
 
-        // v_tmp = W_x @ x_t
+        // v_tmp = x_t @ W_x.T (matching PyTorch convention)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
+            CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_x, dim_,
@@ -183,10 +183,10 @@ void GatedElmanForward<T>::Run(
             &beta_zero,
             v_tmp, dim_);
 
-        // v_tmp += W_h @ h_prev
+        // v_tmp += h_prev @ W_h.T (matching PyTorch convention)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
+            CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_h, dim_,
@@ -194,10 +194,10 @@ void GatedElmanForward<T>::Run(
             &alpha,
             v_tmp, dim_);
 
-        // delta_tmp = W_delta @ x_t
+        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
+            CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_delta, dim_,
@@ -289,10 +289,10 @@ void GatedElmanBackward<T>::Run(
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv, d_delta_raw, dh_prev, db_float, db_delta_float);
 
-        // dx_t = W_x^T @ dv + W_delta^T @ d_delta_raw
+        // dx_t = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
+            CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_x, dim_,
@@ -302,7 +302,7 @@ void GatedElmanBackward<T>::Run(
 
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
+            CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_delta, dim_,
@@ -310,10 +310,10 @@ void GatedElmanBackward<T>::Run(
             &alpha,
             dx_t, dim_);
 
-        // dh_recurrent = W_h^T @ dv + dh_prev (from gated update)
+        // dh_recurrent = dv @ W_h + dh_prev (backward of h @ W_h.T)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
+            CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_h, dim_,

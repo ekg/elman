@@ -866,6 +866,252 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// Level 4: Full Recurrence Elman (Linear Space)
+// Like Diagonal Selective but with FULL R_h matrix
+// h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + R_h @ h_{t-1} + b)
+// =============================================================================
+
+template<typename T>
+struct FullRecurrenceElmanForward {
+    FullRecurrenceElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* R_h,       // [dim, dim] FULL recurrence matrix
+        const T* W_delta,   // [dim, dim]
+        const T* W_out,     // [dim, dim]
+        const T* b,         // [dim]
+        const T* b_delta,   // [dim]
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim]
+        T* delta_cache,     // [T, B, dim]
+        T* compete_cache);  // [T, B, dim]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct FullRecurrenceElmanBackward {
+    FullRecurrenceElmanBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* R_h,
+        const T* W_delta,
+        const T* W_out,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* delta_cache,
+        const T* compete_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dR_h,
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta);
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// Level 5: Linear Triple R Elman
+// Full Triple R architecture in linear space:
+// v = R_x @ x + R_h @ h_prev + b
+// delta = sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
+// h_new = (1-delta) * h_prev + delta * tanh(v)
+// =============================================================================
+
+template<typename T>
+struct LinearTripleRForward {
+    LinearTripleRForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* R_h,        // [dim, dim] recurrence
+        const T* R_x,        // [dim, dim] input mixing
+        const T* R_delta,    // [dim, dim] gate modulation
+        const T* W_delta,    // [dim, dim] gate input path
+        const T* W_out,      // [dim, dim]
+        const T* b,          // [dim]
+        const T* b_delta,    // [dim]
+        const T* x,          // [T, B, dim]
+        T* h,                // [T+1, B, dim]
+        T* output,           // [T, B, dim]
+        T* v,                // [T, B, dim]
+        T* delta_cache,      // [T, B, dim]
+        T* compete_cache);   // [T, B, dim]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LinearTripleRBackward {
+    LinearTripleRBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* R_h,
+        const T* R_x,
+        const T* R_delta,
+        const T* W_delta,
+        const T* W_out,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* delta_cache,
+        const T* compete_cache,
+        const T* d_output,
+        T* dx,
+        T* dR_h,
+        T* dR_x,
+        T* dR_delta,
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta);
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// Level 6: Linear Polynomial Elman
+// Polynomial activation in linear space:
+// alpha = 1 + softplus(W_alpha @ x + b_alpha)
+// v = W_x @ x + r_h * h_prev + b
+// candidate = sign(v) * |v|^alpha
+// h_new = (1-delta) * h_prev + delta * candidate
+// =============================================================================
+
+template<typename T>
+struct LinearPolynomialForward {
+    LinearPolynomialForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,        // [dim, dim]
+        const T* r_h,        // [dim] diagonal
+        const T* W_alpha,    // [dim, dim]
+        const T* b_alpha,    // [dim]
+        const T* W_delta,    // [dim, dim]
+        const T* W_out,      // [dim, dim]
+        const T* b,          // [dim]
+        const T* b_delta,    // [dim]
+        const T* x,          // [T, B, dim]
+        T* h,                // [T+1, B, dim]
+        T* output,           // [T, B, dim]
+        T* v,                // [T, B, dim]
+        T* alpha_cache,      // [T, B, dim]
+        T* delta_cache,      // [T, B, dim]
+        T* compete_cache);   // [T, B, dim]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LinearPolynomialBackward {
+    LinearPolynomialBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* r_h,
+        const T* W_alpha,
+        const T* W_delta,
+        const T* W_out,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* alpha_cache,
+        const T* delta_cache,
+        const T* compete_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dr_h,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta);
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

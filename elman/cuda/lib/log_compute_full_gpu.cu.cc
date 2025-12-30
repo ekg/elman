@@ -639,12 +639,12 @@ void LogComputeFullElmanForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // W_x @ x_t (linear matmul using cuBLAS)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // wx_x = x_t @ W_x.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
 
-        // W_delta @ x_t (linear matmul)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
 
         // R_h @ h_prev in log space
@@ -664,8 +664,8 @@ void LogComputeFullElmanForward<T>::Run(
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_t, sign_h_t, h_linear);
 
-        // W_out @ h_linear
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // w_out_h = h_linear @ W_out.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Selective output
@@ -779,8 +779,8 @@ void LogComputeFullElmanBackward<T>::Run(
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_prev, sign_h_prev, h_prev_linear);
 
-        // Recompute w_out_h
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // Recompute w_out_h = h_linear @ W_out.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
 
         // Backward through selective output
@@ -794,8 +794,8 @@ void LogComputeFullElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
 
-        // dh_linear += W_out^T @ d_w_out_h
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dh_linear += d_w_out_h @ W_out (backward of h @ W_out.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
 
         // Backward through gated update
@@ -804,7 +804,9 @@ void LogComputeFullElmanBackward<T>::Run(
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv, d_delta_raw, dh_prev_linear, db_float, db_delta_float);
 
-        // dh_prev += R_h^T @ dv (for the R_h @ h term in candidate)
+        // dh_prev += dv @ R_h (backward of h @ R_h.T, but R_h is not transposed in forward)
+        // For the term R_h @ h_prev in forward: d(R_h @ h)/dh = R_h.T
+        // So dh_prev += dv @ R_h.T, which is CUBLAS_OP_T, CUBLAS_OP_N (keeping R_h as-is since dv is transposed)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_h, dim_, dv, dim_, &alpha, dh_prev_linear, dim_);
 
@@ -812,10 +814,10 @@ void LogComputeFullElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, dv, dim_, h_prev_linear, dim_, &alpha, dR_h, dim_);
 
-        // dx = W_x^T @ dv + W_delta^T @ d_delta_raw
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dx = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
         // dh_recurrent for next iteration

@@ -1,11 +1,11 @@
 // Copyright 2025 Erik Garrison. Apache 2.0 License.
 //
-// Level 3: Diagonal Selective Elman - Diagonal r_h (like Mamba2's diagonal A)
-// delta = sigmoid(W_delta @ x_t + b_delta)
-// h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + r_h * h_{t-1} + b)
-// where r_h is a VECTOR (diagonal), not full matrix
-// compete = softmax(h_t.reshape(groups), dim=-1)
-// output = compete * silu(W_out @ h_t)
+// Level 5: Linear Triple R Elman
+// v = R_x @ x + R_h @ h_prev + b
+// delta = sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
+// h_new = (1-delta) * h_prev + delta * tanh(v)
+// compete = softmax(h.reshape(groups), dim=-1)
+// output = compete * silu(W_out @ h)
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -20,16 +20,25 @@
 
 namespace {
 
-// Kernel: Compute gated update with DIAGONAL r_h
-// v = W_x @ x + r_h * h_prev + b (element-wise r_h, not matrix)
+// Simple kernel for y += x (element-wise vector addition)
 template<typename T>
-__global__ void DiagonalSelectiveGatedUpdate(
+__global__ void VectorAdd(const int n, const T* __restrict__ x, T* __restrict__ y) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        y[idx] = static_cast<T>(static_cast<float>(y[idx]) + static_cast<float>(x[idx]));
+    }
+}
+
+// Kernel: Compute gated update with Triple R matrices
+template<typename T>
+__global__ void LinearTripleRGatedUpdate(
     const int batch_size,
     const int dim,
     const T* __restrict__ h_prev,
-    const T* __restrict__ wx_x,        // [B, dim] W_x @ x (pre-computed)
-    const T* __restrict__ r_h,         // [dim] diagonal decay
-    const T* __restrict__ delta_raw,   // [B, dim] W_delta @ x
+    const T* __restrict__ rx_x,        // [B, dim] R_x @ x
+    const T* __restrict__ rh_h,        // [B, dim] R_h @ h_prev
+    const T* __restrict__ wdelta_x,    // [B, dim] W_delta @ x
+    const T* __restrict__ rdelta_h,    // [B, dim] R_delta @ h_prev
     const T* __restrict__ b,           // [dim]
     const T* __restrict__ b_delta,     // [dim]
     T* __restrict__ h_out,
@@ -42,26 +51,30 @@ __global__ void DiagonalSelectiveGatedUpdate(
     if (idx < total) {
         const int d = idx % dim;
 
-        // Delta gate: sigmoid(delta_raw + b_delta)
-        float delta_in = static_cast<float>(delta_raw[idx]) + static_cast<float>(b_delta[d]);
+        // Delta gate: sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
+        float delta_in = static_cast<float>(wdelta_x[idx]) +
+                         static_cast<float>(rdelta_h[idx]) +
+                         static_cast<float>(b_delta[d]);
         float delta = 1.0f / (1.0f + expf(-delta_in));
         if (delta_cache) delta_cache[idx] = static_cast<T>(delta);
 
-        // Candidate with DIAGONAL r_h: v = W_x @ x + r_h * h_prev + b
-        float h_p = static_cast<float>(h_prev[idx]);
-        float v = static_cast<float>(wx_x[idx]) + static_cast<float>(r_h[d]) * h_p + static_cast<float>(b[d]);
+        // Candidate: v = R_x @ x + R_h @ h_prev + b
+        float v = static_cast<float>(rx_x[idx]) +
+                  static_cast<float>(rh_h[idx]) +
+                  static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v);
         float candidate = tanhf(v);
 
         // Gated update: h = (1 - delta) * h_prev + delta * candidate
+        float h_p = static_cast<float>(h_prev[idx]);
         float h_new = (1.0f - delta) * h_p + delta * candidate;
         h_out[idx] = static_cast<T>(h_new);
     }
 }
 
-// Kernel: Compute compete×silu output (same as SelectiveElman)
+// Kernel: Compute compete×silu output
 template<typename T>
-__global__ void DiagonalSelectiveOutput(
+__global__ void LinearTripleROutput(
     const int batch_size,
     const int dim,
     const int n_groups,
@@ -119,9 +132,9 @@ __global__ void DiagonalSelectiveOutput(
     }
 }
 
-// Backward through selective output (same as SelectiveElman)
+// Backward through selective output
 template<typename T>
-__global__ void DiagonalSelectiveOutputBackward(
+__global__ void LinearTripleROutputBackward(
     const int batch_size,
     const int dim,
     const int n_groups,
@@ -174,21 +187,19 @@ __global__ void DiagonalSelectiveOutputBackward(
     }
 }
 
-// Backward through diagonal gated update
+// Backward through Triple R gated update
 template<typename T>
-__global__ void DiagonalSelectiveGatedBackward(
+__global__ void LinearTripleRGatedBackward(
     const int batch_size,
     const int dim,
     const T* __restrict__ h_prev,
     const T* __restrict__ v,
     const T* __restrict__ delta,
-    const T* __restrict__ r_h,
     const T* __restrict__ dh,
     const T* __restrict__ dh_recurrent,
     T* __restrict__ dv,
     T* __restrict__ d_delta_raw,
-    T* __restrict__ dh_prev_out,
-    float* __restrict__ dr_h,              // [dim] gradient for diagonal (float for atomicAdd)
+    T* __restrict__ dh_prev_gated,
     float* __restrict__ db,
     float* __restrict__ db_delta) {
 
@@ -216,17 +227,8 @@ __global__ void DiagonalSelectiveGatedBackward(
         float d_delta_raw_val = d_delta * dsigmoid;
         d_delta_raw[idx] = static_cast<T>(d_delta_raw_val);
 
-        // dh_prev from both gated path and r_h path
-        // dh_prev += (1 - delta) * grad_h + dv * r_h
-        float dh_prev_gated = one_minus_del * grad_h;
-        float dh_prev_rh = dv_val * static_cast<float>(r_h[d]);
-        dh_prev_out[idx] = static_cast<T>(dh_prev_gated + dh_prev_rh);
-
-        // dr_h: gradient for diagonal element
-        // v = W_x @ x + r_h * h_prev + b
-        // dv/dr_h = h_prev
-        float dr_h_val = dv_val * h_p;
-        atomicAdd(&dr_h[d], dr_h_val);
+        float dh_prev_val = one_minus_del * grad_h;
+        dh_prev_gated[idx] = static_cast<T>(dh_prev_val);
 
         atomicAdd(&db[d], dv_val);
         atomicAdd(&db_delta[d], d_delta_raw_val);
@@ -241,11 +243,11 @@ namespace v0 {
 namespace elman_ladder {
 
 // =============================================================================
-// Diagonal Selective Elman Forward
+// Linear Triple R Forward
 // =============================================================================
 
 template<typename T>
-DiagonalSelectiveElmanForward<T>::DiagonalSelectiveElmanForward(
+LinearTripleRForward<T>::LinearTripleRForward(
     bool training,
     int batch_size,
     int dim,
@@ -260,10 +262,11 @@ DiagonalSelectiveElmanForward<T>::DiagonalSelectiveElmanForward(
       stream_(stream) {}
 
 template<typename T>
-void DiagonalSelectiveElmanForward<T>::Run(
+void LinearTripleRForward<T>::Run(
     int steps,
-    const T* W_x,
-    const T* r_h,
+    const T* R_h,
+    const T* R_x,
+    const T* R_delta,
     const T* W_delta,
     const T* W_out,
     const T* b,
@@ -284,9 +287,11 @@ void DiagonalSelectiveElmanForward<T>::Run(
     const int group_size = dim_ / n_groups_;
 
     // Workspace
-    T *wx_x, *delta_tmp, *w_out_h;
-    cudaMalloc(&wx_x, BD * sizeof(T));
-    cudaMalloc(&delta_tmp, BD * sizeof(T));
+    T *rx_x, *rh_h, *wdelta_x, *rdelta_h, *w_out_h;
+    cudaMalloc(&rx_x, BD * sizeof(T));
+    cudaMalloc(&rh_h, BD * sizeof(T));
+    cudaMalloc(&wdelta_x, BD * sizeof(T));
+    cudaMalloc(&rdelta_h, BD * sizeof(T));
     cudaMalloc(&w_out_h, BD * sizeof(T));
 
     for (int t = 0; t < steps; ++t) {
@@ -298,40 +303,50 @@ void DiagonalSelectiveElmanForward<T>::Run(
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
-        // wx_x = x_t @ W_x.T (matching PyTorch convention)
+        // rx_x = x_t @ R_x.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
+            dim_, batch_size_, dim_, &alpha, R_x, dim_, x_t, dim_, &beta_zero, rx_x, dim_);
 
-        // delta_tmp = x_t @ W_delta.T (matching PyTorch convention)
+        // rh_h = h_prev @ R_h.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
+            dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev, dim_, &beta_zero, rh_h, dim_);
 
-        // Diagonal gated update (r_h is element-wise, not matrix)
-        DiagonalSelectiveGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, wx_x, r_h, delta_tmp, b, b_delta, h_t, v_t, delta_t);
+        // wdelta_x = x_t @ W_delta.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_delta, dim_, x_t, dim_, &beta_zero, wdelta_x, dim_);
 
-        // w_out_h = h_t @ W_out.T (matching PyTorch convention)
+        // rdelta_h = h_prev @ R_delta.T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_delta, dim_, h_prev, dim_, &beta_zero, rdelta_h, dim_);
+
+        // Triple R gated update
+        LinearTripleRGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_prev, rx_x, rh_h, wdelta_x, rdelta_h, b, b_delta, h_t, v_t, delta_t);
+
+        // w_out_h = h_t @ W_out.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
         // Selective output
         dim3 grid(batch_size_, n_groups_);
         int smem_size = 2 * block_size * sizeof(float);
-        DiagonalSelectiveOutput<T><<<grid, block_size, smem_size, stream_>>>(
+        LinearTripleROutput<T><<<grid, block_size, smem_size, stream_>>>(
             batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
     }
 
-    cudaFree(wx_x);
-    cudaFree(delta_tmp);
+    cudaFree(rx_x);
+    cudaFree(rh_h);
+    cudaFree(wdelta_x);
+    cudaFree(rdelta_h);
     cudaFree(w_out_h);
 }
 
 // =============================================================================
-// Diagonal Selective Elman Backward
+// Linear Triple R Backward
 // =============================================================================
 
 template<typename T>
-DiagonalSelectiveElmanBackward<T>::DiagonalSelectiveElmanBackward(
+LinearTripleRBackward<T>::LinearTripleRBackward(
     int batch_size,
     int dim,
     int n_groups,
@@ -344,10 +359,11 @@ DiagonalSelectiveElmanBackward<T>::DiagonalSelectiveElmanBackward(
       stream_(stream) {}
 
 template<typename T>
-void DiagonalSelectiveElmanBackward<T>::Run(
+void LinearTripleRBackward<T>::Run(
     int steps,
-    const T* W_x,
-    const T* r_h,
+    const T* R_h,
+    const T* R_x,
+    const T* R_delta,
     const T* W_delta,
     const T* W_out,
     const T* x,
@@ -357,8 +373,9 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     const T* compete_cache,
     const T* d_output,
     T* dx,
-    T* dW_x,
-    T* dr_h,
+    T* dR_h,
+    T* dR_x,
+    T* dR_delta,
     T* dW_delta,
     T* dW_out,
     T* db,
@@ -366,37 +383,40 @@ void DiagonalSelectiveElmanBackward<T>::Run(
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
+    static const T beta_one = static_cast<T>(1.0);
 
     const int BD = batch_size_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *dv, *d_delta_raw, *dh_recurrent, *dh_prev;
-    T *dh_compete, *d_w_out_h, *w_out_h;
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&d_delta_raw, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMalloc(&dh_prev, BD * sizeof(T));
-    cudaMalloc(&dh_compete, BD * sizeof(T));
-    cudaMalloc(&d_w_out_h, BD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
-
-    // Float buffers for atomic gradients
-    float *dr_h_float, *db_float, *db_delta_float;
-    cudaMalloc(&dr_h_float, dim_ * sizeof(float));
-    cudaMalloc(&db_float, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_float, dim_ * sizeof(float));
-    cudaMemset(dr_h_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
-
-    // Zero weight gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
+    // Zero out weight gradients
+    cudaMemset(dR_h, 0, dim_ * dim_ * sizeof(T));
+    cudaMemset(dR_x, 0, dim_ * dim_ * sizeof(T));
+    cudaMemset(dR_delta, 0, dim_ * dim_ * sizeof(T));
     cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
     cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+
+    // Float buffers for bias gradients
+    float *db_f, *db_delta_f;
+    cudaMalloc(&db_f, dim_ * sizeof(float));
+    cudaMalloc(&db_delta_f, dim_ * sizeof(float));
+    cudaMemset(db_f, 0, dim_ * sizeof(float));
+    cudaMemset(db_delta_f, 0, dim_ * sizeof(float));
+
+    // Workspace
+    T *w_out_h, *dh_compete, *d_w_out_h, *dv, *d_delta_raw, *dh_prev_gated, *dh_recurrent;
+    T *dh_rh, *dh_rdelta;
+    cudaMalloc(&w_out_h, BD * sizeof(T));
+    cudaMalloc(&dh_compete, BD * sizeof(T));
+    cudaMalloc(&d_w_out_h, BD * sizeof(T));
+    cudaMalloc(&dv, BD * sizeof(T));
+    cudaMalloc(&d_delta_raw, BD * sizeof(T));
+    cudaMalloc(&dh_prev_gated, BD * sizeof(T));
+    cudaMalloc(&dh_recurrent, BD * sizeof(T));
+    cudaMalloc(&dh_rh, BD * sizeof(T));
+    cudaMalloc(&dh_rdelta, BD * sizeof(T));
+    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -412,75 +432,91 @@ void DiagonalSelectiveElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
 
-        // Backward through selective output
+        // Backward through output
         dim3 grid(batch_size_, n_groups_);
         int smem_size = block_size * sizeof(float);
-        DiagonalSelectiveOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, compete_t,
-            d_out_t, dh_compete, d_w_out_h);
+        LinearTripleROutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
+            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, compete_t, d_out_t, dh_compete, d_w_out_h);
 
-        // dW_out
+        // dW_out += d_w_out_h.T @ h_t
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_t, dim_, &alpha, dW_out, dim_);
+            dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_t, dim_, &beta_one, dW_out, dim_);
 
-        // dh through W_out path: dh += d_w_out_h @ W_out (backward of h @ W_out.T)
+        // dh from W_out path
+        T* dh_wout;
+        cudaMalloc(&dh_wout, BD * sizeof(T));
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_compete, dim_);
+            dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &beta_zero, dh_wout, dim_);
 
-        // Backward through diagonal gated update
-        DiagonalSelectiveGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, v_t, delta_t, r_h, dh_compete,
-            (t < steps - 1) ? dh_recurrent : nullptr,
-            dv, d_delta_raw, dh_prev, dr_h_float, db_float, db_delta_float);
+        // Combine dh
+        T* dh;
+        cudaMalloc(&dh, BD * sizeof(T));
+        cudaMemcpy(dh, dh_compete, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_wout, dh);
+        cudaFree(dh_wout);
 
-        // dx = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
+        // Backward through gated update
+        LinearTripleRGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_prev, v_t, delta_t, dh, dh_recurrent, dv, d_delta_raw, dh_prev_gated, db_f, db_delta_f);
 
-        // dh_recurrent for next iteration
-        cudaMemcpy(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice);
-
-        // Weight gradients
+        // dR_x += dv.T @ x_t
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, dv, dim_, x_t, dim_, &alpha, dW_x, dim_);
+            dim_, dim_, batch_size_, &alpha, dv, dim_, x_t, dim_, &beta_one, dR_x, dim_);
+
+        // dR_h += dv.T @ h_prev
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_t, dim_, &alpha, dW_delta, dim_);
+            dim_, dim_, batch_size_, &alpha, dv, dim_, h_prev, dim_, &beta_one, dR_h, dim_);
+
+        // dW_delta += d_delta_raw.T @ x_t
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_t, dim_, &beta_one, dW_delta, dim_);
+
+        // dR_delta += d_delta_raw.T @ h_prev
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, h_prev, dim_, &beta_one, dR_delta, dim_);
+
+        // dx = dv @ R_x + d_delta_raw @ W_delta
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &beta_one, dx_t, dim_);
+
+        // dh_prev from R_h and R_delta paths
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_h, dim_, dv, dim_, &beta_zero, dh_rh, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_delta, dim_, d_delta_raw, dim_, &beta_zero, dh_rdelta, dim_);
+
+        // dh_recurrent = dh_prev_gated + dh_rh + dh_rdelta
+        cudaMemcpy(dh_recurrent, dh_prev_gated, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_rh, dh_recurrent);
+        VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_rdelta, dh_recurrent);
+
+        cudaFree(dh);
     }
 
-    // Copy float gradients to T type
-    cudaMemset(dr_h, 0, dim_ * sizeof(T));
-    cudaMemset(db, 0, dim_ * sizeof(T));
-    cudaMemset(db_delta, 0, dim_ * sizeof(T));
-    if constexpr (std::is_same<T, float>::value) {
-        cudaMemcpy(dr_h, dr_h_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(db_delta, db_delta_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    }
+    // Convert float gradients to T
+    cudaMemcpy(db, db_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
+    cudaMemcpy(db_delta, db_delta_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
 
-    cudaFree(dv);
-    cudaFree(d_delta_raw);
-    cudaFree(dh_recurrent);
-    cudaFree(dh_prev);
+    cudaFree(db_f);
+    cudaFree(db_delta_f);
+    cudaFree(w_out_h);
     cudaFree(dh_compete);
     cudaFree(d_w_out_h);
-    cudaFree(w_out_h);
-    cudaFree(dr_h_float);
-    cudaFree(db_float);
-    cudaFree(db_delta_float);
+    cudaFree(dv);
+    cudaFree(d_delta_raw);
+    cudaFree(dh_prev_gated);
+    cudaFree(dh_recurrent);
+    cudaFree(dh_rh);
+    cudaFree(dh_rdelta);
 }
 
-// Explicit template instantiations
-template struct DiagonalSelectiveElmanForward<__half>;
-template struct DiagonalSelectiveElmanForward<__nv_bfloat16>;
-template struct DiagonalSelectiveElmanForward<float>;
-template struct DiagonalSelectiveElmanForward<double>;
-
-template struct DiagonalSelectiveElmanBackward<__half>;
-template struct DiagonalSelectiveElmanBackward<__nv_bfloat16>;
-template struct DiagonalSelectiveElmanBackward<float>;
-template struct DiagonalSelectiveElmanBackward<double>;
+// Explicit instantiations
+template class LinearTripleRForward<float>;
+template class LinearTripleRForward<__half>;
+template class LinearTripleRBackward<float>;
+template class LinearTripleRBackward<__half>;
 
 }  // namespace elman_ladder
 }  // namespace v0

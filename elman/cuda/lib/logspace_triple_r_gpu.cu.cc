@@ -827,8 +827,8 @@ void LogSpaceTripleRBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
 
-        // dh_linear += W_out^T @ d_w_out_h
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        // dh_linear += d_w_out_h @ W_out (backward of h @ W_out.T)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
 
         // Backward through gated update
@@ -857,10 +857,10 @@ void LogSpaceTripleRBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, h_prev_linear, dim_, &alpha, dR_delta, dim_);
 
-        // dx = R_x^T @ dv + W_delta^T @ d_delta_raw
+        // dx = R_x^T @ dv (backward of R_x @ x) + d_delta_raw @ W_delta (backward of x @ W_delta.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
         // dW_delta += d_delta_raw @ x^T

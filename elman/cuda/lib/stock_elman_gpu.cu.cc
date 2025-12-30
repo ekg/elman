@@ -121,10 +121,10 @@ void StockElmanForward<T>::Run(
         // Temporary for W_x @ x_t + W_h @ h_prev
         // We'll compute directly into h_t, then apply tanh+bias
 
-        // h_t = W_x @ x_t
+        // h_t = x_t @ W_x.T (matching PyTorch convention)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
+            CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_x, dim_,
@@ -132,10 +132,10 @@ void StockElmanForward<T>::Run(
             &beta_zero,
             h_t, dim_);
 
-        // h_t += W_h @ h_prev
+        // h_t += h_prev @ W_h.T (matching PyTorch convention)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
+            CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_h, dim_,
@@ -215,10 +215,10 @@ void StockElmanBackward<T>::Run(
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv, db_float);
 
-        // dx_t = W_x^T @ dv
+        // dx_t = dv @ W_x (backward of x @ W_x.T)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
+            CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_x, dim_,
@@ -226,10 +226,10 @@ void StockElmanBackward<T>::Run(
             &beta_zero,
             dx_t, dim_);
 
-        // dh_recurrent = W_h^T @ dv (for next iteration)
+        // dh_recurrent = dv @ W_h (backward of h @ W_h.T)
         blas<T>::gemm(
             blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
+            CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_,
             &alpha,
             W_h, dim_,
