@@ -18,11 +18,13 @@ import os
 import sys
 import time
 import math
+import json
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from pathlib import Path
+from datetime import datetime
 from schedulefree import AdamWScheduleFree
 
 # Add elman package to path
@@ -126,6 +128,88 @@ def format_params(n):
     elif n >= 1e3:
         return f"{n/1e3:.2f}K"
     return str(n)
+
+
+class StepLogger:
+    """JSON logger for per-step metrics."""
+
+    def __init__(self, log_path, config):
+        self.log_path = log_path
+        self.config = config
+        self.start_time = time.time()
+        self.step_start = None
+
+        # Write header with config
+        with open(log_path, 'w') as f:
+            header = {
+                'type': 'header',
+                'timestamp': datetime.now().isoformat(),
+                'config': config
+            }
+            f.write(json.dumps(header) + '\n')
+
+    def start_step(self):
+        """Mark the start of a step for timing."""
+        self.step_start = time.time()
+
+    def log_step(self, step, metrics):
+        """Log metrics for a step."""
+        step_time = time.time() - self.step_start if self.step_start else 0
+        total_time = time.time() - self.start_time
+
+        record = {
+            'type': 'step',
+            'step': step,
+            'step_time_ms': step_time * 1000,
+            'total_time_s': total_time,
+            **metrics
+        }
+
+        with open(self.log_path, 'a') as f:
+            f.write(json.dumps(record) + '\n')
+
+
+def get_gpu_memory_mb():
+    """Get current GPU memory usage in MB."""
+    if torch.cuda.is_available():
+        return {
+            'allocated_mb': torch.cuda.memory_allocated() / 1024 / 1024,
+            'reserved_mb': torch.cuda.memory_reserved() / 1024 / 1024,
+            'max_allocated_mb': torch.cuda.max_memory_allocated() / 1024 / 1024,
+        }
+    return {}
+
+
+def compute_grad_norms(model):
+    """Compute gradient norms for different parameter groups."""
+    norms = {}
+    total_norm = 0.0
+
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2).item()
+            total_norm += param_norm ** 2
+
+            # Group by layer type
+            if 'embedding' in name:
+                group = 'embedding'
+            elif 'head' in name:
+                group = 'head'
+            elif 'layer' in name:
+                group = 'layers'
+            else:
+                group = 'other'
+
+            if group not in norms:
+                norms[group] = 0.0
+            norms[group] += param_norm ** 2
+
+    norms['total'] = math.sqrt(total_norm)
+    for k in norms:
+        if k != 'total':
+            norms[k] = math.sqrt(norms[k])
+
+    return norms
 
 
 def get_lr(step, warmup_steps, max_lr, max_steps):
@@ -267,22 +351,40 @@ def train(args):
 
     # Output directory
     output_dir = Path(args.output)
+    step_logger = None
     if is_main:
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Config dict for logging
+        config = {
+            'level': str(args.level),
+            'params': args.params,
+            'num_params': num_params,
+            'vocab_size': vocab_size,
+            'tokenizer': args.tokenizer,
+            'tokenizer_name': args.tokenizer_name,
+            'chunk_size': args.chunk_size,
+            'batch_size': args.batch_size,
+            'grad_accum': args.grad_accum,
+            'lr': args.lr,
+            'warmup_steps': args.warmup_steps,
+            'max_steps': args.max_steps,
+            'weight_decay': args.weight_decay,
+            'grad_clip': args.grad_clip,
+            'world_size': world_size,
+            'dtype': str(dtype),
+            'tbptt': args.tbptt,
+            'tokens_per_step': args.batch_size * world_size * args.grad_accum * args.chunk_size,
+        }
+
         # Save config
-        import json
         with open(output_dir / 'config.json', 'w') as f:
-            json.dump({
-                'level': args.level,
-                'params': args.params,
-                'num_params': num_params,
-                'vocab_size': vocab_size,
-                'tokenizer': args.tokenizer,
-                'tokenizer_name': args.tokenizer_name,
-                'chunk_size': args.chunk_size,
-                'batch_size': args.batch_size,
-                'world_size': world_size,
-            }, f, indent=2)
+            json.dump(config, f, indent=2)
+
+        # Create step logger
+        log_path = output_dir / 'steps.jsonl'
+        step_logger = StepLogger(log_path, config)
+        print(f"Logging to: {log_path}")
 
     # Training loop
     if is_main:
@@ -306,7 +408,13 @@ def train(args):
         optimizer.train()  # Set optimizer to train mode for schedule-free
     optimizer.zero_grad()
 
+    # For per-step timing
+    forward_time = 0.0
+    backward_time = 0.0
+
     while step < args.max_steps:
+        if step_logger:
+            step_logger.start_step()
         # Get batch - different methods based on dataset type
         if use_subword or args.tbptt:
             # TokenizedStreamDataset and BatchedStreamDataset: use get_batch()
@@ -348,6 +456,7 @@ def train(args):
         x = batch[:, :-1]  # Input tokens
         y = batch[:, 1:]   # Target tokens
 
+        t_forward_start = time.time()
         with torch.amp.autocast('cuda', dtype=dtype, enabled=args.bf16):
             if args.tbptt or use_subword:
                 logits, (next_hidden, _) = model(x, return_prev_hiddens=True, prev_hiddens=hidden_state)
@@ -355,10 +464,15 @@ def train(args):
                 logits, _ = model(x, return_prev_hiddens=True)
                 next_hidden = None
             loss = F.cross_entropy(logits.view(-1, vocab_size), y.reshape(-1))
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        forward_time = (time.time() - t_forward_start) * 1000  # ms
 
         # Backward pass
+        t_backward_start = time.time()
         loss_scaled = loss / args.grad_accum
         loss_scaled.backward()
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        backward_time = (time.time() - t_backward_start) * 1000  # ms
 
         # Update hidden state for TBPTT/streaming (detach from graph)
         # Handle both tensor and tuple (log_h, sign_h) hidden states
@@ -373,14 +487,20 @@ def train(args):
             hidden_state = [detach_hidden(h) for h in next_hidden]
 
         # Update
+        grad_norms = {}
         if (step + 1) % args.grad_accum == 0:
-            # Always compute gradient norm for monitoring
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+            # Compute detailed gradient norms before clipping
+            model_for_grads = model.module if args.ddp else model
+            grad_norms = compute_grad_norms(model_for_grads)
+            grad_norm = grad_norms.get('total', 0.0)
+
             # Only clip if grad_clip > 0
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
             optimizer.zero_grad()
+        else:
+            grad_norm = 0.0
 
         # Logging
         running_loss += loss.item()
@@ -399,9 +519,33 @@ def train(args):
             if is_main:
                 elapsed = time.time() - start_time
                 tokens_per_sec = tokens_seen / elapsed
-                print(f"Step {step:6d} | Loss {avg_loss:.4f} | LR {lr:.2e} | "
+                memory = get_gpu_memory_mb()
+
+                # Perplexity
+                ppl = math.exp(avg_loss) if avg_loss < 20 else float('inf')
+
+                print(f"Step {step:6d} | Loss {avg_loss:.4f} | PPL {ppl:.1f} | LR {lr:.2e} | "
                       f"Grad {grad_norm:.2f} | Tok/s {tokens_per_sec:,.0f} | "
+                      f"Mem {memory.get('allocated_mb', 0):.0f}MB | "
                       f"Elapsed {elapsed:.1f}s")
+
+                # Log to JSON
+                if step_logger:
+                    step_logger.log_step(step, {
+                        'loss': avg_loss,
+                        'perplexity': ppl if ppl != float('inf') else -1,
+                        'lr': lr,
+                        'tokens_seen': tokens_seen,
+                        'tokens_per_sec': tokens_per_sec,
+                        'forward_time_ms': forward_time,
+                        'backward_time_ms': backward_time,
+                        'grad_norm_total': grad_norms.get('total', 0),
+                        'grad_norm_embedding': grad_norms.get('embedding', 0),
+                        'grad_norm_layers': grad_norms.get('layers', 0),
+                        'grad_norm_head': grad_norms.get('head', 0),
+                        **{f'memory_{k}': v for k, v in memory.items()},
+                    })
+
             running_loss = 0.0
 
         # Save checkpoint (main process only)
