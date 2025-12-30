@@ -43,10 +43,15 @@ constexpr float GRAD_CLIP = 10.0f;     // Gradient clipping for numerical stabil
 // =============================================================================
 
 // Convert linear value to log space: x -> (log|x|, sign(x))
+// Uses soft-abs: sqrt(x^2 + eps^2) to bound gradients near zero
+// The gradient d/dx sqrt(x^2 + eps^2) = x / sqrt(x^2 + eps^2) is bounded by 1
+constexpr float SOFT_ABS_EPS = 1e-6f;
+
 __device__ __forceinline__ void to_log_space(float x, float& log_x, float& sign_x) {
     sign_x = (x >= 0.0f) ? 1.0f : -1.0f;
-    float abs_x = fabsf(x);
-    log_x = (abs_x > LOG_EPS) ? logf(abs_x) : LOG_ZERO;
+    // Soft-abs bounds gradient to 1 near zero, preventing explosion
+    float soft_abs_x = sqrtf(x * x + SOFT_ABS_EPS * SOFT_ABS_EPS);
+    log_x = logf(soft_abs_x);
 }
 
 // Convert log space to linear: (log|x|, sign(x)) -> x
@@ -54,6 +59,29 @@ __device__ __forceinline__ float from_log_space(float log_x, float sign_x) {
     if (log_x <= LOG_ZERO + 1.0f) return 0.0f;
     float result = sign_x * expf(fminf(log_x, 20.0f));  // Clamp to prevent overflow
     return result;
+}
+
+// Simple element-wise add kernel
+template<typename T>
+__global__ void AddKernel(const int n, const T* a, const T* b, T* c) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        c[idx] = static_cast<T>(static_cast<float>(a[idx]) + static_cast<float>(b[idx]));
+    }
+}
+
+// Add bias kernel: result[b,d] = input[b,d] + bias[d]
+template<typename T>
+__global__ void AddBiasKernel(const int batch_size, const int dim,
+                               const T* __restrict__ input,
+                               const T* __restrict__ bias,
+                               T* __restrict__ output) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+    if (idx < total) {
+        const int d = idx % dim;
+        output[idx] = static_cast<T>(static_cast<float>(input[idx]) + static_cast<float>(bias[d]));
+    }
 }
 
 // Signed log addition: compute (log|a+b|, sign(a+b)) from (log|a|, sign_a) and (log|b|, sign_b)
@@ -265,176 +293,199 @@ __global__ void LogToLinearKernel(
 }
 
 // =============================================================================
-// Forward: Log-Space RMSNorm (fused normalization)
-// Computes: h_normed = gamma * h / rms(h) entirely in log-space
-// Uses logsumexp for bounded gradients
+// Fused LogSpace RMSNorm + Linear Conversion Kernel
+// Uses logsumexp for bounded gradients (softmax weights in [0,1])
 // =============================================================================
 
-template<typename T>
-__global__ void LogPolyRMSNormKernel(
+template<typename T, int BLOCK_DIM = 256>
+__global__ void LogSpaceRMSNormKernel(
     const int batch_size,
     const int dim,
-    const T* __restrict__ log_h,        // [B, dim] log magnitudes
-    const T* __restrict__ sign_h,       // [B, dim] signs
-    const T* __restrict__ log_gamma,    // [dim] learnable scale in log-space
-    T* __restrict__ h_linear_normed,    // [B, dim] normalized linear values
-    T* __restrict__ log_rms_cache) {    // [B] cached log_rms for backward (optional)
+    const T* __restrict__ log_h,      // [B, dim] log|h|
+    const T* __restrict__ sign_h,     // [B, dim] sign(h)
+    const T* __restrict__ log_gamma,  // [dim] learnable scale
+    T* __restrict__ h_linear,         // [B, dim] output
+    T* __restrict__ log_rms_cache) {  // [B, 1] cached for backward
 
-    extern __shared__ float smem[];
-
+    // Each block handles one batch element
     const int b = blockIdx.x;
     if (b >= batch_size) return;
 
-    const int base = b * dim;
-    const float log_dim = logf(static_cast<float>(dim));
+    extern __shared__ float sdata[];
 
-    // Step 1: Compute logsumexp(2 * log_h) for this batch element
-    // Find max for numerical stability
-    float max_log_h2 = -FLT_MAX;
+    // Step 1: Compute max for numerical stability (each thread handles multiple elements)
+    float thread_max = -1e30f;
     for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-        float log_h_val = static_cast<float>(log_h[base + d]);
-        float log_h2 = 2.0f * log_h_val;  // log(h^2) = 2*log|h|
-        max_log_h2 = fmaxf(max_log_h2, log_h2);
+        float log_h2 = 2.0f * static_cast<float>(log_h[b * dim + d]);
+        thread_max = fmaxf(thread_max, log_h2);
     }
-    smem[threadIdx.x] = max_log_h2;
-    __syncthreads();
 
-    // Reduce to find global max
+    // Block-wide max reduction
+    sdata[threadIdx.x] = thread_max;
+    __syncthreads();
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (threadIdx.x < s) {
-            smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x + s]);
+            sdata[threadIdx.x] = fmaxf(sdata[threadIdx.x], sdata[threadIdx.x + s]);
         }
         __syncthreads();
     }
-    max_log_h2 = smem[0];
-    __syncthreads();
+    float max_val = sdata[0];
 
-    // Compute sum of exp(log_h2 - max)
-    float sum_exp = 0.0f;
+    // Step 2: Compute sum of exp(log_h2 - max) for logsumexp
+    float thread_sum = 0.0f;
     for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-        float log_h_val = static_cast<float>(log_h[base + d]);
-        float log_h2 = 2.0f * log_h_val;
-        sum_exp += expf(log_h2 - max_log_h2);
+        float log_h2 = 2.0f * static_cast<float>(log_h[b * dim + d]);
+        thread_sum += expf(log_h2 - max_val);
     }
 
-    float* sum_smem = smem + blockDim.x;
-    sum_smem[threadIdx.x] = sum_exp;
+    // Block-wide sum reduction
+    sdata[threadIdx.x] = thread_sum;
     __syncthreads();
-
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (threadIdx.x < s) {
-            sum_smem[threadIdx.x] += sum_smem[threadIdx.x + s];
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
         }
         __syncthreads();
     }
-    sum_exp = sum_smem[0];
+    float sum_exp = sdata[0];
 
-    // logsumexp = max + log(sum_exp)
-    float log_sum_h2 = max_log_h2 + logf(sum_exp + 1e-10f);
+    // logsumexp(2*log_h) = max + log(sum_exp)
+    float log_sum_h2 = max_val + logf(sum_exp);
 
-    // log(mean(h^2)) = logsumexp - log(dim)
-    float log_mean_h2 = log_sum_h2 - log_dim;
+    // log(rms) = log(mean(h^2)) / 2 = (log_sum_h2 - log(dim)) / 2
+    float log_rms = (log_sum_h2 - logf(static_cast<float>(dim))) * 0.5f;
 
-    // log(rms) = log(mean(h^2)) / 2
-    float log_rms = log_mean_h2 * 0.5f;
-
-    // Cache log_rms for backward
-    if (log_rms_cache && threadIdx.x == 0) {
+    // Cache log_rms for backward (only thread 0 writes)
+    if (threadIdx.x == 0 && log_rms_cache != nullptr) {
         log_rms_cache[b] = static_cast<T>(log_rms);
     }
 
-    // Step 2: Normalize each element
-    // log|h_normed| = log|h| - log_rms + log_gamma
-    // h_normed = sign_h * exp(log|h_normed|)
+    // Step 3: Apply normalization and convert to linear
     for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-        float log_h_val = static_cast<float>(log_h[base + d]);
-        float sign_h_val = static_cast<float>(sign_h[base + d]);
-        float log_gamma_val = static_cast<float>(log_gamma[d]);
+        int idx = b * dim + d;
+        float log_h_val = static_cast<float>(log_h[idx]);
+        float sign_val = static_cast<float>(sign_h[idx]);
+        float gamma = static_cast<float>(log_gamma[d]);
 
-        float log_h_norm = log_h_val - log_rms + log_gamma_val;
+        // Normalized log: log_h - log_rms + log_gamma
+        float log_normed = log_h_val - log_rms + gamma;
 
-        // Convert to linear space
-        float h_lin = from_log_space(log_h_norm, sign_h_val);
-        h_linear_normed[base + d] = static_cast<T>(h_lin);
+        // Convert to linear with clamping
+        float clamped = fminf(fmaxf(log_normed, -40.0f), 20.0f);
+        h_linear[idx] = static_cast<T>(sign_val * expf(clamped));
     }
 }
 
 // =============================================================================
-// Backward: Log-Space RMSNorm
+// Backward Kernel: RMSNorm in log-space
+// Gradient flow: d_h_linear -> d_log_h (+ d_log_gamma)
+// Key insight: logsumexp gradient is softmax, giving bounded gradients!
 // =============================================================================
 
-template<typename T>
-__global__ void LogPolyRMSNormBackward(
+template<typename T, int BLOCK_DIM = 256>
+__global__ void LogSpaceRMSNormBackwardKernel(
     const int batch_size,
     const int dim,
-    const T* __restrict__ log_h,        // [B, dim] input log magnitudes
-    const T* __restrict__ sign_h,       // [B, dim] signs
-    const T* __restrict__ log_gamma,    // [dim] learnable scale
-    const T* __restrict__ log_rms,      // [B] cached log_rms from forward
-    const T* __restrict__ d_h_linear,   // [B, dim] gradient from output
-    T* __restrict__ d_log_h,            // [B, dim] gradient to input
-    float* __restrict__ d_log_gamma) {  // [dim] gradient to log_gamma (float for atomicAdd)
+    const T* __restrict__ log_h,          // [B, dim] log|h| (input to RMSNorm)
+    const T* __restrict__ sign_h,         // [B, dim] sign(h)
+    const T* __restrict__ log_gamma,      // [dim] learnable scale
+    const T* __restrict__ h_linear,       // [B, dim] output from forward
+    const T* __restrict__ d_h_linear,     // [B, dim] incoming gradient
+    T* __restrict__ d_log_h,              // [B, dim] gradient w.r.t. log_h
+    float* __restrict__ d_log_gamma) {    // [dim] gradient w.r.t. log_gamma (atomic add)
 
-    extern __shared__ float smem[];
-
+    // Each block handles one batch element
     const int b = blockIdx.x;
     if (b >= batch_size) return;
 
-    const int base = b * dim;
-    const float log_dim = logf(static_cast<float>(dim));
-    float log_rms_val = static_cast<float>(log_rms[b]);
+    extern __shared__ float sdata[];
+    // sdata layout: [0..BLOCK_DIM-1] for reductions, [BLOCK_DIM..2*BLOCK_DIM-1] for softmax
 
-    // Compute sum of d_out * h_normed (for gradient through rms)
-    float sum_dout_hnorm = 0.0f;
+    // Step 1: Compute logsumexp for softmax weights (same as forward)
+    float thread_max = -1e30f;
     for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-        float log_h_val = static_cast<float>(log_h[base + d]);
-        float sign_h_val = static_cast<float>(sign_h[base + d]);
-        float log_gamma_val = static_cast<float>(log_gamma[d]);
-        float d_out = static_cast<float>(d_h_linear[base + d]);
-
-        float log_h_norm = log_h_val - log_rms_val + log_gamma_val;
-        float h_norm = from_log_space(log_h_norm, sign_h_val);
-
-        sum_dout_hnorm += d_out * h_norm;
+        float log_h2 = 2.0f * static_cast<float>(log_h[b * dim + d]);
+        thread_max = fmaxf(thread_max, log_h2);
     }
 
-    smem[threadIdx.x] = sum_dout_hnorm;
+    sdata[threadIdx.x] = thread_max;
     __syncthreads();
-
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (threadIdx.x < s) {
-            smem[threadIdx.x] += smem[threadIdx.x + s];
+            sdata[threadIdx.x] = fmaxf(sdata[threadIdx.x], sdata[threadIdx.x + s]);
         }
         __syncthreads();
     }
-    sum_dout_hnorm = smem[0];
+    float max_val = sdata[0];
 
-    // Mean for gradient correction
-    float mean_dout_hnorm = sum_dout_hnorm / static_cast<float>(dim);
-
-    // Compute gradients
+    float thread_sum = 0.0f;
     for (int d = threadIdx.x; d < dim; d += blockDim.x) {
-        float log_h_val = static_cast<float>(log_h[base + d]);
-        float sign_h_val = static_cast<float>(sign_h[base + d]);
-        float log_gamma_val = static_cast<float>(log_gamma[d]);
-        float d_out = static_cast<float>(d_h_linear[base + d]);
+        float log_h2 = 2.0f * static_cast<float>(log_h[b * dim + d]);
+        thread_sum += expf(log_h2 - max_val);
+    }
 
-        float log_h_norm = log_h_val - log_rms_val + log_gamma_val;
-        float h_norm = from_log_space(log_h_norm, sign_h_val);
+    sdata[threadIdx.x] = thread_sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    float sum_exp = sdata[0];
 
-        // Gradient w.r.t. log_gamma: d_out * h_norm (through exp)
-        float d_log_gamma_val = d_out * h_norm;
-        atomicAdd(&d_log_gamma[d], d_log_gamma_val);
+    // Step 2: Compute d_log_h_normed = d_h_linear * h_linear (chain rule for exp)
+    // and sum for d_log_rms
+    float thread_d_log_rms = 0.0f;
+    for (int d = threadIdx.x; d < dim; d += blockDim.x) {
+        int idx = b * dim + d;
+        float h_lin = static_cast<float>(h_linear[idx]);
+        float d_h_lin = static_cast<float>(d_h_linear[idx]);
 
-        // Gradient w.r.t. log_h
-        float scale = expf(log_gamma_val - log_rms_val);
-        float d_h = d_out * scale * sign_h_val - h_norm * mean_dout_hnorm / static_cast<float>(dim);
+        // d/d(log_normed) exp(log_normed) = exp(log_normed) = h_linear/sign
+        // But h_linear = sign * exp(log_normed), so d_log_normed = d_h_linear * h_linear
+        float d_log_normed = d_h_lin * h_lin;
 
-        // Convert to d_log_h
-        float h_val = from_log_space(log_h_val, sign_h_val);
-        float d_log_h_val = d_h * h_val;
+        // d_log_gamma: accumulate with atomic (scaled by 0.0001 to match Python)
+        atomicAdd(&d_log_gamma[d], d_log_normed * 0.0001f);
 
-        d_log_h[base + d] = static_cast<T>(fminf(fmaxf(d_log_h_val, -GRAD_CLIP), GRAD_CLIP));
+        // d_log_rms = -sum(d_log_normed) over dim
+        thread_d_log_rms -= d_log_normed;
+    }
+
+    // Reduce d_log_rms across threads
+    sdata[threadIdx.x] = thread_d_log_rms;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
+    float d_log_rms = sdata[0];
+
+    // Step 3: Backward through logsumexp
+    // d/d(log_h[i]) logsumexp(2*log_h) = softmax(2*log_h)[i] * 2
+    // d/d(log_h[i]) log_rms = d/d(log_h[i]) (logsumexp(2*log_h)/2 - log(dim)/2)
+    //                       = softmax(2*log_h)[i]
+    // d_log_h from log_rms path = d_log_rms * softmax(2*log_h)
+    for (int d = threadIdx.x; d < dim; d += blockDim.x) {
+        int idx = b * dim + d;
+        float log_h2 = 2.0f * static_cast<float>(log_h[idx]);
+        float h_lin = static_cast<float>(h_linear[idx]);
+        float d_h_lin = static_cast<float>(d_h_linear[idx]);
+
+        // Softmax weight for this element
+        float softmax_w = expf(log_h2 - max_val) / sum_exp;
+
+        // Direct gradient: d_log_h from normalization = d_log_normed
+        float d_log_normed = d_h_lin * h_lin;
+
+        // Gradient through log_rms: d_log_rms * softmax
+        float d_from_rms = d_log_rms * softmax_w;
+
+        // Total gradient (scaled by 0.0001 to match Python grad_scale and stabilize)
+        d_log_h[idx] = static_cast<T>((d_log_normed + d_from_rms) * 0.0001f);
     }
 }
 
@@ -588,11 +639,11 @@ struct LogPolyElmanForward {
         const T* W_delta,       // [dim, dim]
         const T* b,             // [dim]
         const T* b_delta,       // [dim]
-        const T* log_gamma,     // [dim] RMSNorm scale in log-space
+        const T* log_gamma,     // [dim] RMSNorm scale (learnable)
         const T* x,             // [steps, B, dim]
         T* log_h,               // [steps+1, B, dim]
         T* sign_h,              // [steps+1, B, dim]
-        T* h_linear,            // [steps, B, dim] NORMALIZED output
+        T* h_linear,            // [steps, B, dim] for output (optional)
         T* log_v_cache,
         T* sign_v_cache,
         T* alpha_cache,
@@ -600,7 +651,7 @@ struct LogPolyElmanForward {
         T* delta_cache,
         T* weight_rh_cache,
         T* alpha_raw_cache,
-        T* log_rms_cache) {     // [steps, B] cache for backward
+        T* log_rms_cache) {     // [steps, B, 1] RMSNorm values for backward
 
         static const T alpha_one = static_cast<T>(1.0);
         static const T beta_zero = static_cast<T>(0.0);
@@ -608,9 +659,6 @@ struct LogPolyElmanForward {
         const int BD = batch_size_ * dim_;
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
-
-        // Shared memory for RMSNorm reduction
-        const int norm_smem_size = 2 * block_size * sizeof(float);
 
         // Workspace for GEMM results
         T *wx_x, *alpha_raw, *delta_tmp;
@@ -633,19 +681,27 @@ struct LogPolyElmanForward {
             T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
             T* weight_t = training_ ? (weight_rh_cache + t * BD) : nullptr;
             T* alpha_raw_t = training_ ? (alpha_raw_cache + t * BD) : nullptr;
-            T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
 
-            // wx_x = W_x @ x_t
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // wx_x = x_t @ W_x.T (matching PyTorch: linear_input = x_t @ self.W_x.T)
+            // Using CUBLAS_OP_T to transpose W_x since CUBLAS is column-major
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_x, dim_, x_t, dim_, &beta_zero, wx_x, dim_);
 
-            // alpha_raw = W_alpha @ x_t + b_alpha
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // alpha_raw = x_t @ W_alpha.T (matching PyTorch: alpha_raw = x_t @ self.W_alpha.T + self.b_alpha)
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_alpha, dim_, x_t, dim_, &beta_zero, alpha_raw, dim_);
+            cudaDeviceSynchronize();  // Sync all CUDA operations before AddBiasKernel
+            // Add b_alpha bias
+            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                batch_size_, dim_, alpha_raw, b_alpha, alpha_raw);
 
-            // delta_tmp = W_delta @ x_t + b_delta
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            // delta_tmp = x_t @ W_delta.T (matching PyTorch: delta_raw = x_t @ self.W_delta.T + self.b_delta)
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_delta, dim_, x_t, dim_, &beta_zero, delta_tmp, dim_);
+            cudaDeviceSynchronize();  // Sync all CUDA operations before AddBiasKernel
+            // Add b_delta bias
+            AddBiasKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                batch_size_, dim_, delta_tmp, b_delta, delta_tmp);
 
             // Store alpha_raw for backward
             if (alpha_raw_t) {
@@ -660,13 +716,18 @@ struct LogPolyElmanForward {
                 log_h_t, sign_h_t,
                 log_v_t, sign_v_t, alpha_t, log_h_unb_t, delta_t, weight_t);
 
-            // Apply RMSNorm and convert to normalized linear output
+            // Apply RMSNorm and convert to linear for output
             if (h_linear) {
-                LogPolyRMSNormKernel<T><<<batch_size_, block_size, norm_smem_size, stream_>>>(
+                // Use fused logsumexp RMSNorm kernel
+                // Each block handles one batch element
+                const int rmsnorm_block = 256;
+                size_t smem_size = rmsnorm_block * sizeof(float);
+                T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
+
+                LogSpaceRMSNormKernel<T, 256><<<batch_size_, rmsnorm_block, smem_size, stream_>>>(
                     batch_size_, dim_,
                     log_h_t, sign_h_t, log_gamma,
-                    h_linear + t * BD,
-                    log_rms_t);
+                    h_linear + t * BD, log_rms_t);
             }
         }
 
@@ -704,7 +765,7 @@ struct LogPolyElmanBackward {
         const T* sign_r_h,
         const T* W_alpha,
         const T* W_delta,
-        const T* log_gamma,         // [dim] RMSNorm scale
+        const T* log_gamma,      // [dim] RMSNorm scale
         const T* x,
         const T* log_h,
         const T* sign_h,
@@ -715,7 +776,7 @@ struct LogPolyElmanBackward {
         const T* log_h_unbounded_cache,
         const T* delta_cache,
         const T* weight_rh_cache,
-        const T* log_rms_cache,     // [steps, B] cached from forward
+        const T* h_linear_cache, // [T, B, dim] cached h_linear for RMSNorm backward
         const T* d_h_linear,
         T* dx,
         T* dW_x,
@@ -725,7 +786,7 @@ struct LogPolyElmanBackward {
         T* dW_delta,
         T* db,
         T* db_delta,
-        T* d_log_gamma) {           // [dim] gradient for RMSNorm scale
+        T* d_log_gamma) {        // [dim] gradient for RMSNorm scale
 
         static const T alpha_one = static_cast<T>(1.0);
         static const T beta_zero = static_cast<T>(0.0);
@@ -734,17 +795,15 @@ struct LogPolyElmanBackward {
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
 
-        // Shared memory for RMSNorm reduction
-        const int norm_smem_size = block_size * sizeof(float);
-
         // Workspace
-        T *d_log_h_recurrent, *d_log_h_prev, *d_wx_x, *d_alpha_raw, *d_delta_raw, *d_log_h;
+        T *d_log_h_recurrent, *d_log_h_prev, *d_wx_x, *d_alpha_raw, *d_delta_raw;
+        T *d_log_h_from_rmsnorm;  // NEW: gradient after RMSNorm backward
         cudaMalloc(&d_log_h_recurrent, BD * sizeof(T));
         cudaMalloc(&d_log_h_prev, BD * sizeof(T));
         cudaMalloc(&d_wx_x, BD * sizeof(T));
         cudaMalloc(&d_alpha_raw, BD * sizeof(T));
         cudaMalloc(&d_delta_raw, BD * sizeof(T));
-        cudaMalloc(&d_log_h, BD * sizeof(T));
+        cudaMalloc(&d_log_h_from_rmsnorm, BD * sizeof(T));
         cudaMemset(d_log_h_recurrent, 0, BD * sizeof(T));
 
         // Float buffers for atomic gradients
@@ -765,12 +824,16 @@ struct LogPolyElmanBackward {
         cudaMemset(dW_alpha, 0, dim_ * dim_ * sizeof(T));
         cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
 
+        // RMSNorm backward kernel config
+        const int rmsnorm_block = 256;
+        const int smem_size = rmsnorm_block * sizeof(float);
+
         for (int t = steps - 1; t >= 0; --t) {
             const T* x_t = x + t * BD;
             const T* log_h_prev = log_h + t * BD;
             const T* sign_h_prev = sign_h + t * BD;
-            const T* log_h_t = log_h + (t + 1) * BD;
-            const T* sign_h_t = sign_h + (t + 1) * BD;
+            const T* log_h_new = log_h + (t + 1) * BD;   // log_h after step t
+            const T* sign_h_new = sign_h + (t + 1) * BD;
 
             const T* log_v_t = log_v_cache + t * BD;
             const T* sign_v_t = sign_v_cache + t * BD;
@@ -779,38 +842,47 @@ struct LogPolyElmanBackward {
             const T* log_h_unb_t = log_h_unbounded_cache + t * BD;
             const T* delta_t = delta_cache + t * BD;
             const T* weight_t = weight_rh_cache + t * BD;
-            const T* log_rms_t = log_rms_cache + t * batch_size_;
+            const T* h_linear_t = h_linear_cache + t * BD;
 
-            const T* d_h_t = d_h_linear + t * BD;
+            const T* d_h_linear_t = d_h_linear + t * BD;
             T* dx_t = dx + t * BD;
 
-            // Backward through RMSNorm: d_h_linear -> d_log_h
-            LogPolyRMSNormBackward<T><<<batch_size_, block_size, norm_smem_size, stream_>>>(
+            // Step 1: RMSNorm backward - convert d_h_linear -> d_log_h
+            LogSpaceRMSNormBackwardKernel<T, 256><<<batch_size_, rmsnorm_block, smem_size, stream_>>>(
                 batch_size_, dim_,
-                log_h_t, sign_h_t, log_gamma, log_rms_t,
-                d_h_t, d_log_h, d_log_gamma_float);
+                log_h_new, sign_h_new, log_gamma,
+                h_linear_t, d_h_linear_t,
+                d_log_h_from_rmsnorm, d_log_gamma_float);
 
-            // Backward through log-space update
+            // Step 2: Add recurrent gradient from next timestep
+            // d_log_h_total = d_log_h_from_rmsnorm + d_log_h_recurrent
+            if (t < steps - 1) {
+                // Simple element-wise add kernel
+                AddKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                    BD, d_log_h_from_rmsnorm, d_log_h_recurrent, d_log_h_from_rmsnorm);
+            }
+
+            // Step 3: Backward through polynomial update
             LogPolyGatedBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
                 batch_size_, dim_,
                 log_h_prev, sign_h_prev,
                 log_v_t, sign_v_t, alpha_t, alpha_raw_t, log_h_unb_t, delta_t, weight_t,
                 log_r_h, sign_r_h,
-                d_log_h,
-                (t < steps - 1) ? d_log_h_recurrent : nullptr,
+                d_log_h_from_rmsnorm,  // Use gradient after RMSNorm backward
+                nullptr,  // recurrent gradient already added above
                 d_log_h_prev, d_wx_x, d_alpha_raw, d_delta_raw,
                 d_log_r_h_float, db_float);
 
-            // dx through W_x path
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            // dx through W_x path (backward of x @ W.T is d_result @ W)
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_x, dim_, d_wx_x, dim_, &beta_zero, dx_t, dim_);
 
             // dx through W_alpha path
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_alpha, dim_, d_alpha_raw, dim_, &alpha_one, dx_t, dim_);
 
             // dx through W_delta path
-            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
                 dim_, batch_size_, dim_, &alpha_one, W_delta, dim_, d_delta_raw, dim_, &alpha_one, dx_t, dim_);
 
             // Weight gradients
@@ -839,7 +911,7 @@ struct LogPolyElmanBackward {
         cudaFree(d_wx_x);
         cudaFree(d_alpha_raw);
         cudaFree(d_delta_raw);
-        cudaFree(d_log_h);
+        cudaFree(d_log_h_from_rmsnorm);
         cudaFree(d_log_r_h_float);
         cudaFree(db_float);
         cudaFree(db_delta_float);
