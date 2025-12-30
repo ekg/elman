@@ -301,23 +301,16 @@ class LogSpacePolynomialCell(nn.Module):
         else:
             log_h0, sign_h0 = h0
 
-        # Require CUDA kernel
-        if not HASTE_AVAILABLE:
-            raise RuntimeError(
-                "LogSpacePolynomial requires hasty_pytorch_lib with logspace_polynomial_forward. "
-                "Install hasty_pytorch from ~/elman/elman/cuda/"
+        # Use CUDA kernel when available (with fused RMSNorm)
+        if HASTE_AVAILABLE and x.is_cuda:
+            return LogSpacePolynomialFunction.apply(
+                self.training, x, log_h0, sign_h0,
+                self.W_x, self.log_r_h, self.sign_r_h,
+                self.W_alpha, self.b_alpha, self.W_delta,
+                self.b, self.b_delta, self.log_gamma
             )
-        if not x.is_cuda:
-            raise RuntimeError(
-                "LogSpacePolynomial requires CUDA. Input must be on GPU."
-            )
-
-        return LogSpacePolynomialFunction.apply(
-            self.training, x, log_h0, sign_h0,
-            self.W_x, self.log_r_h, self.sign_r_h,
-            self.W_alpha, self.b_alpha, self.W_delta,
-            self.b, self.b_delta, self.log_gamma
-        )
+        else:
+            return self._forward_pytorch(x, log_h0, sign_h0)
 
     def _forward_pytorch(self, x, log_h0, sign_h0):
         """Pure PyTorch implementation for testing."""
@@ -372,7 +365,14 @@ class LogSpacePolynomialCell(nn.Module):
 
             log_h_list.append(log_h_new)
             sign_h_list.append(sign_h_new)
-            h_linear_list.append(from_log_space(log_h_new, sign_h_new))
+
+            # Apply RMSNorm in log-space (matching fused CUDA kernel)
+            log_h2 = 2 * log_h_new  # log(h^2)
+            log_mean_h2 = torch.logsumexp(log_h2, dim=-1, keepdim=True) - torch.log(
+                torch.tensor(self.dim, dtype=x.dtype, device=x.device))
+            log_rms = log_mean_h2 / 2
+            log_h_normed = log_h_new - log_rms + self.log_gamma
+            h_linear_list.append(from_log_space(log_h_normed, sign_h_new))
 
         log_h = torch.stack(log_h_list, dim=0)
         sign_h = torch.stack(sign_h_list, dim=0)
