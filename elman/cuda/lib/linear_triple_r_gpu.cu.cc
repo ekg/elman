@@ -515,8 +515,12 @@ void LinearTripleRBackward<T>::Run(
 // Explicit instantiations
 template class LinearTripleRForward<float>;
 template class LinearTripleRForward<__half>;
+template class LinearTripleRForward<__nv_bfloat16>;
+template class LinearTripleRForward<double>;
 template class LinearTripleRBackward<float>;
 template class LinearTripleRBackward<__half>;
+template class LinearTripleRBackward<__nv_bfloat16>;
+template class LinearTripleRBackward<double>;
 
 }  // namespace elman_ladder
 }  // namespace v0

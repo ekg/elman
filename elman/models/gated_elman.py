@@ -13,6 +13,8 @@ Key question: Does input-dependent gating help compared to stock Elman?
 """
 
 import torch
+import os
+REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
 import torch.nn as nn
 import torch.nn.functional as F
 

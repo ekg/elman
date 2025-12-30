@@ -613,8 +613,12 @@ void LinearPolynomialBackward<T>::Run(
 // Explicit instantiations
 template class LinearPolynomialForward<float>;
 template class LinearPolynomialForward<__half>;
+template class LinearPolynomialForward<__nv_bfloat16>;
+template class LinearPolynomialForward<double>;
 template class LinearPolynomialBackward<float>;
 template class LinearPolynomialBackward<__half>;
+template class LinearPolynomialBackward<__nv_bfloat16>;
+template class LinearPolynomialBackward<double>;
 
 }  // namespace elman_ladder
 }  // namespace v0

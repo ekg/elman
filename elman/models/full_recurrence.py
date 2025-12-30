@@ -16,6 +16,8 @@ Key question: Does full R_h improve over diagonal r_h at the cost of stability?
 """
 
 import torch
+import os
+REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
 import torch.nn as nn
 import torch.nn.functional as F
 

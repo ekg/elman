@@ -19,6 +19,8 @@ Key question: Does triple R improve over single R_h?
 """
 
 import torch
+import os
+REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
 import torch.nn as nn
 import torch.nn.functional as F
 

@@ -242,22 +242,26 @@ def create_ladder_model(
     else:
         target_count = int(target)
 
-    # Model size configurations
-    # Tuned for different parameter counts
+    # Model size configurations (dim, depth, expansion)
+    # Tuned for vocab_size ~50k (tiktoken p50k_base)
     configs = {
-        50_000_000: (384, 12),      # ~50M
-        100_000_000: (512, 16),     # ~100M
-        200_000_000: (768, 18),     # ~200M
-        350_000_000: (1024, 20),    # ~350M
-        500_000_000: (1280, 24),    # ~500M
-        700_000_000: (1536, 28),    # ~700M
-        1_000_000_000: (1920, 32),  # ~1B
-        1_300_000_000: (2048, 40),  # ~1.3B
+        50_000_000: (512, 8, 1.5),       # ~50M
+        100_000_000: (768, 12, 1.5),     # ~100M
+        200_000_000: (1024, 16, 1.5),    # ~200M
+        350_000_000: (1024, 20, 2.0),    # ~350M
+        500_000_000: (1024, 24, 2.5),    # ~500M
+        700_000_000: (1280, 24, 2.0),    # ~700M
+        1_000_000_000: (1536, 28, 2.0),  # ~1B
+        1_300_000_000: (1792, 32, 2.0),  # ~1.3B
     }
 
     # Find closest config
     closest = min(configs.keys(), key=lambda x: abs(x - target_count))
-    dim, depth = configs[closest]
+    dim, depth, default_expansion = configs[closest]
+
+    # Use provided expansion or default from config
+    if expansion == 1.0:
+        expansion = default_expansion
 
     model = LadderLM(
         vocab_size=vocab_size,

@@ -15,10 +15,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Try to import Haste CUDA kernel
+import os
+REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
+
 try:
     import hasty_pytorch_lib
     HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'stock_elman_forward')
-except ImportError:
+except ImportError as e:
+    if REQUIRE_CUDA:
+        raise ImportError(f"CUDA kernels required but not available: {e}")
     HASTE_AVAILABLE = False
 
 LEVEL_0_AVAILABLE = True  # PyTorch fallback always available
@@ -99,6 +104,8 @@ class StockElmanCell(nn.Module):
             )
 
         # PyTorch fallback
+        if REQUIRE_CUDA:
+            raise RuntimeError("CUDA kernels required (ELMAN_REQUIRE_CUDA=1) but not available")
         return self._forward_pytorch(x, h0)
 
     def _forward_pytorch(self, x, h0):

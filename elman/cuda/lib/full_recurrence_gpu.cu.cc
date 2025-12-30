@@ -493,8 +493,12 @@ void FullRecurrenceElmanBackward<T>::Run(
 // Explicit instantiations
 template class FullRecurrenceElmanForward<float>;
 template class FullRecurrenceElmanForward<__half>;
+template class FullRecurrenceElmanForward<__nv_bfloat16>;
+template class FullRecurrenceElmanForward<double>;
 template class FullRecurrenceElmanBackward<float>;
 template class FullRecurrenceElmanBackward<__half>;
+template class FullRecurrenceElmanBackward<__nv_bfloat16>;
+template class FullRecurrenceElmanBackward<double>;
 
 }  // namespace elman_ladder
 }  // namespace v0
