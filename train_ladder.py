@@ -54,6 +54,11 @@ def get_args():
                         help="Hidden state expansion factor")
     parser.add_argument("--n_groups", type=int, default=32,
                         help="Number of groups for compete softmax (levels 2+)")
+    parser.add_argument("--r_h_mode", type=str, default="spectral_norm",
+                        choices=["free", "spectral_norm", "scaled_orthogonal"],
+                        help="R_h constraint mode for log-space levels (default: spectral_norm)")
+    parser.add_argument("--r_h_init_gain", type=float, default=0.1,
+                        help="Initial gain for R_h orthogonal initialization")
 
     # Data
     parser.add_argument("--data", type=str, required=True,
@@ -268,6 +273,8 @@ def train(args):
         vocab_size=vocab_size,
         expansion=args.expansion,
         n_groups=args.n_groups,
+        r_h_mode=args.r_h_mode,
+        r_h_init_gain=args.r_h_init_gain,
     )
     model = model.to(device=device, dtype=dtype)
 
@@ -375,6 +382,8 @@ def train(args):
             'dtype': str(dtype),
             'tbptt': args.tbptt,
             'tokens_per_step': args.batch_size * world_size * args.grad_accum * args.chunk_size,
+            'r_h_mode': args.r_h_mode,
+            'r_h_init_gain': args.r_h_init_gain,
         }
 
         # Save config

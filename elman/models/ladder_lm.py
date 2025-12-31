@@ -23,27 +23,14 @@ def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer (0-3) or string ('log_0', 'log_1', 'log_2')
+        level: Integer (0-6) or string ('log_0' to 'log_5')
 
     Returns:
         Layer class
     """
-    levels = {
-        0: ("Stock Elman", StockElman),
-        1: ("Gated Elman", GatedElman),
-        2: ("Selective Elman", SelectiveElman),
-        3: ("Diagonal Selective", DiagonalSelective),
-        # Log-space levels
-        'log_0': ("Log-Space Polynomial", LogSpacePolynomial),
-        'log_1': ("Log-Space Selective", LogSpaceSelective),
-        'log_2': ("Log-Space Diagonal Selective", LogSpaceDiagonalSelective),
-    }
-
-    if level not in levels:
-        raise ValueError(f"Invalid level {level}. Must be 0-3 or 'log_0'/'log_1'/'log_2'.")
-
-    name, cls = levels[level]
-    return cls
+    # Import from parent module which has the full level definitions
+    from . import get_ladder_level as _get_ladder_level
+    return _get_ladder_level(level)
 
 
 class LadderLM(nn.Module):
@@ -73,12 +60,15 @@ class LadderLM(nn.Module):
         n_groups=32,
         delta_init=-2.0,
         dropout=0.0,
+        r_h_mode='spectral_norm',
+        r_h_init_gain=0.1,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.dim = dim
         self.depth = depth
         self.level = level
+        self.r_h_mode = r_h_mode
 
         # Get the layer class for this level
         LayerClass = get_ladder_level(level)
@@ -99,6 +89,8 @@ class LadderLM(nn.Module):
                 n_groups=n_groups,
                 delta_init=delta_init,
                 dropout=dropout,
+                r_h_mode=r_h_mode,
+                r_h_init_gain=r_h_init_gain,
             )
             for _ in range(depth)
         ])
@@ -219,6 +211,8 @@ def create_ladder_model(
     vocab_size: int = 256,
     expansion: float = 1.0,
     n_groups: int = 32,
+    r_h_mode: str = 'spectral_norm',
+    r_h_init_gain: float = 0.1,
 ):
     """
     Create a LadderLM with approximately target_params parameters.
@@ -229,6 +223,8 @@ def create_ladder_model(
         vocab_size: Vocabulary size
         expansion: Hidden state expansion
         n_groups: Number of groups for compete softmax
+        r_h_mode: Constraint mode for R_h matrix (for log-space levels)
+        r_h_init_gain: Initial gain for R_h orthogonal initialization
 
     Returns:
         LadderLM model
@@ -270,10 +266,13 @@ def create_ladder_model(
         level=level,
         expansion=expansion,
         n_groups=n_groups,
+        r_h_mode=r_h_mode,
+        r_h_init_gain=r_h_init_gain,
     )
 
     actual_params = model.get_num_params()
-    print(f"Created Level {level} model: dim={dim}, depth={depth}, params={actual_params:,}")
+    r_h_info = f", r_h_mode={r_h_mode}" if str(level).startswith('log') else ""
+    print(f"Created Level {level} model: dim={dim}, depth={depth}, params={actual_params:,}{r_h_info}")
 
     return model
 

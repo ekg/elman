@@ -99,13 +99,21 @@ class LogComputeFullCell(nn.Module):
         dim: Hidden dimension
         n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
+        r_h_mode: Constraint mode for R_h matrix:
+            - 'free': No constraint (original behavior, can become unstable)
+            - 'spectral_norm': Spectral normalization (constrains spectral radius to 1)
+            - 'scaled_orthogonal': R_h = sigmoid(scale) * orthogonal_base (stable by construction)
+        r_h_init_gain: Initial gain for R_h orthogonal initialization
     """
 
-    def __init__(self, dim, n_groups=32, delta_init=-2.0, **kwargs):
+    def __init__(self, dim, n_groups=32, delta_init=-2.0,
+                 r_h_mode='spectral_norm', r_h_init_gain=0.1, **kwargs):
         super().__init__()
         self.dim = dim
         self.n_groups = n_groups
         self.group_size = dim // n_groups
+        self.r_h_mode = r_h_mode
+        self.r_h_init_gain = r_h_init_gain
 
         assert dim % n_groups == 0, f"dim {dim} must be divisible by n_groups {n_groups}"
 
@@ -113,8 +121,16 @@ class LogComputeFullCell(nn.Module):
         self.W_x = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
 
-        # Full recurrence matrix
-        self.R_h = nn.Parameter(torch.empty(dim, dim))
+        # Full recurrence matrix with optional constraints
+        if r_h_mode == 'scaled_orthogonal':
+            # Fixed orthogonal base + learned scale
+            self.register_buffer('R_h_base', torch.empty(dim, dim))
+            # Scale parameter: sigmoid(r_h_log_scale) gives scale in (0, 1)
+            # Init to achieve ~0.1 spectral radius: sigmoid(-2.2) ≈ 0.1
+            self.r_h_log_scale = nn.Parameter(torch.tensor(-2.2))
+        else:
+            # Learnable R_h (with optional spectral norm)
+            self.R_h = nn.Parameter(torch.empty(dim, dim))
 
         # Delta gate
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
@@ -127,9 +143,46 @@ class LogComputeFullCell(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_x)
-        nn.init.orthogonal_(self.R_h, gain=0.1)
+        if self.r_h_mode == 'scaled_orthogonal':
+            nn.init.orthogonal_(self.R_h_base)  # Fixed orthogonal, scale learned separately
+        else:
+            nn.init.orthogonal_(self.R_h, gain=self.r_h_init_gain)
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
         nn.init.xavier_uniform_(self.W_out)
+
+    def get_R_h(self):
+        """Get the effective R_h matrix with constraints applied."""
+        if self.r_h_mode == 'scaled_orthogonal':
+            # R_h = sigmoid(log_scale) * orthogonal_base
+            # sigmoid ensures scale in (0, 1), so spectral radius < 1
+            scale = torch.sigmoid(self.r_h_log_scale)
+            return scale * self.R_h_base
+        elif self.r_h_mode == 'spectral_norm':
+            # Spectral normalization: R_h * (target / sigma(R_h))
+            # Constrains spectral radius to target (default 0.99)
+            target_radius = 0.99
+
+            u = getattr(self, '_spectral_u', None)
+            if u is None or u.shape[0] != self.dim:
+                u = torch.randn(self.dim, device=self.R_h.device, dtype=self.R_h.dtype)
+                u = u / u.norm()
+
+            # Power iteration for spectral norm (3 iterations for accuracy)
+            with torch.no_grad():
+                for _ in range(3):
+                    v = self.R_h.T @ u
+                    v = v / (v.norm() + 1e-8)
+                    u = self.R_h @ v
+                    u = u / (u.norm() + 1e-8)
+                self._spectral_u = u
+
+            # Estimate spectral norm: sigma = u^T R_h v
+            sigma = (u @ self.R_h @ v).abs()
+            # Scale to target spectral radius
+            return self.R_h * (target_radius / (sigma + 1e-8))
+        else:
+            # 'free' mode - no constraint
+            return self.R_h
 
     def forward(self, x, h0=None):
         """
@@ -151,17 +204,20 @@ class LogComputeFullCell(nn.Module):
         else:
             log_h0, sign_h0 = h0
 
+        # Get constrained R_h matrix
+        R_h = self.get_R_h()
+
         # Use CUDA kernel when available
         if HASTE_LOG_COMPUTE_FULL_AVAILABLE and x.is_cuda:
             return LogComputeFullFunction.apply(
                 self.training, x, log_h0, sign_h0,
-                self.W_x, self.R_h, self.W_delta,
+                self.W_x, R_h, self.W_delta,
                 self.W_out, self.b, self.b_delta, self.n_groups
             )
         else:
-            return self._forward_pytorch(x, log_h0, sign_h0)
+            return self._forward_pytorch(x, log_h0, sign_h0, R_h)
 
-    def _forward_pytorch(self, x, log_h0, sign_h0):
+    def _forward_pytorch(self, x, log_h0, sign_h0, R_h):
         """Pure PyTorch implementation with full R_h matrix."""
         T, B, D = x.shape
 
@@ -179,7 +235,7 @@ class LogComputeFullCell(nn.Module):
             h_prev_linear = from_log_space(log_h_prev, sign_h_prev)
 
             # Candidate: tanh(W_x @ x + R_h @ h_prev + b)
-            v = x_t @ self.W_x.T + h_prev_linear @ self.R_h.T + self.b
+            v = x_t @ self.W_x.T + h_prev_linear @ R_h.T + self.b
             candidate = torch.tanh(v)
 
             # Delta gate
@@ -226,14 +282,17 @@ class LogComputeFull(nn.Module):
         n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
         dropout: Dropout rate
+        r_h_mode: Constraint mode for R_h matrix ('free', 'spectral_norm', 'scaled_orthogonal')
+        r_h_init_gain: Initial gain for R_h orthogonal initialization
         **kwargs: Ignored (for API compatibility)
     """
 
     def __init__(self, dim, expansion=1.0, n_groups=32, delta_init=-2.0,
-                 dropout=0.0, **kwargs):
+                 dropout=0.0, r_h_mode='spectral_norm', r_h_init_gain=0.1, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
+        self.r_h_mode = r_h_mode
 
         # Adjust n_groups for inner dimension
         while self.d_inner % n_groups != 0 and n_groups > 1:
@@ -244,7 +303,8 @@ class LogComputeFull(nn.Module):
 
         # Log-compute full cell
         self.cell = LogComputeFullCell(
-            self.d_inner, n_groups=n_groups, delta_init=delta_init
+            self.d_inner, n_groups=n_groups, delta_init=delta_init,
+            r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain
         )
 
         # Output projection
