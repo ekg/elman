@@ -93,6 +93,14 @@ std::vector<Tensor> stock_elman_backward(
     Tensor dW_h = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
 
+    // Workspace: (T+1) * B * dim for dv_all + dh_recurrent, plus dim floats for db
+    // Use bytes to properly handle float buffer at end
+    const int64_t elem_size = x.element_size();
+    const int64_t workspace_elems = (time_steps + 1) * batch_size * dim;
+    const int64_t float_bytes = dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;  // Round up
+    Tensor workspace = torch::empty({workspace_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "stock_elman_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -112,7 +120,8 @@ std::vector<Tensor> stock_elman_backward(
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
-            ptr<scalar_t>(db));
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dW_h, db};

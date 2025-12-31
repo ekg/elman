@@ -75,7 +75,8 @@ struct StockElmanBackward {
         T* dx,              // [T, B, dim]
         T* dW_x,            // [dim, dim]
         T* dW_h,            // [dim, dim]
-        T* db);             // [dim]
+        T* db,              // [dim]
+        T* workspace);      // [(T+1)*B*dim + ceil(dim*4/sizeof(T))] workspace
 
 private:
     int batch_size_;

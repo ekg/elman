@@ -210,101 +210,107 @@ void StockElmanBackward<T>::Run(
     T* dx,
     T* dW_x,
     T* dW_h,
-    T* db) {
+    T* db,
+    T* workspace) {  // NEW: workspace passed from Python (dv_all + dh_recurrent)
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
+    static const T beta_one = static_cast<T>(1.0);
 
     const int BD = batch_size_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
-    // Workspace for dv and dh_recurrent
-    T* dv;
-    T* dh_recurrent;
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // ==========================================================================
+    // HASTE PATTERN: Batch the GEMMs that can be batched
+    // Workspace layout: [dv_all: T*BD] [dh_recurrent: BD]
+    // ==========================================================================
 
-    // Use float buffer for bias gradients
-    float* db_float;
-    cudaMalloc(&db_float, dim_ * sizeof(float));
-    cudaMemset(db_float, 0, dim_ * sizeof(float));
+    T* dv_all = workspace;
+    T* dh_recurrent = workspace + steps * BD;
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
 
-    // Zero gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_h, 0, dim_ * dim_ * sizeof(T));
+    // Zero weight gradients
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
 
-    // Backward through time
+    // db_float at end of workspace (after T-typed buffers)
+    // Align to 4 bytes for float access
+    float* db_float = reinterpret_cast<float*>(workspace + (steps + 1) * BD);
+    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+
+    // ==========================================================================
+    // PASS 1: Compute dv for all timesteps (sequential due to recurrent dependency)
+    // ==========================================================================
     for (int t = steps - 1; t >= 0; --t) {
-        const T* x_t = x + t * BD;
-        const T* h_prev = h + t * BD;
         const T* v_t = v + t * BD;
         const T* dh_t = dh_out + t * BD;
-        T* dx_t = dx + t * BD;
+        T* dv_t = dv_all + t * BD;
 
-        // Backward through tanh
+        // Backward through tanh: compute dv_t and accumulate db
         StockElmanBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, v_t, dh_t,
             (t < steps - 1) ? dh_recurrent : nullptr,
-            dv, db_float);
+            dv_t, db_float);
 
-        // dx_t = dv @ W_x (backward of x @ W_x.T)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_x, dim_,
-            dv, dim_,
-            &beta_zero,
-            dx_t, dim_);
-
-        // dh_recurrent = dv @ W_h (backward of h @ W_h.T)
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_,
-            &alpha,
-            W_h, dim_,
-            dv, dim_,
-            &beta_zero,
-            dh_recurrent, dim_);
-
-        // dW_x += dv @ x_t^T
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_,
-            &alpha,
-            dv, dim_,
-            x_t, dim_,
-            &alpha,
-            dW_x, dim_);
-
-        // dW_h += dv @ h_prev^T
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_,
-            &alpha,
-            dv, dim_,
-            h_prev, dim_,
-            &alpha,
-            dW_h, dim_);
+        // dh_recurrent = W_h @ dv_t (must stay in loop - data dependency)
+        // This feeds into the next iteration (t-1)
+        if (t > 0) {
+            blas<T>::gemm(
+                blas_handle_,
+                CUBLAS_OP_N, CUBLAS_OP_N,
+                dim_, batch_size_, dim_,
+                &alpha,
+                W_h, dim_,
+                dv_t, dim_,
+                &beta_zero,
+                dh_recurrent, dim_);
+        }
     }
+
+    // ==========================================================================
+    // PASS 2: Batch GEMMs across all timesteps (HASTE pattern)
+    // ==========================================================================
+
+    // dx = W_x @ dv_all for ALL timesteps in one GEMM
+    blas<T>::gemm(
+        blas_handle_,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_,
+        &alpha,
+        W_x, dim_,
+        dv_all, dim_,
+        &beta_zero,
+        dx, dim_);
+
+    // dW_x = dv_all @ x^T for ALL timesteps in one GEMM
+    blas<T>::gemm(
+        blas_handle_,
+        CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_,
+        &alpha,
+        dv_all, dim_,
+        x, dim_,
+        &beta_one,
+        dW_x, dim_);
+
+    // dW_h = dv_all @ h_prev^T for ALL timesteps in one GEMM
+    blas<T>::gemm(
+        blas_handle_,
+        CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_,
+        &alpha,
+        dv_all, dim_,
+        h, dim_,
+        &beta_one,
+        dW_h, dim_);
 
     // Copy float bias gradient to T type
-    // Simple conversion kernel
-    cudaMemset(db, 0, dim_ * sizeof(T));
-    // For now just copy the float values (would need a proper conversion kernel for half/bf16)
+    cudaMemsetAsync(db, 0, dim_ * sizeof(T), stream_);
     if constexpr (std::is_same<T, float>::value) {
-        cudaMemcpy(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
+        cudaMemcpyAsync(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
     }
-
-    cudaFree(dv);
-    cudaFree(dh_recurrent);
-    cudaFree(db_float);
+    // Note: For half/bfloat16, we'd need a conversion kernel. For now, db stays zero for non-float.
 }
 
 // Explicit template instantiations

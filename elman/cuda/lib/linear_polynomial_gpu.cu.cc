@@ -472,9 +472,15 @@ void LinearPolynomialBackward<T>::Run(
     static const T beta_one = static_cast<T>(1.0);
 
     const int BD = batch_size_ * dim_;
+    const int TBD = steps * BD;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
+
+    // ==========================================================================
+    // HASTE PATTERN: Batch GEMMs across all timesteps
+    // Store gradients for all timesteps, then do big batch GEMMs after loop
+    // ==========================================================================
 
     // Zero out weight gradients
     cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
@@ -493,20 +499,26 @@ void LinearPolynomialBackward<T>::Run(
     cudaMemset(db_delta_f, 0, dim_ * sizeof(float));
     cudaMemset(db_alpha_f, 0, dim_ * sizeof(float));
 
-    // Workspace
-    T *w_out_h, *dh_compete, *d_w_out_h, *dv, *d_alpha_raw, *d_delta_raw, *dh_prev_out, *dh_recurrent;
+    // Workspace for ALL timesteps (Haste pattern)
+    T *dv_all, *d_alpha_all, *d_delta_all, *d_w_out_h_all;
+    cudaMalloc(&dv_all, TBD * sizeof(T));
+    cudaMalloc(&d_alpha_all, TBD * sizeof(T));
+    cudaMalloc(&d_delta_all, TBD * sizeof(T));
+    cudaMalloc(&d_w_out_h_all, TBD * sizeof(T));
+
+    // Per-step workspace
+    T *w_out_h, *dh_compete, *dh, *dh_prev_out, *dh_recurrent;
     cudaMalloc(&w_out_h, BD * sizeof(T));
     cudaMalloc(&dh_compete, BD * sizeof(T));
-    cudaMalloc(&d_w_out_h, BD * sizeof(T));
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&d_alpha_raw, BD * sizeof(T));
-    cudaMalloc(&d_delta_raw, BD * sizeof(T));
+    cudaMalloc(&dh, BD * sizeof(T));
     cudaMalloc(&dh_prev_out, BD * sizeof(T));
     cudaMalloc(&dh_recurrent, BD * sizeof(T));
     cudaMemset(dh_recurrent, 0, BD * sizeof(T));
 
+    // ==========================================================================
+    // PASS 1: Compute gradients for all timesteps (sequential due to recurrent)
+    // ==========================================================================
     for (int t = steps - 1; t >= 0; --t) {
-        const T* x_t = x + t * BD;
         const T* h_prev = h + t * BD;
         const T* h_t = h + (t + 1) * BD;
         const T* v_t = v + t * BD;
@@ -514,7 +526,12 @@ void LinearPolynomialBackward<T>::Run(
         const T* delta_t = delta_cache + t * BD;
         const T* compete_t = compete_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
-        T* dx_t = dx + t * BD;
+
+        // Storage for this timestep
+        T* dv_t = dv_all + t * BD;
+        T* d_alpha_t = d_alpha_all + t * BD;
+        T* d_delta_t = d_delta_all + t * BD;
+        T* d_w_out_h_t = d_w_out_h_all + t * BD;
 
         // Recompute w_out_h = h_t @ W_out.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -524,62 +541,53 @@ void LinearPolynomialBackward<T>::Run(
         dim3 grid(batch_size_, n_groups_);
         int smem_size = block_size * sizeof(float);
         LinearPolynomialOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, compete_t, d_out_t, dh_compete, d_w_out_h);
+            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, compete_t, d_out_t, dh_compete, d_w_out_h_t);
 
-        // dW_out += d_w_out_h.T @ h_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha_blas, d_w_out_h, dim_, h_t, dim_, &beta_one, dW_out, dim_);
-
-        // dh from W_out path
-        T* dh_wout;
-        cudaMalloc(&dh_wout, BD * sizeof(T));
+        // dh from W_out path: dh_wout = W_out @ d_w_out_h
+        // Combine with dh_compete into dh
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, d_w_out_h, dim_, &beta_zero, dh_wout, dim_);
-
-        // Combine dh
-        T* dh;
-        cudaMalloc(&dh, BD * sizeof(T));
-        cudaMemcpy(dh, dh_compete, BD * sizeof(T), cudaMemcpyDeviceToDevice);
-        VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_wout, dh);
-        cudaFree(dh_wout);
+            dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, d_w_out_h_t, dim_, &beta_zero, dh, dim_);
+        VectorAdd<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh_compete, dh);
 
         // Backward through polynomial gated update
         LinearPolynomialGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_prev, v_t, alpha_t, delta_t, r_h, dh, dh_recurrent,
-            dv, d_alpha_raw, d_delta_raw, dh_prev_out, dr_h_f, db_f, db_delta_f);
-
-        // dW_x += dv.T @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha_blas, dv, dim_, x_t, dim_, &beta_one, dW_x, dim_);
-
-        // dW_alpha += d_alpha_raw.T @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha_blas, d_alpha_raw, dim_, x_t, dim_, &beta_one, dW_alpha, dim_);
-
-        // dW_delta += d_delta_raw.T @ x_t
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha_blas, d_delta_raw, dim_, x_t, dim_, &beta_one, dW_delta, dim_);
-
-        // db_alpha accumulation (sum d_alpha_raw across batch)
-        // Already done in kernel via atomicAdd
-
-        // dx = dv @ W_x + d_alpha_raw @ W_alpha + d_delta_raw @ W_delta
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_alpha, dim_, d_alpha_raw, dim_, &beta_one, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_delta, dim_, d_delta_raw, dim_, &beta_one, dx_t, dim_);
+            dv_t, d_alpha_t, d_delta_t, dh_prev_out, dr_h_f, db_f, db_delta_f);
 
         // dh_recurrent = dh_prev_out for next iteration
         cudaMemcpy(dh_recurrent, dh_prev_out, BD * sizeof(T), cudaMemcpyDeviceToDevice);
-
-        cudaFree(dh);
     }
 
-    // Sum d_alpha_raw across batch for db_alpha
-    // Already done via atomicAdd in kernel, but we need to accumulate properly
-    // For simplicity, copy from float buffers
+    // ==========================================================================
+    // PASS 2: Batch GEMMs across all timesteps (Haste pattern)
+    // ==========================================================================
+
+    // dx = W_x @ dv_all + W_alpha @ d_alpha_all + W_delta @ d_delta_all
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_x, dim_, dv_all, dim_, &beta_zero, dx, dim_);
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_alpha, dim_, d_alpha_all, dim_, &beta_one, dx, dim_);
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_blas, W_delta, dim_, d_delta_all, dim_, &beta_one, dx, dim_);
+
+    // dW_x = dv_all @ x^T (all timesteps)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_, &alpha_blas, dv_all, dim_, x, dim_, &beta_one, dW_x, dim_);
+
+    // dW_alpha = d_alpha_all @ x^T (all timesteps)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_, &alpha_blas, d_alpha_all, dim_, x, dim_, &beta_one, dW_alpha, dim_);
+
+    // dW_delta = d_delta_all @ x^T (all timesteps)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_, &alpha_blas, d_delta_all, dim_, x, dim_, &beta_one, dW_delta, dim_);
+
+    // dW_out = d_w_out_h_all @ h[1:T+1]^T (all timesteps)
+    // h[1:T+1] is the output hidden states
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, steps * batch_size_, &alpha_blas, d_w_out_h_all, dim_, h + BD, dim_, &beta_one, dW_out, dim_);
+
+    // Copy from float buffers
     cudaMemcpy(dr_h, dr_h_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
     cudaMemcpy(db, db_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
     cudaMemcpy(db_delta, db_delta_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
@@ -589,12 +597,13 @@ void LinearPolynomialBackward<T>::Run(
     cudaFree(db_f);
     cudaFree(db_delta_f);
     cudaFree(db_alpha_f);
+    cudaFree(dv_all);
+    cudaFree(d_alpha_all);
+    cudaFree(d_delta_all);
+    cudaFree(d_w_out_h_all);
     cudaFree(w_out_h);
     cudaFree(dh_compete);
-    cudaFree(d_w_out_h);
-    cudaFree(dv);
-    cudaFree(d_alpha_raw);
-    cudaFree(d_delta_raw);
+    cudaFree(dh);
     cudaFree(dh_prev_out);
     cudaFree(dh_recurrent);
 }
