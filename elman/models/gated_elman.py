@@ -67,16 +67,26 @@ class GatedElmanCell(nn.Module):
     Args:
         dim: Hidden dimension
         delta_init: Initial bias for delta gate (negative = keep more state)
+        w_h_mode: Constraint mode for W_h matrix
+        w_h_init_gain: Initial gain for W_h initialization
     """
 
-    def __init__(self, dim, delta_init=-2.0):
+    def __init__(self, dim, delta_init=-2.0, w_h_mode='spectral_norm', w_h_init_gain=1.0):
         super().__init__()
         self.dim = dim
+        self.w_h_mode = w_h_mode
+        self.w_h_init_gain = w_h_init_gain
 
         # Candidate computation weights
         self.W_x = nn.Parameter(torch.empty(dim, dim))
-        self.W_h = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
+
+        # Recurrence matrix with optional constraints
+        if w_h_mode == 'scaled_orthogonal':
+            self.register_buffer('W_h_base', torch.empty(dim, dim))
+            self.w_h_log_scale = nn.Parameter(torch.tensor(-0.01))
+        else:
+            self.W_h = nn.Parameter(torch.empty(dim, dim))
 
         # Delta (gate) computation
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
@@ -86,8 +96,34 @@ class GatedElmanCell(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_x)
-        nn.init.xavier_uniform_(self.W_h)
-        nn.init.xavier_uniform_(self.W_delta, gain=0.1)  # Small init for gate
+        if self.w_h_mode == 'scaled_orthogonal':
+            nn.init.orthogonal_(self.W_h_base)
+        else:
+            nn.init.xavier_uniform_(self.W_h, gain=self.w_h_init_gain)
+        nn.init.xavier_uniform_(self.W_delta, gain=0.1)
+
+    def get_W_h(self):
+        """Get the effective W_h matrix with constraints applied."""
+        if self.w_h_mode == 'scaled_orthogonal':
+            scale = torch.sigmoid(self.w_h_log_scale)
+            return scale * self.W_h_base
+        elif self.w_h_mode == 'spectral_norm':
+            target_radius = 0.99
+            u = getattr(self, '_spectral_u', None)
+            if u is None or u.shape[0] != self.dim:
+                u = torch.randn(self.dim, device=self.W_h.device, dtype=self.W_h.dtype)
+                u = u / u.norm()
+            with torch.no_grad():
+                for _ in range(3):
+                    v = self.W_h.T @ u
+                    v = v / (v.norm() + 1e-8)
+                    u = self.W_h @ v
+                    u = u / (u.norm() + 1e-8)
+                self._spectral_u = u
+            sigma = (u @ self.W_h @ v).abs()
+            return self.W_h * (target_radius / (sigma + 1e-8))
+        else:
+            return self.W_h
 
     def forward(self, x, h0=None):
         """
@@ -103,18 +139,21 @@ class GatedElmanCell(nn.Module):
         if h0 is None:
             h0 = torch.zeros(B, self.dim, device=x.device, dtype=x.dtype)
 
+        # Get constrained W_h
+        W_h = self.get_W_h()
+
         # Use Haste kernel if available
         if HASTE_AVAILABLE and x.is_cuda:
             return GatedElmanFunction.apply(
                 self.training, x, h0,
-                self.W_x, self.W_h, self.W_delta,
+                self.W_x, W_h, self.W_delta,
                 self.b, self.b_delta
             )
 
         # PyTorch fallback
-        return self._forward_pytorch(x, h0)
+        return self._forward_pytorch(x, h0, W_h)
 
-    def _forward_pytorch(self, x, h0):
+    def _forward_pytorch(self, x, h0, W_h):
         """Pure PyTorch implementation."""
         T, B, D = x.shape
         h_list = [h0]
@@ -128,7 +167,7 @@ class GatedElmanCell(nn.Module):
             delta = torch.sigmoid(delta_raw)
 
             # Candidate: tanh(W_x @ x + W_h @ h + b)
-            candidate_raw = x_t @ self.W_x.T + h_prev @ self.W_h.T + self.b
+            candidate_raw = x_t @ self.W_x.T + h_prev @ W_h.T + self.b
             candidate = torch.tanh(candidate_raw)
 
             # State update: interpolation between h_prev and candidate
@@ -146,16 +185,19 @@ class GatedElman(nn.Module):
     NO output selectivity - just gated recurrence.
     """
 
-    def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0, **kwargs):
+    def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0,
+                 r_h_mode='spectral_norm', r_h_init_gain=1.0, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
+        self.r_h_mode = r_h_mode
 
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
         # Gated Elman cell
-        self.cell = GatedElmanCell(self.d_inner, delta_init=delta_init)
+        self.cell = GatedElmanCell(self.d_inner, delta_init=delta_init,
+                                   w_h_mode=r_h_mode, w_h_init_gain=r_h_init_gain)
 
         # Output projection
         self.out_proj = nn.Linear(self.d_inner, dim, bias=False)

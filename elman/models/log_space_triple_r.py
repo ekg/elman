@@ -104,20 +104,33 @@ class LogSpaceTripleRCell(nn.Module):
         dim: Hidden dimension
         n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
+        r_h_mode: Constraint mode for R_h/R_delta matrices
+        r_h_init_gain: Initial gain for R_h initialization
     """
 
-    def __init__(self, dim, n_groups=32, delta_init=-2.0, **kwargs):
+    def __init__(self, dim, n_groups=32, delta_init=-2.0,
+                 r_h_mode='spectral_norm', r_h_init_gain=0.1, **kwargs):
         super().__init__()
         self.dim = dim
         self.n_groups = n_groups
         self.group_size = dim // n_groups
+        self.r_h_mode = r_h_mode
+        self.r_h_init_gain = r_h_init_gain
 
         assert dim % n_groups == 0, f"dim {dim} must be divisible by n_groups {n_groups}"
 
-        # Triple R matrices
-        self.R_h = nn.Parameter(torch.empty(dim, dim))      # Hidden recurrence
-        self.R_x = nn.Parameter(torch.empty(dim, dim))      # Input transformation
-        self.R_delta = nn.Parameter(torch.empty(dim, dim))  # Delta gate modulation
+        # Triple R matrices with optional constraints
+        if r_h_mode == 'scaled_orthogonal':
+            self.register_buffer('R_h_base', torch.empty(dim, dim))
+            self.register_buffer('R_delta_base', torch.empty(dim, dim))
+            self.r_h_log_scale = nn.Parameter(torch.tensor(-2.2))  # sigmoid(-2.2) ≈ 0.1
+            self.r_delta_log_scale = nn.Parameter(torch.tensor(-2.2))
+        else:
+            self.R_h = nn.Parameter(torch.empty(dim, dim))
+            self.R_delta = nn.Parameter(torch.empty(dim, dim))
+
+        # R_x is input-only, no constraint needed
+        self.R_x = nn.Parameter(torch.empty(dim, dim))
 
         # Bias
         self.b = nn.Parameter(torch.zeros(dim))
@@ -132,11 +145,52 @@ class LogSpaceTripleRCell(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.orthogonal_(self.R_h, gain=0.1)
+        if self.r_h_mode == 'scaled_orthogonal':
+            nn.init.orthogonal_(self.R_h_base)
+            nn.init.orthogonal_(self.R_delta_base)
+        else:
+            nn.init.orthogonal_(self.R_h, gain=self.r_h_init_gain)
+            nn.init.orthogonal_(self.R_delta, gain=0.1)
         nn.init.orthogonal_(self.R_x, gain=1.0)
-        nn.init.orthogonal_(self.R_delta, gain=0.1)
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
         nn.init.xavier_uniform_(self.W_out)
+
+    def _apply_spectral_norm(self, W, name):
+        """Apply spectral normalization to a weight matrix."""
+        target_radius = 0.99
+        u = getattr(self, f'_spectral_u_{name}', None)
+        if u is None or u.shape[0] != self.dim:
+            u = torch.randn(self.dim, device=W.device, dtype=W.dtype)
+            u = u / u.norm()
+        with torch.no_grad():
+            for _ in range(3):
+                v = W.T @ u
+                v = v / (v.norm() + 1e-8)
+                u = W @ v
+                u = u / (u.norm() + 1e-8)
+            setattr(self, f'_spectral_u_{name}', u)
+        sigma = (u @ W @ v).abs()
+        return W * (target_radius / (sigma + 1e-8))
+
+    def get_R_h(self):
+        """Get the effective R_h matrix with constraints applied."""
+        if self.r_h_mode == 'scaled_orthogonal':
+            scale = torch.sigmoid(self.r_h_log_scale)
+            return scale * self.R_h_base
+        elif self.r_h_mode == 'spectral_norm':
+            return self._apply_spectral_norm(self.R_h, 'R_h')
+        else:
+            return self.R_h
+
+    def get_R_delta(self):
+        """Get the effective R_delta matrix with constraints applied."""
+        if self.r_h_mode == 'scaled_orthogonal':
+            scale = torch.sigmoid(self.r_delta_log_scale)
+            return scale * self.R_delta_base
+        elif self.r_h_mode == 'spectral_norm':
+            return self._apply_spectral_norm(self.R_delta, 'R_delta')
+        else:
+            return self.R_delta
 
     def forward(self, x, h0=None):
         """
@@ -158,17 +212,21 @@ class LogSpaceTripleRCell(nn.Module):
         else:
             log_h0, sign_h0 = h0
 
+        # Get constrained matrices
+        R_h = self.get_R_h()
+        R_delta = self.get_R_delta()
+
         # Use CUDA kernel when available
         if HASTE_LOG_TRIPLE_R_AVAILABLE and x.is_cuda:
             return LogSpaceTripleRFunction.apply(
                 self.training, x, log_h0, sign_h0,
-                self.R_h, self.R_x, self.R_delta,
+                R_h, self.R_x, R_delta,
                 self.W_delta, self.W_out, self.b, self.b_delta, self.n_groups
             )
         else:
-            return self._forward_pytorch(x, log_h0, sign_h0)
+            return self._forward_pytorch(x, log_h0, sign_h0, R_h, R_delta)
 
-    def _forward_pytorch(self, x, log_h0, sign_h0):
+    def _forward_pytorch(self, x, log_h0, sign_h0, R_h, R_delta):
         """Pure PyTorch implementation with triple R matrices."""
         T, B, D = x.shape
 
@@ -186,11 +244,11 @@ class LogSpaceTripleRCell(nn.Module):
             h_prev_linear = from_log_space(log_h_prev, sign_h_prev)
 
             # v = R_x @ x + R_h @ h_prev + b
-            v = x_t @ self.R_x.T + h_prev_linear @ self.R_h.T + self.b
+            v = x_t @ self.R_x.T + h_prev_linear @ R_h.T + self.b
             candidate = torch.tanh(v)
 
             # Delta gate: sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
-            Rdelta_h = h_prev_linear @ self.R_delta.T
+            Rdelta_h = h_prev_linear @ R_delta.T
             delta_raw = x_t @ self.W_delta.T + Rdelta_h + self.b_delta
             delta = torch.sigmoid(delta_raw)
 
@@ -235,14 +293,17 @@ class LogSpaceTripleR(nn.Module):
         n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
         dropout: Dropout rate
+        r_h_mode: Constraint mode for R_h/R_delta matrices
+        r_h_init_gain: Initial gain for R_h initialization
         **kwargs: Ignored (for API compatibility)
     """
 
     def __init__(self, dim, expansion=1.0, n_groups=32, delta_init=-2.0,
-                 dropout=0.0, **kwargs):
+                 dropout=0.0, r_h_mode='spectral_norm', r_h_init_gain=0.1, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
+        self.r_h_mode = r_h_mode
 
         # Adjust n_groups for inner dimension
         while self.d_inner % n_groups != 0 and n_groups > 1:
@@ -253,7 +314,8 @@ class LogSpaceTripleR(nn.Module):
 
         # Log-space triple R cell
         self.cell = LogSpaceTripleRCell(
-            self.d_inner, n_groups=n_groups, delta_init=delta_init
+            self.d_inner, n_groups=n_groups, delta_init=delta_init,
+            r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain
         )
 
         # Output projection
