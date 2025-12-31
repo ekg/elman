@@ -249,7 +249,7 @@ __global__ void LogSpaceMatVecKernel(
 }
 
 // =============================================================================
-// Kernel: Gated update with triple R matrices
+// Kernel: Gated update with triple R matrices (OPTIMIZED: takes linear inputs)
 // v_t = R_x @ x + R_h @ h_{t-1} + b
 // delta_raw = W_delta @ x + R_delta @ h_{t-1} + b_delta
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(v_t)
@@ -261,13 +261,10 @@ __global__ void TripleRGatedUpdateKernel(
     const int dim,
     const T* __restrict__ log_h_prev,
     const T* __restrict__ sign_h_prev,
-    const T* __restrict__ log_Rx_x,      // log|R_x @ x|
-    const T* __restrict__ sign_Rx_x,     // sign(R_x @ x)
-    const T* __restrict__ log_Rh_h,      // log|R_h @ h_{t-1}|
-    const T* __restrict__ sign_Rh_h,     // sign(R_h @ h_{t-1})
+    const T* __restrict__ Rx_x_linear,   // R_x @ x (already linear from cuBLAS!)
+    const T* __restrict__ Rh_h_linear,   // R_h @ h_{t-1} (already linear from cuBLAS!)
     const T* __restrict__ Wdelta_x,      // W_delta @ x (linear)
-    const T* __restrict__ log_Rdelta_h,  // log|R_delta @ h_{t-1}|
-    const T* __restrict__ sign_Rdelta_h, // sign(R_delta @ h_{t-1})
+    const T* __restrict__ Rdelta_h_linear, // R_delta @ h_{t-1} (already linear from cuBLAS!)
     const T* __restrict__ b,
     const T* __restrict__ b_delta,
     T* __restrict__ log_h_out,
@@ -281,30 +278,22 @@ __global__ void TripleRGatedUpdateKernel(
     if (idx < total) {
         const int d = idx % dim;
 
-        // Convert R_h @ h to linear
-        float Rh_h_linear = from_log_space(
-            static_cast<float>(log_Rh_h[idx]),
-            static_cast<float>(sign_Rh_h[idx]));
-
-        // Convert R_x @ x to linear
-        float Rx_x_linear = from_log_space(
-            static_cast<float>(log_Rx_x[idx]),
-            static_cast<float>(sign_Rx_x[idx]));
+        // All inputs are already linear from cuBLAS GEMM - no conversion needed!
+        float Rh_h = static_cast<float>(Rh_h_linear[idx]);
+        float Rx_x = static_cast<float>(Rx_x_linear[idx]);
+        float Rdelta_h = static_cast<float>(Rdelta_h_linear[idx]);
 
         // v_t = R_x @ x + R_h @ h_{t-1} + b
-        float v_f = Rx_x_linear + Rh_h_linear + static_cast<float>(b[d]);
+        float v_f = Rx_x + Rh_h + static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v_f);
         float candidate = tanhf(v_f);
 
         // Delta gate: sigmoid(W_delta @ x + R_delta @ h_{t-1} + b_delta)
-        float Rdelta_h_linear = from_log_space(
-            static_cast<float>(log_Rdelta_h[idx]),
-            static_cast<float>(sign_Rdelta_h[idx]));
-        float delta_in = static_cast<float>(Wdelta_x[idx]) + Rdelta_h_linear + static_cast<float>(b_delta[d]);
+        float delta_in = static_cast<float>(Wdelta_x[idx]) + Rdelta_h + static_cast<float>(b_delta[d]);
         float delta_f = 1.0f / (1.0f + expf(-delta_in));
         if (delta_cache) delta_cache[idx] = static_cast<T>(delta_f);
 
-        // h_{t-1} in linear
+        // h_{t-1} in linear (still need to convert from log space)
         float h_prev_linear = from_log_space(
             static_cast<float>(log_h_prev[idx]),
             static_cast<float>(sign_h_prev[idx]));
@@ -600,7 +589,8 @@ void LogSpaceTripleRForward<T>::Run(
     T* output,
     T* v,
     T* delta_cache,
-    T* compete_cache) {
+    T* compete_cache,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -613,67 +603,39 @@ void LogSpaceTripleRForward<T>::Run(
     const int total_blocks = (TBD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Decompose all three R matrices
-    const int R_blocks = (DD + block_size - 1) / block_size;
+    // =========================================================================
+    // WORKSPACE LAYOUT (OPTIMIZED - uses cuBLAS GEMM instead of log-space matmul!):
+    // Input projections:   [all_Rx_x: TBD] [all_Wdelta_x: TBD]
+    // Per-step scratch:    [Rh_h_linear: BD] [Rdelta_h_linear: BD]
+    //                      [h_prev_linear: BD] [w_out_h: BD] [h_linear: BD]
+    // Total: 2*TBD + 5*BD
+    // =========================================================================
+    T* all_Rx_x = workspace;
+    T* all_Wdelta_x = workspace + TBD;
 
-    T *log_Rh_pos, *log_Rh_neg;
-    T *log_Rx_pos, *log_Rx_neg;
-    T *log_Rdelta_pos, *log_Rdelta_neg;
-
-    cudaMalloc(&log_Rh_pos, DD * sizeof(T));
-    cudaMalloc(&log_Rh_neg, DD * sizeof(T));
-    cudaMalloc(&log_Rx_pos, DD * sizeof(T));
-    cudaMalloc(&log_Rx_neg, DD * sizeof(T));
-    cudaMalloc(&log_Rdelta_pos, DD * sizeof(T));
-    cudaMalloc(&log_Rdelta_neg, DD * sizeof(T));
-
-    DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(DD, R_h, log_Rh_pos, log_Rh_neg);
-    DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(DD, R_x, log_Rx_pos, log_Rx_neg);
-    DecomposeRKernel<T><<<R_blocks, block_size, 0, stream_>>>(DD, R_delta, log_Rdelta_pos, log_Rdelta_neg);
+    T* Rh_h_linear = workspace + 2 * TBD;
+    T* Rdelta_h_linear = workspace + 2 * TBD + BD;
+    T* h_prev_linear = workspace + 2 * TBD + 2 * BD;
+    T* w_out_h = workspace + 2 * TBD + 3 * BD;
+    T* h_linear = workspace + 2 * TBD + 4 * BD;
 
     // =========================================================================
-    // Haste pattern: Pre-compute ALL input projections
+    // Pre-compute ALL input projections using cuBLAS (tensor-core accelerated!)
+    // No log-space decomposition needed - we stay in linear space!
     // =========================================================================
 
-    // Workspace for pre-computed projections (all timesteps)
-    T *all_log_x, *all_sign_x;
-    T *all_log_Rx_x, *all_sign_Rx_x;
-    T *all_Wdelta_x;
-    T *log_Rh_h, *sign_Rh_h;
-    T *log_Rdelta_h, *sign_Rdelta_h;
-    T *w_out_h, *h_linear;
-
-    cudaMalloc(&all_log_x, TBD * sizeof(T));
-    cudaMalloc(&all_sign_x, TBD * sizeof(T));
-    cudaMalloc(&all_log_Rx_x, TBD * sizeof(T));
-    cudaMalloc(&all_sign_Rx_x, TBD * sizeof(T));
-    cudaMalloc(&all_Wdelta_x, TBD * sizeof(T));
-    cudaMalloc(&log_Rh_h, BD * sizeof(T));
-    cudaMalloc(&sign_Rh_h, BD * sizeof(T));
-    cudaMalloc(&log_Rdelta_h, BD * sizeof(T));
-    cudaMalloc(&sign_Rdelta_h, BD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMalloc(&h_linear, BD * sizeof(T));
+    // Pre-compute R_x @ x for ALL timesteps in one GEMM (x is linear input)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, R_x, dim_, x, dim_, &beta_zero, all_Rx_x, dim_);
 
     // Pre-compute W_delta @ x for ALL timesteps in one GEMM
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_Wdelta_x, dim_);
 
-    // Pre-compute log(x), sign(x) for ALL timesteps
-    LinearToLogKernel<T><<<total_blocks, block_size, 0, stream_>>>(TBD, x, all_log_x, all_sign_x);
-
-    // Pre-compute R_x @ x in log space for ALL timesteps
-    for (int t = 0; t < steps; ++t) {
-        dim3 matmul_grid(batch_size_, dim_);
-        int smem_size = 2 * block_size * sizeof(float);
-        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, log_Rx_pos, log_Rx_neg,
-            all_log_x + t * BD, all_sign_x + t * BD,
-            all_log_Rx_x + t * BD, all_sign_Rx_x + t * BD);
-    }
-
     // =========================================================================
-    // Sequential loop: Only recurrent operations (no input GEMMs per step)
+    // Sequential loop: Use cuBLAS for recurrent operations
+    // OPTIMIZATION: Convert h to linear once, then use tensor-core accelerated GEMM
+    // This is O(B*D) transcendentals instead of O(B*D^2) in LogSpaceMatVecKernel!
     // =========================================================================
 
     for (int t = 0; t < steps; ++t) {
@@ -687,27 +649,26 @@ void LogSpaceTripleRForward<T>::Run(
         T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
 
         // Get pre-computed projections for this timestep
-        const T* log_Rx_x_t = all_log_Rx_x + t * BD;
-        const T* sign_Rx_x_t = all_sign_Rx_x + t * BD;
+        const T* Rx_x_t = all_Rx_x + t * BD;
         const T* Wdelta_x_t = all_Wdelta_x + t * BD;
 
-        // R_h @ h_{t-1} in log space (recurrent - can't pre-compute)
-        dim3 matmul_grid(batch_size_, dim_);
-        int smem_size = 2 * block_size * sizeof(float);
-        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, log_Rh_pos, log_Rh_neg,
-            log_h_prev, sign_h_prev, log_Rh_h, sign_Rh_h);
+        // OPTIMIZED: Convert h_prev to linear ONCE, then use cuBLAS GEMM for both R matrices
+        LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            BD, log_h_prev, sign_h_prev, h_prev_linear);
 
-        // R_delta @ h_{t-1} in log space (recurrent - can't pre-compute)
-        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, log_Rdelta_pos, log_Rdelta_neg,
-            log_h_prev, sign_h_prev, log_Rdelta_h, sign_Rdelta_h);
+        // R_h @ h_prev using cuBLAS (tensor-core accelerated!)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev_linear, dim_, &beta_zero, Rh_h_linear, dim_);
 
-        // Gated update (no input projection needed - already pre-computed)
+        // R_delta @ h_prev using cuBLAS (tensor-core accelerated!)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_delta, dim_, h_prev_linear, dim_, &beta_zero, Rdelta_h_linear, dim_);
+
+        // Gated update (now takes linear inputs from cuBLAS!)
         TripleRGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev,
-            log_Rx_x_t, sign_Rx_x_t, log_Rh_h, sign_Rh_h,
-            Wdelta_x_t, log_Rdelta_h, sign_Rdelta_h,
+            Rx_x_t, Rh_h_linear,
+            Wdelta_x_t, Rdelta_h_linear,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
         // Convert h_t to linear for W_out
@@ -724,25 +685,7 @@ void LogSpaceTripleRForward<T>::Run(
             batch_size_, dim_, n_groups_, group_size,
             log_h_t, sign_h_t, w_out_h, out_t, compete_t);
     }
-
-    // Free workspace
-    cudaFree(log_Rh_pos);
-    cudaFree(log_Rh_neg);
-    cudaFree(log_Rx_pos);
-    cudaFree(log_Rx_neg);
-    cudaFree(log_Rdelta_pos);
-    cudaFree(log_Rdelta_neg);
-    cudaFree(all_log_x);
-    cudaFree(all_sign_x);
-    cudaFree(all_log_Rx_x);
-    cudaFree(all_sign_Rx_x);
-    cudaFree(all_Wdelta_x);
-    cudaFree(log_Rh_h);
-    cudaFree(sign_Rh_h);
-    cudaFree(log_Rdelta_h);
-    cudaFree(sign_Rdelta_h);
-    cudaFree(w_out_h);
-    cudaFree(h_linear);
+    // Workspace is managed by caller - no cudaFree needed
 }
 
 // =============================================================================

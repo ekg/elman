@@ -1195,6 +1195,13 @@ std::vector<Tensor> log_compute_full_forward(
     // Workspace for R decomposition
     Tensor log_R_pos = torch::empty({dim, dim}, options);
     Tensor log_R_neg = torch::empty({dim, dim}, options);
+    // Workspace layout (OPTIMIZED - uses cuBLAS GEMM instead of log-space matmul):
+    //   [all_wx_x: TBD] [all_delta_tmp: TBD] [w_out_h: BD]
+    //   [Rh_h_linear: BD] [h_linear: BD]
+    // Total: 2*T*B*dim + 3*B*dim
+    const int64_t BD = batch_size * dim;
+    const int64_t TBD = time_steps * BD;
+    Tensor workspace = torch::empty({2 * TBD + 3 * BD}, options);
 
     log_h[0] = log_h0;
     sign_h[0] = sign_h0;
@@ -1223,7 +1230,8 @@ std::vector<Tensor> log_compute_full_forward(
             training ? ptr<scalar_t>(delta_cache) : nullptr,
             training ? ptr<scalar_t>(compete_cache) : nullptr,
             ptr<scalar_t>(log_R_pos),
-            ptr<scalar_t>(log_R_neg));
+            ptr<scalar_t>(log_R_neg),
+            ptr<scalar_t>(workspace));
     }));
 
     return {log_h, sign_h, output, v, delta_cache, compete_cache};
@@ -1352,6 +1360,14 @@ std::vector<Tensor> logspace_triple_r_forward(
                                   : torch::empty({0}, options);
     Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
                                     : torch::empty({0}, options);
+    // Workspace layout (OPTIMIZED - uses cuBLAS GEMM instead of log-space matmul!):
+    // Input projections: [all_Rx_x: TBD] [all_Wdelta_x: TBD]
+    // Per-step scratch:  [Rh_h_linear: BD] [Rdelta_h_linear: BD]
+    //                    [h_prev_linear: BD] [w_out_h: BD] [h_linear: BD]
+    // Total: 2*T*B*dim + 5*B*dim
+    const int64_t BD = batch_size * dim;
+    const int64_t TBD = time_steps * BD;
+    Tensor workspace = torch::empty({2 * TBD + 5 * BD}, options);
 
     log_h[0] = log_h0;
     sign_h[0] = sign_h0;
@@ -1379,7 +1395,8 @@ std::vector<Tensor> logspace_triple_r_forward(
             ptr<scalar_t>(output),
             training ? ptr<scalar_t>(v) : nullptr,
             training ? ptr<scalar_t>(delta_cache) : nullptr,
-            training ? ptr<scalar_t>(compete_cache) : nullptr);
+            training ? ptr<scalar_t>(compete_cache) : nullptr,
+            ptr<scalar_t>(workspace));
     }));
 
     return {log_h, sign_h, output, v, delta_cache, compete_cache};

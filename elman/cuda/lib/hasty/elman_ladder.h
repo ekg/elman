@@ -441,7 +441,8 @@ struct LogComputeFullElmanForward {
         T* compete_cache,    // [T, B, dim]
         // Workspace for decomposed R
         T* log_R_pos,        // [dim, dim] log(max(R, 0))
-        T* log_R_neg);       // [dim, dim] log(max(-R, 0))
+        T* log_R_neg,        // [dim, dim] log(max(-R, 0))
+        T* workspace);       // [2*T*B*dim + 4*B*dim] for pre-computed projections
 
 private:
     bool training_;
@@ -527,7 +528,8 @@ struct LogSpaceTripleRForward {
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* compete_cache);   // [T, B, dim]
+        T* compete_cache,    // [T, B, dim]
+        T* workspace);       // [2*T*B*dim + 5*B*dim] - uses cuBLAS GEMM
 
 private:
     bool training_;

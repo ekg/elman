@@ -268,7 +268,7 @@ __global__ void LogSpaceMatVecKernel(
 }
 
 // =============================================================================
-// Kernel: Log-space gated update
+// Kernel: Log-space gated update (OPTIMIZED: takes linear Rh_h from cuBLAS GEMM)
 // h_new = (1 - delta) * h_prev + delta * tanh(W_x @ x + R_h @ h_prev + b)
 // =============================================================================
 
@@ -279,8 +279,7 @@ __global__ void LogSpaceGatedUpdateKernel(
     const T* __restrict__ log_h_prev,  // [B, dim]
     const T* __restrict__ sign_h_prev, // [B, dim]
     const T* __restrict__ wx_x,        // [B, dim] W_x @ x (linear)
-    const T* __restrict__ log_Rh_h,    // [B, dim] log|R_h @ h_prev| (from log matmul)
-    const T* __restrict__ sign_Rh_h,   // [B, dim] sign(R_h @ h_prev)
+    const T* __restrict__ Rh_h_linear, // [B, dim] R_h @ h_prev (already linear from cuBLAS!)
     const T* __restrict__ delta_raw,   // [B, dim] W_delta @ x (linear)
     const T* __restrict__ b,           // [dim]
     const T* __restrict__ b_delta,     // [dim]
@@ -300,13 +299,11 @@ __global__ void LogSpaceGatedUpdateKernel(
         float delta_f = 1.0f / (1.0f + expf(-delta_in));
         if (delta_cache) delta_cache[idx] = static_cast<T>(delta_f);
 
-        // Convert R_h @ h_prev to linear for tanh computation
-        float Rh_h_linear = from_log_space(
-            static_cast<float>(log_Rh_h[idx]),
-            static_cast<float>(sign_Rh_h[idx]));
+        // R_h @ h_prev is already linear (from cuBLAS GEMM) - no conversion needed!
+        float Rh_h = static_cast<float>(Rh_h_linear[idx]);
 
         // Candidate: tanh(W_x @ x + R_h @ h_prev + b)
-        float v_f = static_cast<float>(wx_x[idx]) + Rh_h_linear + static_cast<float>(b[d]);
+        float v_f = static_cast<float>(wx_x[idx]) + Rh_h + static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v_f);
         float candidate = tanhf(v_f);
 
@@ -613,7 +610,8 @@ void LogComputeFullElmanForward<T>::Run(
     T* delta_cache,
     T* compete_cache,
     T* log_R_pos,
-    T* log_R_neg) {
+    T* log_R_neg,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -630,17 +628,16 @@ void LogComputeFullElmanForward<T>::Run(
         dim_, R_h, log_R_pos, log_R_neg);
 
     // =========================================================================
-    // Haste pattern: Pre-compute ALL input projections in big GEMMs
+    // WORKSPACE LAYOUT (OPTIMIZED - no log-space matmul!):
+    //   [all_wx_x: TBD] [all_delta_tmp: TBD] [w_out_h: BD]
+    //   [Rh_h_linear: BD] [h_linear: BD]
+    // Total: 2*TBD + 3*BD = 2*steps*BD + 3*BD
     // =========================================================================
-
-    // Workspace for pre-computed projections (all timesteps)
-    T *all_wx_x, *all_delta_tmp, *w_out_h, *log_Rh_h, *sign_Rh_h, *h_linear;
-    cudaMalloc(&all_wx_x, TBD * sizeof(T));
-    cudaMalloc(&all_delta_tmp, TBD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMalloc(&log_Rh_h, BD * sizeof(T));
-    cudaMalloc(&sign_Rh_h, BD * sizeof(T));
-    cudaMalloc(&h_linear, BD * sizeof(T));
+    T* all_wx_x = workspace;
+    T* all_delta_tmp = workspace + TBD;
+    T* w_out_h = workspace + 2 * TBD;
+    T* log_Rh_h = workspace + 2 * TBD + BD;  // Now used as Rh_h_linear
+    T* h_linear = workspace + 2 * TBD + 2 * BD;
 
     // Pre-compute W_x @ x for ALL timesteps in one GEMM
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -652,7 +649,14 @@ void LogComputeFullElmanForward<T>::Run(
 
     // =========================================================================
     // Sequential loop: Only recurrent operations (no input GEMMs per step)
+    // OPTIMIZATION: Use cuBLAS GEMM instead of LogSpaceMatVecKernel!
+    // This is faster because cuBLAS uses tensor cores, and we only do O(B*D)
+    // transcendentals instead of O(B*D^2) in the log-space kernel.
     // =========================================================================
+
+    // Reuse h_linear for h_prev_linear (single conversion per timestep)
+    T* h_prev_linear = h_linear;  // Alias - reuse the same buffer
+    T* Rh_h_linear = log_Rh_h;    // Reuse log_Rh_h buffer for linear result
 
     for (int t = 0; t < steps; ++t) {
         const T* log_h_prev = log_h + t * BD;
@@ -668,17 +672,19 @@ void LogComputeFullElmanForward<T>::Run(
         const T* wx_x_t = all_wx_x + t * BD;
         const T* delta_tmp_t = all_delta_tmp + t * BD;
 
-        // R_h @ h_prev in log space (recurrent - can't pre-compute)
-        dim3 matmul_grid(batch_size_, dim_);
-        int smem_size = 2 * block_size * sizeof(float);
-        LogSpaceMatVecKernel<T><<<matmul_grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, log_R_pos, log_R_neg,
-            log_h_prev, sign_h_prev, log_Rh_h, sign_Rh_h);
+        // OPTIMIZED: Convert h_prev to linear ONCE, then use cuBLAS GEMM
+        // This is O(B*D) transcendentals vs O(B*D^2) in LogSpaceMatVecKernel!
+        LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            BD, log_h_prev, sign_h_prev, h_prev_linear);
 
-        // Gated update (no input GEMM needed - already pre-computed)
+        // R_h @ h_prev using cuBLAS (tensor-core accelerated!)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev_linear, dim_, &beta_zero, Rh_h_linear, dim_);
+
+        // Gated update (now takes linear Rh_h instead of log-space)
         LogSpaceGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev,
-            wx_x_t, log_Rh_h, sign_Rh_h, delta_tmp_t,
+            wx_x_t, Rh_h_linear, delta_tmp_t,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
         // Convert h to linear for W_out multiplication using GPU kernel
@@ -696,13 +702,7 @@ void LogComputeFullElmanForward<T>::Run(
             batch_size_, dim_, n_groups_, group_size,
             log_h_t, sign_h_t, w_out_h, out_t, compete_t);
     }
-
-    cudaFree(all_wx_x);
-    cudaFree(all_delta_tmp);
-    cudaFree(w_out_h);
-    cudaFree(log_Rh_h);
-    cudaFree(sign_Rh_h);
-    cudaFree(h_linear);
+    // Workspace is managed by caller - no cudaFree needed
 }
 
 // =============================================================================
