@@ -233,6 +233,18 @@ __global__ void DiagonalSelectiveGatedBackward(
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 }  // anonymous namespace
 
 
@@ -368,7 +380,8 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     T* dW_delta,
     T* dW_out,
     T* db,
-    T* db_delta) {
+    T* db_delta,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -378,31 +391,32 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Workspace
-    T *dv, *d_delta_raw, *dh_recurrent, *dh_prev;
-    T *dh_compete, *d_w_out_h, *w_out_h;
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&d_delta_raw, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMalloc(&dh_prev, BD * sizeof(T));
-    cudaMalloc(&dh_compete, BD * sizeof(T));
-    cudaMalloc(&d_w_out_h, BD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // ==========================================================================
+    // WORKSPACE LAYOUT: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
+    //                   [dh_compete: BD] [d_w_out_h: BD] [w_out_h: BD]
+    //                   [dr_h_float: dim] [db_float: dim] [db_delta_float: dim]
+    // ==========================================================================
+    T* dv = workspace;
+    T* d_delta_raw = workspace + BD;
+    T* dh_recurrent = workspace + 2 * BD;
+    T* dh_prev = workspace + 3 * BD;
+    T* dh_compete = workspace + 4 * BD;
+    T* d_w_out_h = workspace + 5 * BD;
+    T* w_out_h = workspace + 6 * BD;
+    float* dr_h_float = reinterpret_cast<float*>(workspace + 7 * BD);
+    float* db_float = dr_h_float + dim_;
+    float* db_delta_float = db_float + dim_;
 
-    // Float buffers for atomic gradients
-    float *dr_h_float, *db_float, *db_delta_float;
-    cudaMalloc(&dr_h_float, dim_ * sizeof(float));
-    cudaMalloc(&db_float, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_float, dim_ * sizeof(float));
-    cudaMemset(dr_h_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
+    // Initialize workspace (all async)
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
+    cudaMemsetAsync(dr_h_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
 
-    // Zero weight gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+    // Zero weight gradients (async)
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -445,8 +459,8 @@ void DiagonalSelectiveElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
-        // dh_recurrent for next iteration
-        cudaMemcpy(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        // dh_recurrent for next iteration (async)
+        cudaMemcpyAsync(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
         // Weight gradients
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
@@ -455,26 +469,11 @@ void DiagonalSelectiveElmanBackward<T>::Run(
             dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_t, dim_, &alpha, dW_delta, dim_);
     }
 
-    // Copy float gradients to T type
-    cudaMemset(dr_h, 0, dim_ * sizeof(T));
-    cudaMemset(db, 0, dim_ * sizeof(T));
-    cudaMemset(db_delta, 0, dim_ * sizeof(T));
-    if constexpr (std::is_same<T, float>::value) {
-        cudaMemcpy(dr_h, dr_h_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(db_delta, db_delta_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    }
-
-    cudaFree(dv);
-    cudaFree(d_delta_raw);
-    cudaFree(dh_recurrent);
-    cudaFree(dh_prev);
-    cudaFree(dh_compete);
-    cudaFree(d_w_out_h);
-    cudaFree(w_out_h);
-    cudaFree(dr_h_float);
-    cudaFree(db_float);
-    cudaFree(db_delta_float);
+    // Copy float gradients to T type using parallel kernel
+    const int bias_blocks = (dim_ + block_size - 1) / block_size;
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, dr_h_float, dr_h);
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_delta_float, db_delta);
 }
 
 // Explicit template instantiations

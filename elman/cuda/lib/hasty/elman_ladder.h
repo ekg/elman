@@ -147,7 +147,8 @@ struct GatedElmanBackward {
         T* dW_h,
         T* dW_delta,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [4*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
@@ -224,7 +225,8 @@ struct SelectiveElmanBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [7*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
@@ -303,7 +305,8 @@ struct DiagonalSelectiveElmanBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [7*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
@@ -479,7 +482,8 @@ struct LogComputeFullElmanBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // workspace for backward
 
 private:
     int batch_size_;
@@ -564,7 +568,8 @@ struct LogSpaceTripleRBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // workspace for backward
 
 private:
     int batch_size_;
@@ -663,7 +668,8 @@ struct LogPolyElmanBackward {
         T* dW_delta,
         T* db,
         T* db_delta,
-        T* d_log_gamma);            // [dim] gradient for RMSNorm scale
+        T* d_log_gamma,             // [dim] gradient for RMSNorm scale
+        T* workspace);              // workspace for backward
 
 private:
     int batch_size_;
@@ -762,7 +768,8 @@ struct LogSelectiveElmanBackward {
         T* dW_out,
         T* db,
         T* db_delta,
-        T* d_log_gamma);            // [dim] gradient for RMSNorm scale
+        T* d_log_gamma,             // [dim] gradient for RMSNorm scale
+        T* workspace);              // workspace for backward
 
 private:
     int batch_size_;
@@ -862,7 +869,8 @@ struct LogDiagSelectiveElmanBackward {
         T* dW_out,
         T* db,
         T* db_delta,
-        T* d_log_gamma);        // [dim] gradient for RMSNorm scale
+        T* d_log_gamma,         // [dim] gradient for RMSNorm scale
+        T* workspace);          // workspace for backward
 
 private:
     int batch_size_;
@@ -939,7 +947,8 @@ struct FullRecurrenceElmanBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [8*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
@@ -1021,7 +1030,8 @@ struct LinearTripleRBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [10*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;

@@ -153,6 +153,18 @@ __global__ void GatedElmanBackwardKernel(
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 }  // anonymous namespace
 
 
@@ -269,7 +281,8 @@ void GatedElmanBackward<T>::Run(
     T* dW_h,
     T* dW_delta,
     T* db,
-    T* db_delta) {
+    T* db_delta,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -278,25 +291,26 @@ void GatedElmanBackward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
-    // Workspace
-    T *dv, *d_delta_raw, *dh_recurrent, *dh_prev;
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&d_delta_raw, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMalloc(&dh_prev, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // ==========================================================================
+    // WORKSPACE LAYOUT: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
+    //                   [db_float: dim floats] [db_delta_float: dim floats]
+    // ==========================================================================
+    T* dv = workspace;
+    T* d_delta_raw = workspace + BD;
+    T* dh_recurrent = workspace + 2 * BD;
+    T* dh_prev = workspace + 3 * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + 4 * BD);
+    float* db_delta_float = db_float + dim_;
 
-    // Float buffers for bias gradients
-    float *db_float, *db_delta_float;
-    cudaMalloc(&db_float, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_float, dim_ * sizeof(float));
-    cudaMemset(db_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
+    // Initialize workspace (all async on same stream)
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
+    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
 
-    // Zero gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_h, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
+    // Zero weight gradients (async)
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -344,9 +358,8 @@ void GatedElmanBackward<T>::Run(
             &beta_zero,
             dh_recurrent, dim_);
 
-        // Add dh_prev contribution - need a kernel to add
-        // For now, copy and rely on kernel doing the accumulation next iteration
-        cudaMemcpy(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        // Add dh_prev contribution (async copy)
+        cudaMemcpyAsync(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
         // dW_x += dv @ x_t^T
         blas<T>::gemm(
@@ -382,20 +395,10 @@ void GatedElmanBackward<T>::Run(
             dW_delta, dim_);
     }
 
-    // Copy float bias gradients to T type
-    cudaMemset(db, 0, dim_ * sizeof(T));
-    cudaMemset(db_delta, 0, dim_ * sizeof(T));
-    if constexpr (std::is_same<T, float>::value) {
-        cudaMemcpy(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        cudaMemcpy(db_delta, db_delta_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    }
-
-    cudaFree(dv);
-    cudaFree(d_delta_raw);
-    cudaFree(dh_recurrent);
-    cudaFree(dh_prev);
-    cudaFree(db_float);
-    cudaFree(db_delta_float);
+    // Copy float bias gradients to T type using parallel kernel
+    const int bias_blocks = (dim_ + block_size - 1) / block_size;
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_delta_float, db_delta);
 }
 
 // Explicit template instantiations

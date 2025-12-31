@@ -598,6 +598,18 @@ __global__ void LogPolyGatedBackwardKernel(
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 }  // anonymous namespace
 
 
@@ -795,7 +807,8 @@ struct LogPolyElmanBackward {
         T* dW_delta,
         T* db,
         T* db_delta,
-        T* d_log_gamma) {        // [dim] gradient for RMSNorm scale
+        T* d_log_gamma,          // [dim] gradient for RMSNorm scale
+        T* workspace) {
 
         static const T alpha_one = static_cast<T>(1.0);
         static const T beta_zero = static_cast<T>(0.0);
@@ -804,34 +817,32 @@ struct LogPolyElmanBackward {
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
 
-        // Workspace
-        T *d_log_h_recurrent, *d_log_h_prev, *d_wx_x, *d_alpha_raw, *d_delta_raw;
-        T *d_log_h_from_rmsnorm;  // NEW: gradient after RMSNorm backward
-        cudaMalloc(&d_log_h_recurrent, BD * sizeof(T));
-        cudaMalloc(&d_log_h_prev, BD * sizeof(T));
-        cudaMalloc(&d_wx_x, BD * sizeof(T));
-        cudaMalloc(&d_alpha_raw, BD * sizeof(T));
-        cudaMalloc(&d_delta_raw, BD * sizeof(T));
-        cudaMalloc(&d_log_h_from_rmsnorm, BD * sizeof(T));
-        cudaMemset(d_log_h_recurrent, 0, BD * sizeof(T));
+        // Workspace layout: 6 * BD * sizeof(T) + 5 * dim_ * sizeof(float)
+        T* d_log_h_recurrent = workspace;
+        T* d_log_h_prev = d_log_h_recurrent + BD;
+        T* d_wx_x = d_log_h_prev + BD;
+        T* d_alpha_raw = d_wx_x + BD;
+        T* d_delta_raw = d_alpha_raw + BD;
+        T* d_log_h_from_rmsnorm = d_delta_raw + BD;
 
-        // Float buffers for atomic gradients
-        float *d_log_r_h_float, *db_float, *db_delta_float, *db_alpha_float, *d_log_gamma_float;
-        cudaMalloc(&d_log_r_h_float, dim_ * sizeof(float));
-        cudaMalloc(&db_float, dim_ * sizeof(float));
-        cudaMalloc(&db_delta_float, dim_ * sizeof(float));
-        cudaMalloc(&db_alpha_float, dim_ * sizeof(float));
-        cudaMalloc(&d_log_gamma_float, dim_ * sizeof(float));
-        cudaMemset(d_log_r_h_float, 0, dim_ * sizeof(float));
-        cudaMemset(db_float, 0, dim_ * sizeof(float));
-        cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
-        cudaMemset(db_alpha_float, 0, dim_ * sizeof(float));
-        cudaMemset(d_log_gamma_float, 0, dim_ * sizeof(float));
+        // Float buffers for atomic gradients (after T buffers)
+        float* d_log_r_h_float = reinterpret_cast<float*>(d_log_h_from_rmsnorm + BD);
+        float* db_float = d_log_r_h_float + dim_;
+        float* db_delta_float = db_float + dim_;
+        float* db_alpha_float = db_delta_float + dim_;
+        float* d_log_gamma_float = db_alpha_float + dim_;
+
+        cudaMemsetAsync(d_log_h_recurrent, 0, BD * sizeof(T), stream_);
+        cudaMemsetAsync(d_log_r_h_float, 0, dim_ * sizeof(float), stream_);
+        cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+        cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
+        cudaMemsetAsync(db_alpha_float, 0, dim_ * sizeof(float), stream_);
+        cudaMemsetAsync(d_log_gamma_float, 0, dim_ * sizeof(float), stream_);
 
         // Zero weight gradients
-        cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-        cudaMemset(dW_alpha, 0, dim_ * dim_ * sizeof(T));
-        cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
+        cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+        cudaMemsetAsync(dW_alpha, 0, dim_ * dim_ * sizeof(T), stream_);
+        cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
 
         // RMSNorm backward kernel config
         const int rmsnorm_block = 256;
@@ -905,27 +916,14 @@ struct LogPolyElmanBackward {
                 dim_, dim_, batch_size_, &alpha_one, d_delta_raw, dim_, x_t, dim_, &alpha_one, dW_delta, dim_);
 
             // Copy for next iteration
-            cudaMemcpy(d_log_h_recurrent, d_log_h_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+            cudaMemcpyAsync(d_log_h_recurrent, d_log_h_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
         }
 
-        // Copy float gradients to output
-        if constexpr (std::is_same<T, float>::value) {
-            cudaMemcpy(d_log_r_h, d_log_r_h_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-            cudaMemcpy(d_log_gamma, d_log_gamma_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-        }
-
-        cudaFree(d_log_h_recurrent);
-        cudaFree(d_log_h_prev);
-        cudaFree(d_wx_x);
-        cudaFree(d_alpha_raw);
-        cudaFree(d_delta_raw);
-        cudaFree(d_log_h_from_rmsnorm);
-        cudaFree(d_log_r_h_float);
-        cudaFree(db_float);
-        cudaFree(db_delta_float);
-        cudaFree(db_alpha_float);
-        cudaFree(d_log_gamma_float);
+        // Copy float gradients to output type using kernel
+        const int copy_blocks = (dim_ + block_size - 1) / block_size;
+        CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, d_log_r_h_float, d_log_r_h);
+        CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
+        CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, d_log_gamma_float, d_log_gamma);
     }
 };
 

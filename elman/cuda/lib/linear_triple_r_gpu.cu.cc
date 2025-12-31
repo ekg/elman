@@ -235,6 +235,18 @@ __global__ void LinearTripleRGatedBackward(
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 }  // anonymous namespace
 
 
@@ -382,7 +394,8 @@ void LinearTripleRBackward<T>::Run(
     T* dW_delta,
     T* dW_out,
     T* db,
-    T* db_delta) {
+    T* db_delta,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -393,33 +406,38 @@ void LinearTripleRBackward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
-    // Zero out weight gradients
-    cudaMemset(dR_h, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dR_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dR_delta, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+    // ==========================================================================
+    // WORKSPACE LAYOUT: [w_out_h: BD] [dh_compete: BD] [d_w_out_h: BD] [dv: BD]
+    //                   [d_delta_raw: BD] [dh_prev_gated: BD] [dh_recurrent: BD]
+    //                   [dh_rh: BD] [dh_rdelta: BD] [dh_wout: BD] [dh: BD]
+    //                   [db_f: dim floats] [db_delta_f: dim floats]
+    // Total: 11*BD + 2*dim floats
+    // ==========================================================================
+    T* w_out_h = workspace;
+    T* dh_compete = workspace + BD;
+    T* d_w_out_h = workspace + 2 * BD;
+    T* dv = workspace + 3 * BD;
+    T* d_delta_raw = workspace + 4 * BD;
+    T* dh_prev_gated = workspace + 5 * BD;
+    T* dh_recurrent = workspace + 6 * BD;
+    T* dh_rh = workspace + 7 * BD;
+    T* dh_rdelta = workspace + 8 * BD;
+    T* dh_wout = workspace + 9 * BD;
+    T* dh = workspace + 10 * BD;
+    float* db_f = reinterpret_cast<float*>(workspace + 11 * BD);
+    float* db_delta_f = db_f + dim_;
 
-    // Float buffers for bias gradients
-    float *db_f, *db_delta_f;
-    cudaMalloc(&db_f, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_f, dim_ * sizeof(float));
-    cudaMemset(db_f, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_f, 0, dim_ * sizeof(float));
+    // Initialize workspace (all async)
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
+    cudaMemsetAsync(db_f, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_delta_f, 0, dim_ * sizeof(float), stream_);
 
-    // Workspace
-    T *w_out_h, *dh_compete, *d_w_out_h, *dv, *d_delta_raw, *dh_prev_gated, *dh_recurrent;
-    T *dh_rh, *dh_rdelta;
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMalloc(&dh_compete, BD * sizeof(T));
-    cudaMalloc(&d_w_out_h, BD * sizeof(T));
-    cudaMalloc(&dv, BD * sizeof(T));
-    cudaMalloc(&d_delta_raw, BD * sizeof(T));
-    cudaMalloc(&dh_prev_gated, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMalloc(&dh_rh, BD * sizeof(T));
-    cudaMalloc(&dh_rdelta, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // Zero out weight gradients (async)
+    cudaMemsetAsync(dR_h, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dR_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dR_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -446,21 +464,18 @@ void LinearTripleRBackward<T>::Run(
             dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_t, dim_, &beta_one, dW_out, dim_);
 
         // dh from W_out path
-        T* dh_wout;
-        cudaMalloc(&dh_wout, BD * sizeof(T));
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &beta_zero, dh_wout, dim_);
 
-        // Combine dh
-        T* dh;
-        cudaMalloc(&dh, BD * sizeof(T));
-        cudaMemcpy(dh, dh_compete, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        // Combine dh = dh_compete + dh_wout
+        cudaMemcpyAsync(dh, dh_compete, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
         VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_wout, dh);
-        cudaFree(dh_wout);
 
         // Backward through gated update
         LinearTripleRGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, v_t, delta_t, dh, dh_recurrent, dv, d_delta_raw, dh_prev_gated, db_f, db_delta_f);
+            batch_size_, dim_, h_prev, v_t, delta_t, dh,
+            (t < steps - 1) ? dh_recurrent : nullptr,
+            dv, d_delta_raw, dh_prev_gated, db_f, db_delta_f);
 
         // dR_x += dv.T @ x_t
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
@@ -491,28 +506,15 @@ void LinearTripleRBackward<T>::Run(
             dim_, batch_size_, dim_, &alpha, R_delta, dim_, d_delta_raw, dim_, &beta_zero, dh_rdelta, dim_);
 
         // dh_recurrent = dh_prev_gated + dh_rh + dh_rdelta
-        cudaMemcpy(dh_recurrent, dh_prev_gated, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        cudaMemcpyAsync(dh_recurrent, dh_prev_gated, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
         VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_rh, dh_recurrent);
         VectorAdd<T><<<(BD + 255) / 256, 256, 0, stream_>>>(BD, dh_rdelta, dh_recurrent);
-
-        cudaFree(dh);
     }
 
-    // Convert float gradients to T
-    cudaMemcpy(db, db_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(db_delta, db_delta_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-
-    cudaFree(db_f);
-    cudaFree(db_delta_f);
-    cudaFree(w_out_h);
-    cudaFree(dh_compete);
-    cudaFree(d_w_out_h);
-    cudaFree(dv);
-    cudaFree(d_delta_raw);
-    cudaFree(dh_prev_gated);
-    cudaFree(dh_recurrent);
-    cudaFree(dh_rh);
-    cudaFree(dh_rdelta);
+    // Convert float gradients to T using parallel kernel
+    const int bias_blocks = (dim_ + block_size - 1) / block_size;
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_f, db);
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_delta_f, db_delta);
 }
 
 // Explicit instantiations

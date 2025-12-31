@@ -212,6 +212,15 @@ std::vector<Tensor> gated_elman_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
+    //            [db_float: dim floats] [db_delta_float: dim floats]
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 4 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "gated_elman_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -235,7 +244,8 @@ std::vector<Tensor> gated_elman_backward(
             ptr<scalar_t>(dW_h),
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dW_h, dW_delta, db, db_delta};
@@ -339,6 +349,14 @@ std::vector<Tensor> selective_elman_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: 7*BD T elements + 2*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 7 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "selective_elman_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -365,7 +383,8 @@ std::vector<Tensor> selective_elman_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dW_h, dW_delta, dW_out, db, db_delta};
@@ -469,6 +488,14 @@ std::vector<Tensor> diagonal_selective_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: 7*BD T elements + 3*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 7 * BD;
+    const int64_t float_bytes = 3 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "diagonal_selective_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -495,7 +522,8 @@ std::vector<Tensor> diagonal_selective_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta};
@@ -600,6 +628,14 @@ std::vector<Tensor> full_recurrence_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: 10*BD T elements + 2*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 10 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "full_recurrence_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -626,7 +662,8 @@ std::vector<Tensor> full_recurrence_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dR_h, dW_delta, dW_out, db, db_delta};
@@ -737,6 +774,14 @@ std::vector<Tensor> linear_triple_r_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: 11*BD T elements + 2*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 11 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "linear_triple_r_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -765,7 +810,8 @@ std::vector<Tensor> linear_triple_r_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dR_h, dR_x, dR_delta, dW_delta, dW_out, db, db_delta};
@@ -1216,6 +1262,14 @@ std::vector<Tensor> log_compute_full_backward(
     Tensor log_R_pos = torch::empty({dim, dim}, options);
     Tensor log_R_neg = torch::empty({dim, dim}, options);
 
+    // Workspace: 9*BD T elements + 2*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 9 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "log_compute_full_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -1245,7 +1299,8 @@ std::vector<Tensor> log_compute_full_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dR_h, dW_delta, dW_out, db, db_delta};
@@ -1361,6 +1416,14 @@ std::vector<Tensor> logspace_triple_r_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: 10*BD T elements + 2*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 10 * BD;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "logspace_triple_r_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -1390,7 +1453,8 @@ std::vector<Tensor> logspace_triple_r_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dR_h, dR_x, dR_delta, dW_delta, dW_out, db, db_delta};
@@ -1514,7 +1578,7 @@ std::vector<Tensor> logspace_polynomial_backward(
     Tensor log_h_unbounded_cache,
     Tensor delta_cache,
     Tensor weight_rh_cache,
-    Tensor log_rms_cache,   // [T, B] cached from forward
+    Tensor h_linear_cache,  // [T, B, dim] cached h_linear for RMSNorm backward
     Tensor d_h_linear) {
 
     const auto time_steps = x.size(0);
@@ -1533,6 +1597,14 @@ std::vector<Tensor> logspace_polynomial_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor d_log_gamma = torch::zeros({dim}, options);
+
+    // Workspace: 6*BD T elements + 5*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 6 * BD;
+    const int64_t float_bytes = 5 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "logspace_polynomial_backward", ([&] {
@@ -1560,7 +1632,7 @@ std::vector<Tensor> logspace_polynomial_backward(
             ptr<scalar_t>(log_h_unbounded_cache),
             ptr<scalar_t>(delta_cache),
             ptr<scalar_t>(weight_rh_cache),
-            ptr<scalar_t>(log_rms_cache),
+            ptr<scalar_t>(h_linear_cache),
             ptr<scalar_t>(d_h_linear),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
@@ -1570,7 +1642,8 @@ std::vector<Tensor> logspace_polynomial_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
-            ptr<scalar_t>(d_log_gamma));
+            ptr<scalar_t>(d_log_gamma),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma};
@@ -1730,6 +1803,14 @@ std::vector<Tensor> logspace_selective_backward(
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor d_log_gamma = torch::zeros({dim}, options);  // NEW
 
+    // Workspace: 9*BD T elements + 5*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 9 * BD;
+    const int64_t float_bytes = 5 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "logspace_selective_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -1770,7 +1851,8 @@ std::vector<Tensor> logspace_selective_backward(
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
-            ptr<scalar_t>(d_log_gamma));
+            ptr<scalar_t>(d_log_gamma),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma};
@@ -1930,6 +2012,14 @@ std::vector<Tensor> logspace_diag_selective_backward(
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor d_log_gamma = torch::zeros({dim}, options);  // NEW
 
+    // Workspace: 9*BD T elements + 5*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 9 * BD;
+    const int64_t float_bytes = 5 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "logspace_diag_selective_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -1970,7 +2060,8 @@ std::vector<Tensor> logspace_diag_selective_backward(
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
-            ptr<scalar_t>(d_log_gamma));
+            ptr<scalar_t>(d_log_gamma),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma};
