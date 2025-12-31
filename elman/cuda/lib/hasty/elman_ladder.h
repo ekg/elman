@@ -64,6 +64,8 @@ struct StockElmanBackward {
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
+    ~StockElmanBackward();
+
     void Run(
         int steps,
         const T* W_x,
@@ -82,7 +84,9 @@ private:
     int batch_size_;
     int dim_;
     cublasHandle_t blas_handle_;
-    cudaStream_t stream_;
+    cudaStream_t sync_stream_;
+    cudaStream_t stream_[2];  // Multi-stream for parallel GEMMs
+    cudaEvent_t event_;
 };
 
 // =============================================================================
@@ -388,7 +392,8 @@ struct LogStorageDiagonalElmanBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [(4*T+4)*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
@@ -1103,7 +1108,8 @@ struct LinearPolynomialBackward {
         T* dW_delta,
         T* dW_out,
         T* db,
-        T* db_delta);
+        T* db_delta,
+        T* workspace);  // [(4*T+5)*B*dim + ceil(4*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;

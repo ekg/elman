@@ -196,7 +196,16 @@ StockElmanBackward<T>::StockElmanBackward(
     : batch_size_(batch_size),
       dim_(dim),
       blas_handle_(blas_handle),
-      stream_(stream) {}
+      sync_stream_(stream) {
+    stream_[0] = stream;  // Use the provided stream
+    stream_[1] = nullptr;
+    event_ = nullptr;
+}
+
+template<typename T>
+StockElmanBackward<T>::~StockElmanBackward() {
+    // No cleanup needed - we don't own the stream
+}
 
 template<typename T>
 void StockElmanBackward<T>::Run(
@@ -211,7 +220,7 @@ void StockElmanBackward<T>::Run(
     T* dW_x,
     T* dW_h,
     T* db,
-    T* workspace) {  // NEW: workspace passed from Python (dv_all + dh_recurrent)
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -221,26 +230,25 @@ void StockElmanBackward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
+    const cudaStream_t stream = stream_[0];
+
     // ==========================================================================
-    // HASTE PATTERN: Batch the GEMMs that can be batched
-    // Workspace layout: [dv_all: T*BD] [dh_recurrent: BD]
+    // HASTE PATTERN: Batched GEMMs with workspace from Python
+    // Workspace layout: [dv_all: T*BD] [dh_recurrent: BD] [db_float: dim floats]
     // ==========================================================================
 
     T* dv_all = workspace;
     T* dh_recurrent = workspace + steps * BD;
-    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
-
-    // Zero weight gradients
-    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
-    cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
-
-    // db_float at end of workspace (after T-typed buffers)
-    // Align to 4 bytes for float access
     float* db_float = reinterpret_cast<float*>(workspace + (steps + 1) * BD);
-    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+
+    // Initialize workspace and weight gradients (all async on same stream)
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream);
+    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream);
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream);
+    cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream);
 
     // ==========================================================================
-    // PASS 1: Compute dv for all timesteps (sequential due to recurrent dependency)
+    // PASS 1: BPTT loop (sequential due to recurrent dependency)
     // ==========================================================================
     for (int t = steps - 1; t >= 0; --t) {
         const T* v_t = v + t * BD;
@@ -248,13 +256,12 @@ void StockElmanBackward<T>::Run(
         T* dv_t = dv_all + t * BD;
 
         // Backward through tanh: compute dv_t and accumulate db
-        StockElmanBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+        StockElmanBackwardKernel<T><<<num_blocks, block_size, 0, stream>>>(
             batch_size_, dim_, v_t, dh_t,
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv_t, db_float);
 
         // dh_recurrent = W_h @ dv_t (must stay in loop - data dependency)
-        // This feeds into the next iteration (t-1)
         if (t > 0) {
             blas<T>::gemm(
                 blas_handle_,
@@ -269,10 +276,10 @@ void StockElmanBackward<T>::Run(
     }
 
     // ==========================================================================
-    // PASS 2: Batch GEMMs across all timesteps (HASTE pattern)
+    // PASS 2: Batch GEMMs across all timesteps
     // ==========================================================================
 
-    // dx = W_x @ dv_all for ALL timesteps in one GEMM
+    // dx = W_x @ dv_all for ALL timesteps
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
@@ -283,7 +290,7 @@ void StockElmanBackward<T>::Run(
         &beta_zero,
         dx, dim_);
 
-    // dW_x = dv_all @ x^T for ALL timesteps in one GEMM
+    // dW_x = dv_all @ x^T
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -294,7 +301,7 @@ void StockElmanBackward<T>::Run(
         &beta_one,
         dW_x, dim_);
 
-    // dW_h = dv_all @ h_prev^T for ALL timesteps in one GEMM
+    // dW_h = dv_all @ h^T
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -306,11 +313,10 @@ void StockElmanBackward<T>::Run(
         dW_h, dim_);
 
     // Copy float bias gradient to T type
-    cudaMemsetAsync(db, 0, dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(db, 0, dim_ * sizeof(T), stream);
     if constexpr (std::is_same<T, float>::value) {
-        cudaMemcpyAsync(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
+        cudaMemcpyAsync(db, db_float, dim_ * sizeof(float), cudaMemcpyDeviceToDevice, stream);
     }
-    // Note: For half/bfloat16, we'd need a conversion kernel. For now, db stays zero for non-float.
 }
 
 // Explicit template instantiations

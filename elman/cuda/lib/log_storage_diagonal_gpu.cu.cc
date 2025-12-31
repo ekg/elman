@@ -79,6 +79,19 @@ __global__ void LogToLinearKernel(
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 // Kernel: Convert gradient w.r.t. h to gradient w.r.t. log_h
 // Since h = sign * exp(log_h), by chain rule: d_log_h = d_h * h
 // STABILITY FIX: Clamp output to prevent explosion when h grows large
@@ -777,7 +790,8 @@ void LogStorageDiagonalElmanBackward<T>::Run(
     T* dW_delta,
     T* dW_out,
     T* db,
-    T* db_delta) {
+    T* db_delta,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -787,40 +801,36 @@ void LogStorageDiagonalElmanBackward<T>::Run(
     const int TBD = steps * BD;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
+    const int dim_blocks = (dim_ + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
     // ==========================================================================
-    // HASTE PATTERN: Batch GEMMs across all timesteps
+    // HASTE PATTERN: Workspace from Python (PyTorch caching allocator)
+    // Layout: [dv_all: TBD][d_delta_all: TBD][d_w_out_h_all: TBD][h_linear_all: TBD]
+    //         [dh_linear: BD][dh_recurrent: BD][w_out_h: BD][h_prev_linear: BD]
+    //         [dr_h_float: dim floats][db_float: dim floats][db_delta_float: dim floats]
     // ==========================================================================
 
-    // Zero weight gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+    T* dv_all = workspace;
+    T* d_delta_all = dv_all + TBD;
+    T* d_w_out_h_all = d_delta_all + TBD;
+    T* h_linear_all = d_w_out_h_all + TBD;
+    T* dh_linear = h_linear_all + TBD;
+    T* dh_recurrent = dh_linear + BD;
+    T* w_out_h = dh_recurrent + BD;
+    T* h_prev_linear = w_out_h + BD;
+    float* dr_h_float = reinterpret_cast<float*>(h_prev_linear + BD);
+    float* db_float = dr_h_float + dim_;
+    float* db_delta_float = db_float + dim_;
 
-    // Float buffers for atomic gradients
-    float *dr_h_float, *db_float, *db_delta_float;
-    cudaMalloc(&dr_h_float, dim_ * sizeof(float));
-    cudaMalloc(&db_float, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_float, dim_ * sizeof(float));
-    cudaMemset(dr_h_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_float, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_float, 0, dim_ * sizeof(float));
-
-    // Workspace for ALL timesteps (Haste pattern)
-    T *dv_all, *d_delta_all, *d_w_out_h_all, *h_linear_all;
-    cudaMalloc(&dv_all, TBD * sizeof(T));
-    cudaMalloc(&d_delta_all, TBD * sizeof(T));
-    cudaMalloc(&d_w_out_h_all, TBD * sizeof(T));
-    cudaMalloc(&h_linear_all, TBD * sizeof(T));  // Store h_linear for dW_out batch
-
-    // Per-step workspace
-    T *dh_linear, *dh_recurrent, *w_out_h, *h_prev_linear;
-    cudaMalloc(&dh_linear, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMalloc(&h_prev_linear, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // Zero weight gradients and workspace (all async on same stream)
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
+    cudaMemsetAsync(dr_h_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
 
     // ==========================================================================
     // PASS 1: Compute gradients for all timesteps (sequential due to recurrent)
@@ -892,34 +902,10 @@ void LogStorageDiagonalElmanBackward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, steps * batch_size_, &alpha, d_w_out_h_all, dim_, h_linear_all, dim_, &beta_one, dW_out, dim_);
 
-    // Copy float gradients to output type
-    cudaMemset(dr_h, 0, dim_ * sizeof(T));
-    cudaMemset(db, 0, dim_ * sizeof(T));
-    cudaMemset(db_delta, 0, dim_ * sizeof(T));
-
-    auto copy_float_to_T = [&](float* src, T* dst, int n) {
-        for (int i = 0; i < n; ++i) {
-            float val;
-            cudaMemcpy(&val, src + i, sizeof(float), cudaMemcpyDeviceToHost);
-            T tval = static_cast<T>(val);
-            cudaMemcpy(dst + i, &tval, sizeof(T), cudaMemcpyHostToDevice);
-        }
-    };
-    copy_float_to_T(dr_h_float, dr_h, dim_);
-    copy_float_to_T(db_float, db, dim_);
-    copy_float_to_T(db_delta_float, db_delta, dim_);
-
-    cudaFree(dv_all);
-    cudaFree(d_delta_all);
-    cudaFree(d_w_out_h_all);
-    cudaFree(h_linear_all);
-    cudaFree(dh_linear);
-    cudaFree(dh_recurrent);
-    cudaFree(w_out_h);
-    cudaFree(h_prev_linear);
-    cudaFree(dr_h_float);
-    cudaFree(db_float);
-    cudaFree(db_delta_float);
+    // Copy float gradients to output type using kernel
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, dr_h_float, dr_h);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_delta_float, db_delta);
 }
 
 // Explicit template instantiations

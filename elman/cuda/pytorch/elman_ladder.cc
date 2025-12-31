@@ -884,6 +884,18 @@ std::vector<Tensor> linear_polynomial_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: (4*T+5)*B*dim T elements + 4*dim floats
+    // Layout: [dv_all: TBD][d_alpha_all: TBD][d_delta_all: TBD][d_w_out_h_all: TBD]
+    //         [w_out_h: BD][dh_compete: BD][dh: BD][dh_prev_out: BD][dh_recurrent: BD]
+    //         [dr_h_f: dim floats][db_f: dim][db_delta_f: dim][db_alpha_f: dim]
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t TBD = time_steps * BD;
+    const int64_t t_elems = 4 * TBD + 5 * BD;  // T-type elements
+    const int64_t float_bytes = 4 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;  // Round up
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "linear_polynomial_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -914,7 +926,8 @@ std::vector<Tensor> linear_polynomial_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dr_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta};
@@ -1040,6 +1053,18 @@ std::vector<Tensor> log_storage_diagonal_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
 
+    // Workspace: (4*T+4)*B*dim T elements + 3*dim floats
+    // Layout: [dv_all: TBD][d_delta_all: TBD][d_w_out_h_all: TBD][h_linear_all: TBD]
+    //         [dh_linear: BD][dh_recurrent: BD][w_out_h: BD][h_prev_linear: BD]
+    //         [dr_h_float: dim floats][db_float: dim floats][db_delta_float: dim floats]
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t TBD = time_steps * BD;
+    const int64_t t_elems = 4 * TBD + 4 * BD;  // T-type elements
+    const int64_t float_bytes = 3 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;  // Round up
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "log_storage_diagonal_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
@@ -1070,7 +1095,8 @@ std::vector<Tensor> log_storage_diagonal_backward(
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
-            ptr<scalar_t>(db_delta));
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
     }));
 
     return {dx, dW_x, dr_h, dW_delta, dW_out, db, db_delta};

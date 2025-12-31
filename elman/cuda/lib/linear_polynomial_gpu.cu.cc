@@ -31,6 +31,19 @@ __global__ void VectorAdd(const int n, const T* __restrict__ x, T* __restrict__ 
     }
 }
 
+// Kernel: Copy float array to type T (for bias gradients)
+template<typename T>
+__global__ void CopyFloatToT(
+    const int n,
+    const float* __restrict__ src,
+    T* __restrict__ dst) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(src[idx]);
+    }
+}
+
 // Kernel: Add bias to each row (batch_size rows, dim columns)
 template<typename T>
 __global__ void AddBiasKernel(const int batch_size, const int dim,
@@ -465,7 +478,8 @@ void LinearPolynomialBackward<T>::Run(
     T* dW_delta,
     T* dW_out,
     T* db,
-    T* db_delta) {
+    T* db_delta,
+    T* workspace) {
 
     static const T alpha_blas = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -475,45 +489,40 @@ void LinearPolynomialBackward<T>::Run(
     const int TBD = steps * BD;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
+    const int dim_blocks = (dim_ + block_size - 1) / block_size;
     const int group_size = dim_ / n_groups_;
 
     // ==========================================================================
-    // HASTE PATTERN: Batch GEMMs across all timesteps
-    // Store gradients for all timesteps, then do big batch GEMMs after loop
+    // HASTE PATTERN: Workspace from Python (PyTorch caching allocator)
+    // Layout: [dv_all: TBD][d_alpha_all: TBD][d_delta_all: TBD][d_w_out_h_all: TBD]
+    //         [w_out_h: BD][dh_compete: BD][dh: BD][dh_prev_out: BD][dh_recurrent: BD]
+    //         [dr_h_f: dim floats][db_f: dim][db_delta_f: dim][db_alpha_f: dim]
     // ==========================================================================
 
-    // Zero out weight gradients
-    cudaMemset(dW_x, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_alpha, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_delta, 0, dim_ * dim_ * sizeof(T));
-    cudaMemset(dW_out, 0, dim_ * dim_ * sizeof(T));
+    T* dv_all = workspace;
+    T* d_alpha_all = dv_all + TBD;
+    T* d_delta_all = d_alpha_all + TBD;
+    T* d_w_out_h_all = d_delta_all + TBD;
+    T* w_out_h = d_w_out_h_all + TBD;
+    T* dh_compete = w_out_h + BD;
+    T* dh = dh_compete + BD;
+    T* dh_prev_out = dh + BD;
+    T* dh_recurrent = dh_prev_out + BD;
+    float* dr_h_f = reinterpret_cast<float*>(dh_recurrent + BD);
+    float* db_f = dr_h_f + dim_;
+    float* db_delta_f = db_f + dim_;
+    float* db_alpha_f = db_delta_f + dim_;
 
-    // Float buffers for bias/diagonal gradients
-    float *dr_h_f, *db_f, *db_delta_f, *db_alpha_f;
-    cudaMalloc(&dr_h_f, dim_ * sizeof(float));
-    cudaMalloc(&db_f, dim_ * sizeof(float));
-    cudaMalloc(&db_delta_f, dim_ * sizeof(float));
-    cudaMalloc(&db_alpha_f, dim_ * sizeof(float));
-    cudaMemset(dr_h_f, 0, dim_ * sizeof(float));
-    cudaMemset(db_f, 0, dim_ * sizeof(float));
-    cudaMemset(db_delta_f, 0, dim_ * sizeof(float));
-    cudaMemset(db_alpha_f, 0, dim_ * sizeof(float));
-
-    // Workspace for ALL timesteps (Haste pattern)
-    T *dv_all, *d_alpha_all, *d_delta_all, *d_w_out_h_all;
-    cudaMalloc(&dv_all, TBD * sizeof(T));
-    cudaMalloc(&d_alpha_all, TBD * sizeof(T));
-    cudaMalloc(&d_delta_all, TBD * sizeof(T));
-    cudaMalloc(&d_w_out_h_all, TBD * sizeof(T));
-
-    // Per-step workspace
-    T *w_out_h, *dh_compete, *dh, *dh_prev_out, *dh_recurrent;
-    cudaMalloc(&w_out_h, BD * sizeof(T));
-    cudaMalloc(&dh_compete, BD * sizeof(T));
-    cudaMalloc(&dh, BD * sizeof(T));
-    cudaMalloc(&dh_prev_out, BD * sizeof(T));
-    cudaMalloc(&dh_recurrent, BD * sizeof(T));
-    cudaMemset(dh_recurrent, 0, BD * sizeof(T));
+    // Zero out weight gradients and workspace (all async on same stream)
+    cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_alpha, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
+    cudaMemsetAsync(dr_h_f, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_f, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_delta_f, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_alpha_f, 0, dim_ * sizeof(float), stream_);
 
     // ==========================================================================
     // PASS 1: Compute gradients for all timesteps (sequential due to recurrent)
@@ -555,7 +564,7 @@ void LinearPolynomialBackward<T>::Run(
             dv_t, d_alpha_t, d_delta_t, dh_prev_out, dr_h_f, db_f, db_delta_f);
 
         // dh_recurrent = dh_prev_out for next iteration
-        cudaMemcpy(dh_recurrent, dh_prev_out, BD * sizeof(T), cudaMemcpyDeviceToDevice);
+        cudaMemcpyAsync(dh_recurrent, dh_prev_out, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
     }
 
     // ==========================================================================
@@ -587,25 +596,11 @@ void LinearPolynomialBackward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, steps * batch_size_, &alpha_blas, d_w_out_h_all, dim_, h + BD, dim_, &beta_one, dW_out, dim_);
 
-    // Copy from float buffers
-    cudaMemcpy(dr_h, dr_h_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(db, db_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(db_delta, db_delta_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(db_alpha, db_alpha_f, dim_ * sizeof(float), cudaMemcpyDeviceToDevice);
-
-    cudaFree(dr_h_f);
-    cudaFree(db_f);
-    cudaFree(db_delta_f);
-    cudaFree(db_alpha_f);
-    cudaFree(dv_all);
-    cudaFree(d_alpha_all);
-    cudaFree(d_delta_all);
-    cudaFree(d_w_out_h_all);
-    cudaFree(w_out_h);
-    cudaFree(dh_compete);
-    cudaFree(dh);
-    cudaFree(dh_prev_out);
-    cudaFree(dh_recurrent);
+    // Copy from float buffers using kernel
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, dr_h_f, dr_h);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_f, db);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_delta_f, db_delta);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_alpha_f, db_alpha);
 }
 
 // Explicit instantiations
