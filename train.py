@@ -44,8 +44,8 @@ def parse_args():
                         help='Path to validation data file')
 
     # Model
-    parser.add_argument('--level', type=int, default=3, choices=[0, 1, 2, 3],
-                        help='Ladder level (0=Stock, 1=Gated, 2=Selective, 3=Diagonal)')
+    parser.add_argument('--level', type=str, default='3',
+                        help='Ladder level: 0-6 (linear) or log_0 to log_5 (log-space)')
     parser.add_argument('--params', type=str, default='100m',
                         help='Target parameter count (e.g., 100m, 500m, 1b)')
     parser.add_argument('--dim', type=int, default=None,
@@ -100,6 +100,16 @@ def parse_args():
                         help='Enable TBPTT (carry hidden state across chunks)')
 
     return parser.parse_args()
+
+
+def parse_level(level_str):
+    """Parse level string to int or keep as string for log-space levels."""
+    if level_str.startswith('log_'):
+        return level_str  # Keep as string for log-space levels
+    try:
+        return int(level_str)
+    except ValueError:
+        return level_str  # Keep as string for any other format
 
 
 def setup_output_dir(args):
@@ -183,6 +193,9 @@ def validate(model, val_loader, device, max_batches=100):
 
 def train(args):
     """Main training loop."""
+    # Parse level (convert '3' to 3, keep 'log_5' as string)
+    args.level = parse_level(args.level)
+
     # Setup
     torch.manual_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
