@@ -261,15 +261,15 @@ __global__ void LogDiagRMSNormBackward(
         float h_norm = from_log_space(log_h_norm, sign_h_val);
 
         // Gradient w.r.t. log_gamma: d_out * h_norm (through exp)
-        // Scaled by 0.0001 to match Python grad_scale and stabilize training
-        float d_log_gamma_val = d_out * h_norm * 0.0001f;
+        // Reduced scaling from 0.0001 to 0.01
+        float d_log_gamma_val = d_out * h_norm * 0.001f;
         atomicAdd(&d_log_gamma[d], d_log_gamma_val);
 
         // Gradient w.r.t. log_h (simplified for bounded gradients)
         // d_log_h = d_out * h_norm * (1 - h_norm^2 / sum_h2)
         // Approximated as: d_out * h_norm - mean_dout_hnorm * h_norm
-        // Scaled by 0.0001 to match Python grad_scale and stabilize training
-        float d_log_h_val = (d_out - mean_dout_hnorm) * fabsf(h_norm + 1e-6f) * 0.0001f;
+        // Reduced scaling from 0.0001 to 0.01
+        float d_log_h_val = (d_out - mean_dout_hnorm) * fabsf(h_norm + 1e-6f) * 0.001f;
         d_log_h[base + d] = static_cast<T>(fminf(fmaxf(d_log_h_val, -GRAD_CLIP), GRAD_CLIP));
     }
 }
@@ -337,13 +337,14 @@ __global__ void LogDiagSelectiveUpdateKernel(
         if (sign_v_cache) sign_v_cache[idx] = static_cast<T>(sign_v);
         if (weight_rh_cache) weight_rh_cache[idx] = static_cast<T>(weight_rh);
 
-        // Polynomial activation
-        float log_cand = alpha * log_v;
-        float sign_cand = sign_v;
-
-        // Soft bound
-        float log_cand_bounded = soft_bound_log(log_cand);
-        if (log_h_unbounded_cache) log_h_unbounded_cache[idx] = static_cast<T>(log_cand);
+        // Tanh activation (replacing polynomial for stability)
+        // Convert v to linear, apply tanh, convert back to log
+        float v_linear = from_log_space(log_v, sign_v);
+        float cand_linear = tanhf(v_linear);
+        float log_cand_bounded, sign_cand;
+        to_log_space(cand_linear, log_cand_bounded, sign_cand);
+        // Cache the tanh input for backward pass
+        if (log_h_unbounded_cache) log_h_unbounded_cache[idx] = static_cast<T>(v_linear);
 
         // Delta gate
         float delta_raw_val = static_cast<float>(delta_raw[idx]);
@@ -546,14 +547,21 @@ __global__ void LogDiagSelectiveUpdateBackward(
         float d_log_cand_bounded = grad_log_h * del;
         float d_log_hp_decay = grad_log_h * one_minus_delta;
 
-        float bound_grad = soft_bound_grad(log_h_unb);
-        float d_log_cand = d_log_cand_bounded * bound_grad;
+        // Backward through tanh activation (log_h_unb now stores v_linear)
+        float v_linear = log_h_unb;  // Cached tanh input
+        float tanh_v = tanhf(v_linear);
+        float tanh_grad = 1.0f - tanh_v * tanh_v;  // dtanh/dv = 1 - tanh²
 
-        float d_log_v = alpha_val * d_log_cand;
-        float d_alpha = log_v_val * d_log_cand;
+        // d_cand_bounded -> d_v_linear
+        float d_cand_linear = d_log_cand_bounded * fabsf(tanh_v + 1e-6f);
+        float d_v_linear = d_cand_linear * tanh_grad;
 
-        float d_alpha_raw_val = d_alpha * softplus_grad(alpha_raw_val);
-        d_alpha_raw[idx] = static_cast<T>(fminf(fmaxf(d_alpha_raw_val, -GRAD_CLIP), GRAD_CLIP));
+        // d_v_linear -> d_log_v
+        float v_from_log = from_log_space(log_v_val, sign_v_val);
+        float d_log_v = d_v_linear * fabsf(v_from_log + 1e-6f);
+
+        // No alpha gradient needed (tanh doesn't use alpha)
+        d_alpha_raw[idx] = static_cast<T>(0.0f);
 
         float d_log_rh_hp = d_log_v * w_rh;
         float d_log_input = d_log_v * (1.0f - fminf(w_rh, 1.0f));
@@ -564,10 +572,9 @@ __global__ void LogDiagSelectiveUpdateBackward(
         float d_log_hp_total = d_log_hp_decay + d_log_hp_rh;
         d_log_h_prev[idx] = static_cast<T>(d_log_hp_total);
 
+        // Delta gradient (using tanh_v which is the candidate)
         float h_prev_linear = from_log_space(log_hp, sign_hp);
-        float cand_linear = from_log_space(log_h_unb, sign_v_val);
-        cand_linear = cand_linear / (1.0f + fabsf(cand_linear));
-        float d_delta_val = grad_log_h * (cand_linear - h_prev_linear);
+        float d_delta_val = grad_log_h * (tanh_v - h_prev_linear);
         float d_delta_raw_val = d_delta_val * del * one_minus_delta;
         d_delta_raw[idx] = static_cast<T>(fminf(fmaxf(d_delta_raw_val, -GRAD_CLIP), GRAD_CLIP));
 

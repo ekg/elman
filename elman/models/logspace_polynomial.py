@@ -91,11 +91,10 @@ def grad_scale(x, scale=0.01):
 
 
 def from_log_space(log_x, sign_x):
-    """Convert (log|x|, sign(x)) back to linear tensor with gradient scaling."""
+    """Convert (log|x|, sign(x)) back to linear tensor."""
     mask = log_x > LOG_ZERO + 1.0
-    # Apply gradient scaling to stabilize backward pass
-    log_x_scaled = grad_scale(log_x, 0.01)  # Scale down gradients by 100x
-    result = sign_x * torch.exp(torch.clamp(log_x_scaled, max=20.0))
+    # Removed grad_scale - was killing recurrence gradients
+    result = sign_x * torch.exp(torch.clamp(log_x, max=20.0))
     return torch.where(mask, result, torch.zeros_like(result))
 
 

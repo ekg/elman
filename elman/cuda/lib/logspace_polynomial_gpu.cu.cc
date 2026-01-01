@@ -572,8 +572,8 @@ __global__ void LogSpaceRMSNormBackwardKernel(
         // But h_linear = sign * exp(log_normed), so d_log_normed = d_h_linear * h_linear
         float d_log_normed = d_h_lin * h_lin;
 
-        // d_log_gamma: accumulate with atomic (scaled by 0.0001 to match Python)
-        atomicAdd(&d_log_gamma[d], d_log_normed * 0.0001f);
+        // d_log_gamma: accumulate with atomic (reduced scaling from 0.0001 to 0.01)
+        atomicAdd(&d_log_gamma[d], d_log_normed * 0.001f);
 
         // d_log_rms = -sum(d_log_normed) over dim
         thread_d_log_rms -= d_log_normed;
@@ -610,8 +610,8 @@ __global__ void LogSpaceRMSNormBackwardKernel(
         // Gradient through log_rms: d_log_rms * softmax
         float d_from_rms = d_log_rms * softmax_w;
 
-        // Total gradient (scaled by 0.0001 to match Python grad_scale and stabilize)
-        d_log_h[idx] = static_cast<T>((d_log_normed + d_from_rms) * 0.0001f);
+        // Total gradient (reduced scaling from 0.0001 to 0.01)
+        d_log_h[idx] = static_cast<T>((d_log_normed + d_from_rms) * 0.001f);
     }
 }
 
