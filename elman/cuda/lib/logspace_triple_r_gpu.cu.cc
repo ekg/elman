@@ -251,7 +251,7 @@ __global__ void LogSpaceMatVecKernel(
 // =============================================================================
 // Kernel: Gated update with triple R matrices (OPTIMIZED: takes linear inputs)
 // v_t = R_x @ x + R_h @ h_{t-1} + b
-// delta_raw = W_delta @ x + R_delta @ h_{t-1} + b_delta
+// delta_raw = W_delta @ x + b_delta  (R_delta removed - causes instability!)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(v_t)
 // =============================================================================
 
@@ -264,7 +264,6 @@ __global__ void TripleRGatedUpdateKernel(
     const T* __restrict__ Rx_x_linear,   // R_x @ x (already linear from cuBLAS!)
     const T* __restrict__ Rh_h_linear,   // R_h @ h_{t-1} (already linear from cuBLAS!)
     const T* __restrict__ Wdelta_x,      // W_delta @ x (linear)
-    const T* __restrict__ Rdelta_h_linear, // R_delta @ h_{t-1} (already linear from cuBLAS!)
     const T* __restrict__ b,
     const T* __restrict__ b_delta,
     T* __restrict__ log_h_out,
@@ -281,15 +280,14 @@ __global__ void TripleRGatedUpdateKernel(
         // All inputs are already linear from cuBLAS GEMM - no conversion needed!
         float Rh_h = static_cast<float>(Rh_h_linear[idx]);
         float Rx_x = static_cast<float>(Rx_x_linear[idx]);
-        float Rdelta_h = static_cast<float>(Rdelta_h_linear[idx]);
 
         // v_t = R_x @ x + R_h @ h_{t-1} + b
         float v_f = Rx_x + Rh_h + static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v_f);
         float candidate = tanhf(v_f);
 
-        // Delta gate: sigmoid(W_delta @ x + R_delta @ h_{t-1} + b_delta)
-        float delta_in = static_cast<float>(Wdelta_x[idx]) + Rdelta_h + static_cast<float>(b_delta[d]);
+        // Delta gate: sigmoid(W_delta @ x + b_delta) - NO R_delta for stability!
+        float delta_in = static_cast<float>(Wdelta_x[idx]) + static_cast<float>(b_delta[d]);
         float delta_f = 1.0f / (1.0f + expf(-delta_in));
         if (delta_cache) delta_cache[idx] = static_cast<T>(delta_f);
 
@@ -606,18 +604,16 @@ void LogSpaceTripleRForward<T>::Run(
     // =========================================================================
     // WORKSPACE LAYOUT (OPTIMIZED - uses cuBLAS GEMM instead of log-space matmul!):
     // Input projections:   [all_Rx_x: TBD] [all_Wdelta_x: TBD]
-    // Per-step scratch:    [Rh_h_linear: BD] [Rdelta_h_linear: BD]
-    //                      [h_prev_linear: BD] [w_out_h: BD] [h_linear: BD]
-    // Total: 2*TBD + 5*BD
+    // Per-step scratch:    [Rh_h_linear: BD] [h_prev_linear: BD] [w_out_h: BD] [h_linear: BD]
+    // Total: 2*TBD + 4*BD  (R_delta removed for stability)
     // =========================================================================
     T* all_Rx_x = workspace;
     T* all_Wdelta_x = workspace + TBD;
 
     T* Rh_h_linear = workspace + 2 * TBD;
-    T* Rdelta_h_linear = workspace + 2 * TBD + BD;
-    T* h_prev_linear = workspace + 2 * TBD + 2 * BD;
-    T* w_out_h = workspace + 2 * TBD + 3 * BD;
-    T* h_linear = workspace + 2 * TBD + 4 * BD;
+    T* h_prev_linear = workspace + 2 * TBD + BD;
+    T* w_out_h = workspace + 2 * TBD + 2 * BD;
+    T* h_linear = workspace + 2 * TBD + 3 * BD;
 
     // =========================================================================
     // Pre-compute ALL input projections using cuBLAS (tensor-core accelerated!)
@@ -660,15 +656,13 @@ void LogSpaceTripleRForward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_h, dim_, h_prev_linear, dim_, &beta_zero, Rh_h_linear, dim_);
 
-        // R_delta @ h_prev using cuBLAS (tensor-core accelerated!)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, R_delta, dim_, h_prev_linear, dim_, &beta_zero, Rdelta_h_linear, dim_);
+        // NOTE: R_delta @ h_prev REMOVED - causes training instability!
 
         // Gated update (now takes linear inputs from cuBLAS!)
         TripleRGatedUpdateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev,
             Rx_x_t, Rh_h_linear,
-            Wdelta_x_t, Rdelta_h_linear,
+            Wdelta_x_t,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
         // Convert h_t to linear for W_out
@@ -797,12 +791,12 @@ void LogSpaceTripleRBackward<T>::Run(
             batch_size_, dim_, n_groups_, group_size, log_h_t, sign_h_t, w_out_h, compete_t,
             d_out_t, dh_linear, d_w_out_h);
 
-        // dW_out += d_w_out_h @ h_linear^T
+        // dW_out += h_linear @ d_w_out_h^T  (for Y = W.T @ X, dW = X @ dY.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
+            dim_, dim_, batch_size_, &alpha, h_linear, dim_, d_w_out_h, dim_, &alpha, dW_out, dim_);
 
-        // dh_linear += d_w_out_h @ W_out (backward of h @ W_out.T)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        // dh_linear += d_w_out_h @ W_out (for Y = h @ W_out.T, dX = dY @ W_out)
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
 
         // Backward through gated update
@@ -811,35 +805,30 @@ void LogSpaceTripleRBackward<T>::Run(
             (t < steps - 1) ? dh_recurrent : nullptr,
             dv, d_delta_raw, dh_prev_linear, db_float, db_delta_float);
 
-        // dh_prev += R_h^T @ dv (for the R_h @ h term in candidate)
+        // dh_prev += dv @ R_h (for Y = h @ R_h.T, dX = dY @ R_h)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_h, dim_, dv, dim_, &alpha, dh_prev_linear, dim_);
 
-        // dh_prev += R_delta^T @ d_delta_raw (for the R_delta @ h term in delta gate)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, R_delta, dim_, d_delta_raw, dim_, &alpha, dh_prev_linear, dim_);
+        // NOTE: R_delta backward REMOVED - R_delta not used in forward anymore!
 
-        // dR_h += dv @ h_prev^T
+        // dR_h += h_prev @ dv^T  (for Y = W.T @ X, dW = X @ dY.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, dv, dim_, h_prev_linear, dim_, &alpha, dR_h, dim_);
+            dim_, dim_, batch_size_, &alpha, h_prev_linear, dim_, dv, dim_, &alpha, dR_h, dim_);
 
-        // dR_x += dv @ x^T
+        // dR_x += x @ dv^T  (for Y = W.T @ X, dW = X @ dY.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, dv, dim_, x_linear, dim_, &alpha, dR_x, dim_);
+            dim_, dim_, batch_size_, &alpha, x_linear, dim_, dv, dim_, &alpha, dR_x, dim_);
 
-        // dR_delta += d_delta_raw @ h_prev^T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, h_prev_linear, dim_, &alpha, dR_delta, dim_);
-
-        // dx = R_x^T @ dv (backward of R_x @ x) + d_delta_raw @ W_delta (backward of x @ W_delta.T)
+        // dx = dv @ R_x (for Y = x @ R_x.T, dX = dY @ R_x) + d_delta_raw @ W_delta
+        // In cuBLAS col-major: dx_T = R_x.T @ dv.T, so dx = (R_x.T @ dv.T).T = dv @ R_x
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
 
-        // dW_delta += d_delta_raw @ x^T
+        // dW_delta += x @ d_delta_raw^T  (for Y = W.T @ X, dW = X @ dY.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_linear, dim_, &alpha, dW_delta, dim_);
+            dim_, dim_, batch_size_, &alpha, x_linear, dim_, d_delta_raw, dim_, &alpha, dW_delta, dim_);
 
         // dh_recurrent for next iteration
         cudaMemcpyAsync(dh_recurrent, dh_prev_linear, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
