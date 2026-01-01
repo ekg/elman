@@ -36,7 +36,7 @@ namespace {
 // Constants for log-space computation
 constexpr float LOG_ZERO = -40.0f;     // Represents log(~0), not too extreme for gradients
 constexpr float LOG_EPS = 1e-10f;      // Small epsilon for log stability
-constexpr float GRAD_CLIP = 10.0f;     // Gradient clipping for numerical stability
+constexpr float GRAD_CLIP = 1.0f;      // Aggressive gradient clipping for stability
 
 // =============================================================================
 // Device functions for signed log arithmetic
@@ -267,6 +267,10 @@ __global__ void LogPolyGatedUpdateKernel(
         float log_h_new, sign_h_new, weight_decay;
         signed_log_add(log_term1, sign_term1, log_term2, sign_term2,
                        log_h_new, sign_h_new, weight_decay);
+
+        // === Clamp hidden state to prevent explosion ===
+        log_h_new = fminf(fmaxf(log_h_new, -20.0f), 10.0f);
+        if (!isfinite(log_h_new)) log_h_new = 0.0f;
 
         // === Output ===
         log_h_out[idx] = static_cast<T>(log_h_new);
@@ -524,13 +528,17 @@ __global__ void LogPolyGatedBackwardKernel(
     if (idx < total) {
         const int d = idx % dim;
 
-        // Load gradients
+        // Load gradients with NaN/Inf protection
         float grad_log_h = static_cast<float>(d_log_h[idx]);
         if (d_log_h_recurrent) {
             grad_log_h += static_cast<float>(d_log_h_recurrent[idx]);
         }
+        // Sanitize: replace NaN/Inf with 0
+        if (!isfinite(grad_log_h)) grad_log_h = 0.0f;
+        // Early clipping of incoming gradient
+        grad_log_h = fminf(fmaxf(grad_log_h, -1.0f), 1.0f);
 
-        // Load cached values
+        // Load cached values with NaN/Inf protection and clamping
         float log_hp = static_cast<float>(log_h_prev[idx]);
         float sign_hp = static_cast<float>(sign_h_prev[idx]);
         float log_v_val = static_cast<float>(log_v[idx]);
@@ -540,6 +548,15 @@ __global__ void LogPolyGatedBackwardKernel(
         float log_h_unb = static_cast<float>(log_h_unbounded[idx]);
         float del = static_cast<float>(delta[idx]);
         float w_rh = static_cast<float>(weight_rh[idx]);
+
+        // Sanitize cached values
+        if (!isfinite(log_hp)) log_hp = LOG_ZERO;
+        if (!isfinite(log_v_val)) log_v_val = LOG_ZERO;
+        if (!isfinite(log_h_unb)) log_h_unb = LOG_ZERO;
+        log_hp = fminf(fmaxf(log_hp, -40.0f), 20.0f);
+        log_v_val = fminf(fmaxf(log_v_val, -40.0f), 20.0f);
+        log_h_unb = fminf(fmaxf(log_h_unb, -40.0f), 20.0f);
+
         // Clamp log_r_h to <= -0.1 for stability (must match forward)
         float log_rh = fminf(static_cast<float>(log_r_h[d]), -0.1f);
 
@@ -560,8 +577,12 @@ __global__ void LogPolyGatedBackwardKernel(
         // === Backward through polynomial: log_cand = alpha * log_v ===
         // d_log_v = alpha * d_log_cand
         // d_alpha = log_v * d_log_cand
-        float d_log_v = alpha_val * d_log_cand;
-        float d_alpha = log_v_val * d_log_cand;
+        // Clip d_log_cand first to prevent explosion
+        float d_log_cand_clipped = fminf(fmaxf(d_log_cand, -10.0f), 10.0f);
+        float d_log_v = alpha_val * d_log_cand_clipped;
+        // Clip log_v when computing d_alpha to prevent explosion from extreme log values
+        float log_v_clipped = fminf(fmaxf(log_v_val, -20.0f), 20.0f);
+        float d_alpha = log_v_clipped * d_log_cand_clipped;
 
         // Gradient through alpha = 1 + softplus(alpha_raw)
         // d_alpha_raw = d_alpha * sigmoid(alpha_raw)
@@ -569,28 +590,36 @@ __global__ void LogPolyGatedBackwardKernel(
         d_alpha_raw[idx] = static_cast<T>(fminf(fmaxf(d_alpha_raw_val, -GRAD_CLIP), GRAD_CLIP));
 
         // === Backward through signed log addition v = r_h*h_prev + input ===
-        float d_log_rh_hp = d_log_v * w_rh;
-        float d_log_input = d_log_v * (1.0f - fminf(w_rh, 1.0f));
+        // Clip d_log_v to prevent gradient explosion
+        float d_log_v_clipped = fminf(fmaxf(d_log_v, -10.0f), 10.0f);
+        float d_log_rh_hp = d_log_v_clipped * w_rh;
+        float d_log_input = d_log_v_clipped * (1.0f - fminf(w_rh, 1.0f));
 
         // === Backward through r_h * h_prev ===
         float d_log_hp_rh = d_log_rh_hp;
-        float d_log_rh_val = d_log_rh_hp;
+        float d_log_rh_val = fminf(fmaxf(d_log_rh_hp, -GRAD_CLIP), GRAD_CLIP);
 
         // === Total gradient to log_h_prev ===
         float d_log_hp_total = d_log_hp_decay + d_log_hp_rh;
-        d_log_h_prev[idx] = static_cast<T>(d_log_hp_total);
+        // Clip total gradient to prevent explosion through time
+        d_log_h_prev[idx] = static_cast<T>(fminf(fmaxf(d_log_hp_total, -10.0f), 10.0f));
 
         // === Backward through delta gate ===
-        float h_prev_linear = from_log_space(log_hp, sign_hp);
-        float cand_linear = from_log_space(log_h_unb, sign_v_val);
+        float h_prev_linear = from_log_space(fminf(log_hp, 20.0f), sign_hp);
+        float cand_linear = from_log_space(fminf(log_h_unb, 20.0f), sign_v_val);
         cand_linear = cand_linear / (1.0f + fabsf(cand_linear));  // Approximate bounded
+        h_prev_linear = fminf(fmaxf(h_prev_linear, -100.0f), 100.0f);  // Clamp linear values
 
         float d_delta = grad_log_h * (cand_linear - h_prev_linear);
+        d_delta = fminf(fmaxf(d_delta, -100.0f), 100.0f);  // Clip before sigmoid derivative
         float d_delta_raw_val = d_delta * del * one_minus_delta;
         d_delta_raw[idx] = static_cast<T>(fminf(fmaxf(d_delta_raw_val, -GRAD_CLIP), GRAD_CLIP));
 
         // === Backward through W_x @ x + b ===
-        float input_linear = from_log_space(log_v_val - log_rh - log_hp, 1.0f);
+        // Clamp log argument to prevent explosion
+        float log_input_arg = fminf(fmaxf(log_v_val - log_rh - log_hp, -20.0f), 20.0f);
+        float input_linear = from_log_space(log_input_arg, 1.0f);
+        input_linear = fminf(fmaxf(input_linear, -100.0f), 100.0f);
         float d_wx_linear = d_log_input * fmaxf(fabsf(input_linear), LOG_EPS);
         d_wx_x[idx] = static_cast<T>(fminf(fmaxf(d_wx_linear, -GRAD_CLIP), GRAD_CLIP));
 

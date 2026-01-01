@@ -78,9 +78,10 @@ __global__ void LinearPolynomialGatedUpdate(
     if (idx < total) {
         const int d = idx % dim;
 
-        // Input-dependent alpha: 1 + softplus(alpha_raw)
+        // Input-dependent alpha: 1 + softplus(alpha_raw), capped at 2.0 for stability
         float alpha_in = static_cast<float>(alpha_raw[idx]);
-        float alpha = 1.0f + log1pf(expf(alpha_in));  // softplus
+        float softplus_val = log1pf(expf(alpha_in));
+        float alpha = 1.0f + fminf(softplus_val, 1.0f);  // Cap alpha to [1, 2]
         if (alpha_cache) alpha_cache[idx] = static_cast<T>(alpha);
 
         // Delta gate
@@ -89,9 +90,11 @@ __global__ void LinearPolynomialGatedUpdate(
         if (delta_cache) delta_cache[idx] = static_cast<T>(delta);
 
         // v = W_x @ x + r_h * h_prev + b
+        // Clamp r_h to <= 0.9 for stability
         float h_p = static_cast<float>(h_prev[idx]);
+        float r_h_val = fminf(static_cast<float>(r_h[d]), 0.9f);
         float v = static_cast<float>(wx_x[idx]) +
-                  static_cast<float>(r_h[d]) * h_p +
+                  r_h_val * h_p +
                   static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v);
 
@@ -298,8 +301,10 @@ __global__ void LinearPolynomialGatedBackward(
         d_delta_raw[idx] = static_cast<T>(d_delta_raw_val);
 
         // dh_prev from gated path and r_h path
+        // Clamp r_h to <= 0.9 for stability (must match forward)
         float dh_prev_gated = one_minus_del * grad_h;
-        float dh_prev_rh = dv_val * static_cast<float>(r_h[d]);
+        float r_h_val = fminf(static_cast<float>(r_h[d]), 0.9f);
+        float dh_prev_rh = dv_val * r_h_val;
         dh_prev_out[idx] = static_cast<T>(dh_prev_gated + dh_prev_rh);
 
         // dr_h: gradient for diagonal element
