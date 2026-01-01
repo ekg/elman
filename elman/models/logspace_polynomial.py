@@ -193,13 +193,14 @@ class LogSpaceRMSNorm(nn.Module):
 
 
 class LogSpacePolynomialFunction(torch.autograd.Function):
-    """Autograd function for Log-Space Polynomial Elman (Haste kernel with fused RMSNorm)."""
+    """Autograd function for Log-Space Polynomial Elman (Haste kernel with fused RMSNorm + selective output)."""
 
     @staticmethod
-    def forward(ctx, training, x, log_h0, sign_h0, W_x, log_r_h, sign_r_h,
-                W_alpha, b_alpha, W_delta, b, b_delta, log_gamma):
+    def forward(ctx, training, n_groups, x, log_h0, sign_h0, W_x, log_r_h, sign_r_h,
+                W_alpha, b_alpha, W_delta, W_out, b, b_delta, log_gamma):
         results = hasty_pytorch_lib.logspace_polynomial_forward(
             training,
+            n_groups,
             x.contiguous(),
             log_h0.contiguous(),
             sign_h0.contiguous(),
@@ -209,39 +210,47 @@ class LogSpacePolynomialFunction(torch.autograd.Function):
             W_alpha.contiguous(),
             b_alpha.contiguous(),
             W_delta.contiguous(),
+            W_out.contiguous(),
             b.contiguous(),
             b_delta.contiguous(),
             log_gamma.contiguous()
         )
-        log_h, sign_h, h_linear, log_v_cache, sign_v_cache, alpha_cache, \
-            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache, log_rms_cache = results
+        log_h, sign_h, output, h_linear_cache, log_v_cache, sign_v_cache, alpha_cache, \
+            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache, \
+            log_rms_cache, compete_cache = results
 
         if training:
-            # Save h_linear for RMSNorm backward (fused logsumexp gradient)
+            ctx.n_groups = n_groups
+            # Save for backward (fused logsumexp gradient + selective output)
             ctx.save_for_backward(
-                x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
+                x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, W_out, log_gamma,
                 log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache,
+                h_linear_cache, compete_cache, log_rms_cache
             )
 
-        return log_h, sign_h, h_linear
+        return log_h, sign_h, output
 
     @staticmethod
-    def backward(ctx, d_log_h, d_sign_h, d_h_linear):
-        (x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
+    def backward(ctx, d_log_h, d_sign_h, d_output):
+        n_groups = ctx.n_groups
+        (x, W_x, log_r_h, sign_r_h, W_alpha, W_delta, W_out, log_gamma,
          log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear_cache) = ctx.saved_tensors
+         alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache,
+         h_linear_cache, compete_cache, log_rms_cache) = ctx.saved_tensors
 
-        dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma = \
+        dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma = \
             hasty_pytorch_lib.logspace_polynomial_backward(
-                W_x, log_r_h, sign_r_h, W_alpha, W_delta, log_gamma,
+                n_groups,
+                W_x, log_r_h, sign_r_h, W_alpha, W_delta, W_out, log_gamma,
                 x, log_h, sign_h, log_v_cache, sign_v_cache, alpha_cache,
-                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache, h_linear_cache,
-                d_h_linear.contiguous()
+                alpha_raw_cache, log_h_unbounded_cache, delta_cache, weight_rh_cache,
+                h_linear_cache, compete_cache, log_rms_cache,
+                d_output.contiguous()
             )
 
-        return (None, dx, None, None, dW_x, d_log_r_h, None,
-                dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma)
+        return (None, None, dx, None, None, dW_x, d_log_r_h, None,
+                dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma)
 
 
 class LogSpacePolynomialCell(nn.Module):
@@ -251,16 +260,19 @@ class LogSpacePolynomialCell(nn.Module):
     Stores hidden state as (log|h|, sign(h)) pairs.
     Uses polynomial activation with input-dependent exponent.
     Includes fused RMSNorm with logsumexp for bounded gradients.
+    NOW includes selective output (compete × silu) for gradient stability.
 
     Args:
         dim: Hidden dimension
+        n_groups: Number of groups for compete softmax (default 8)
         alpha_init: Initial value for alpha bias (default 0.0 -> softplus(0) = 0.69, so α ≈ 1.69)
         delta_init: Initial bias for delta gate (default -2.0 -> sigmoid(-2) ≈ 0.12)
     """
 
-    def __init__(self, dim, alpha_init=0.0, delta_init=-2.0):
+    def __init__(self, dim, n_groups=8, alpha_init=0.0, delta_init=-2.0):
         super().__init__()
         self.dim = dim
+        self.n_groups = n_groups  # NEW: for selective output
 
         # Input projection (no learnable bias - adding in linear space causes gradient explosion)
         self.W_x = nn.Parameter(torch.empty(dim, dim))
@@ -280,6 +292,9 @@ class LogSpacePolynomialCell(nn.Module):
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
         self.b_delta = nn.Parameter(torch.full((dim,), delta_init))
 
+        # NEW: Output projection for selective output (compete × silu)
+        self.W_out = nn.Parameter(torch.empty(dim, dim))
+
         # Fused RMSNorm scale in log-space (learned)
         self.log_gamma = nn.Parameter(torch.zeros(dim))
 
@@ -290,6 +305,7 @@ class LogSpacePolynomialCell(nn.Module):
         nn.init.xavier_uniform_(self.W_x, gain=0.5)
         nn.init.xavier_uniform_(self.W_alpha, gain=0.1)  # Small init for alpha
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
+        nn.init.xavier_uniform_(self.W_out, gain=0.5)  # NEW: output projection
 
     def forward(self, x, h0=None):
         """
@@ -300,7 +316,7 @@ class LogSpacePolynomialCell(nn.Module):
         Returns:
             log_h: [T+1, B, dim] log magnitudes including initial state
             sign_h: [T+1, B, dim] signs including initial state
-            h_linear: [T, B, dim] NORMALIZED hidden states in linear space for output
+            output: [T, B, dim] SELECTIVE output (compete × silu) for gradient stability
         """
         T, B, D = x.shape
 
@@ -311,24 +327,25 @@ class LogSpacePolynomialCell(nn.Module):
         else:
             log_h0, sign_h0 = h0
 
-        # Use CUDA kernel when available (with fused RMSNorm)
+        # Use CUDA kernel when available (with fused RMSNorm + selective output)
         if HASTE_AVAILABLE and x.is_cuda:
             return LogSpacePolynomialFunction.apply(
-                self.training, x, log_h0, sign_h0,
+                self.training, self.n_groups, x, log_h0, sign_h0,
                 self.W_x, self.log_r_h, self.sign_r_h,
-                self.W_alpha, self.b_alpha, self.W_delta,
+                self.W_alpha, self.b_alpha, self.W_delta, self.W_out,
                 self.b, self.b_delta, self.log_gamma
             )
         else:
             return self._forward_pytorch(x, log_h0, sign_h0)
 
     def _forward_pytorch(self, x, log_h0, sign_h0):
-        """Pure PyTorch implementation for testing."""
+        """Pure PyTorch implementation for testing (includes selective output)."""
         T, B, D = x.shape
+        group_size = D // self.n_groups
 
         log_h_list = [log_h0]
         sign_h_list = [sign_h0]
-        h_linear_list = []
+        output_list = []
 
         for t in range(T):
             log_h_prev = log_h_list[-1]
@@ -385,13 +402,29 @@ class LogSpacePolynomialCell(nn.Module):
                 torch.tensor(self.dim, dtype=x.dtype, device=x.device))
             log_rms = log_mean_h2 / 2
             log_h_normed = log_h_new - log_rms + self.log_gamma
-            h_linear_list.append(from_log_space(log_h_normed, sign_h_new))
+            h_linear = from_log_space(log_h_normed, sign_h_new)  # [B, D]
+
+            # NEW: Selective output (compete × silu) for gradient stability
+            # Reshape for group softmax: [B, n_groups, group_size]
+            h_grouped = h_linear.view(B, self.n_groups, group_size)
+            compete = F.softmax(h_grouped, dim=-1)  # [B, n_groups, group_size]
+            compete = compete.view(B, D)  # [B, D]
+
+            # Compute w_out_h = W_out @ h_linear
+            w_out_h = h_linear @ self.W_out.T  # [B, D]
+
+            # SiLU activation
+            silu_val = w_out_h * torch.sigmoid(w_out_h)
+
+            # Final output = compete * silu
+            output_t = compete * silu_val
+            output_list.append(output_t)
 
         log_h = torch.stack(log_h_list, dim=0)
         sign_h = torch.stack(sign_h_list, dim=0)
-        h_linear = torch.stack(h_linear_list, dim=0)
+        output = torch.stack(output_list, dim=0)
 
-        return log_h, sign_h, h_linear
+        return log_h, sign_h, output
 
 
 class LogSpacePolynomial(nn.Module):
@@ -401,33 +434,36 @@ class LogSpacePolynomial(nn.Module):
     This is the first level that operates entirely in log-space with bounded gradients.
     Uses polynomial activation with input-dependent exponent for nonlinearity.
     Uses FUSED LogSpaceRMSNorm in CUDA kernel for bounded gradient flow.
+    NOW includes selective output (compete × silu) for gradient stability.
 
     Matches interface of StockElman/GatedElman/etc for drop-in use in LadderLM.
 
     Args:
         dim: Model dimension
         expansion: Hidden state expansion factor (d_inner = dim * expansion)
+        n_groups: Number of groups for compete softmax (default 8)
         alpha_init: Initial value for alpha bias
         delta_init: Initial bias for delta gate
         dropout: Dropout rate (applied after output projection)
         **kwargs: Ignored (for API compatibility with other levels)
     """
 
-    def __init__(self, dim, expansion=1.0, alpha_init=0.0, delta_init=-2.0,
+    def __init__(self, dim, expansion=1.0, n_groups=8, alpha_init=0.0, delta_init=-2.0,
                  dropout=0.0, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
+        self.n_groups = n_groups
 
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
-        # Log-space polynomial cell (now includes fused RMSNorm)
+        # Log-space polynomial cell (now includes fused RMSNorm + selective output)
         self.cell = LogSpacePolynomialCell(
-            self.d_inner, alpha_init=alpha_init, delta_init=delta_init
+            self.d_inner, n_groups=n_groups, alpha_init=alpha_init, delta_init=delta_init
         )
 
-        # Output projection
+        # Output projection (after selective output from cell)
         self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
 
         # Optional dropout
@@ -447,7 +483,7 @@ class LogSpacePolynomial(nn.Module):
 
         Returns:
             output: [B, T, dim] output for residual connection
-            h_final: [B, d_inner] final hidden state for TBPTT
+            h_final: tuple (log_h, sign_h) final hidden state for TBPTT
         """
         B, T, D = x.shape
 
@@ -457,15 +493,15 @@ class LogSpacePolynomial(nn.Module):
         # Transpose to [T, B, d_inner] for cell
         x_proj = x_proj.transpose(0, 1).contiguous()
 
-        # Run cell - returns log-space hidden states and NORMALIZED h_linear
-        log_h, sign_h, h_linear = self.cell(x_proj, h0)
-        # log_h: [T+1, B, d_inner], h_linear: [T, B, d_inner] already normalized by fused RMSNorm
+        # Run cell - returns log-space hidden states and SELECTIVE output
+        log_h, sign_h, cell_output = self.cell(x_proj, h0)
+        # log_h: [T+1, B, d_inner], cell_output: [T, B, d_inner] from compete × silu
 
         # Transpose back to [B, T, d_inner]
-        h_normed = h_linear.transpose(0, 1).contiguous()
+        cell_output_bt = cell_output.transpose(0, 1).contiguous()
 
         # Output projection
-        output = self.out_proj(h_normed)  # [B, T, dim]
+        output = self.out_proj(cell_output_bt)  # [B, T, dim]
         output = self.dropout(output)
 
         # Final hidden state for TBPTT (last timestep)

@@ -1483,6 +1483,7 @@ std::vector<Tensor> logspace_triple_r_backward(
 
 std::vector<Tensor> logspace_polynomial_forward(
     bool training,
+    int64_t n_groups,
     Tensor x,
     Tensor log_h0,
     Tensor sign_h0,
@@ -1492,6 +1493,7 @@ std::vector<Tensor> logspace_polynomial_forward(
     Tensor W_alpha,
     Tensor b_alpha,
     Tensor W_delta,
+    Tensor W_out,           // NEW: for selective output
     Tensor b,
     Tensor b_delta,
     Tensor log_gamma) {  // [dim] RMSNorm scale in log-space
@@ -1509,6 +1511,7 @@ std::vector<Tensor> logspace_polynomial_forward(
     CHECK_INPUT(W_alpha);
     CHECK_INPUT(b_alpha);
     CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
     CHECK_INPUT(log_gamma);
@@ -1518,9 +1521,11 @@ std::vector<Tensor> logspace_polynomial_forward(
 
     Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
     Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
-    Tensor h_linear = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);  // Final selective output
 
     // Caches for backward
+    Tensor h_linear_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                     : torch::empty({0}, options);  // NEW: for selective backward
     Tensor log_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
                                   : torch::empty({0}, options);
     Tensor sign_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
@@ -1537,6 +1542,8 @@ std::vector<Tensor> logspace_polynomial_forward(
                                       : torch::empty({0}, options);
     Tensor log_rms_cache = training ? torch::empty({time_steps, batch_size}, options)
                                     : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);  // NEW: for selective backward
 
     log_h[0] = log_h0;
     sign_h[0] = sign_h0;
@@ -1545,7 +1552,7 @@ std::vector<Tensor> logspace_polynomial_forward(
         x.scalar_type(), "logspace_polynomial_forward", ([&] {
         using namespace hasty::v0::elman_ladder;
         LogPolyElmanForward<typename native_type<scalar_t>::T> forward(
-            training, batch_size, dim,
+            training, batch_size, dim, n_groups,
             at::cuda::getCurrentCUDABlasHandle(),
             at::cuda::getCurrentCUDAStream());
 
@@ -1557,13 +1564,15 @@ std::vector<Tensor> logspace_polynomial_forward(
             ptr<scalar_t>(W_alpha),
             ptr<scalar_t>(b_alpha),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
             ptr<scalar_t>(log_gamma),
             ptr<scalar_t>(x),
             ptr<scalar_t>(log_h),
             ptr<scalar_t>(sign_h),
-            ptr<scalar_t>(h_linear),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(h_linear_cache) : nullptr,
             training ? ptr<scalar_t>(log_v_cache) : nullptr,
             training ? ptr<scalar_t>(sign_v_cache) : nullptr,
             training ? ptr<scalar_t>(alpha_cache) : nullptr,
@@ -1571,19 +1580,23 @@ std::vector<Tensor> logspace_polynomial_forward(
             training ? ptr<scalar_t>(delta_cache) : nullptr,
             training ? ptr<scalar_t>(weight_rh_cache) : nullptr,
             training ? ptr<scalar_t>(alpha_raw_cache) : nullptr,
-            training ? ptr<scalar_t>(log_rms_cache) : nullptr);
+            training ? ptr<scalar_t>(log_rms_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr);
     }));
 
-    return {log_h, sign_h, h_linear, log_v_cache, sign_v_cache, alpha_cache,
-            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache, log_rms_cache};
+    return {log_h, sign_h, output, h_linear_cache, log_v_cache, sign_v_cache, alpha_cache,
+            log_h_unbounded_cache, delta_cache, weight_rh_cache, alpha_raw_cache,
+            log_rms_cache, compete_cache};
 }
 
 std::vector<Tensor> logspace_polynomial_backward(
+    int64_t n_groups,
     Tensor W_x,
     Tensor log_r_h,
     Tensor sign_r_h,
     Tensor W_alpha,
     Tensor W_delta,
+    Tensor W_out,           // NEW: for selective output
     Tensor log_gamma,       // [dim] RMSNorm scale
     Tensor x,
     Tensor log_h,
@@ -1595,8 +1608,10 @@ std::vector<Tensor> logspace_polynomial_backward(
     Tensor log_h_unbounded_cache,
     Tensor delta_cache,
     Tensor weight_rh_cache,
-    Tensor h_linear_cache,  // [T, B, dim] cached h_linear for RMSNorm backward
-    Tensor d_h_linear) {
+    Tensor h_linear_cache,  // [T, B, dim] cached h_linear
+    Tensor compete_cache,   // NEW: cached compete weights
+    Tensor log_rms_cache,   // [T, B] cached from forward
+    Tensor d_output) {      // RENAMED: gradient from final output
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -1611,14 +1626,15 @@ std::vector<Tensor> logspace_polynomial_backward(
     Tensor dW_alpha = torch::zeros({dim, dim}, options);
     Tensor db_alpha = torch::zeros({dim}, options);
     Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);  // NEW
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor d_log_gamma = torch::zeros({dim}, options);
 
-    // Workspace: 6*BD T elements + 5*dim floats
+    // Workspace: 9*BD T elements + 5*dim floats (increased for selective output)
     const int64_t elem_size = x.element_size();
     const int64_t BD = batch_size * dim;
-    const int64_t t_elems = 6 * BD;
+    const int64_t t_elems = 9 * BD;
     const int64_t float_bytes = 5 * dim * sizeof(float);
     const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
     Tensor workspace = torch::empty({t_elems + float_elems}, options);
@@ -1627,7 +1643,7 @@ std::vector<Tensor> logspace_polynomial_backward(
         x.scalar_type(), "logspace_polynomial_backward", ([&] {
         using namespace hasty::v0::elman_ladder;
         LogPolyElmanBackward<typename native_type<scalar_t>::T> backward(
-            batch_size, dim,
+            batch_size, dim, n_groups,
             at::cuda::getCurrentCUDABlasHandle(),
             at::cuda::getCurrentCUDAStream());
 
@@ -1638,6 +1654,7 @@ std::vector<Tensor> logspace_polynomial_backward(
             ptr<scalar_t>(sign_r_h),
             ptr<scalar_t>(W_alpha),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
             ptr<scalar_t>(log_gamma),
             ptr<scalar_t>(x),
             ptr<scalar_t>(log_h),
@@ -1650,20 +1667,23 @@ std::vector<Tensor> logspace_polynomial_backward(
             ptr<scalar_t>(delta_cache),
             ptr<scalar_t>(weight_rh_cache),
             ptr<scalar_t>(h_linear_cache),
-            ptr<scalar_t>(d_h_linear),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(log_rms_cache),
+            ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(d_log_r_h),
             ptr<scalar_t>(dW_alpha),
             ptr<scalar_t>(db_alpha),
             ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
             ptr<scalar_t>(d_log_gamma),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, db, db_delta, d_log_gamma};
+    return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma};
 }
 
 // =============================================================================

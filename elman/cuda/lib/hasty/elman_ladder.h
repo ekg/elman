@@ -586,12 +586,13 @@ private:
 // True log-space RNN with polynomial activation
 // =============================================================================
 
-// Log-Space Level 0 (log_0): Log-Space Polynomial
+// Log-Space Level 0 (log_0): Log-Space Polynomial with Selective Output
 // α_t = 1 + softplus(W_α @ x_t + b_α)
 // v = r_h * h_prev + W_x @ x + b
 // log|h_cand| = α_t * log|v|
 // log|h_bounded| = -softplus(-log|h_cand|)
 // h_new = (1-δ) * h_prev + δ * h_bounded
+// output = compete(h_linear) * silu(W_out @ h_linear)  // ADDED: selective output
 
 template<typename T>
 struct LogPolyElmanForward {
@@ -599,6 +600,7 @@ struct LogPolyElmanForward {
         bool training,
         int batch_size,
         int dim,
+        int n_groups,           // NEW: for selective output
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -610,13 +612,15 @@ struct LogPolyElmanForward {
         const T* W_alpha,       // [dim, dim]
         const T* b_alpha,       // [dim]
         const T* W_delta,       // [dim, dim]
+        const T* W_out,         // [dim, dim] NEW: for selective output
         const T* b,             // [dim]
         const T* b_delta,       // [dim]
         const T* log_gamma,     // [dim] RMSNorm scale in log-space
         const T* x,             // [T, B, dim]
         T* log_h,               // [T+1, B, dim]
         T* sign_h,              // [T+1, B, dim]
-        T* h_linear,            // [T, B, dim] NORMALIZED output
+        T* output,              // [T, B, dim] final output after selective
+        T* h_linear_cache,      // [T, B, dim] intermediate h_linear for backward
         T* log_v_cache,
         T* sign_v_cache,
         T* alpha_cache,
@@ -624,12 +628,14 @@ struct LogPolyElmanForward {
         T* delta_cache,
         T* weight_rh_cache,
         T* alpha_raw_cache,
-        T* log_rms_cache);      // [T, B] cache for backward
+        T* log_rms_cache,       // [T, B] cache for backward
+        T* compete_cache);      // [T, B, dim] NEW: cached compete weights
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
+    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -639,6 +645,7 @@ struct LogPolyElmanBackward {
     LogPolyElmanBackward(
         int batch_size,
         int dim,
+        int n_groups,           // NEW: for selective output
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -649,6 +656,7 @@ struct LogPolyElmanBackward {
         const T* sign_r_h,
         const T* W_alpha,
         const T* W_delta,
+        const T* W_out,             // NEW: for selective output
         const T* log_gamma,         // [dim] RMSNorm scale
         const T* x,
         const T* log_h,
@@ -660,14 +668,17 @@ struct LogPolyElmanBackward {
         const T* log_h_unbounded_cache,
         const T* delta_cache,
         const T* weight_rh_cache,
+        const T* h_linear_cache,    // [T, B, dim] cached h_linear
+        const T* compete_cache,     // NEW: cached compete weights
         const T* log_rms_cache,     // [T, B] cached from forward
-        const T* d_h_linear,
+        const T* d_output,          // gradient from final output
         T* dx,
         T* dW_x,
         T* d_log_r_h,
         T* dW_alpha,
         T* db_alpha,
         T* dW_delta,
+        T* dW_out,                  // NEW: gradient for W_out
         T* db,
         T* db_delta,
         T* d_log_gamma,             // [dim] gradient for RMSNorm scale
@@ -676,6 +687,7 @@ struct LogPolyElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };

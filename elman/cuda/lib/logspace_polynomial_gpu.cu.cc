@@ -298,6 +298,127 @@ __global__ void LogToLinearKernel(
 }
 
 // =============================================================================
+// Selective Output Kernel (compete × silu) - Copied from log_1 for stability
+// =============================================================================
+
+template<typename T>
+__global__ void LogSelectiveOutput(
+    const int batch_size,
+    const int dim,
+    const int n_groups,
+    const int group_size,
+    const T* __restrict__ h_linear,   // [B, dim] in linear space (after RMSNorm)
+    const T* __restrict__ w_out_h,    // [B, dim] W_out @ h
+    T* __restrict__ output,
+    T* __restrict__ compete_cache) {
+
+    extern __shared__ float smem[];
+
+    const int b = blockIdx.x;
+    const int g = blockIdx.y;
+
+    if (b >= batch_size || g >= n_groups) return;
+
+    const int base = b * dim + g * group_size;
+
+    // Find max for softmax stability
+    float max_val = -FLT_MAX;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        max_val = fmaxf(max_val, static_cast<float>(h_linear[base + i]));
+    }
+    smem[threadIdx.x] = max_val;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x + s]);
+        __syncthreads();
+    }
+    max_val = smem[0];
+    __syncthreads();
+
+    // Compute exp sum
+    float sum = 0.0f;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        sum += expf(static_cast<float>(h_linear[base + i]) - max_val);
+    }
+    float* sum_smem = smem + blockDim.x;
+    sum_smem[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sum_smem[threadIdx.x] += sum_smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    sum = sum_smem[0];
+
+    // output = compete * silu(w_out_h)
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float compete = expf(static_cast<float>(h_linear[base + i]) - max_val) / sum;
+        if (compete_cache) compete_cache[base + i] = static_cast<T>(compete);
+
+        float w = static_cast<float>(w_out_h[base + i]);
+        float silu_val = w / (1.0f + expf(-w));
+        output[base + i] = static_cast<T>(compete * silu_val);
+    }
+}
+
+// =============================================================================
+// Selective Output Backward Kernel
+// =============================================================================
+
+template<typename T>
+__global__ void LogSelectiveOutputBackward(
+    const int batch_size,
+    const int dim,
+    const int n_groups,
+    const int group_size,
+    const T* __restrict__ h_linear,
+    const T* __restrict__ w_out_h,
+    const T* __restrict__ compete,
+    const T* __restrict__ d_output,
+    T* __restrict__ dh_linear,
+    T* __restrict__ d_w_out_h) {
+
+    extern __shared__ float smem[];
+
+    const int b = blockIdx.x;
+    const int g = blockIdx.y;
+
+    if (b >= batch_size || g >= n_groups) return;
+
+    const int base = b * dim + g * group_size;
+
+    float sum_compete_dcompete = 0.0f;
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float dout = static_cast<float>(d_output[base + i]);
+        float w = static_cast<float>(w_out_h[base + i]);
+        float sig = 1.0f / (1.0f + expf(-w));
+        float silu_val = w * sig;
+        float dsilu_dw = sig * (1.0f + w * (1.0f - sig));
+        float comp = static_cast<float>(compete[base + i]);
+
+        d_w_out_h[base + i] = static_cast<T>(dout * comp * dsilu_dw);
+        sum_compete_dcompete += comp * dout * silu_val;
+    }
+
+    smem[threadIdx.x] = sum_compete_dcompete;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
+        __syncthreads();
+    }
+    sum_compete_dcompete = smem[0];
+
+    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
+        float dout = static_cast<float>(d_output[base + i]);
+        float w = static_cast<float>(w_out_h[base + i]);
+        float sig = 1.0f / (1.0f + expf(-w));
+        float silu_val = w * sig;
+        float comp = static_cast<float>(compete[base + i]);
+        float d_comp = dout * silu_val;
+        dh_linear[base + i] = static_cast<T>(comp * (d_comp - sum_compete_dcompete));
+    }
+}
+
+// =============================================================================
 // Fused LogSpace RMSNorm + Linear Conversion Kernel
 // Uses logsumexp for bounded gradients (softmax weights in [0,1])
 // =============================================================================
@@ -657,6 +778,7 @@ struct LogPolyElmanForward {
     bool training_;
     int batch_size_;
     int dim_;
+    int n_groups_;  // NEW: for selective output
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 
@@ -664,11 +786,13 @@ struct LogPolyElmanForward {
         bool training,
         int batch_size,
         int dim,
+        int n_groups,  // NEW: for selective output
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream)
         : training_(training),
           batch_size_(batch_size),
           dim_(dim),
+          n_groups_(n_groups),
           blas_handle_(blas_handle),
           stream_(stream) {}
 
@@ -680,13 +804,15 @@ struct LogPolyElmanForward {
         const T* W_alpha,       // [dim, dim] for input-dependent alpha
         const T* b_alpha,       // [dim]
         const T* W_delta,       // [dim, dim]
+        const T* W_out,         // [dim, dim] NEW: for selective output
         const T* b,             // [dim]
         const T* b_delta,       // [dim]
         const T* log_gamma,     // [dim] RMSNorm scale (learnable)
         const T* x,             // [steps, B, dim]
         T* log_h,               // [steps+1, B, dim]
         T* sign_h,              // [steps+1, B, dim]
-        T* h_linear,            // [steps, B, dim] for output (optional)
+        T* output,              // [steps, B, dim] RENAMED: final output after selective
+        T* h_linear_cache,      // [steps, B, dim] intermediate h_linear for backward
         T* log_v_cache,
         T* sign_v_cache,
         T* alpha_cache,
@@ -694,7 +820,8 @@ struct LogPolyElmanForward {
         T* delta_cache,
         T* weight_rh_cache,
         T* alpha_raw_cache,
-        T* log_rms_cache) {     // [steps, B, 1] RMSNorm values for backward
+        T* log_rms_cache,
+        T* compete_cache) {     // [steps, B, dim] NEW: for selective output backward
 
         static const T alpha_one = static_cast<T>(1.0);
         static const T beta_zero = static_cast<T>(0.0);
@@ -703,15 +830,17 @@ struct LogPolyElmanForward {
         const int TBD = steps * BD;  // Total batch*dim for all timesteps
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
+        const int group_size = dim_ / n_groups_;  // NEW: for selective output
 
         // =========================================================================
         // Haste pattern: Pre-compute ALL input projections in big GEMMs
         // =========================================================================
 
-        T *all_wx_x, *all_alpha_raw, *all_delta_tmp;
+        T *all_wx_x, *all_alpha_raw, *all_delta_tmp, *w_out_h;
         cudaMalloc(&all_wx_x, TBD * sizeof(T));
         cudaMalloc(&all_alpha_raw, TBD * sizeof(T));
         cudaMalloc(&all_delta_tmp, TBD * sizeof(T));
+        cudaMalloc(&w_out_h, BD * sizeof(T));  // NEW: for selective output
 
         // Pre-compute W_x @ x for ALL timesteps in one GEMM
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -742,6 +871,7 @@ struct LogPolyElmanForward {
             const T* sign_h_prev = sign_h + t * BD;
             T* log_h_t = log_h + (t + 1) * BD;
             T* sign_h_t = sign_h + (t + 1) * BD;
+            T* out_t = output + t * BD;
 
             // Caches for this timestep
             T* log_v_t = training_ ? (log_v_cache + t * BD) : nullptr;
@@ -751,6 +881,9 @@ struct LogPolyElmanForward {
             T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
             T* weight_t = training_ ? (weight_rh_cache + t * BD) : nullptr;
             T* alpha_raw_t = training_ ? (alpha_raw_cache + t * BD) : nullptr;
+            T* h_linear_t = training_ ? (h_linear_cache + t * BD) : nullptr;
+            T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
+            T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
 
             // Get pre-computed projections for this timestep
             const T* wx_x_t = all_wx_x + t * BD;
@@ -770,22 +903,33 @@ struct LogPolyElmanForward {
                 log_h_t, sign_h_t,
                 log_v_t, sign_v_t, alpha_t, log_h_unb_t, delta_t, weight_t);
 
-            // Apply RMSNorm and convert to linear for output
-            if (h_linear) {
-                const int rmsnorm_block = 256;
-                size_t smem_size = rmsnorm_block * sizeof(float);
-                T* log_rms_t = training_ ? (log_rms_cache + t * batch_size_) : nullptr;
+            // Apply RMSNorm and convert to linear
+            const int rmsnorm_block = 256;
+            size_t rmsnorm_smem = rmsnorm_block * sizeof(float);
 
-                LogSpaceRMSNormKernel<T, 256><<<batch_size_, rmsnorm_block, smem_size, stream_>>>(
-                    batch_size_, dim_,
-                    log_h_t, sign_h_t, log_gamma,
-                    h_linear + t * BD, log_rms_t);
-            }
+            // Use temporary buffer if not training (no cache needed)
+            T* h_linear_buf = h_linear_t ? h_linear_t : w_out_h;  // Reuse w_out_h as temp
+
+            LogSpaceRMSNormKernel<T, 256><<<batch_size_, rmsnorm_block, rmsnorm_smem, stream_>>>(
+                batch_size_, dim_,
+                log_h_t, sign_h_t, log_gamma,
+                h_linear_buf, log_rms_t);
+
+            // w_out_h = h_linear @ W_out.T
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+                dim_, batch_size_, dim_, &alpha_one, W_out, dim_, h_linear_buf, dim_, &beta_zero, w_out_h, dim_);
+
+            // NEW: Selective output with compete mechanism (stabilizer)
+            dim3 grid(batch_size_, n_groups_);
+            int smem_size = 2 * block_size * sizeof(float);
+            LogSelectiveOutput<T><<<grid, block_size, smem_size, stream_>>>(
+                batch_size_, dim_, n_groups_, group_size, h_linear_buf, w_out_h, out_t, compete_t);
         }
 
         cudaFree(all_wx_x);
         cudaFree(all_alpha_raw);
         cudaFree(all_delta_tmp);
+        cudaFree(w_out_h);
     }
 };
 
@@ -797,16 +941,19 @@ template<typename T>
 struct LogPolyElmanBackward {
     int batch_size_;
     int dim_;
+    int n_groups_;  // NEW: for selective output
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 
     LogPolyElmanBackward(
         int batch_size,
         int dim,
+        int n_groups,  // NEW: for selective output
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream)
         : batch_size_(batch_size),
           dim_(dim),
+          n_groups_(n_groups),
           blas_handle_(blas_handle),
           stream_(stream) {}
 
@@ -817,6 +964,7 @@ struct LogPolyElmanBackward {
         const T* sign_r_h,
         const T* W_alpha,
         const T* W_delta,
+        const T* W_out,          // NEW: for selective output
         const T* log_gamma,      // [dim] RMSNorm scale
         const T* x,
         const T* log_h,
@@ -829,13 +977,16 @@ struct LogPolyElmanBackward {
         const T* delta_cache,
         const T* weight_rh_cache,
         const T* h_linear_cache, // [T, B, dim] cached h_linear for RMSNorm backward
-        const T* d_h_linear,
+        const T* compete_cache,  // NEW: cached compete weights
+        const T* log_rms_cache,  // [T, B] cached from forward
+        const T* d_output,       // RENAMED: gradient from final output
         T* dx,
         T* dW_x,
         T* d_log_r_h,
         T* dW_alpha,
         T* db_alpha,
         T* dW_delta,
+        T* dW_out,               // NEW: gradient for W_out
         T* db,
         T* db_delta,
         T* d_log_gamma,          // [dim] gradient for RMSNorm scale
@@ -847,17 +998,21 @@ struct LogPolyElmanBackward {
         const int BD = batch_size_ * dim_;
         const int block_size = 256;
         const int num_blocks = (BD + block_size - 1) / block_size;
+        const int group_size = dim_ / n_groups_;  // NEW
 
-        // Workspace layout: 6 * BD * sizeof(T) + 5 * dim_ * sizeof(float)
+        // Workspace layout: 8 * BD * sizeof(T) + 5 * dim_ * sizeof(float)
         T* d_log_h_recurrent = workspace;
         T* d_log_h_prev = d_log_h_recurrent + BD;
         T* d_wx_x = d_log_h_prev + BD;
         T* d_alpha_raw = d_wx_x + BD;
         T* d_delta_raw = d_alpha_raw + BD;
         T* d_log_h_from_rmsnorm = d_delta_raw + BD;
+        T* d_h_linear = d_log_h_from_rmsnorm + BD;   // NEW: gradient for h_linear
+        T* d_w_out_h = d_h_linear + BD;              // NEW: gradient for w_out_h
+        T* w_out_h = d_w_out_h + BD;                 // NEW: recomputed w_out_h
 
         // Float buffers for atomic gradients (after T buffers)
-        float* d_log_r_h_float = reinterpret_cast<float*>(d_log_h_from_rmsnorm + BD);
+        float* d_log_r_h_float = reinterpret_cast<float*>(w_out_h + BD);
         float* db_float = d_log_r_h_float + dim_;
         float* db_delta_float = db_float + dim_;
         float* db_alpha_float = db_delta_float + dim_;
@@ -874,8 +1029,9 @@ struct LogPolyElmanBackward {
         cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
         cudaMemsetAsync(dW_alpha, 0, dim_ * dim_ * sizeof(T), stream_);
         cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+        cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);  // NEW
 
-        // RMSNorm backward kernel config
+        // Kernel configs
         const int rmsnorm_block = 256;
         const int smem_size = rmsnorm_block * sizeof(float);
 
@@ -894,18 +1050,38 @@ struct LogPolyElmanBackward {
             const T* delta_t = delta_cache + t * BD;
             const T* weight_t = weight_rh_cache + t * BD;
             const T* h_linear_t = h_linear_cache + t * BD;
+            const T* compete_t = compete_cache + t * BD;
 
-            const T* d_h_linear_t = d_h_linear + t * BD;
+            const T* d_output_t = d_output + t * BD;
             T* dx_t = dx + t * BD;
 
-            // Step 1: RMSNorm backward - convert d_h_linear -> d_log_h
+            // Step 0: Recompute w_out_h = W_out @ h_linear
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+                dim_, batch_size_, dim_, &alpha_one, W_out, dim_, h_linear_t, dim_, &beta_zero, w_out_h, dim_);
+
+            // Step 1: Selective output backward -> d_h_linear, d_w_out_h
+            dim3 grid(batch_size_, n_groups_);
+            int sel_smem = block_size * sizeof(float);
+            LogSelectiveOutputBackward<T><<<grid, block_size, sel_smem, stream_>>>(
+                batch_size_, dim_, n_groups_, group_size,
+                h_linear_t, w_out_h, compete_t, d_output_t, d_h_linear, d_w_out_h);
+
+            // dW_out
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+                dim_, dim_, batch_size_, &alpha_one, d_w_out_h, dim_, h_linear_t, dim_, &alpha_one, dW_out, dim_);
+
+            // d_h_linear += W_out^T @ d_w_out_h
+            blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+                dim_, batch_size_, dim_, &alpha_one, W_out, dim_, d_w_out_h, dim_, &alpha_one, d_h_linear, dim_);
+
+            // Step 2: RMSNorm backward - convert d_h_linear -> d_log_h
             LogSpaceRMSNormBackwardKernel<T, 256><<<batch_size_, rmsnorm_block, smem_size, stream_>>>(
                 batch_size_, dim_,
                 log_h_new, sign_h_new, log_gamma,
-                h_linear_t, d_h_linear_t,
+                h_linear_t, d_h_linear,
                 d_log_h_from_rmsnorm, d_log_gamma_float);
 
-            // Step 2: Add recurrent gradient from next timestep
+            // Step 3: Add recurrent gradient from next timestep
             // d_log_h_total = d_log_h_from_rmsnorm + d_log_h_recurrent
             if (t < steps - 1) {
                 // Simple element-wise add kernel
@@ -913,7 +1089,7 @@ struct LogPolyElmanBackward {
                     BD, d_log_h_from_rmsnorm, d_log_h_recurrent, d_log_h_from_rmsnorm);
             }
 
-            // Step 3: Backward through polynomial update
+            // Step 4: Backward through polynomial update
             LogPolyGatedBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
                 batch_size_, dim_,
                 log_h_prev, sign_h_prev,

@@ -98,14 +98,13 @@ __global__ void LinearPolynomialGatedUpdate(
                   static_cast<float>(b[d]);
         if (v_cache) v_cache[idx] = static_cast<T>(v);
 
-        // Polynomial activation: sign(v) * |v|^alpha, bounded
+        // Polynomial activation with pre-squashing for stability
+        // v_squashed = v / (1 + |v|) maps to (-1, 1), bounding polynomial output
         float sign_v = (v >= 0.0f) ? 1.0f : -1.0f;
         float abs_v = fabsf(v);
-        // Bound |v| to avoid explosion
-        abs_v = fminf(abs_v, 10.0f);
-        float candidate = sign_v * powf(abs_v + 1e-6f, alpha);
-        // Bound candidate
-        candidate = fmaxf(fminf(candidate, 10.0f), -10.0f);
+        float v_squashed = abs_v / (1.0f + abs_v);  // Squash to (0, 1)
+        float candidate = sign_v * powf(v_squashed + 1e-6f, alpha);
+        // No additional clamp needed: v_squashed ∈ (0,1), alpha ≥ 1 → candidate ∈ (-1, 1)
 
         // Gated update: h = (1 - delta) * h_prev + delta * candidate
         float h_new = (1.0f - delta) * h_p + delta * candidate;
@@ -263,23 +262,26 @@ __global__ void LinearPolynomialGatedBackward(
         float one_minus_del = 1.0f - del;
         float h_p = static_cast<float>(h_prev[idx]);
 
-        // Compute candidate and its derivatives
+        // Compute candidate and its derivatives with pre-squashing
+        // v_squashed = |v| / (1 + |v|), candidate = sign(v) * v_squashed^alpha
         float sign_v = (v_val >= 0.0f) ? 1.0f : -1.0f;
         float abs_v = fabsf(v_val);
-        abs_v = fminf(abs_v, 10.0f);
-        float abs_v_eps = abs_v + 1e-6f;
-        float candidate = sign_v * powf(abs_v_eps, alpha_val);
-        candidate = fmaxf(fminf(candidate, 10.0f), -10.0f);
+        float one_plus_abs_v = 1.0f + abs_v;
+        float v_squashed = abs_v / one_plus_abs_v;  // ∈ (0, 1)
+        float v_squashed_eps = v_squashed + 1e-6f;
+        float candidate = sign_v * powf(v_squashed_eps, alpha_val);
+        // candidate ∈ (-1, 1), no clamping needed
 
-        // d_candidate/dv = alpha * sign(v) * |v|^(alpha-1)
-        float d_cand_dv = alpha_val * sign_v * powf(abs_v_eps, alpha_val - 1.0f);
-        // Bound gradient
-        d_cand_dv = fmaxf(fminf(d_cand_dv, 100.0f), -100.0f);
+        // d_candidate/dv = alpha * sign(v) * v_squashed^(alpha-1) * d(v_squashed)/d|v|
+        // where d(|v|/(1+|v|))/d|v| = 1/(1+|v|)^2
+        float d_squash_dv = 1.0f / (one_plus_abs_v * one_plus_abs_v);
+        float d_cand_dv = alpha_val * sign_v * powf(v_squashed_eps, alpha_val - 1.0f) * d_squash_dv;
+        // Gradient is naturally bounded since v_squashed ∈ (0,1) and d_squash_dv ≤ 1
 
-        // d_candidate/d_alpha = sign(v) * |v|^alpha * log(|v|)
-        float log_abs_v = logf(abs_v_eps);
-        float d_cand_dalpha = sign_v * powf(abs_v_eps, alpha_val) * log_abs_v;
-        d_cand_dalpha = fmaxf(fminf(d_cand_dalpha, 100.0f), -100.0f);
+        // d_candidate/d_alpha = sign(v) * v_squashed^alpha * log(v_squashed)
+        float log_v_squashed = logf(v_squashed_eps);
+        float d_cand_dalpha = sign_v * powf(v_squashed_eps, alpha_val) * log_v_squashed;
+        // log(v_squashed) ≤ 0 since v_squashed ≤ 1, so gradient is bounded
 
         // Clip grad_h early to prevent explosion
         grad_h = fmaxf(fminf(grad_h, 10.0f), -10.0f);
