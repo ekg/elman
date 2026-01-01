@@ -137,7 +137,7 @@ def parse_log(log_file, level, elapsed):
 
 def main():
     parser = argparse.ArgumentParser(description='Benchmark all Elman Ladder levels')
-    parser.add_argument('--data', type=str, default='data/tinystories_50mb.txt',
+    parser.add_argument('--data', type=str, default='data/pile_1mb.txt',
                         help='Path to training data')
     parser.add_argument('--steps', type=int, default=1000,
                         help='Training steps per level')
