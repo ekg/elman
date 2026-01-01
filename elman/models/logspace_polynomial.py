@@ -336,11 +336,14 @@ class LogSpacePolynomialCell(nn.Module):
             x_t = x[t]
 
             # Compute input-dependent alpha: α = 1 + softplus(W_alpha @ x + b_alpha)
+            # Cap alpha to [1, 2] to prevent gradient explosion
             alpha_raw = x_t @ self.W_alpha.T + self.b_alpha
-            alpha = 1.0 + F.softplus(alpha_raw)
+            alpha = 1.0 + torch.clamp(F.softplus(alpha_raw), max=1.0)
 
             # r_h * h_prev in log space
-            log_rh_hp = self.log_r_h + log_h_prev
+            # Constrain log_r_h to be <= -0.1 (so r_h <= 0.9) for stability
+            log_r_h_clamped = torch.clamp(self.log_r_h, max=-0.1)
+            log_rh_hp = log_r_h_clamped + log_h_prev
             sign_rh_hp = self.sign_r_h * sign_h_prev
 
             # W_x @ x in linear space, then convert to log (no bias - causes gradient explosion)

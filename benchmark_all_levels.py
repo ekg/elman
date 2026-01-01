@@ -231,7 +231,8 @@ def main():
         all_metrics[str(level)] = metrics
 
         status = "✓" if proc.returncode == 0 else "✗"
-        print(f"[GPU {level % args.gpus}] {status} Level {level}: {elapsed:.1f}s, "
+        gpu_id = list(processes.keys()).index(level) % args.gpus
+        print(f"[GPU {gpu_id}] {status} Level {level}: {elapsed:.1f}s, "
               f"loss={metrics.get('final_loss', 'N/A')}, tok/s={metrics.get('tokens_per_sec', 'N/A')}")
 
     total_time = time.time() - start_time

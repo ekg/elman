@@ -324,14 +324,15 @@ __global__ void LogSelectiveUpdateKernel(
 
         float log_hp = static_cast<float>(log_h_prev[idx]);
         float sign_hp = static_cast<float>(sign_h_prev[idx]);
-        float log_rh = static_cast<float>(log_r_h[d]);
+        // Clamp log_r_h to <= -0.1 (so r_h <= 0.9) for stability
+        float log_rh = fminf(static_cast<float>(log_r_h[d]), -0.1f);
         float sign_rh = static_cast<float>(sign_r_h[d]);
         float wx = static_cast<float>(wx_x[idx]);
         float bias = static_cast<float>(b[d]);
 
-        // Input-dependent alpha
+        // Input-dependent alpha, capped at 2.0 for stability
         float alpha_raw_val = static_cast<float>(alpha_raw[idx]);
-        float alpha = 1.0f + stable_softplus(alpha_raw_val);
+        float alpha = 1.0f + fminf(stable_softplus(alpha_raw_val), 1.0f);
         if (alpha_cache) alpha_cache[idx] = static_cast<T>(alpha);
 
         // r_h * h_prev in log space
@@ -561,7 +562,8 @@ __global__ void LogSelectiveUpdateBackward(
         float log_h_unb = static_cast<float>(log_h_unbounded[idx]);
         float del = static_cast<float>(delta[idx]);
         float w_rh = static_cast<float>(weight_rh[idx]);
-        float log_rh = static_cast<float>(log_r_h[d]);
+        // Clamp log_r_h to <= -0.1 for stability (must match forward)
+        float log_rh = fminf(static_cast<float>(log_r_h[d]), -0.1f);
 
         float one_minus_delta = 1.0f - del;
 
