@@ -19,7 +19,7 @@ import time
 import argparse
 import json
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+# Using subprocess.Popen for true parallelism across GPUs
 from datetime import datetime
 
 # All levels to benchmark
@@ -188,18 +188,51 @@ def main():
 
     start_time = time.time()
 
-    with ProcessPoolExecutor(max_workers=args.gpus) as executor:
-        futures = {}
-        for i, level in enumerate(levels):
-            gpu_id = i % args.gpus
-            future = executor.submit(
-                run_training, gpu_id, level, data_path, args.steps, output_base, args.params
-            )
-            futures[future] = level
+    # Launch all jobs as background subprocesses for true parallelism
+    processes = {}
+    log_files = {}
 
-        for future in as_completed(futures):
-            level, metrics = future.result()
-            all_metrics[str(level)] = metrics
+    for i, level in enumerate(levels):
+        gpu_id = i % args.gpus
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
+        log_name = f"level_{level}"
+        log_file = output_base / f"{log_name}.log"
+        log_files[level] = log_file
+
+        cmd = [
+            sys.executable, 'train.py',
+            '--data', str(data_path),
+            '--level', str(level),
+            '--params', args.params,
+            '--steps', str(args.steps),
+            '--batch_size', '16',
+            '--chunk_size', '512',
+            '--lr', '3e-4',
+            '--warmup_steps', '100',
+            '--log_every', '10',
+            '--save_every', '999999',
+            '--bf16',
+            '--output', str(output_base / log_name),
+        ]
+
+        f = open(log_file, 'w')
+        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, cwd='/home/erikg/elman')
+        processes[level] = (proc, f, time.time())
+        print(f"[GPU {gpu_id}] Started level {level}")
+
+    # Wait for all to complete
+    for level, (proc, f, start) in processes.items():
+        proc.wait()
+        f.close()
+        elapsed = time.time() - start
+        metrics = parse_log(log_files[level], level, elapsed)
+        all_metrics[str(level)] = metrics
+
+        status = "✓" if proc.returncode == 0 else "✗"
+        print(f"[GPU {level % args.gpus}] {status} Level {level}: {elapsed:.1f}s, "
+              f"loss={metrics.get('final_loss', 'N/A')}, tok/s={metrics.get('tokens_per_sec', 'N/A')}")
 
     total_time = time.time() - start_time
 
