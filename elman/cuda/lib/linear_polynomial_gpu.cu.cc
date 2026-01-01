@@ -281,37 +281,45 @@ __global__ void LinearPolynomialGatedBackward(
         float d_cand_dalpha = sign_v * powf(abs_v_eps, alpha_val) * log_abs_v;
         d_cand_dalpha = fmaxf(fminf(d_cand_dalpha, 100.0f), -100.0f);
 
+        // Clip grad_h early to prevent explosion
+        grad_h = fmaxf(fminf(grad_h, 10.0f), -10.0f);
+
         float d_cand = grad_h * del;
+        d_cand = fmaxf(fminf(d_cand, 10.0f), -10.0f);
         float dv_val = d_cand * d_cand_dv;
+        dv_val = fmaxf(fminf(dv_val, 100.0f), -100.0f);
         dv[idx] = static_cast<T>(dv_val);
 
         // d_alpha = d_cand * d_cand_dalpha
         float d_alpha = d_cand * d_cand_dalpha;
+        d_alpha = fmaxf(fminf(d_alpha, 100.0f), -100.0f);
         // d_alpha_raw = d_alpha * softplus'(alpha_raw) = d_alpha * sigmoid(alpha_raw)
         // alpha = 1 + softplus(alpha_raw)
         // softplus'(x) = sigmoid(x)
         float alpha_raw = alpha_val - 1.0f;  // Approximate
         float sig_alpha = 1.0f / (1.0f + expf(-alpha_raw));
-        d_alpha_raw[idx] = static_cast<T>(d_alpha * sig_alpha);
+        d_alpha_raw[idx] = static_cast<T>(fmaxf(fminf(d_alpha * sig_alpha, 10.0f), -10.0f));
 
-        // d_delta
-        float d_delta = grad_h * (candidate - h_p);
+        // d_delta - clip candidate and h_p difference first
+        float cand_hp_diff = fmaxf(fminf(candidate - h_p, 10.0f), -10.0f);
+        float d_delta = grad_h * cand_hp_diff;
         float dsigmoid = del * one_minus_del;
         float d_delta_raw_val = d_delta * dsigmoid;
-        d_delta_raw[idx] = static_cast<T>(d_delta_raw_val);
+        d_delta_raw[idx] = static_cast<T>(fmaxf(fminf(d_delta_raw_val, 10.0f), -10.0f));
 
         // dh_prev from gated path and r_h path
         // Clamp r_h to <= 0.9 for stability (must match forward)
         float dh_prev_gated = one_minus_del * grad_h;
         float r_h_val = fminf(static_cast<float>(r_h[d]), 0.9f);
         float dh_prev_rh = dv_val * r_h_val;
-        dh_prev_out[idx] = static_cast<T>(dh_prev_gated + dh_prev_rh);
+        float dh_prev_total = dh_prev_gated + dh_prev_rh;
+        dh_prev_out[idx] = static_cast<T>(fmaxf(fminf(dh_prev_total, 10.0f), -10.0f));
 
-        // dr_h: gradient for diagonal element
-        float dr_h_val = dv_val * h_p;
+        // dr_h: gradient for diagonal element - clip contribution
+        float dr_h_val = fmaxf(fminf(dv_val * h_p, 1.0f), -1.0f);
         atomicAdd(&dr_h[d], dr_h_val);
 
-        atomicAdd(&db[d], dv_val);
+        atomicAdd(&db[d], fmaxf(fminf(dv_val, 1.0f), -1.0f));
         atomicAdd(&db_delta[d], d_delta_raw_val);
     }
 }
