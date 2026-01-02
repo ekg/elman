@@ -105,6 +105,15 @@ class Mamba2LM(nn.Module):
         logits = self.lm_head(x)
 
         if return_loss:
+            # Mask out padded positions if actual_length is provided
+            if actual_length is not None:
+                device = logits.device
+                # Create mask: valid positions are 0 to actual_length-2 (shifted by 1 for targets)
+                positions = torch.arange(target.size(1), device=device).unsqueeze(0)
+                valid_mask = positions < (actual_length.unsqueeze(1) - 1)
+                target = target.clone()
+                target[~valid_mask] = -100
+
             loss = F.cross_entropy(
                 logits.view(-1, self.vocab_size),
                 target.reshape(-1),
@@ -138,19 +147,33 @@ def create_mamba2_model(
     else:
         target_count = int(target)
 
-    # Configs tuned to match parameter counts
-    configs = {
-        50_000_000: (384, 12, 64, 2),    # dim, depth, d_state, expand
-        100_000_000: (512, 16, 64, 2),
-        200_000_000: (768, 18, 64, 2),
-        350_000_000: (1024, 20, 64, 2),
-        500_000_000: (1280, 24, 128, 2),
-        700_000_000: (1536, 28, 128, 2),
-        1_000_000_000: (1920, 32, 128, 2),
-    }
+    # Search for dim/depth that hits target param count
+    # Mamba2 layer params ≈ dim * (3*expand*dim + 2*d_state + expand*dim) per layer
+    # Plus embedding: vocab_size * dim * 2 (embed + head)
+    d_state = 64
+    expand = 2
 
-    closest = min(configs.keys(), key=lambda x: abs(x - target_count))
-    dim, depth, d_state, expand = configs[closest]
+    best_config = None
+    best_diff = float('inf')
+
+    for depth in range(6, 36, 2):
+        for dim in range(256, 2048, 32):
+            # Estimate params
+            embed_params = vocab_size * dim * 2  # embedding + lm_head
+            # Mamba2 layer: ~6.1 * dim^2 per layer (measured)
+            layer_params = depth * 6.1 * dim * dim
+            total = embed_params + layer_params
+
+            diff = abs(total - target_count)
+            if diff < best_diff:
+                best_diff = diff
+                best_config = (dim, depth)
+
+    dim, depth = best_config
+
+    # Use larger d_state for bigger models
+    if target_count >= 500_000_000:
+        d_state = 128
 
     model = Mamba2LM(
         vocab_size=vocab_size,
@@ -160,7 +183,8 @@ def create_mamba2_model(
         expand=expand,
     )
 
-    print(f"Created Mamba2 model: dim={dim}, depth={depth}, params={model.get_num_params():,}")
+    actual_params = model.get_num_params()
+    print(f"Created Mamba2 model: dim={dim}, depth={depth}, params={actual_params:,}")
     return model
 
 

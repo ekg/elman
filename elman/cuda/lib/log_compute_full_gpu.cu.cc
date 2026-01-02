@@ -567,6 +567,106 @@ __global__ void CopyFloatToT(
     }
 }
 
+// =============================================================================
+// h+x Selective Output Kernels
+// =============================================================================
+
+// h+x selective output: output = h * silu(h + x + b_gate)
+// This makes output selection input-dependent, similar to Mamba2
+template<typename T>
+__global__ void SelectiveOutputForward(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
+    T* __restrict__ output,
+    T* __restrict__ gate_cache) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
+
+        float h_val = static_cast<float>(h[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
+
+        // gate_raw = h + x + b_gate
+        float gate_raw = h_val + x_val + b_val;
+
+        // silu(gate_raw) = gate_raw * sigmoid(gate_raw)
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
+
+        // output = h * silu(h + x + b_gate)
+        output[idx] = static_cast<T>(h_val * silu_val);
+
+        // Cache silu value for backward
+        if (gate_cache) {
+            gate_cache[idx] = static_cast<T>(silu_val);
+        }
+    }
+}
+
+// Backward for h+x selective output
+template<typename T>
+__global__ void SelectiveOutputBackward(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
+    const T* __restrict__ d_output,
+    T* __restrict__ dh,
+    T* __restrict__ dx,
+    float* __restrict__ db_gate) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
+
+        float h_val = static_cast<float>(h[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
+        float dout = static_cast<float>(d_output[idx]);
+
+        // Recompute forward values
+        float gate_raw = h_val + x_val + b_val;
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
+
+        // d_silu/d_gate_raw = sigmoid + gate_raw * sigmoid * (1 - sigmoid)
+        float d_silu = sigmoid_val + gate_raw * sigmoid_val * (1.0f - sigmoid_val);
+
+        // output = h * silu(gate_raw)
+        // d_h = dout * silu + dout * h * d_silu (since d_gate_raw/d_h = 1)
+        float dh_val = dout * (silu_val + h_val * d_silu);
+        dh[idx] = static_cast<T>(dh_val);
+
+        // d_x = dout * h * d_silu (since d_gate_raw/d_x = 1)
+        float dx_val = dout * h_val * d_silu;
+        dx[idx] = static_cast<T>(dx_val);
+
+        // d_b_gate = dout * h * d_silu (same as dx)
+        atomicAdd(&db_gate[d], dx_val);
+    }
+}
+
+// Helper: Vector addition in place
+template<typename T>
+__global__ void VectorAddInplace(
+    const int n,
+    const T* __restrict__ src,
+    T* __restrict__ dst) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float s = static_cast<float>(src[idx]);
+        float d = static_cast<float>(dst[idx]);
+        dst[idx] = static_cast<T>(s + d);
+    }
+}
+
 }  // anonymous namespace
 
 
@@ -583,13 +683,11 @@ LogComputeFullElmanForward<T>::LogComputeFullElmanForward(
     bool training,
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : training_(training),
       batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -599,16 +697,16 @@ void LogComputeFullElmanForward<T>::Run(
     const T* W_x,
     const T* R_h,
     const T* W_delta,
-    const T* W_out,
     const T* b,
     const T* b_delta,
+    const T* b_gate,
     const T* x,
     T* log_h,
     T* sign_h,
     T* output,
     T* v,
     T* delta_cache,
-    T* compete_cache,
+    T* gate_cache,
     T* log_R_pos,
     T* log_R_neg,
     T* workspace) {
@@ -620,7 +718,6 @@ void LogComputeFullElmanForward<T>::Run(
     const int TBD = steps * BD;  // Total batch*dim for all timesteps
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
     // Decompose R_h matrix
     const int R_blocks = (dim_ * dim_ + block_size - 1) / block_size;
@@ -629,15 +726,13 @@ void LogComputeFullElmanForward<T>::Run(
 
     // =========================================================================
     // WORKSPACE LAYOUT (OPTIMIZED - no log-space matmul!):
-    //   [all_wx_x: TBD] [all_delta_tmp: TBD] [w_out_h: BD]
-    //   [Rh_h_linear: BD] [h_linear: BD]
-    // Total: 2*TBD + 3*BD = 2*steps*BD + 3*BD
+    //   [all_wx_x: TBD] [all_delta_tmp: TBD] [Rh_h_linear: BD] [h_linear: BD]
+    // Total: 2*TBD + 2*BD = 2*steps*BD + 2*BD
     // =========================================================================
     T* all_wx_x = workspace;
     T* all_delta_tmp = workspace + TBD;
-    T* w_out_h = workspace + 2 * TBD;
-    T* log_Rh_h = workspace + 2 * TBD + BD;  // Now used as Rh_h_linear
-    T* h_linear = workspace + 2 * TBD + 2 * BD;
+    T* Rh_h_linear = workspace + 2 * TBD;
+    T* h_linear = workspace + 2 * TBD + BD;
 
     // Pre-compute W_x @ x for ALL timesteps in one GEMM
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -656,7 +751,6 @@ void LogComputeFullElmanForward<T>::Run(
 
     // Reuse h_linear for h_prev_linear (single conversion per timestep)
     T* h_prev_linear = h_linear;  // Alias - reuse the same buffer
-    T* Rh_h_linear = log_Rh_h;    // Reuse log_Rh_h buffer for linear result
 
     for (int t = 0; t < steps; ++t) {
         const T* log_h_prev = log_h + t * BD;
@@ -666,11 +760,12 @@ void LogComputeFullElmanForward<T>::Run(
         T* out_t = output + t * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
-        T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
+        T* gate_t = training_ ? (gate_cache + t * BD) : nullptr;
 
         // Get pre-computed projections for this timestep
         const T* wx_x_t = all_wx_x + t * BD;
         const T* delta_tmp_t = all_delta_tmp + t * BD;
+        const T* x_t = x + t * BD;
 
         // OPTIMIZED: Convert h_prev to linear ONCE, then use cuBLAS GEMM
         // This is O(B*D) transcendentals vs O(B*D^2) in LogSpaceMatVecKernel!
@@ -687,20 +782,13 @@ void LogComputeFullElmanForward<T>::Run(
             wx_x_t, Rh_h_linear, delta_tmp_t,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
-        // Convert h to linear for W_out multiplication using GPU kernel
+        // Convert h to linear for h+x selective output
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_t, sign_h_t, h_linear);
 
-        // w_out_h = h_linear @ W_out.T (depends on h_t, can't pre-compute)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
-
-        // Selective output
-        dim3 out_grid(batch_size_, n_groups_);
-        int out_smem_size = 2 * block_size * sizeof(float);
-        LogSpaceSelectiveOutputKernel<T><<<out_grid, block_size, out_smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size,
-            log_h_t, sign_h_t, w_out_h, out_t, compete_t);
+        // h+x selective output: output = h * silu(h + x + b_gate)
+        SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_linear, x_t, b_gate, out_t, gate_t);
     }
     // Workspace is managed by caller - no cudaFree needed
 }
@@ -713,12 +801,10 @@ template<typename T>
 LogComputeFullElmanBackward<T>::LogComputeFullElmanBackward(
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -728,13 +814,13 @@ void LogComputeFullElmanBackward<T>::Run(
     const T* W_x,
     const T* R_h,
     const T* W_delta,
-    const T* W_out,
+    const T* b_gate,
     const T* x,
     const T* log_h,
     const T* sign_h,
     const T* v,
     const T* delta_cache,
-    const T* compete_cache,
+    const T* gate_cache,
     const T* log_R_pos,
     const T* log_R_neg,
     const T* d_output,
@@ -742,9 +828,9 @@ void LogComputeFullElmanBackward<T>::Run(
     T* dW_x,
     T* dR_h,
     T* dW_delta,
-    T* dW_out,
     T* db,
     T* db_delta,
+    T* db_gate,
     T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
@@ -753,37 +839,37 @@ void LogComputeFullElmanBackward<T>::Run(
     const int BD = batch_size_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
     // ==========================================================================
     // WORKSPACE LAYOUT: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD]
-    //                   [dh_prev_linear: BD] [dh_linear: BD] [d_w_out_h: BD]
-    //                   [w_out_h: BD] [h_linear: BD] [h_prev_linear: BD]
+    //                   [dh_prev_linear: BD] [dh_linear: BD] [dx_gate: BD]
+    //                   [h_linear: BD] [h_prev_linear: BD]
     //                   [db_float: dim floats] [db_delta_float: dim floats]
-    // Total: 9*BD + 2*dim floats
+    //                   [db_gate_float: dim floats]
+    // Total: 8*BD + 3*dim floats
     // ==========================================================================
     T* dv = workspace;
     T* d_delta_raw = workspace + BD;
     T* dh_recurrent = workspace + 2 * BD;
     T* dh_prev_linear = workspace + 3 * BD;
     T* dh_linear = workspace + 4 * BD;
-    T* d_w_out_h = workspace + 5 * BD;
-    T* w_out_h = workspace + 6 * BD;
-    T* h_linear = workspace + 7 * BD;
-    T* h_prev_linear = workspace + 8 * BD;
-    float* db_float = reinterpret_cast<float*>(workspace + 9 * BD);
+    T* dx_gate = workspace + 5 * BD;
+    T* h_linear = workspace + 6 * BD;
+    T* h_prev_linear = workspace + 7 * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + 8 * BD);
     float* db_delta_float = db_float + dim_;
+    float* db_gate_float = db_delta_float + dim_;
 
     // Initialize workspace (all async)
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
     cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
     cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_gate_float, 0, dim_ * sizeof(float), stream_);
 
     // Zero weight gradients (async)
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dR_h, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
-    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -793,7 +879,6 @@ void LogComputeFullElmanBackward<T>::Run(
         const T* sign_h_t = sign_h + (t + 1) * BD;
         const T* v_t = v + t * BD;
         const T* delta_t = delta_cache + t * BD;
-        const T* compete_t = compete_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
         T* dx_t = dx + t * BD;
 
@@ -803,29 +888,21 @@ void LogComputeFullElmanBackward<T>::Run(
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(
             BD, log_h_prev, sign_h_prev, h_prev_linear);
 
-        // Recompute w_out_h = h_linear @ W_out.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
+        // Backward through h+x selective output: output = h * silu(h + x + b_gate)
+        SelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_linear, x_t, b_gate, d_out_t,
+            dh_linear, dx_gate, db_gate_float);
 
-        // Backward through selective output
-        dim3 grid(batch_size_, n_groups_);
-        int smem_size = block_size * sizeof(float);
-        LogComputeSelectiveOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, log_h_t, sign_h_t, w_out_h, compete_t,
-            d_out_t, dh_linear, d_w_out_h);
-
-        // dW_out += d_w_out_h @ h_linear^T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, d_w_out_h, dim_, h_linear, dim_, &alpha, dW_out, dim_);
-
-        // dh_linear += d_w_out_h @ W_out (backward of h @ W_out.T)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
+        // Add recurrent gradient to dh
+        if (t < steps - 1) {
+            VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(
+                BD, dh_recurrent, dh_linear);
+        }
 
         // Backward through gated update
         LogComputeGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev, v_t, delta_t, dh_linear,
-            (t < steps - 1) ? dh_recurrent : nullptr,
+            nullptr,  // dh_recurrent handled above
             dv, d_delta_raw, dh_prev_linear, db_float, db_delta_float);
 
         // dh_prev += dv @ R_h (backward of h @ R_h.T, but R_h is not transposed in forward)
@@ -838,11 +915,12 @@ void LogComputeFullElmanBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, dv, dim_, h_prev_linear, dim_, &alpha, dR_h, dim_);
 
-        // dx = dv @ W_x + d_delta_raw @ W_delta (backward of x @ W.T)
+        // dx = dv @ W_x + d_delta_raw @ W_delta + dx_gate
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
+        VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dx_gate, dx_t);
 
         // dh_recurrent for next iteration (async)
         cudaMemcpyAsync(dh_recurrent, dh_prev_linear, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
@@ -858,6 +936,7 @@ void LogComputeFullElmanBackward<T>::Run(
     const int bias_blocks = (dim_ + block_size - 1) / block_size;
     CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
     CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_delta_float, db_delta);
+    CopyFloatToT<T><<<bias_blocks, block_size, 0, stream_>>>(dim_, db_gate_float, db_gate);
 }
 
 // Explicit template instantiations

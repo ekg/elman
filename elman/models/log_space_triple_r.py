@@ -4,22 +4,21 @@ Level log_5: Log-Space Triple R Elman
 Log-space storage with THREE R matrices for complete recurrence control:
 - R_h: Hidden state recurrence
 - R_x: Input transformation (replaces W_x for symmetry)
-- R_delta: Delta gate modulation from hidden state
+- R_delta: Delta gate modulation from hidden state (unused but kept)
 
 Architecture:
     # All projections
     v = R_x @ x + R_h @ h_prev + b
-    delta_raw = W_delta @ x + R_delta @ h_prev + b_delta
+    delta_raw = W_delta @ x + b_delta
     delta = sigmoid(delta_raw)
     h_new = (1-delta) * h_prev + delta * tanh(v)
 
-    # Selective output
-    compete = softmax(h.reshape(groups), dim=-1)
-    output = compete * silu(W_out @ h)
+    # h+x selective output (like Mamba2)
+    output = h * silu(h + x + b_gate)
 
 Key features:
 - Triple R matrices for symmetric input/hidden/gate recurrence
-- R_delta allows hidden state to modulate gating (input-state interaction)
+- h+x selective output: input-dependent gating like Mamba2
 - Most expressive recurrence structure in the ladder
 """
 
@@ -45,11 +44,11 @@ LOG_SPACE_TRIPLE_R_AVAILABLE = True  # PyTorch fallback always available
 
 
 class LogSpaceTripleRFunction(torch.autograd.Function):
-    """Autograd function for Log-Space Triple R Elman (Haste kernel)."""
+    """Autograd function for Log-Space Triple R Elman with h+x gating (Haste kernel)."""
 
     @staticmethod
     def forward(ctx, training, x, log_h0, sign_h0, R_h, R_x, R_delta,
-                W_delta, W_out, b, b_delta, n_groups):
+                W_delta, b, b_delta, b_gate):
         results = hasty_pytorch_lib.logspace_triple_r_forward(
             training,
             x.contiguous(),
@@ -59,38 +58,35 @@ class LogSpaceTripleRFunction(torch.autograd.Function):
             R_x.contiguous(),
             R_delta.contiguous(),
             W_delta.contiguous(),
-            W_out.contiguous(),
             b.contiguous(),
             b_delta.contiguous(),
-            n_groups
+            b_gate.contiguous()
         )
-        log_h, sign_h, output, v_cache, delta_cache, compete_cache = results
+        log_h, sign_h, output, v_cache, delta_cache, gate_cache = results
 
         if training:
             ctx.save_for_backward(
-                x, R_h, R_x, R_delta, W_delta, W_out,
-                log_h, sign_h, v_cache, delta_cache, compete_cache
+                x, R_h, R_x, R_delta, W_delta, b_gate,
+                log_h, sign_h, v_cache, delta_cache, gate_cache
             )
-            ctx.n_groups = n_groups
 
         # Return h_linear as None since it's not computed in CUDA kernel
         return output, log_h, sign_h, None
 
     @staticmethod
     def backward(ctx, d_output, d_log_h, d_sign_h, d_h_linear):
-        (x, R_h, R_x, R_delta, W_delta, W_out,
-         log_h, sign_h, v_cache, delta_cache, compete_cache) = ctx.saved_tensors
+        (x, R_h, R_x, R_delta, W_delta, b_gate,
+         log_h, sign_h, v_cache, delta_cache, gate_cache) = ctx.saved_tensors
 
-        dx, dR_h, dR_x, dR_delta, dW_delta, dW_out, db, db_delta = \
+        dx, dR_h, dR_x, dR_delta, dW_delta, db, db_delta, db_gate = \
             hasty_pytorch_lib.logspace_triple_r_backward(
-                R_h, R_x, R_delta, W_delta, W_out,
-                x, log_h, sign_h, v_cache, delta_cache, compete_cache,
-                d_output.contiguous(),
-                ctx.n_groups
+                R_h, R_x, R_delta, W_delta, b_gate,
+                x, log_h, sign_h, v_cache, delta_cache, gate_cache,
+                d_output.contiguous()
             )
 
         return (None, dx, None, None, dR_h, dR_x, dR_delta,
-                dW_delta, dW_out, db, db_delta, None)
+                dW_delta, db, db_delta, db_gate)
 
 
 class LogSpaceTripleRCell(nn.Module):
@@ -100,27 +96,24 @@ class LogSpaceTripleRCell(nn.Module):
     Log-space storage with three R matrices for complete
     recurrence control: R_h, R_x, R_delta.
 
+    h+x selective output: output = h * silu(h + x + b_gate)
+
     Args:
         dim: Hidden dimension
-        n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
         r_h_mode: Constraint mode for R_h/R_delta matrices
         r_h_init_gain: Initial gain for R_h initialization
     """
 
-    def __init__(self, dim, n_groups=32, delta_init=-2.0,
+    def __init__(self, dim, delta_init=-2.0,
                  r_h_mode='spectral_norm', r_h_init_gain=0.1,
                  spectral_radius=0.9, diagonal_r_delta=False, **kwargs):
         super().__init__()
         self.dim = dim
-        self.n_groups = n_groups
-        self.group_size = dim // n_groups
         self.r_h_mode = r_h_mode
         self.r_h_init_gain = r_h_init_gain
         self.spectral_radius = spectral_radius  # Target spectral radius (lower = more stable)
         self.diagonal_r_delta = diagonal_r_delta  # Use diagonal r_delta for stability
-
-        assert dim % n_groups == 0, f"dim {dim} must be divisible by n_groups {n_groups}"
 
         # R_h matrix with optional constraints
         if r_h_mode == 'scaled_orthogonal':
@@ -149,8 +142,8 @@ class LogSpaceTripleRCell(nn.Module):
         # Delta gate also uses linear W_delta @ x
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
 
-        # Output projection
-        self.W_out = nn.Parameter(torch.empty(dim, dim))
+        # h+x selective gate bias
+        self.b_gate = nn.Parameter(torch.zeros(dim))
 
         self._init_weights()
 
@@ -165,7 +158,6 @@ class LogSpaceTripleRCell(nn.Module):
                 nn.init.orthogonal_(self.R_delta, gain=0.1)
         nn.init.orthogonal_(self.R_x, gain=1.0)
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
-        nn.init.xavier_uniform_(self.W_out)
 
     def _apply_spectral_norm(self, W, name, target_radius=None):
         """Apply spectral normalization to a weight matrix."""
@@ -221,7 +213,7 @@ class LogSpaceTripleRCell(nn.Module):
             h0: tuple of (log_h0, sign_h0) each [B, dim], or None
 
         Returns:
-            output: [T, B, dim] selective output
+            output: [T, B, dim] h+x selective output
             log_h: [T+1, B, dim] log magnitudes
             sign_h: [T+1, B, dim] signs
             h_linear: [T, B, dim] linear hidden states (None for CUDA)
@@ -244,13 +236,13 @@ class LogSpaceTripleRCell(nn.Module):
             return LogSpaceTripleRFunction.apply(
                 self.training, x, log_h0, sign_h0,
                 R_h, R_x, R_delta,
-                self.W_delta, self.W_out, self.b, self.b_delta, self.n_groups
+                self.W_delta, self.b, self.b_delta, self.b_gate
             )
         else:
             return self._forward_pytorch(x, log_h0, sign_h0, R_h, R_x, R_delta)
 
     def _forward_pytorch(self, x, log_h0, sign_h0, R_h, R_x, R_delta):
-        """Pure PyTorch implementation with triple R matrices."""
+        """Pure PyTorch implementation with triple R matrices and h+x gating."""
         T, B, D = x.shape
 
         log_h_list = [log_h0]
@@ -281,14 +273,9 @@ class LogSpaceTripleRCell(nn.Module):
             # Convert to log space
             log_h_new, sign_h_new = to_log_space(h_new)
 
-            # Selective output
-            h_reshaped = h_new.view(B, self.n_groups, self.group_size)
-            compete = F.softmax(h_reshaped, dim=-1)
-            compete = compete.view(B, D)
-
-            w_out_h = h_new @ self.W_out.T
-            silu_out = F.silu(w_out_h)
-            output = compete * silu_out
+            # h+x selective output: output = h * silu(h + x + b_gate)
+            gate = F.silu(h_new + x_t + self.b_gate)
+            output = h_new * gate
 
             log_h_list.append(log_h_new)
             sign_h_list.append(sign_h_new)
@@ -308,12 +295,11 @@ class LogSpaceTripleR(nn.Module):
     Log-Space Triple R Elman layer for use in LadderLM.
 
     Log-space storage with triple R matrices.
-    Most expressive recurrence in the ladder.
+    h+x selective output: output = h * silu(h + x + b_gate)
 
     Args:
         dim: Model dimension
         expansion: Hidden state expansion factor
-        n_groups: Number of groups for compete softmax
         delta_init: Initial bias for delta gate
         dropout: Dropout rate
         r_h_mode: Constraint mode for R_h/R_delta matrices
@@ -323,7 +309,7 @@ class LogSpaceTripleR(nn.Module):
         **kwargs: Ignored (for API compatibility)
     """
 
-    def __init__(self, dim, expansion=1.0, n_groups=32, delta_init=-2.0,
+    def __init__(self, dim, expansion=1.0, delta_init=-2.0,
                  dropout=0.0, r_h_mode='spectral_norm', r_h_init_gain=0.1,
                  spectral_radius=0.99, diagonal_r_delta=False, **kwargs):
         super().__init__()
@@ -332,16 +318,12 @@ class LogSpaceTripleR(nn.Module):
         self.r_h_mode = r_h_mode
         self.diagonal_r_delta = diagonal_r_delta
 
-        # Adjust n_groups for inner dimension
-        while self.d_inner % n_groups != 0 and n_groups > 1:
-            n_groups -= 1
-
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
         # Log-space triple R cell
         self.cell = LogSpaceTripleRCell(
-            self.d_inner, n_groups=n_groups, delta_init=delta_init,
+            self.d_inner, delta_init=delta_init,
             r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
             spectral_radius=spectral_radius, diagonal_r_delta=diagonal_r_delta
         )
@@ -400,3 +382,33 @@ __all__ = [
     'LOG_SPACE_TRIPLE_R_AVAILABLE',
     'HASTE_LOG_TRIPLE_R_AVAILABLE',
 ]
+
+
+if __name__ == "__main__":
+    print("Testing LogSpaceTripleR (log_5)...")
+    print("=" * 60)
+    print(f"Haste CUDA kernel available: {HASTE_LOG_TRIPLE_R_AVAILABLE}")
+
+    # Test layer
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model = LogSpaceTripleR(dim=512, expansion=2.0).to(device).bfloat16()
+    x = torch.randn(2, 32, 512, device=device, dtype=torch.bfloat16)
+
+    print("Testing forward...")
+    out, h = model(x)
+    print(f"Input: {x.shape}, Output: {out.shape}")
+    print(f"Hidden state: log_h={h[0].shape}, sign_h={h[1].shape}")
+
+    print("Testing backward...")
+    loss = out.sum()
+    loss.backward()
+    print("Backward passed!")
+
+    # Verify h+x gating components
+    print(f"b_gate shape: {model.cell.b_gate.shape} (should be [{model.d_inner}])")
+    print(f"R_h shape: {model.cell.R_h.shape}")
+    print(f"R_x shape: {model.cell.R_x.shape}")
+
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {params:,}")
+    print("Log-Space Triple R (log_5) test passed!")

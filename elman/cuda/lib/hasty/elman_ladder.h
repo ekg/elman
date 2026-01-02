@@ -172,9 +172,10 @@ private:
 
 // =============================================================================
 // Level 2: Selective Elman
-// Same recurrence as Gated Elman, but with compete×silu output:
-// compete = softmax(h_t, groups=n_groups)
-// output = compete * silu(W_out @ h_t)
+// Same recurrence as Gated Elman, with h+x selective output:
+// delta = sigmoid(W_delta @ x_t + b_delta)
+// h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+// output = h_t * silu(h_t + x_t + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -183,7 +184,6 @@ struct SelectiveElmanForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -192,21 +192,20 @@ struct SelectiveElmanForward {
         const T* W_x,       // [dim, dim]
         const T* W_h,       // [dim, dim]
         const T* W_delta,   // [dim, dim]
-        const T* W_out,     // [dim, dim]
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
+        const T* b_gate,    // [dim] h+x gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] internal hidden
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
         T* delta_cache,     // [T, B, dim] cached delta
-        T* compete_cache);  // [T, B, dim] cached compete for backward
+        T* gate_cache);     // [T, B, dim] cached silu for backward
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -216,7 +215,6 @@ struct SelectiveElmanBackward {
     SelectiveElmanBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -225,26 +223,25 @@ struct SelectiveElmanBackward {
         const T* W_x,
         const T* W_h,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,   // [T, B, dim] gradient from above (on output)
         T* dx,
         T* dW_x,
         T* dW_h,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [7*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
+        T* db_gate,
+        T* workspace);  // [6*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -254,7 +251,7 @@ private:
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + r_h * h_{t-1} + b)
 // where r_h is a VECTOR (diagonal), not full matrix
-// + compete×silu output
+// output = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
 // =============================================================================
 
 template<typename T>
@@ -263,7 +260,6 @@ struct DiagonalSelectiveElmanForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -272,21 +268,20 @@ struct DiagonalSelectiveElmanForward {
         const T* W_x,       // [dim, dim]
         const T* r_h,       // [dim] DIAGONAL decay
         const T* W_delta,   // [dim, dim]
-        const T* W_out,     // [dim, dim]
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
+        const T* b_gate,    // [dim] h+x gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] internal hidden
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
         T* delta_cache,     // [T, B, dim]
-        T* compete_cache);  // [T, B, dim]
+        T* gate_cache);     // [T, B, dim] cached silu
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -296,7 +291,6 @@ struct DiagonalSelectiveElmanBackward {
     DiagonalSelectiveElmanBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -305,26 +299,25 @@ struct DiagonalSelectiveElmanBackward {
         const T* W_x,
         const T* r_h,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,
         T* dx,
         T* dW_x,
         T* dr_h,            // [dim] gradient for diagonal decay
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [7*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
+        T* db_gate,
+        T* workspace);  // [6*B*dim + ceil(4*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -345,7 +338,6 @@ struct LogStorageDiagonalElmanForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -354,16 +346,16 @@ struct LogStorageDiagonalElmanForward {
         const T* W_x,           // [dim, dim]
         const T* r_h,           // [dim] DIAGONAL decay
         const T* W_delta,       // [dim, dim]
-        const T* W_out,         // [dim, dim]
         const T* b,             // [dim]
         const T* b_delta,       // [dim]
+        const T* b_gate,        // [dim] h+x selective gate bias
         const T* x,             // [T, B, dim]
         T* log_h,               // [T+1, B, dim] log(|h|)
         T* sign_h,              // [T+1, B, dim] sign(h) in {-1, +1}
-        T* output,              // [T, B, dim] selective output
+        T* output,              // [T, B, dim] h+x selective output
         T* v,                   // [T, B, dim] pre-activation
         T* delta_cache,         // [T, B, dim]
-        T* compete_cache,       // [T, B, dim]
+        T* gate_cache,          // [T, B, dim] silu gate cache
         T* weight1_cache,       // [T, B, dim] softmax weight for log-space backward
         T* log_term1_cache,     // [T, B, dim] log|(1-δ)*h_prev|
         T* log_term2_cache);    // [T, B, dim] log|δ*candidate|
@@ -372,7 +364,6 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -382,7 +373,6 @@ struct LogStorageDiagonalElmanBackward {
     LogStorageDiagonalElmanBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -391,13 +381,13 @@ struct LogStorageDiagonalElmanBackward {
         const T* W_x,
         const T* r_h,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* log_h,
         const T* sign_h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* weight1_cache,     // softmax weight for log-space backward
         const T* log_term1_cache,   // log|(1-δ)*h_prev|
         const T* log_term2_cache,   // log|δ*candidate|
@@ -406,15 +396,14 @@ struct LogStorageDiagonalElmanBackward {
         T* dW_x,
         T* dr_h,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [(4*T+4)*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
+        T* db_gate,
+        T* workspace);  // [(3*T+4)*B*dim + ceil(4*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -433,7 +422,6 @@ struct LogComputeFullElmanForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -442,26 +430,25 @@ struct LogComputeFullElmanForward {
         const T* W_x,        // [dim, dim]
         const T* R_h,        // [dim, dim] FULL recurrence matrix
         const T* W_delta,    // [dim, dim]
-        const T* W_out,      // [dim, dim]
         const T* b,          // [dim]
         const T* b_delta,    // [dim]
+        const T* b_gate,     // [dim] h+x selective gating bias
         const T* x,          // [T, B, dim]
         T* log_h,            // [T+1, B, dim] log(|h|)
         T* sign_h,           // [T+1, B, dim] sign(h)
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* compete_cache,    // [T, B, dim]
+        T* gate_cache,       // [T, B, dim] silu gate values for backward
         // Workspace for decomposed R
         T* log_R_pos,        // [dim, dim] log(max(R, 0))
         T* log_R_neg,        // [dim, dim] log(max(-R, 0))
-        T* workspace);       // [2*T*B*dim + 4*B*dim] for pre-computed projections
+        T* workspace);       // [2*T*B*dim + 2*B*dim] for pre-computed projections
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -471,7 +458,6 @@ struct LogComputeFullElmanBackward {
     LogComputeFullElmanBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -480,13 +466,13 @@ struct LogComputeFullElmanBackward {
         const T* W_x,
         const T* R_h,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,     // [dim] h+x selective gating bias
         const T* x,
         const T* log_h,
         const T* sign_h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache, // [T, B, dim] silu gate values from forward
         const T* log_R_pos,
         const T* log_R_neg,
         const T* d_output,
@@ -494,15 +480,14 @@ struct LogComputeFullElmanBackward {
         T* dW_x,
         T* dR_h,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // workspace for backward
+        T* db_gate,          // [dim] gradient for h+x gate bias
+        T* workspace);       // workspace for backward
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -522,7 +507,6 @@ struct LogSpaceTripleRForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -530,25 +514,24 @@ struct LogSpaceTripleRForward {
         int steps,
         const T* R_h,        // [dim, dim] recurrence
         const T* R_x,        // [dim, dim] input mixing
-        const T* R_delta,    // [dim, dim] gate modulation
+        const T* R_delta,    // [dim, dim] gate modulation (unused but kept)
         const T* W_delta,    // [dim, dim] gate input path
-        const T* W_out,      // [dim, dim]
         const T* b,          // [dim]
         const T* b_delta,    // [dim]
+        const T* b_gate,     // [dim] h+x selective gate bias
         const T* x,          // [T, B, dim]
         T* log_h,            // [T+1, B, dim]
         T* sign_h,           // [T+1, B, dim]
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* compete_cache,    // [T, B, dim]
-        T* workspace);       // [2*T*B*dim + 5*B*dim] - uses cuBLAS GEMM
+        T* gate_cache,       // [T, B, dim] silu gate cache
+        T* workspace);       // [2*T*B*dim + 3*B*dim] - uses cuBLAS GEMM
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -558,7 +541,6 @@ struct LogSpaceTripleRBackward {
     LogSpaceTripleRBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -568,28 +550,27 @@ struct LogSpaceTripleRBackward {
         const T* R_x,
         const T* R_delta,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* log_h,
         const T* sign_h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,
         T* dx,
         T* dR_h,
         T* dR_x,
         T* dR_delta,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
+        T* db_gate,
         T* workspace);  // workspace for backward
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1015,6 +996,7 @@ private:
 // Level 4: Full Recurrence Elman (Linear Space)
 // Like Diagonal Selective but with FULL R_h matrix
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + R_h @ h_{t-1} + b)
+// output = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
 // =============================================================================
 
 template<typename T>
@@ -1023,7 +1005,6 @@ struct FullRecurrenceElmanForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1032,21 +1013,20 @@ struct FullRecurrenceElmanForward {
         const T* W_x,       // [dim, dim]
         const T* R_h,       // [dim, dim] FULL recurrence matrix
         const T* W_delta,   // [dim, dim]
-        const T* W_out,     // [dim, dim]
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
+        const T* b_gate,    // [dim] h+x gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim]
         T* output,          // [T, B, dim]
         T* v,               // [T, B, dim]
         T* delta_cache,     // [T, B, dim]
-        T* compete_cache);  // [T, B, dim]
+        T* gate_cache);     // [T, B, dim]
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1056,7 +1036,6 @@ struct FullRecurrenceElmanBackward {
     FullRecurrenceElmanBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1065,26 +1044,24 @@ struct FullRecurrenceElmanBackward {
         const T* W_x,
         const T* R_h,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,
         T* dx,
         T* dW_x,
         T* dR_h,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [8*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
+        T* db_gate);
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1095,6 +1072,7 @@ private:
 // v = R_x @ x + R_h @ h_prev + b
 // delta = sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
 // h_new = (1-delta) * h_prev + delta * tanh(v)
+// output = h * silu(h + x + b_gate)  -- h+x selective gating
 // =============================================================================
 
 template<typename T>
@@ -1103,7 +1081,6 @@ struct LinearTripleRForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1113,21 +1090,20 @@ struct LinearTripleRForward {
         const T* R_x,        // [dim, dim] input mixing
         const T* R_delta,    // [dim, dim] gate modulation
         const T* W_delta,    // [dim, dim] gate input path
-        const T* W_out,      // [dim, dim]
         const T* b,          // [dim]
         const T* b_delta,    // [dim]
+        const T* b_gate,     // [dim] h+x gate bias
         const T* x,          // [T, B, dim]
         T* h,                // [T+1, B, dim]
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* compete_cache);   // [T, B, dim]
+        T* gate_cache);      // [T, B, dim]
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1137,7 +1113,6 @@ struct LinearTripleRBackward {
     LinearTripleRBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1147,27 +1122,25 @@ struct LinearTripleRBackward {
         const T* R_x,
         const T* R_delta,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,
         T* dx,
         T* dR_h,
         T* dR_x,
         T* dR_delta,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [10*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
+        T* db_gate);
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1179,6 +1152,9 @@ private:
 // v = W_x @ x + r_h * h_prev + b
 // candidate = sign(v) * |v|^alpha
 // h_new = (1-delta) * h_prev + delta * candidate
+//
+// h+x Output selectivity:
+// output = h * silu(h + x + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -1187,7 +1163,6 @@ struct LinearPolynomialForward {
         bool training,
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1198,22 +1173,21 @@ struct LinearPolynomialForward {
         const T* W_alpha,    // [dim, dim]
         const T* b_alpha,    // [dim]
         const T* W_delta,    // [dim, dim]
-        const T* W_out,      // [dim, dim]
         const T* b,          // [dim]
         const T* b_delta,    // [dim]
+        const T* b_gate,     // [dim]
         const T* x,          // [T, B, dim]
         T* h,                // [T+1, B, dim]
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* alpha_cache,      // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* compete_cache);   // [T, B, dim]
+        T* gate_cache);      // [T, B, dim]
 
 private:
     bool training_;
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1223,7 +1197,6 @@ struct LinearPolynomialBackward {
     LinearPolynomialBackward(
         int batch_size,
         int dim,
-        int n_groups,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
 
@@ -1233,13 +1206,13 @@ struct LinearPolynomialBackward {
         const T* r_h,
         const T* W_alpha,
         const T* W_delta,
-        const T* W_out,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* alpha_cache,
         const T* delta_cache,
-        const T* compete_cache,
+        const T* gate_cache,
         const T* d_output,
         T* dx,
         T* dW_x,
@@ -1247,15 +1220,14 @@ struct LinearPolynomialBackward {
         T* dW_alpha,
         T* db_alpha,
         T* dW_delta,
-        T* dW_out,
         T* db,
         T* db_delta,
-        T* workspace);  // [(4*T+5)*B*dim + ceil(4*dim*sizeof(float)/sizeof(T))]
+        T* db_gate,
+        T* workspace);  // [(4*T+5)*B*dim + ceil(5*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
     int dim_;
-    int n_groups_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };

@@ -12,7 +12,9 @@
 //   delta_raw = W_delta @ x + R_delta @ h_{t-1} + b_delta
 //   delta_t = sigmoid(delta_raw)
 //   h_t = (1 - delta_t) * h_{t-1} + delta_t * tanh(v_t)
-//   output_t = compete(h_t) * silu(W_out @ h_t)
+//
+// h+x Output selectivity:
+//   output_t = h_t * silu(h_t + x_t + b_gate)
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -309,75 +311,93 @@ __global__ void TripleRGatedUpdateKernel(
 }
 
 // =============================================================================
-// Kernel: Selective output (compete x silu)
+// Kernel: h+x selective output forward
+// output = h * silu(h + x + b_gate)
 // =============================================================================
 
 template<typename T>
-__global__ void SelectiveOutputKernel(
+__global__ void SelectiveOutputForward(
     const int batch_size,
     const int dim,
-    const int n_groups,
-    const int group_size,
-    const T* __restrict__ log_h,
-    const T* __restrict__ sign_h,
-    const T* __restrict__ w_out_h,
+    const T* __restrict__ h_linear,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
     T* __restrict__ output,
-    T* __restrict__ compete_cache) {
+    T* __restrict__ gate_cache) {
 
-    extern __shared__ float smem[];
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
 
-    const int b = blockIdx.x;
-    const int g = blockIdx.y;
+        float h_val = static_cast<float>(h_linear[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
 
-    if (b >= batch_size || g >= n_groups) return;
+        // gate_raw = h + x + b_gate
+        float gate_raw = h_val + x_val + b_val;
 
-    const int base = b * dim + g * group_size;
+        // silu(gate_raw) = gate_raw * sigmoid(gate_raw)
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
 
-    // Find max for softmax stability
-    float max_val = -FLT_MAX;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float h_linear = from_log_space(
-            static_cast<float>(log_h[base + i]),
-            static_cast<float>(sign_h[base + i]));
-        max_val = fmaxf(max_val, h_linear);
+        // output = h * silu(h + x + b_gate)
+        output[idx] = static_cast<T>(h_val * silu_val);
+
+        // Cache silu value for backward
+        if (gate_cache) gate_cache[idx] = static_cast<T>(silu_val);
     }
-    smem[threadIdx.x] = max_val;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x + s]);
-        __syncthreads();
-    }
-    max_val = smem[0];
-    __syncthreads();
+}
 
-    // Compute exp sum
-    float sum = 0.0f;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float h_linear = from_log_space(
-            static_cast<float>(log_h[base + i]),
-            static_cast<float>(sign_h[base + i]));
-        sum += expf(h_linear - max_val);
-    }
-    float* sum_smem = smem + blockDim.x;
-    sum_smem[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) sum_smem[threadIdx.x] += sum_smem[threadIdx.x + s];
-        __syncthreads();
-    }
-    sum = sum_smem[0];
+// Backward through h+x selective output
+template<typename T>
+__global__ void SelectiveOutputBackward(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h_linear,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
+    const T* __restrict__ d_output,
+    T* __restrict__ dh_out,
+    T* __restrict__ dx_out,
+    float* __restrict__ db_gate) {
 
-    // Compute output
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float h_linear = from_log_space(
-            static_cast<float>(log_h[base + i]),
-            static_cast<float>(sign_h[base + i]));
-        float compete = expf(h_linear - max_val) / sum;
-        if (compete_cache) compete_cache[base + i] = static_cast<T>(compete);
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
 
-        float w = static_cast<float>(w_out_h[base + i]);
-        float silu_val = w / (1.0f + expf(-w));
-        output[base + i] = static_cast<T>(compete * silu_val);
+        float h_val = static_cast<float>(h_linear[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
+        float dout = static_cast<float>(d_output[idx]);
+
+        // Recompute forward
+        float gate_raw = h_val + x_val + b_val;
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
+
+        // dsilu/dgate = sigmoid + gate * sigmoid * (1 - sigmoid)
+        //             = sigmoid * (1 + gate * (1 - sigmoid))
+        float dsilu_dgate = sigmoid_val * (1.0f + gate_raw * (1.0f - sigmoid_val));
+
+        // d_output/dh = silu + h * dsilu_dgate (since dgate/dh = 1)
+        float dh = dout * (silu_val + h_val * dsilu_dgate);
+        dh_out[idx] = static_cast<T>(dh);
+
+        // d_output/dx = h * dsilu_dgate (since dgate/dx = 1)
+        float dx = dout * h_val * dsilu_dgate;
+        dx_out[idx] = static_cast<T>(dx);
+
+        // d_output/db_gate = h * dsilu_dgate (since dgate/db = 1)
+        atomicAdd(&db_gate[d], dout * h_val * dsilu_dgate);
+    }
+}
+
+// Kernel: Add dx to existing dx (for accumulating gradient from h+x path)
+template<typename T>
+__global__ void VectorAddInplace(const int n, const T* __restrict__ src, T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(static_cast<float>(dst[idx]) + static_cast<float>(src[idx]));
     }
 }
 
@@ -425,61 +445,7 @@ __global__ void LinearToLogKernel(
 // Backward kernels
 // =============================================================================
 
-// Backward through selective output
-template<typename T>
-__global__ void TripleRSelectiveOutputBackward(
-    const int batch_size,
-    const int dim,
-    const int n_groups,
-    const int group_size,
-    const T* __restrict__ log_h,
-    const T* __restrict__ sign_h,
-    const T* __restrict__ w_out_h,
-    const T* __restrict__ compete,
-    const T* __restrict__ d_output,
-    T* __restrict__ dh_linear,
-    T* __restrict__ d_w_out_h) {
-
-    extern __shared__ float smem[];
-
-    const int b = blockIdx.x;
-    const int g = blockIdx.y;
-
-    if (b >= batch_size || g >= n_groups) return;
-
-    const int base = b * dim + g * group_size;
-
-    float sum_compete_dcompete = 0.0f;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float dout = static_cast<float>(d_output[base + i]);
-        float w = static_cast<float>(w_out_h[base + i]);
-        float sig = 1.0f / (1.0f + expf(-w));
-        float silu_val = w * sig;
-        float dsilu_dw = sig * (1.0f + w * (1.0f - sig));
-        float comp = static_cast<float>(compete[base + i]);
-
-        d_w_out_h[base + i] = static_cast<T>(dout * comp * dsilu_dw);
-        sum_compete_dcompete += comp * dout * silu_val;
-    }
-
-    smem[threadIdx.x] = sum_compete_dcompete;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
-        __syncthreads();
-    }
-    sum_compete_dcompete = smem[0];
-
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float dout = static_cast<float>(d_output[base + i]);
-        float w = static_cast<float>(w_out_h[base + i]);
-        float sig = 1.0f / (1.0f + expf(-w));
-        float silu_val = w * sig;
-        float comp = static_cast<float>(compete[base + i]);
-        float d_comp = dout * silu_val;
-        dh_linear[base + i] = static_cast<T>(comp * (d_comp - sum_compete_dcompete));
-    }
-}
+// (Old TripleRSelectiveOutputBackward removed - using h+x gating now)
 
 // Backward through Triple R gated update
 template<typename T>
@@ -561,13 +527,11 @@ LogSpaceTripleRForward<T>::LogSpaceTripleRForward(
     bool training,
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : training_(training),
       batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -578,16 +542,16 @@ void LogSpaceTripleRForward<T>::Run(
     const T* R_x,
     const T* R_delta,
     const T* W_delta,
-    const T* W_out,
     const T* b,
     const T* b_delta,
+    const T* b_gate,
     const T* x,
     T* log_h,
     T* sign_h,
     T* output,
     T* v,
     T* delta_cache,
-    T* compete_cache,
+    T* gate_cache,
     T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
@@ -595,25 +559,21 @@ void LogSpaceTripleRForward<T>::Run(
 
     const int BD = batch_size_ * dim_;
     const int TBD = steps * BD;  // Total batch*dim for all timesteps
-    const int DD = dim_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
-    const int total_blocks = (TBD + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
     // =========================================================================
     // WORKSPACE LAYOUT (OPTIMIZED - uses cuBLAS GEMM instead of log-space matmul!):
     // Input projections:   [all_Rx_x: TBD] [all_Wdelta_x: TBD]
-    // Per-step scratch:    [Rh_h_linear: BD] [h_prev_linear: BD] [w_out_h: BD] [h_linear: BD]
-    // Total: 2*TBD + 4*BD  (R_delta removed for stability)
+    // Per-step scratch:    [Rh_h_linear: BD] [h_prev_linear: BD] [h_linear: BD]
+    // Total: 2*TBD + 3*BD  (R_delta and W_out removed)
     // =========================================================================
     T* all_Rx_x = workspace;
     T* all_Wdelta_x = workspace + TBD;
 
     T* Rh_h_linear = workspace + 2 * TBD;
     T* h_prev_linear = workspace + 2 * TBD + BD;
-    T* w_out_h = workspace + 2 * TBD + 2 * BD;
-    T* h_linear = workspace + 2 * TBD + 3 * BD;
+    T* h_linear = workspace + 2 * TBD + 2 * BD;
 
     // =========================================================================
     // Pre-compute ALL input projections using cuBLAS (tensor-core accelerated!)
@@ -640,9 +600,10 @@ void LogSpaceTripleRForward<T>::Run(
         T* log_h_t = log_h + (t + 1) * BD;
         T* sign_h_t = sign_h + (t + 1) * BD;
         T* out_t = output + t * BD;
+        const T* x_t = x + t * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
-        T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
+        T* gate_t = training_ ? (gate_cache + t * BD) : nullptr;
 
         // Get pre-computed projections for this timestep
         const T* Rx_x_t = all_Rx_x + t * BD;
@@ -665,19 +626,12 @@ void LogSpaceTripleRForward<T>::Run(
             Wdelta_x_t,
             b, b_delta, log_h_t, sign_h_t, v_t, delta_t);
 
-        // Convert h_t to linear for W_out
+        // Convert h_t to linear for h+x output
         LogToLinearKernel<T><<<num_blocks, block_size, 0, stream_>>>(BD, log_h_t, sign_h_t, h_linear);
 
-        // h_linear @ W_out.T (depends on h_t, can't pre-compute)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
-
-        // Selective output
-        dim3 out_grid(batch_size_, n_groups_);
-        int out_smem_size = 2 * block_size * sizeof(float);
-        SelectiveOutputKernel<T><<<out_grid, block_size, out_smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size,
-            log_h_t, sign_h_t, w_out_h, out_t, compete_t);
+        // h+x selective output: output = h * silu(h + x + b_gate)
+        SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_linear, x_t, b_gate, out_t, gate_t);
     }
     // Workspace is managed by caller - no cudaFree needed
 }
@@ -690,12 +644,10 @@ template<typename T>
 LogSpaceTripleRBackward<T>::LogSpaceTripleRBackward(
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -706,22 +658,22 @@ void LogSpaceTripleRBackward<T>::Run(
     const T* R_x,
     const T* R_delta,
     const T* W_delta,
-    const T* W_out,
+    const T* b_gate,
     const T* x,
     const T* log_h,
     const T* sign_h,
     const T* v,
     const T* delta_cache,
-    const T* compete_cache,
+    const T* gate_cache,
     const T* d_output,
     T* dx,
     T* dR_h,
     T* dR_x,
     T* dR_delta,
     T* dW_delta,
-    T* dW_out,
     T* db,
     T* db_delta,
+    T* db_gate,
     T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
@@ -730,34 +682,35 @@ void LogSpaceTripleRBackward<T>::Run(
     const int BD = batch_size_ * dim_;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
-    // Workspace layout: 10 * BD * sizeof(T) + 2 * dim_ * sizeof(float)
+    // Workspace layout: 9 * BD * sizeof(T) + 3 * dim_ * sizeof(float)
+    // [dv][d_delta_raw][dh_recurrent][dh_prev_linear][dh_linear][dx_gate]
+    // [h_linear][h_prev_linear][x_linear] + [db_float][db_delta_float][db_gate_float]
     T* dv = workspace;
     T* d_delta_raw = dv + BD;
     T* dh_recurrent = d_delta_raw + BD;
     T* dh_prev_linear = dh_recurrent + BD;
     T* dh_linear = dh_prev_linear + BD;
-    T* d_w_out_h = dh_linear + BD;
-    T* w_out_h = d_w_out_h + BD;
-    T* h_linear = w_out_h + BD;
+    T* dx_gate = dh_linear + BD;
+    T* h_linear = dx_gate + BD;
     T* h_prev_linear = h_linear + BD;
     T* x_linear = h_prev_linear + BD;
 
     // Float buffers for atomic gradients (after T buffers)
     float* db_float = reinterpret_cast<float*>(x_linear + BD);
     float* db_delta_float = db_float + dim_;
+    float* db_gate_float = db_delta_float + dim_;
 
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
     cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
     cudaMemsetAsync(db_delta_float, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_gate_float, 0, dim_ * sizeof(float), stream_);
 
     // Zero weight gradients
     cudaMemsetAsync(dR_h, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dR_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dR_delta, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
-    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -767,7 +720,6 @@ void LogSpaceTripleRBackward<T>::Run(
         const T* sign_h_t = sign_h + (t + 1) * BD;
         const T* v_t = v + t * BD;
         const T* delta_t = delta_cache + t * BD;
-        const T* compete_t = compete_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
         T* dx_t = dx + t * BD;
 
@@ -780,29 +732,19 @@ void LogSpaceTripleRBackward<T>::Run(
         // Copy x_t to workspace (already linear)
         cudaMemcpyAsync(x_linear, x_t, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
-        // Recompute w_out_h = h_linear @ W_out.T (matching forward)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, h_linear, dim_, &beta_zero, w_out_h, dim_);
+        // Backward through h+x selective output
+        SelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_linear, x_t, b_gate, d_out_t, dh_linear, dx_gate, db_gate_float);
 
-        // Backward through selective output
-        dim3 grid(batch_size_, n_groups_);
-        int smem_size = block_size * sizeof(float);
-        TripleRSelectiveOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, log_h_t, sign_h_t, w_out_h, compete_t,
-            d_out_t, dh_linear, d_w_out_h);
-
-        // dW_out += h_linear @ d_w_out_h^T  (for Y = W.T @ X, dW = X @ dY.T)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-            dim_, dim_, batch_size_, &alpha, h_linear, dim_, d_w_out_h, dim_, &alpha, dW_out, dim_);
-
-        // dh_linear += d_w_out_h @ W_out (for Y = h @ W_out.T, dX = dY @ W_out)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_out, dim_, d_w_out_h, dim_, &alpha, dh_linear, dim_);
+        // Add dh_recurrent to dh_linear
+        if (t < steps - 1) {
+            VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh_recurrent, dh_linear);
+        }
 
         // Backward through gated update
         TripleRGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, log_h_prev, sign_h_prev, v_t, delta_t, dh_linear,
-            (t < steps - 1) ? dh_recurrent : nullptr,
+            nullptr,
             dv, d_delta_raw, dh_prev_linear, db_float, db_delta_float);
 
         // dh_prev += dv @ R_h (for Y = h @ R_h.T, dX = dY @ R_h)
@@ -819,12 +761,13 @@ void LogSpaceTripleRBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, x_linear, dim_, dv, dim_, &alpha, dR_x, dim_);
 
-        // dx = dv @ R_x (for Y = x @ R_x.T, dX = dY @ R_x) + d_delta_raw @ W_delta
-        // In cuBLAS col-major: dx_T = R_x.T @ dv.T, so dx = (R_x.T @ dv.T).T = dv @ R_x
+        // dx = dv @ R_x + d_delta_raw @ W_delta + dx_gate
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, R_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
+        // Add dx_gate to dx
+        VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dx_gate, dx_t);
 
         // dW_delta += x @ d_delta_raw^T  (for Y = W.T @ X, dW = X @ dY.T)
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
@@ -838,6 +781,7 @@ void LogSpaceTripleRBackward<T>::Run(
     const int copy_blocks = (dim_ + block_size - 1) / block_size;
     CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_float, db);
     CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_delta_float, db_delta);
+    CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_gate_float, db_gate);
 }
 
 // Explicit template instantiations

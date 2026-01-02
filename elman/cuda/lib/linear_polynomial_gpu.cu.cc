@@ -6,8 +6,9 @@
 // candidate = sign(v) * |v|^alpha (bounded)
 // delta = sigmoid(W_delta @ x + b_delta)
 // h_new = (1-delta) * h_prev + delta * candidate
-// compete = softmax(h.reshape(groups), dim=-1)
-// output = compete * silu(W_out @ h)
+//
+// h+x Output selectivity:
+// output = h * silu(h + x + b_gate)
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -112,118 +113,91 @@ __global__ void LinearPolynomialGatedUpdate(
     }
 }
 
-// Kernel: Compute compete×silu output
+// Kernel: h+x selective output forward
+// output = h * silu(h + x + b_gate)
 template<typename T>
-__global__ void LinearPolynomialOutput(
+__global__ void SelectiveOutputForward(
     const int batch_size,
     const int dim,
-    const int n_groups,
-    const int group_size,
     const T* __restrict__ h,
-    const T* __restrict__ w_out_h,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
     T* __restrict__ output,
-    T* __restrict__ compete_cache) {
+    T* __restrict__ gate_cache) {
 
-    extern __shared__ float smem[];
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
 
-    const int b = blockIdx.x;
-    const int g = blockIdx.y;
+        float h_val = static_cast<float>(h[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
 
-    if (b >= batch_size || g >= n_groups) return;
+        // gate_raw = h + x + b_gate
+        float gate_raw = h_val + x_val + b_val;
 
-    const int base = b * dim + g * group_size;
+        // silu(gate_raw) = gate_raw * sigmoid(gate_raw)
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
 
-    // Find max for softmax stability
-    float max_val = -FLT_MAX;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        max_val = fmaxf(max_val, static_cast<float>(h[base + i]));
-    }
-    smem[threadIdx.x] = max_val;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] = fmaxf(smem[threadIdx.x], smem[threadIdx.x + s]);
-        __syncthreads();
-    }
-    max_val = smem[0];
-    __syncthreads();
+        // output = h * silu(h + x + b_gate)
+        output[idx] = static_cast<T>(h_val * silu_val);
 
-    // Compute exp sum
-    float sum = 0.0f;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        sum += expf(static_cast<float>(h[base + i]) - max_val);
-    }
-    float* sum_smem = smem + blockDim.x;
-    sum_smem[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) sum_smem[threadIdx.x] += sum_smem[threadIdx.x + s];
-        __syncthreads();
-    }
-    sum = sum_smem[0];
-
-    // Compute output = compete * silu(w_out_h)
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float compete = expf(static_cast<float>(h[base + i]) - max_val) / sum;
-        if (compete_cache) compete_cache[base + i] = static_cast<T>(compete);
-
-        float w = static_cast<float>(w_out_h[base + i]);
-        float silu_val = w / (1.0f + expf(-w));
-        output[base + i] = static_cast<T>(compete * silu_val);
+        // Cache silu value for backward
+        if (gate_cache) gate_cache[idx] = static_cast<T>(silu_val);
     }
 }
 
-// Backward through selective output
+// Backward through h+x selective output
 template<typename T>
-__global__ void LinearPolynomialOutputBackward(
+__global__ void SelectiveOutputBackward(
     const int batch_size,
     const int dim,
-    const int n_groups,
-    const int group_size,
     const T* __restrict__ h,
-    const T* __restrict__ w_out_h,
-    const T* __restrict__ compete,
+    const T* __restrict__ x,
+    const T* __restrict__ b_gate,
     const T* __restrict__ d_output,
-    T* __restrict__ dh_compete,
-    T* __restrict__ d_w_out_h) {
+    T* __restrict__ dh_out,
+    T* __restrict__ dx_out,
+    float* __restrict__ db_gate) {
 
-    extern __shared__ float smem[];
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < batch_size * dim) {
+        const int d = idx % dim;
 
-    const int b = blockIdx.x;
-    const int g = blockIdx.y;
+        float h_val = static_cast<float>(h[idx]);
+        float x_val = static_cast<float>(x[idx]);
+        float b_val = static_cast<float>(b_gate[d]);
+        float dout = static_cast<float>(d_output[idx]);
 
-    if (b >= batch_size || g >= n_groups) return;
+        // Recompute forward
+        float gate_raw = h_val + x_val + b_val;
+        float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
 
-    const int base = b * dim + g * group_size;
+        // dsilu/dgate = sigmoid + gate * sigmoid * (1 - sigmoid)
+        //             = sigmoid * (1 + gate * (1 - sigmoid))
+        float dsilu_dgate = sigmoid_val * (1.0f + gate_raw * (1.0f - sigmoid_val));
 
-    float sum_compete_dcompete = 0.0f;
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float dout = static_cast<float>(d_output[base + i]);
-        float w = static_cast<float>(w_out_h[base + i]);
-        float sig = 1.0f / (1.0f + expf(-w));
-        float silu_val = w * sig;
-        float dsilu_dw = sig * (1.0f + w * (1.0f - sig));
-        float comp = static_cast<float>(compete[base + i]);
+        // d_output/dh = silu + h * dsilu_dgate (since dgate/dh = 1)
+        float dh = dout * (silu_val + h_val * dsilu_dgate);
+        dh_out[idx] = static_cast<T>(dh);
 
-        d_w_out_h[base + i] = static_cast<T>(dout * comp * dsilu_dw);
-        sum_compete_dcompete += comp * dout * silu_val;
+        // d_output/dx = h * dsilu_dgate (since dgate/dx = 1)
+        float dx = dout * h_val * dsilu_dgate;
+        dx_out[idx] = static_cast<T>(dx);
+
+        // d_output/db_gate = h * dsilu_dgate (since dgate/db = 1)
+        atomicAdd(&db_gate[d], dout * h_val * dsilu_dgate);
     }
+}
 
-    smem[threadIdx.x] = sum_compete_dcompete;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) smem[threadIdx.x] += smem[threadIdx.x + s];
-        __syncthreads();
-    }
-    sum_compete_dcompete = smem[0];
-
-    for (int i = threadIdx.x; i < group_size; i += blockDim.x) {
-        float dout = static_cast<float>(d_output[base + i]);
-        float w = static_cast<float>(w_out_h[base + i]);
-        float sig = 1.0f / (1.0f + expf(-w));
-        float silu_val = w * sig;
-        float comp = static_cast<float>(compete[base + i]);
-        float d_comp = dout * silu_val;
-        dh_compete[base + i] = static_cast<T>(comp * (d_comp - sum_compete_dcompete));
+// Kernel: Add dx to existing dx (for accumulating gradient from h+x path)
+template<typename T>
+__global__ void VectorAddInplace(const int n, const T* __restrict__ src, T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = static_cast<T>(static_cast<float>(dst[idx]) + static_cast<float>(src[idx]));
     }
 }
 
@@ -342,13 +316,11 @@ LinearPolynomialForward<T>::LinearPolynomialForward(
     bool training,
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : training_(training),
       batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -360,16 +332,16 @@ void LinearPolynomialForward<T>::Run(
     const T* W_alpha,
     const T* b_alpha,
     const T* W_delta,
-    const T* W_out,
     const T* b,
     const T* b_delta,
+    const T* b_gate,
     const T* x,
     T* h,
     T* output,
     T* v,
     T* alpha_cache,
     T* delta_cache,
-    T* compete_cache) {
+    T* gate_cache) {
 
     static const T alpha_blas = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -378,19 +350,16 @@ void LinearPolynomialForward<T>::Run(
     const int TBD = steps * BD;  // Total batch*dim for all timesteps
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
-    const int total_blocks = (TBD + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
     // =========================================================================
     // Haste pattern: Pre-compute ALL input projections in big GEMMs
     // =========================================================================
 
     // Workspace for pre-computed projections (all timesteps)
-    T *all_wx_x, *all_alpha_raw, *all_delta_raw, *w_out_h;
+    T *all_wx_x, *all_alpha_raw, *all_delta_raw;
     cudaMalloc(&all_wx_x, TBD * sizeof(T));
     cudaMalloc(&all_alpha_raw, TBD * sizeof(T));
     cudaMalloc(&all_delta_raw, TBD * sizeof(T));
-    cudaMalloc(&w_out_h, BD * sizeof(T));
 
     // Pre-compute W_x @ x for ALL timesteps in one GEMM
     // x is [T, B, dim], treat as [T*B, dim]
@@ -422,10 +391,11 @@ void LinearPolynomialForward<T>::Run(
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
+        const T* x_t = x + t * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
         T* alpha_t = training_ ? (alpha_cache + t * BD) : nullptr;
         T* delta_t = training_ ? (delta_cache + t * BD) : nullptr;
-        T* compete_t = training_ ? (compete_cache + t * BD) : nullptr;
+        T* gate_t = training_ ? (gate_cache + t * BD) : nullptr;
 
         // Get pre-computed projections for this timestep
         const T* wx_x_t = all_wx_x + t * BD;
@@ -436,21 +406,14 @@ void LinearPolynomialForward<T>::Run(
         LinearPolynomialGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_prev, wx_x_t, r_h, alpha_raw_t, delta_raw_t, b, h_t, v_t, alpha_t, delta_t);
 
-        // w_out_h = h_t @ W_out.T (output projection - depends on h_t so can't pre-compute)
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
-
-        // Selective output with compete mechanism
-        dim3 grid(batch_size_, n_groups_);
-        int smem_size = 2 * block_size * sizeof(float);
-        LinearPolynomialOutput<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, out_t, compete_t);
+        // h+x selective output: output = h * silu(h + x + b_gate)
+        SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, x_t, b_gate, out_t, gate_t);
     }
 
     cudaFree(all_wx_x);
     cudaFree(all_alpha_raw);
     cudaFree(all_delta_raw);
-    cudaFree(w_out_h);
 }
 
 // =============================================================================
@@ -461,12 +424,10 @@ template<typename T>
 LinearPolynomialBackward<T>::LinearPolynomialBackward(
     int batch_size,
     int dim,
-    int n_groups,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : batch_size_(batch_size),
       dim_(dim),
-      n_groups_(n_groups),
       blas_handle_(blas_handle),
       stream_(stream) {}
 
@@ -477,13 +438,13 @@ void LinearPolynomialBackward<T>::Run(
     const T* r_h,
     const T* W_alpha,
     const T* W_delta,
-    const T* W_out,
+    const T* b_gate,
     const T* x,
     const T* h,
     const T* v,
     const T* alpha_cache,
     const T* delta_cache,
-    const T* compete_cache,
+    const T* gate_cache,
     const T* d_output,
     T* dx,
     T* dW_x,
@@ -491,9 +452,9 @@ void LinearPolynomialBackward<T>::Run(
     T* dW_alpha,
     T* db_alpha,
     T* dW_delta,
-    T* dW_out,
     T* db,
     T* db_delta,
+    T* db_gate,
     T* workspace) {
 
     static const T alpha_blas = static_cast<T>(1.0);
@@ -505,39 +466,38 @@ void LinearPolynomialBackward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int dim_blocks = (dim_ + block_size - 1) / block_size;
-    const int group_size = dim_ / n_groups_;
 
     // ==========================================================================
     // HASTE PATTERN: Workspace from Python (PyTorch caching allocator)
-    // Layout: [dv_all: TBD][d_alpha_all: TBD][d_delta_all: TBD][d_w_out_h_all: TBD]
-    //         [w_out_h: BD][dh_compete: BD][dh: BD][dh_prev_out: BD][dh_recurrent: BD]
-    //         [dr_h_f: dim floats][db_f: dim][db_delta_f: dim][db_alpha_f: dim]
+    // Layout: [dv_all: TBD][d_alpha_all: TBD][d_delta_all: TBD][dx_gate: TBD]
+    //         [dh_gate: BD][dh: BD][dh_prev_out: BD][dh_recurrent: BD]
+    //         [dr_h_f: dim floats][db_f: dim][db_delta_f: dim][db_alpha_f: dim][db_gate_f: dim]
     // ==========================================================================
 
     T* dv_all = workspace;
     T* d_alpha_all = dv_all + TBD;
     T* d_delta_all = d_alpha_all + TBD;
-    T* d_w_out_h_all = d_delta_all + TBD;
-    T* w_out_h = d_w_out_h_all + TBD;
-    T* dh_compete = w_out_h + BD;
-    T* dh = dh_compete + BD;
+    T* dx_gate = d_delta_all + TBD;
+    T* dh_gate = dx_gate + TBD;
+    T* dh = dh_gate + BD;
     T* dh_prev_out = dh + BD;
     T* dh_recurrent = dh_prev_out + BD;
     float* dr_h_f = reinterpret_cast<float*>(dh_recurrent + BD);
     float* db_f = dr_h_f + dim_;
     float* db_delta_f = db_f + dim_;
     float* db_alpha_f = db_delta_f + dim_;
+    float* db_gate_f = db_alpha_f + dim_;
 
     // Zero out weight gradients and workspace (all async on same stream)
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_alpha, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
-    cudaMemsetAsync(dW_out, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
     cudaMemsetAsync(dr_h_f, 0, dim_ * sizeof(float), stream_);
     cudaMemsetAsync(db_f, 0, dim_ * sizeof(float), stream_);
     cudaMemsetAsync(db_delta_f, 0, dim_ * sizeof(float), stream_);
     cudaMemsetAsync(db_alpha_f, 0, dim_ * sizeof(float), stream_);
+    cudaMemsetAsync(db_gate_f, 0, dim_ * sizeof(float), stream_);
 
     // ==========================================================================
     // PASS 1: Compute gradients for all timesteps (sequential due to recurrent)
@@ -545,37 +505,31 @@ void LinearPolynomialBackward<T>::Run(
     for (int t = steps - 1; t >= 0; --t) {
         const T* h_prev = h + t * BD;
         const T* h_t = h + (t + 1) * BD;
+        const T* x_t = x + t * BD;
         const T* v_t = v + t * BD;
         const T* alpha_t = alpha_cache + t * BD;
         const T* delta_t = delta_cache + t * BD;
-        const T* compete_t = compete_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
 
         // Storage for this timestep
         T* dv_t = dv_all + t * BD;
         T* d_alpha_t = d_alpha_all + t * BD;
         T* d_delta_t = d_delta_all + t * BD;
-        T* d_w_out_h_t = d_w_out_h_all + t * BD;
+        T* dx_gate_t = dx_gate + t * BD;
 
-        // Recompute w_out_h = h_t @ W_out.T
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, h_t, dim_, &beta_zero, w_out_h, dim_);
+        // Backward through h+x selective output
+        SelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, x_t, b_gate, d_out_t, dh_gate, dx_gate_t, db_gate_f);
 
-        // Backward through output
-        dim3 grid(batch_size_, n_groups_);
-        int smem_size = block_size * sizeof(float);
-        LinearPolynomialOutputBackward<T><<<grid, block_size, smem_size, stream_>>>(
-            batch_size_, dim_, n_groups_, group_size, h_t, w_out_h, compete_t, d_out_t, dh_compete, d_w_out_h_t);
+        // dh = dh_gate (from h+x path)
+        cudaMemcpyAsync(dh, dh_gate, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
-        // dh from W_out path: dh_wout = W_out @ d_w_out_h
-        // Combine with dh_compete into dh
-        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha_blas, W_out, dim_, d_w_out_h_t, dim_, &beta_zero, dh, dim_);
-        VectorAdd<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh_compete, dh);
+        // Add dh_recurrent to dh
+        VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh_recurrent, dh);
 
         // Backward through polynomial gated update
         LinearPolynomialGatedBackward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_prev, v_t, alpha_t, delta_t, r_h, dh, dh_recurrent,
+            batch_size_, dim_, h_prev, v_t, alpha_t, delta_t, r_h, dh, nullptr,
             dv_t, d_alpha_t, d_delta_t, dh_prev_out, dr_h_f, db_f, db_delta_f);
 
         // dh_recurrent = dh_prev_out for next iteration
@@ -586,13 +540,16 @@ void LinearPolynomialBackward<T>::Run(
     // PASS 2: Batch GEMMs across all timesteps (Haste pattern)
     // ==========================================================================
 
-    // dx = W_x @ dv_all + W_alpha @ d_alpha_all + W_delta @ d_delta_all
+    // dx = W_x @ dv_all + W_alpha @ d_alpha_all + W_delta @ d_delta_all + dx_gate
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha_blas, W_x, dim_, dv_all, dim_, &beta_zero, dx, dim_);
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha_blas, W_alpha, dim_, d_alpha_all, dim_, &beta_one, dx, dim_);
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha_blas, W_delta, dim_, d_delta_all, dim_, &beta_one, dx, dim_);
+
+    // Add dx_gate to dx
+    VectorAddInplace<T><<<(TBD + block_size - 1) / block_size, block_size, 0, stream_>>>(TBD, dx_gate, dx);
 
     // dW_x = dv_all @ x^T (all timesteps)
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
@@ -606,16 +563,12 @@ void LinearPolynomialBackward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, steps * batch_size_, &alpha_blas, d_delta_all, dim_, x, dim_, &beta_one, dW_delta, dim_);
 
-    // dW_out = d_w_out_h_all @ h[1:T+1]^T (all timesteps)
-    // h[1:T+1] is the output hidden states
-    blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-        dim_, dim_, steps * batch_size_, &alpha_blas, d_w_out_h_all, dim_, h + BD, dim_, &beta_one, dW_out, dim_);
-
     // Copy from float buffers using kernel
     CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, dr_h_f, dr_h);
     CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_f, db);
     CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_delta_f, db_delta);
     CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_alpha_f, db_alpha);
+    CopyFloatToT<T><<<dim_blocks, block_size, 0, stream_>>>(dim_, db_gate_f, db_gate);
 }
 
 // Explicit instantiations

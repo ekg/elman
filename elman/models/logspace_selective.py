@@ -35,7 +35,6 @@ from .logspace_polynomial import (
 # Try to import Haste CUDA kernel
 try:
     import hasty_pytorch_lib
-    # Re-enabled: GEMM transpose and gradient scaling now fixed
     HASTE_SELECTIVE_AVAILABLE = hasattr(hasty_pytorch_lib, 'logspace_selective_forward')
 except ImportError:
     hasty_pytorch_lib = None
