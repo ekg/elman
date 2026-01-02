@@ -173,6 +173,15 @@ class LadderLM(nn.Module):
         logits = self.lm_head(x)
 
         if return_loss:
+            # Mask out padded positions if actual_length is provided
+            if actual_length is not None:
+                device = logits.device
+                # Create mask: valid positions are 0 to actual_length-2 (shifted by 1 for targets)
+                positions = torch.arange(target.size(1), device=device).unsqueeze(0)
+                valid_mask = positions < (actual_length.unsqueeze(1) - 1)
+                target = target.clone()
+                target[~valid_mask] = -100
+
             # Compute cross-entropy loss
             loss = F.cross_entropy(
                 logits.view(-1, self.vocab_size),
@@ -201,6 +210,10 @@ class LadderLM(nn.Module):
             'log_0': "Log-Space Polynomial",
             'log_1': "Log-Space Selective",
             'log_2': "Log-Space Diagonal Selective",
+            'log_3': "Log-Space Diagonal (Full)",
+            'log_4': "Log-Compute Full",
+            'log_5': "Log-Space Triple R",
+            'log_6': "Log-Space Diagonal Triple R",
         }
         return f'level={self.level} ({level_names.get(self.level, "Unknown")}), dim={self.dim}, depth={self.depth}'
 

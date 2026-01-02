@@ -37,7 +37,7 @@ namespace {
 
 constexpr float LOG_ZERO = -40.0f;
 constexpr float LOG_EPS = 1e-10f;
-constexpr float GRAD_CLIP = 10.0f;
+constexpr float GRAD_CLIP = 1.0f;  // Strict clipping for numerical stability
 
 // =============================================================================
 // Device functions for signed log arithmetic
@@ -239,7 +239,9 @@ __global__ void LogDiagTripleRRMSNormBackward(
         float log_h_norm = log_h_val - log_rms_val + log_gamma_val;
         float h_norm = from_log_space(log_h_norm, sign_h_val);
 
+        // Scale gradients by 0.001 for numerical stability (like log_0)
         float d_log_gamma_val = d_out * h_norm * 0.001f;
+        d_log_gamma_val = fminf(fmaxf(d_log_gamma_val, -GRAD_CLIP), GRAD_CLIP);
         atomicAdd(&d_log_gamma[d], d_log_gamma_val);
 
         float d_log_h_val = (d_out - mean_dout_hnorm) * fabsf(h_norm + 1e-6f) * 0.001f;
@@ -550,13 +552,16 @@ __global__ void LogDiagTripleRUpdateBackward(
         float d_delta_val = grad_log_h * (tanh_v - h_prev_linear);
         float d_delta_raw_val = d_delta_val * del * one_minus_delta;
 
-        // Gradient for W_delta @ x
-        d_wdelta_x[idx] = static_cast<T>(fminf(fmaxf(d_delta_raw_val, -GRAD_CLIP), GRAD_CLIP));
+        // Gradient for W_delta @ x (scale to prevent accumulation explosion)
+        float d_wdelta_scaled = d_delta_raw_val * 0.001f;
+        d_wdelta_x[idx] = static_cast<T>(fminf(fmaxf(d_wdelta_scaled, -GRAD_CLIP), GRAD_CLIP));
 
         // Gradient for r_delta (through r_delta * h_prev)
         float r_delta_linear = from_log_space(log_rd, sign_rd);
         float d_rdelta_h = d_delta_raw_val;  // d_delta_raw / d(r_delta * h_prev)
-        float d_log_r_delta_val = d_rdelta_h * h_prev_linear;  // d/d(r_delta)
+        float d_log_r_delta_val = d_rdelta_h * h_prev_linear * 0.001f;  // scale for stability
+        // Clip before atomic add to prevent gradient explosion
+        d_log_r_delta_val = fminf(fmaxf(d_log_r_delta_val, -GRAD_CLIP), GRAD_CLIP);
         atomicAdd(&d_log_r_delta[d], d_log_r_delta_val);
 
         // Gradient contribution to h_prev from R_delta
@@ -566,17 +571,23 @@ __global__ void LogDiagTripleRUpdateBackward(
         float d_log_hp_total = d_log_hp_decay + d_log_hp_rh;
         // Add contribution from R_delta path (in log space approximately)
         d_log_hp_total += d_hp_from_rdelta * fabsf(h_prev_linear + 1e-6f);
+        d_log_hp_total = fminf(fmaxf(d_log_hp_total, -GRAD_CLIP), GRAD_CLIP);
         d_log_h_prev[idx] = static_cast<T>(d_log_hp_total);
 
-        // Input gradients
+        // Input gradients (scale to prevent GEMM accumulation explosion)
         float input_linear = from_log_space(log_v_val - log_rh - log_hp, 1.0f);
-        float d_wx_linear = d_log_input * fmaxf(fabsf(input_linear), LOG_EPS);
+        float d_wx_linear = d_log_input * fmaxf(fabsf(input_linear), LOG_EPS) * 0.001f;
         d_wx_x[idx] = static_cast<T>(fminf(fmaxf(d_wx_linear, -GRAD_CLIP), GRAD_CLIP));
 
-        // Accumulate diagonal gradients
-        atomicAdd(&d_log_r_h[d], d_log_rh_val);
-        atomicAdd(&d_b[d], d_wx_linear);
-        atomicAdd(&d_b_delta[d], d_delta_raw_val);
+        // Accumulate diagonal gradients with per-element clipping and scaling
+        // Scale by 0.001 to prevent gradient explosion from batch*time accumulation
+        float scale = 0.001f;
+        float d_log_rh_clipped = fminf(fmaxf(d_log_rh_val * scale, -GRAD_CLIP), GRAD_CLIP);
+        float d_b_clipped = fminf(fmaxf(d_wx_linear * scale, -GRAD_CLIP), GRAD_CLIP);
+        float d_b_delta_clipped = fminf(fmaxf(d_delta_raw_val * scale, -GRAD_CLIP), GRAD_CLIP);
+        atomicAdd(&d_log_r_h[d], d_log_rh_clipped);
+        atomicAdd(&d_b[d], d_b_clipped);
+        atomicAdd(&d_b_delta[d], d_b_delta_clipped);
     }
 }
 

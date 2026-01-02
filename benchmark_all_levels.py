@@ -27,7 +27,7 @@ ALL_LEVELS = [
     # Linear-space levels (0-6)
     0, 1, 2, 3, 4, 5, 6,
     # Log-space levels
-    'log_0', 'log_1', 'log_2', 'log_3', 'log_4', 'log_5',
+    'log_0', 'log_1', 'log_2', 'log_3', 'log_4', 'log_5', 'log_6',
 ]
 
 
