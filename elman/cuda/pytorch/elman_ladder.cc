@@ -2104,6 +2104,210 @@ std::vector<Tensor> logspace_diag_selective_backward(
     return {dx, dW_x, d_log_r_h, dW_alpha, db_alpha, dW_delta, dW_out, db, db_delta, d_log_gamma};
 }
 
+// =============================================================================
+// Level 7: Log-Space Diagonal Triple R
+// =============================================================================
+
+std::vector<Tensor> logspace_diag_triple_r_forward(
+    bool training,
+    int64_t n_groups,
+    Tensor x,
+    Tensor log_h0,
+    Tensor sign_h0,
+    Tensor W_x,
+    Tensor log_r_h,
+    Tensor sign_r_h,
+    Tensor log_r_delta,     // NEW: diagonal R_delta in log space
+    Tensor sign_r_delta,    // NEW
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    Tensor log_gamma) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(log_h0);
+    CHECK_INPUT(sign_h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(log_r_h);
+    CHECK_INPUT(sign_r_h);
+    CHECK_INPUT(log_r_delta);
+    CHECK_INPUT(sign_r_delta);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+    CHECK_INPUT(log_gamma);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor log_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor sign_h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+
+    // Caches for backward
+    Tensor h_linear_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                     : torch::empty({0}, options);
+    Tensor log_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor sign_v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                   : torch::empty({0}, options);
+    Tensor log_h_unbounded_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                            : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor weight_rh_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                      : torch::empty({0}, options);
+    Tensor rdelta_h_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                     : torch::empty({0}, options);  // NEW
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+    Tensor log_rms_cache = training ? torch::empty({time_steps, batch_size}, options)
+                                    : torch::empty({0}, options);
+
+    log_h[0] = log_h0;
+    sign_h[0] = sign_h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_diag_triple_r_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        LogDiagTripleRForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(log_r_h),
+            ptr<scalar_t>(sign_r_h),
+            ptr<scalar_t>(log_r_delta),
+            ptr<scalar_t>(sign_r_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(log_gamma),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(h_linear_cache) : nullptr,
+            training ? ptr<scalar_t>(log_v_cache) : nullptr,
+            training ? ptr<scalar_t>(sign_v_cache) : nullptr,
+            training ? ptr<scalar_t>(log_h_unbounded_cache) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(weight_rh_cache) : nullptr,
+            training ? ptr<scalar_t>(rdelta_h_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr,
+            training ? ptr<scalar_t>(log_rms_cache) : nullptr);
+    }));
+
+    return {log_h, sign_h, output, h_linear_cache, log_v_cache, sign_v_cache,
+            log_h_unbounded_cache, delta_cache, weight_rh_cache, rdelta_h_cache,
+            compete_cache, log_rms_cache};
+}
+
+std::vector<Tensor> logspace_diag_triple_r_backward(
+    int64_t n_groups,
+    Tensor W_x,
+    Tensor log_r_h,
+    Tensor sign_r_h,
+    Tensor log_r_delta,
+    Tensor sign_r_delta,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor log_gamma,
+    Tensor x,
+    Tensor log_h,
+    Tensor sign_h,
+    Tensor log_v_cache,
+    Tensor sign_v_cache,
+    Tensor log_h_unbounded_cache,
+    Tensor delta_cache,
+    Tensor weight_rh_cache,
+    Tensor rdelta_h_cache,
+    Tensor h_linear_cache,
+    Tensor compete_cache,
+    Tensor log_rms_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor d_log_r_h = torch::zeros({dim}, options);
+    Tensor d_log_r_delta = torch::zeros({dim}, options);  // NEW
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+    Tensor d_log_gamma = torch::zeros({dim}, options);
+
+    // Workspace: 8*BD T elements + 5*dim floats
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 8 * BD;
+    const int64_t float_bytes = 5 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "logspace_diag_triple_r_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        LogDiagTripleRBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(log_r_h),
+            ptr<scalar_t>(sign_r_h),
+            ptr<scalar_t>(log_r_delta),
+            ptr<scalar_t>(sign_r_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(log_gamma),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(log_h),
+            ptr<scalar_t>(sign_h),
+            ptr<scalar_t>(log_v_cache),
+            ptr<scalar_t>(sign_v_cache),
+            ptr<scalar_t>(log_h_unbounded_cache),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(weight_rh_cache),
+            ptr<scalar_t>(rdelta_h_cache),
+            ptr<scalar_t>(h_linear_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(log_rms_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(d_log_r_h),
+            ptr<scalar_t>(d_log_r_delta),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(d_log_gamma),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_x, d_log_r_h, d_log_r_delta, dW_delta, dW_out, db, db_delta, d_log_gamma};
+}
+
 }  // anonymous namespace
 
 
@@ -2173,4 +2377,9 @@ void elman_ladder_init(py::module& m) {
           "Log-Space Level 2: Diagonal Selective forward");
     m.def("logspace_diag_selective_backward", &logspace_diag_selective_backward,
           "Log-Space Level 2: Diagonal Selective backward");
+
+    m.def("logspace_diag_triple_r_forward", &logspace_diag_triple_r_forward,
+          "Level 7: Log-Space Diagonal Triple R forward");
+    m.def("logspace_diag_triple_r_backward", &logspace_diag_triple_r_backward,
+          "Level 7: Log-Space Diagonal Triple R backward");
 }

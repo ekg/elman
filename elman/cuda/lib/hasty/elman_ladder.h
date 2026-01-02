@@ -582,6 +582,110 @@ private:
 };
 
 // =============================================================================
+// Level 7: Log-Space Diagonal Triple R
+// Like log_2 but with diagonal R_delta modulation for the delta gate
+// v = r_h * h_prev + W_x @ x + b
+// delta_raw = W_delta @ x + r_delta * h_prev + b_delta
+// h_t = (1 - delta) * h_prev + delta * tanh(v)
+// =============================================================================
+
+template<typename T>
+struct LogDiagTripleRForward {
+    LogDiagTripleRForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,           // [dim, dim]
+        const T* log_r_h,       // [dim] diagonal in log space
+        const T* sign_r_h,      // [dim]
+        const T* log_r_delta,   // [dim] diagonal R_delta in log space
+        const T* sign_r_delta,  // [dim]
+        const T* W_delta,       // [dim, dim]
+        const T* W_out,         // [dim, dim]
+        const T* b,             // [dim]
+        const T* b_delta,       // [dim]
+        const T* log_gamma,     // [dim] RMSNorm scale
+        const T* x,             // [T, B, dim]
+        T* log_h,               // [T+1, B, dim]
+        T* sign_h,              // [T+1, B, dim]
+        T* output,              // [T, B, dim]
+        T* h_linear_cache,      // [T, B, dim]
+        T* log_v_cache,         // [T, B, dim]
+        T* sign_v_cache,        // [T, B, dim]
+        T* log_h_unbounded_cache, // [T, B, dim]
+        T* delta_cache,         // [T, B, dim]
+        T* weight_rh_cache,     // [T, B, dim]
+        T* rdelta_h_cache,      // [T, B, dim] cached r_delta * h
+        T* compete_cache,       // [T, B, dim]
+        T* log_rms_cache);      // [T, B]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LogDiagTripleRBackward {
+    LogDiagTripleRBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* log_r_h,
+        const T* sign_r_h,
+        const T* log_r_delta,
+        const T* sign_r_delta,
+        const T* W_delta,
+        const T* W_out,
+        const T* log_gamma,
+        const T* x,
+        const T* log_h,
+        const T* sign_h,
+        const T* log_v_cache,
+        const T* sign_v_cache,
+        const T* log_h_unbounded_cache,
+        const T* delta_cache,
+        const T* weight_rh_cache,
+        const T* rdelta_h_cache,
+        const T* h_linear_cache,
+        const T* compete_cache,
+        const T* log_rms_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* d_log_r_h,           // [dim] gradient for diagonal r_h
+        T* d_log_r_delta,       // [dim] gradient for diagonal r_delta
+        T* dW_delta,
+        T* dW_out,
+        T* db,
+        T* db_delta,
+        T* d_log_gamma,
+        T* workspace);
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // Log-Space Polynomial Levels (log_0, log_1, log_2)
 // True log-space RNN with polynomial activation
 // =============================================================================
