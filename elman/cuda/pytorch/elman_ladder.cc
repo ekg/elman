@@ -2308,6 +2308,155 @@ std::vector<Tensor> logspace_diag_triple_r_backward(
     return {dx, dW_x, d_log_r_h, d_log_r_delta, dW_delta, dW_out, db, db_delta, d_log_gamma};
 }
 
+// =============================================================================
+// Level 7: Diagonal Triple R (Linear Space)
+// v = r_h * h_prev + W_x @ x + b
+// delta = sigmoid(W_delta @ x + r_delta * h_prev + b_delta)
+// h_new = (1 - delta) * h_prev + delta * tanh(v)
+// =============================================================================
+
+std::vector<Tensor> diag_triple_r_forward(
+    bool training,
+    Tensor x,
+    Tensor h0,
+    Tensor W_x,
+    Tensor r_h,
+    Tensor r_delta,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor b,
+    Tensor b_delta,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(r_h);
+    CHECK_INPUT(r_delta);
+    CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_out);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_delta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                              : torch::empty({0}, options);
+    Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                  : torch::empty({0}, options);
+    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                    : torch::empty({0}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diag_triple_r_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagTripleRForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(r_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(compete_cache) : nullptr);
+    }));
+
+    return {h, output, v_cache, delta_cache, compete_cache};
+}
+
+std::vector<Tensor> diag_triple_r_backward(
+    Tensor W_x,
+    Tensor r_h,
+    Tensor r_delta,
+    Tensor W_delta,
+    Tensor W_out,
+    Tensor x,
+    Tensor h,
+    Tensor v_cache,
+    Tensor delta_cache,
+    Tensor compete_cache,
+    Tensor d_output,
+    int n_groups) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor d_r_h = torch::zeros({dim}, options);
+    Tensor d_r_delta = torch::zeros({dim}, options);
+    Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_out = torch::zeros({dim}, options);  // Now d_b_gate [dim] not [dim, dim]
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_delta = torch::zeros({dim}, options);
+
+    // Workspace: 6*BD T elements + 5*dim floats (d_r_h, d_r_delta, db, db_delta, d_b_gate)
+    const int64_t elem_size = x.element_size();
+    const int64_t BD = batch_size * dim;
+    const int64_t t_elems = 6 * BD;
+    const int64_t float_bytes = 5 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({t_elems + float_elems}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diag_triple_r_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagTripleRBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_groups,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(r_h),
+            ptr<scalar_t>(r_delta),
+            ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(delta_cache),
+            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(d_r_h),
+            ptr<scalar_t>(d_r_delta),
+            ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_x, d_r_h, d_r_delta, dW_delta, dW_out, db, db_delta};
+}
+
 }  // anonymous namespace
 
 
@@ -2382,4 +2531,9 @@ void elman_ladder_init(py::module& m) {
           "Level 7: Log-Space Diagonal Triple R forward");
     m.def("logspace_diag_triple_r_backward", &logspace_diag_triple_r_backward,
           "Level 7: Log-Space Diagonal Triple R backward");
+
+    m.def("diag_triple_r_forward", &diag_triple_r_forward,
+          "Level 7: Diagonal Triple R (Linear Space) forward");
+    m.def("diag_triple_r_backward", &diag_triple_r_backward,
+          "Level 7: Diagonal Triple R (Linear Space) backward");
 }

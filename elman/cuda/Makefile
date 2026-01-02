@@ -36,7 +36,8 @@ CUDA_OBJS := \
 	lib/logspace_polynomial_gpu.o \
 	lib/logspace_selective_gpu.o \
 	lib/logspace_diagonal_selective_gpu.o \
-	lib/logspace_diagonal_triple_r_gpu.o
+	lib/logspace_diagonal_triple_r_gpu.o \
+	lib/diagonal_triple_r_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

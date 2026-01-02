@@ -1247,6 +1247,97 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// Level 7: Diagonal Triple R (Linear Space)
+// Like Level 5 (Triple R) but with DIAGONAL r_h and r_delta instead of
+// full matrices. More efficient O(d) recurrence.
+//
+// Architecture:
+//   v = r_h * h_prev + W_x @ x + b              -- diagonal r_h (element-wise)
+//   delta_raw = W_delta @ x + r_delta * h_prev + b_delta  -- diagonal r_delta
+//   delta = sigmoid(delta_raw)
+//   h_new = (1 - delta) * h_prev + delta * tanh(v)
+//
+//   // Selective output
+//   compete = softmax(h_new.reshape(groups), dim=-1)
+//   output = compete * silu(W_out @ h_new)
+// =============================================================================
+
+template<typename T>
+struct DiagTripleRForward {
+    DiagTripleRForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,           // [dim, dim]
+        const T* r_h,           // [dim] diagonal recurrence
+        const T* r_delta,       // [dim] diagonal delta modulation
+        const T* W_delta,       // [dim, dim]
+        const T* W_out,         // [dim] b_gate for h+x selective output
+        const T* b,             // [dim]
+        const T* b_delta,       // [dim]
+        const T* x,             // [T, B, dim]
+        T* h,                   // [T+1, B, dim]
+        T* output,              // [T, B, dim]
+        T* v_cache,             // [T, B, dim] for backward
+        T* delta_cache,         // [T, B, dim] for backward
+        T* compete_cache);      // [T, B, dim] gate_cache for backward
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct DiagTripleRBackward {
+    DiagTripleRBackward(
+        int batch_size,
+        int dim,
+        int n_groups,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,           // [dim, dim]
+        const T* r_h,           // [dim]
+        const T* r_delta,       // [dim]
+        const T* W_delta,       // [dim, dim]
+        const T* W_out,         // [dim] b_gate
+        const T* x,             // [T, B, dim]
+        const T* h,             // [T+1, B, dim]
+        const T* v_cache,       // [T, B, dim]
+        const T* delta_cache,   // [T, B, dim]
+        const T* compete_cache, // [T, B, dim] gate_cache
+        const T* d_output,      // [T, B, dim]
+        T* dx,                  // [T, B, dim]
+        T* dW_x,                // [dim, dim]
+        T* d_r_h,               // [dim]
+        T* d_r_delta,           // [dim]
+        T* dW_delta,            // [dim, dim]
+        T* dW_out,              // [dim] d_b_gate
+        T* db,                  // [dim]
+        T* db_delta,            // [dim]
+        T* workspace);          // [6*B*dim + ceil(5*dim*sizeof(float)/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_groups_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

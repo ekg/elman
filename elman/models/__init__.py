@@ -146,6 +146,16 @@ except ImportError:
     LogSpaceDiagTripleRCell = None
     LOGSPACE_LEVEL_6_AVAILABLE = False
 
+# Level 7: Linear-space Diagonal Triple R
+try:
+    from .diagonal_triple_r import (
+        DiagTripleR, DiagTripleRCell, LEVEL_7_AVAILABLE
+    )
+except ImportError:
+    DiagTripleR = None
+    DiagTripleRCell = None
+    LEVEL_7_AVAILABLE = False
+
 # Language model wrapper
 try:
     from .ladder_lm import LadderLM, create_ladder_model
@@ -181,7 +191,7 @@ except ImportError:
 def get_available_levels():
     """Return dict of available ladder levels."""
     levels = {
-        # Linear-space levels (0-6)
+        # Linear-space levels (0-7)
         0: ("Stock Elman", LEVEL_0_AVAILABLE, StockElman),
         1: ("Gated Elman", LEVEL_1_AVAILABLE, GatedElman),
         2: ("Selective Elman", LEVEL_2_AVAILABLE, SelectiveElman),
@@ -189,7 +199,8 @@ def get_available_levels():
         4: ("Full Recurrence", LEVEL_4_AVAILABLE, FullRecurrence),
         5: ("Linear Triple R", LEVEL_5_AVAILABLE, LinearTripleR),
         6: ("Linear Polynomial", LEVEL_6_AVAILABLE, LinearPolynomial),
-        # Log-space levels (log_0 to log_5)
+        7: ("Diagonal Triple R", LEVEL_7_AVAILABLE, DiagTripleR),
+        # Log-space levels (log_0 to log_6)
         'log_0': ("Log-Space Polynomial", LOGSPACE_LEVEL_0_AVAILABLE, LogSpacePolynomial),
         'log_1': ("Log-Space Selective", LOGSPACE_LEVEL_1_AVAILABLE, LogSpaceSelective),
         'log_2': ("Log-Space Diagonal Selective", LOGSPACE_LEVEL_2_AVAILABLE, LogSpaceDiagonalSelective),
@@ -213,7 +224,7 @@ def get_ladder_level(level):
 
 
 __all__ = [
-    # Linear-space level classes (0-6)
+    # Linear-space level classes (0-7)
     'StockElman', 'StockElmanCell',
     'GatedElman', 'GatedElmanCell',
     'SelectiveElman', 'SelectiveElmanCell',
@@ -221,6 +232,7 @@ __all__ = [
     'FullRecurrence', 'FullRecurrenceCell',
     'LinearTripleR', 'LinearTripleRCell',
     'LinearPolynomial', 'LinearPolynomialCell',
+    'DiagTripleR', 'DiagTripleRCell',
     # Log-space level classes (log_0 to log_6)
     'LogSpacePolynomial', 'LogSpacePolynomialCell',
     'LogSpaceSelective', 'LogSpaceSelectiveCell',
@@ -235,7 +247,7 @@ __all__ = [
     'Mamba2LM', 'create_mamba2_model', 'MAMBA2_AVAILABLE',
     # Availability flags
     'LEVEL_0_AVAILABLE', 'LEVEL_1_AVAILABLE', 'LEVEL_2_AVAILABLE', 'LEVEL_3_AVAILABLE',
-    'LEVEL_4_AVAILABLE', 'LEVEL_5_AVAILABLE', 'LEVEL_6_AVAILABLE',
+    'LEVEL_4_AVAILABLE', 'LEVEL_5_AVAILABLE', 'LEVEL_6_AVAILABLE', 'LEVEL_7_AVAILABLE',
     'LOGSPACE_LEVEL_0_AVAILABLE', 'LOGSPACE_LEVEL_1_AVAILABLE', 'LOGSPACE_LEVEL_2_AVAILABLE',
     'LOG_STORAGE_DIAGONAL_AVAILABLE', 'LOG_COMPUTE_FULL_AVAILABLE', 'LOG_SPACE_TRIPLE_R_AVAILABLE',
     'LOGSPACE_LEVEL_6_AVAILABLE',
