@@ -24,7 +24,8 @@ std::vector<Tensor> stock_elman_forward(
     Tensor h0,          // [B, dim]
     Tensor W_x,         // [dim, dim]
     Tensor W_h,         // [dim, dim]
-    Tensor b) {         // [dim]
+    Tensor b,           // [dim]
+    Tensor b_gate) {    // [dim] h+x gate bias
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -35,13 +36,17 @@ std::vector<Tensor> stock_elman_forward(
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
     CHECK_INPUT(b);
+    CHECK_INPUT(b_gate);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
 
     Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
     Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
                         : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
 
     h[0] = h0;
 
@@ -58,21 +63,26 @@ std::vector<Tensor> stock_elman_forward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(b),
+            ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
-            training ? ptr<scalar_t>(v) : nullptr);
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr);
     }));
 
-    return {h, v};
+    return {h, output, v, gate_cache};
 }
 
 std::vector<Tensor> stock_elman_backward(
     Tensor W_x,
     Tensor W_h,
+    Tensor b_gate,
     Tensor x,
     Tensor h,
     Tensor v,
-    Tensor dh_out) {
+    Tensor gate_cache,
+    Tensor d_output) {
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -80,10 +90,12 @@ std::vector<Tensor> stock_elman_backward(
 
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
+    CHECK_INPUT(b_gate);
     CHECK_INPUT(x);
     CHECK_INPUT(h);
     CHECK_INPUT(v);
-    CHECK_INPUT(dh_out);
+    CHECK_INPUT(gate_cache);
+    CHECK_INPUT(d_output);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
@@ -92,12 +104,12 @@ std::vector<Tensor> stock_elman_backward(
     Tensor dW_x = torch::zeros({dim, dim}, options);
     Tensor dW_h = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
+    Tensor d_b_gate = torch::zeros({dim}, options);
 
-    // Workspace: (T+1) * B * dim for dv_all + dh_recurrent, plus dim floats for db
-    // Use bytes to properly handle float buffer at end
+    // Workspace: (T+3)*B*dim + ceil(2*dim*4/sizeof(T)) for db and d_b_gate accumulators
     const int64_t elem_size = x.element_size();
-    const int64_t workspace_elems = (time_steps + 1) * batch_size * dim;
-    const int64_t float_bytes = dim * sizeof(float);
+    const int64_t workspace_elems = (time_steps + 3) * batch_size * dim;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
     const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;  // Round up
     Tensor workspace = torch::empty({workspace_elems + float_elems}, options);
 
@@ -113,18 +125,21 @@ std::vector<Tensor> stock_elman_backward(
             time_steps,
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
-            ptr<scalar_t>(dh_out),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
             ptr<scalar_t>(db),
+            ptr<scalar_t>(d_b_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dW_h, db};
+    return {dx, dW_x, dW_h, db, d_b_gate};
 }
 
 // =============================================================================
@@ -139,7 +154,8 @@ std::vector<Tensor> gated_elman_forward(
     Tensor W_h,
     Tensor W_delta,
     Tensor b,
-    Tensor b_delta) {
+    Tensor b_delta,
+    Tensor b_gate) {
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -152,15 +168,19 @@ std::vector<Tensor> gated_elman_forward(
     CHECK_INPUT(W_delta);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
+    CHECK_INPUT(b_gate);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
 
     Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
     Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
                         : torch::empty({0}, options);
     Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
                                   : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
 
     h[0] = h0;
 
@@ -179,24 +199,29 @@ std::vector<Tensor> gated_elman_forward(
             ptr<scalar_t>(W_delta),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
             training ? ptr<scalar_t>(v) : nullptr,
-            training ? ptr<scalar_t>(delta_cache) : nullptr);
+            training ? ptr<scalar_t>(delta_cache) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr);
     }));
 
-    return {h, v, delta_cache};
+    return {h, output, v, delta_cache, gate_cache};
 }
 
 std::vector<Tensor> gated_elman_backward(
     Tensor W_x,
     Tensor W_h,
     Tensor W_delta,
+    Tensor b_gate,
     Tensor x,
     Tensor h,
     Tensor v,
     Tensor delta_cache,
-    Tensor dh_out) {
+    Tensor gate_cache,
+    Tensor d_output) {
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -211,13 +236,15 @@ std::vector<Tensor> gated_elman_backward(
     Tensor dW_delta = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
+    Tensor d_b_gate = torch::zeros({dim}, options);
 
     // Workspace: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
-    //            [db_float: dim floats] [db_delta_float: dim floats]
+    //            [dh: BD] [dx_gate: BD]
+    //            [db_float: dim] [db_delta_float: dim] [db_gate_float: dim]
     const int64_t elem_size = x.element_size();
     const int64_t BD = batch_size * dim;
-    const int64_t t_elems = 4 * BD;
-    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t t_elems = 6 * BD;
+    const int64_t float_bytes = 3 * dim * sizeof(float);
     const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
     Tensor workspace = torch::empty({t_elems + float_elems}, options);
 
@@ -234,21 +261,24 @@ std::vector<Tensor> gated_elman_backward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
             ptr<scalar_t>(delta_cache),
-            ptr<scalar_t>(dh_out),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
             ptr<scalar_t>(dW_delta),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(d_b_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dW_h, dW_delta, db, db_delta};
+    return {dx, dW_x, dW_h, dW_delta, db, db_delta, d_b_gate};
 }
 
 // =============================================================================

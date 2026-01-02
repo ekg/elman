@@ -44,9 +44,12 @@ struct StockElmanForward {
         const T* W_x,       // [dim, dim]
         const T* W_h,       // [dim, dim]
         const T* b,         // [dim]
+        const T* b_gate,    // [dim] h+x gate bias
         const T* x,         // [T, B, dim]
-        T* h,               // [T+1, B, dim] output
-        T* v);              // [T, B, dim] pre-activation for backward
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] selective output
+        T* v,               // [T, B, dim] pre-activation for backward
+        T* gate_cache);     // [T, B, dim] gate cache for backward
 
 private:
     bool training_;
@@ -70,29 +73,33 @@ struct StockElmanBackward {
         int steps,
         const T* W_x,
         const T* W_h,
+        const T* b_gate,    // [dim]
         const T* x,
         const T* h,
         const T* v,
-        const T* dh_out,    // [T, B, dim] gradient from above
+        const T* gate_cache,
+        const T* d_output,  // [T, B, dim] gradient from output
         T* dx,              // [T, B, dim]
         T* dW_x,            // [dim, dim]
         T* dW_h,            // [dim, dim]
         T* db,              // [dim]
-        T* workspace);      // [(T+1)*B*dim + ceil(dim*4/sizeof(T))] workspace
+        T* d_b_gate,        // [dim]
+        T* workspace);      // [(T+3)*B*dim + ceil(2*dim*4/sizeof(T))]
 
 private:
     int batch_size_;
     int dim_;
     cublasHandle_t blas_handle_;
     cudaStream_t sync_stream_;
-    cudaStream_t stream_[2];  // Multi-stream for parallel GEMMs
+    cudaStream_t stream_[2];
     cudaEvent_t event_;
 };
 
 // =============================================================================
-// Level 1: Gated Elman
+// Level 1: Gated Elman with h+x selective output
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+// output = h_t * silu(h_t + x_t + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -111,10 +118,13 @@ struct GatedElmanForward {
         const T* W_delta,   // [dim, dim]
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
+        const T* b_gate,    // [dim] h+x gate bias
         const T* x,         // [T, B, dim]
-        T* h,               // [T+1, B, dim] output
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
-        T* delta_cache);    // [T, B, dim] cached delta for backward
+        T* delta_cache,     // [T, B, dim] cached delta for backward
+        T* gate_cache);     // [T, B, dim] cached gate for backward
 
 private:
     bool training_;
@@ -137,18 +147,21 @@ struct GatedElmanBackward {
         const T* W_x,
         const T* W_h,
         const T* W_delta,
+        const T* b_gate,
         const T* x,
         const T* h,
         const T* v,
         const T* delta_cache,
-        const T* dh_out,
+        const T* gate_cache,
+        const T* d_output,
         T* dx,
         T* dW_x,
         T* dW_h,
         T* dW_delta,
         T* db,
         T* db_delta,
-        T* workspace);  // [4*B*dim + ceil(2*dim*sizeof(float)/sizeof(T))]
+        T* d_b_gate,
+        T* workspace);  // [6*B*dim + ceil(3*dim*sizeof(float)/sizeof(T))]
 
 private:
     int batch_size_;
