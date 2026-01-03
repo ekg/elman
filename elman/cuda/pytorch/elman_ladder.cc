@@ -143,6 +143,268 @@ std::vector<Tensor> stock_elman_backward(
 }
 
 // =============================================================================
+// X-Gated Elman (x-only gating: output = h * silu(W_gate @ x + b_gate))
+// =============================================================================
+
+std::vector<Tensor> x_gated_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor W_gate,      // [dim, dim] gate projection
+    Tensor b,           // [dim]
+    Tensor b_gate) {    // [dim] x-only gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Allocate outputs
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options) : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options) : torch::empty({0}, options);
+
+    // Set initial hidden state
+    h[0].copy_(h0);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "x_gated_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        XGatedElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_gate),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr);
+    }));
+
+    return {h, output, v, gate_cache};
+}
+
+std::vector<Tensor> x_gated_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_gate,
+    Tensor x,
+    Tensor h,
+    Tensor v,
+    Tensor gate_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(gate_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor d_b_gate = torch::zeros({dim}, options);
+
+    // Workspace: (2*T+2)*B*dim + ceil(2*dim*4/sizeof(T)) for db and d_b_gate accumulators
+    const int64_t elem_size = x.element_size();
+    const int64_t workspace_elems = (2 * time_steps + 2) * batch_size * dim;
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({workspace_elems + float_elems}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "x_gated_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        XGatedElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_gate),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_gate),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(d_b_gate),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_x, dW_h, dW_gate, db, d_b_gate};
+}
+
+// =============================================================================
+// Diagonal Elman (tanh + diagonal α, x-only gating)
+// h = tanh(W_x @ x + α ⊙ h_prev + b), output = h * silu(x + b_gate)
+// =============================================================================
+
+std::vector<Tensor> diagonal_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor alpha,       // [dim] diagonal decay (pre-sigmoid)
+    Tensor b,           // [dim] recurrence bias
+    Tensor b_gate) {    // [dim] x-only gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(alpha);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                              : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
+
+    h[0].copy_(h0);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagonalElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(alpha),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr);
+    }));
+
+    return {h, output, v_cache, gate_cache};
+}
+
+std::vector<Tensor> diagonal_elman_backward(
+    Tensor W_x,
+    Tensor alpha,
+    Tensor b_gate,
+    Tensor x,
+    Tensor h,
+    Tensor v_cache,
+    Tensor gate_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(alpha);
+    CHECK_INPUT(b_gate);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(gate_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dalpha = torch::zeros({dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor d_b_gate = torch::zeros({dim}, options);
+
+    // Workspace: (T+3)*B*dim + ceil(3*dim*4/sizeof(T))
+    const int64_t elem_size = x.element_size();
+    const int64_t workspace_elems = (time_steps + 3) * batch_size * dim;
+    const int64_t float_bytes = 3 * dim * sizeof(float);
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
+    Tensor workspace = torch::empty({workspace_elems + float_elems}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagonalElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(alpha),
+            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dalpha),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(d_b_gate),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_x, dalpha, db, d_b_gate};
+}
+
+// =============================================================================
 // Level 1: Gated Elman
 // =============================================================================
 
@@ -2462,6 +2724,16 @@ void elman_ladder_init(py::module& m) {
           "Level 0: Stock Elman forward");
     m.def("stock_elman_backward", &stock_elman_backward,
           "Level 0: Stock Elman backward");
+
+    m.def("x_gated_elman_forward", &x_gated_elman_forward,
+          "X-Gated Elman forward (x-only gating)");
+    m.def("x_gated_elman_backward", &x_gated_elman_backward,
+          "X-Gated Elman backward (x-only gating)");
+
+    m.def("diagonal_elman_forward", &diagonal_elman_forward,
+          "Diagonal Linear Elman forward (x-only gating, diagonal decay)");
+    m.def("diagonal_elman_backward", &diagonal_elman_backward,
+          "Diagonal Linear Elman backward (x-only gating, diagonal decay)");
 
     m.def("gated_elman_forward", &gated_elman_forward,
           "Level 1: Gated Elman forward");

@@ -26,8 +26,9 @@ namespace v0 {
 namespace elman_ladder {
 
 // =============================================================================
-// Level 0: Stock Elman
+// Level 0: Stock Elman (h+x gating)
 // h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+// output = h * silu(h + x + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -85,6 +86,151 @@ struct StockElmanBackward {
         T* db,              // [dim]
         T* d_b_gate,        // [dim]
         T* workspace);      // [(T+3)*B*dim + ceil(2*dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t sync_stream_;
+    cudaStream_t stream_[2];
+    cudaEvent_t event_;
+};
+
+// =============================================================================
+// X-Gated Elman (x-only gating with learned W_gate)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+// output = h * silu(W_gate @ x + b_gate)  -- x-only with learned projection
+// =============================================================================
+
+template<typename T>
+struct XGatedElmanForward {
+    XGatedElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection
+        const T* b,         // [dim]
+        const T* b_gate,    // [dim] x-only gate bias
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] selective output
+        T* v,               // [T, B, dim] pre-activation for backward
+        T* gate_cache);     // [T, B, dim] gate cache for backward (stores gate_raw)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct XGatedElmanBackward {
+    XGatedElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~XGatedElmanBackward();
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* W_gate,    // [dim, dim] gate projection
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* gate_cache,
+        const T* d_output,  // [T, B, dim] gradient from output
+        T* dx,              // [T, B, dim]
+        T* dW_x,            // [dim, dim]
+        T* dW_h,            // [dim, dim]
+        T* dW_gate,         // [dim, dim] gradient for gate projection
+        T* db,              // [dim]
+        T* d_b_gate,        // [dim]
+        T* workspace);      // [(2*T+2)*B*dim + ceil(2*dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t sync_stream_;
+    cudaStream_t stream_[2];
+    cudaEvent_t event_;
+};
+
+// =============================================================================
+// Diagonal Elman (x-only gating, tanh + diagonal α)
+// h_t = tanh(W_x @ x_t + α ⊙ h_{t-1} + b)  -- KEEP tanh, diagonal decay
+// output = h * silu(x + b_gate)  -- x-only selective gating
+// Faster than dense W_h, but keeps tanh for expressivity.
+// =============================================================================
+
+template<typename T>
+struct DiagonalElmanForward {
+    DiagonalElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* alpha,     // [dim] diagonal decay (pre-sigmoid)
+        const T* b,         // [dim] recurrence bias
+        const T* b_gate,    // [dim] x-only gate bias
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] selective output
+        T* v_cache,         // [T, B, dim] pre-activation cache for backward
+        T* gate_cache);     // [T, B, dim] gate cache for backward
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct DiagonalElmanBackward {
+    DiagonalElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~DiagonalElmanBackward();
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* alpha,     // [dim] diagonal decay
+        const T* b_gate,    // [dim]
+        const T* x,
+        const T* h,
+        const T* v_cache,   // [T, B, dim] pre-activation cache
+        const T* gate_cache,
+        const T* d_output,  // [T, B, dim] gradient from output
+        T* dx,              // [T, B, dim]
+        T* dW_x,            // [dim, dim]
+        T* dalpha,          // [dim] gradient for diagonal decay
+        T* db,              // [dim] gradient for recurrence bias
+        T* d_b_gate,        // [dim]
+        T* workspace);      // [(T+3)*B*dim + ceil(3*dim*4/sizeof(T))]
 
 private:
     int batch_size_;
