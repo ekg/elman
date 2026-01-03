@@ -137,6 +137,7 @@ class Mamba2LM(nn.Module):
 def create_mamba2_model(
     target_params: str = "100m",
     vocab_size: int = 256,
+    expand: int = 2,
 ):
     """Create a Mamba2 model with approximately target_params parameters."""
     target = target_params.lower()
@@ -148,20 +149,27 @@ def create_mamba2_model(
         target_count = int(target)
 
     # Search for dim/depth that hits target param count
-    # Mamba2 layer params ≈ dim * (3*expand*dim + 2*d_state + expand*dim) per layer
-    # Plus embedding: vocab_size * dim * 2 (embed + head)
+    # Mamba2 layer params scale with expand factor
     d_state = 64
-    expand = 2
+    headdim = 64
+
+    # For expand=1, dim must be divisible by headdim
+    # For expand=2, dim*2 must be divisible by headdim
+    dim_step = headdim if expand == 1 else 32
 
     best_config = None
     best_diff = float('inf')
 
     for depth in range(6, 36, 2):
-        for dim in range(256, 2048, 32):
-            # Estimate params
+        for dim in range(256, 2048, dim_step):
+            # Check Mamba2 constraint: d_ssm = dim * expand must be divisible by headdim
+            if (dim * expand) % headdim != 0:
+                continue
+
+            # Estimate params (scales with expand factor)
             embed_params = vocab_size * dim * 2  # embedding + lm_head
-            # Mamba2 layer: ~6.1 * dim^2 per layer (measured)
-            layer_params = depth * 6.1 * dim * dim
+            # Mamba2 layer params scale roughly as: expand * 3 * dim^2 per layer
+            layer_params = depth * expand * 3.05 * dim * dim
             total = embed_params + layer_params
 
             diff = abs(total - target_count)
@@ -181,10 +189,11 @@ def create_mamba2_model(
         depth=depth,
         d_state=d_state,
         expand=expand,
+        headdim=headdim,
     )
 
     actual_params = model.get_num_params()
-    print(f"Created Mamba2 model: dim={dim}, depth={depth}, params={actual_params:,}")
+    print(f"Created Mamba2 model: dim={dim}, depth={depth}, expand={expand}, params={actual_params:,}")
     return model
 
 
