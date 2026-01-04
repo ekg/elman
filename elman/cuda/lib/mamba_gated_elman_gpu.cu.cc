@@ -187,7 +187,8 @@ void MambaGatedElmanForward<T>::Run(
     const T* z,         // [T, B, dim] gate input (pre silu)
     T* h,               // [T+1, B, dim] hidden states
     T* output,          // [T, B, dim] output
-    T* v) {             // [T, B, dim] pre-activation cache
+    T* v,               // [T, B, dim] pre-activation cache
+    T* workspace) {     // [T*B*dim + B*dim] for tmp_Wx, tmp_Rh
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -197,10 +198,9 @@ void MambaGatedElmanForward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
 
     // Pre-compute W_x @ x for all timesteps (HASTE pattern)
-    T* tmp_Wx;
-    T* tmp_Rh;
-    cudaMalloc(&tmp_Wx, steps * BD * sizeof(T));
-    cudaMalloc(&tmp_Rh, BD * sizeof(T));
+    // Workspace layout: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    T* tmp_Wx = workspace;
+    T* tmp_Rh = workspace + steps * BD;
 
     // One big GEMM: tmp_Wx = x @ W_x.T for all T*B rows at once
     blas<T>::gemm(
@@ -241,9 +241,7 @@ void MambaGatedElmanForward<T>::Run(
         MambaGateForward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_t, z_t, out_t);
     }
-
-    cudaFree(tmp_Wx);
-    cudaFree(tmp_Rh);
+    // No cleanup needed - workspace is managed by caller
 }
 
 // =============================================================================

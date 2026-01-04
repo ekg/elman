@@ -44,7 +44,8 @@ struct StockElmanForward {
         T* h,               // [T+1, B, dim] hidden states
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation for backward
-        T* gate_cache);     // [T, B, dim] gate cache for backward (stores gate_raw)
+        T* gate_cache,      // [T, B, dim] gate cache for backward (stores gate_raw)
+        T* workspace);      // [2*T*B*dim + B*dim] for Wx, gate_proj, Rh
 
 private:
     bool training_;
@@ -117,7 +118,8 @@ struct MambaGatedElmanForward {
         const T* z,         // [T, B, dim] gate input (pre silu)
         T* h,               // [T+1, B, dim] hidden states
         T* output,          // [T, B, dim] output
-        T* v);              // [T, B, dim] pre-activation cache
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
 
 private:
     bool training_;
@@ -227,6 +229,85 @@ private:
     int batch_size_;
     int dim_;
     int n_slots_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E3: Low-Rank Slot Elman (independent low-rank W_h per slot)
+// h_t[s] = tanh(W_x @ x + U_s @ (V_s @ h_prev[s]) + b)    for each slot s
+// output = sum(C[s] * h_t[s]) * silu(z)
+// Key: Low-rank W_h_s = U_s @ V_s gives unique dynamics per slot with O(2dr) compute
+// =============================================================================
+
+template<typename T>
+struct LowRankSlotElmanForward {
+    LowRankSlotElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_slots,
+        int rank,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,         // [dim, dim]
+        const T* U,           // [n_slots, dim, rank] per-slot output projection
+        const T* V,           // [n_slots, rank, dim] per-slot input projection
+        const T* b,           // [dim]
+        const T* C,           // [n_slots]
+        const T* x,           // [T, B, dim]
+        const T* z,           // [T, B, dim]
+        T* h,                 // [T+1, n_slots, B, dim]
+        T* output,            // [T, B, dim]
+        T* Vh_cache,          // [T, n_slots, B, rank] - cache Vh for backward GEMM
+        T* workspace,         // [T*B*dim]
+        cublasHandle_t blas_handle);
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_slots_;
+    int rank_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LowRankSlotElmanBackward {
+    LowRankSlotElmanBackward(
+        int batch_size,
+        int dim,
+        int n_slots,
+        int rank,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,         // [dim, dim]
+        const T* U,           // [n_slots, dim, rank]
+        const T* V,           // [n_slots, rank, dim]
+        const T* C,           // [n_slots]
+        const T* x,           // [T, B, dim]
+        const T* z,           // [T, B, dim]
+        const T* h,           // [T+1, n_slots, B, dim]
+        const T* Vh_all,      // [T, n_slots, B, rank] - from forward cache
+        const T* d_output,    // [T, B, dim]
+        T* dx,                // [T, B, dim]
+        T* dz,                // [T, B, dim]
+        T* dW_x,              // [dim, dim]
+        T* dU,                // [n_slots, dim, rank]
+        T* dV,                // [n_slots, rank, dim]
+        T* db,                // [dim]
+        T* dC,                // [n_slots]
+        T* workspace,         // [T*SBD + T*SBR + 2*SBD + T*BD + float_grads]
+        cublasHandle_t blas_handle);
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_slots_;
+    int rank_;
     cudaStream_t stream_;
 };
 

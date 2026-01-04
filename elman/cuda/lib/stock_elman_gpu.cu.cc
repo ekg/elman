@@ -223,7 +223,8 @@ void StockElmanForward<T>::Run(
     T* h,
     T* output,
     T* v,
-    T* gate_cache) {
+    T* gate_cache,
+    T* workspace) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -234,13 +235,11 @@ void StockElmanForward<T>::Run(
 
     // =========================================================================
     // HASTE PATTERN: Pre-compute W_x @ x and W_gate @ x for ALL timesteps
+    // Workspace layout: [tmp_Wx: T*BD] [gate_proj: T*BD] [tmp_Rh: BD]
     // =========================================================================
-    T* tmp_Wx;
-    T* tmp_Rh;
-    T* gate_proj;
-    cudaMalloc(&tmp_Wx, steps * BD * sizeof(T));
-    cudaMalloc(&tmp_Rh, BD * sizeof(T));
-    cudaMalloc(&gate_proj, steps * BD * sizeof(T));
+    T* tmp_Wx = workspace;
+    T* gate_proj = workspace + steps * BD;
+    T* tmp_Rh = workspace + 2 * steps * BD;
 
     // One big GEMM: tmp_Wx = x @ W_x.T for all T*B rows at once
     blas<T>::gemm(
@@ -293,10 +292,7 @@ void StockElmanForward<T>::Run(
         SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_t, gate_proj_t, b_gate, out_t, gate_t);
     }
-
-    cudaFree(tmp_Wx);
-    cudaFree(tmp_Rh);
-    cudaFree(gate_proj);
+    // No cleanup needed - workspace is managed by caller
 }
 
 // =============================================================================
