@@ -1,6 +1,6 @@
 // Copyright 2025 Erik Garrison. Apache 2.0 License.
 //
-// Level 7: Diagonal Triple R (Linear Space) with h+x Selective Output
+// Level 7: Diagonal Triple R (Linear Space) with Learned Gate Projection
 //
 // Like Level 5 (Triple R) but with diagonal r_h and r_delta instead of
 // full matrices. More efficient O(d) recurrence.
@@ -11,8 +11,8 @@
 //   delta = sigmoid(delta_raw)
 //   h_new = (1 - delta) * h_prev + delta * tanh(v)
 //
-//   // Input-dependent selective output (Mamba2-style)
-//   output = h_new * silu(h_new + x + b_gate)   -- h+x gating!
+//   // Learned gate projection output
+//   output = h_new * silu(W_gate @ x + b_gate)  -- learned gate projection!
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -78,8 +78,8 @@ __global__ void DiagTripleRUpdateKernel(
 }
 
 // =============================================================================
-// Forward: h+x Selective Output (Mamba2-style input-dependent gating)
-// output = h * silu(h + x + b_gate)
+// Forward: Learned Gate Projection Output
+// output = h * silu(W_gate @ x + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -87,10 +87,10 @@ __global__ void DiagTripleRSelectiveOutput(
     const int batch_size,
     const int dim,
     const T* __restrict__ h,            // [B, dim]
-    const T* __restrict__ x,            // [B, dim] input at this timestep
+    const T* __restrict__ gate_proj,    // [B, dim] pre-computed W_gate @ x
     const T* __restrict__ b_gate,       // [dim] learned gate bias
     T* __restrict__ output,             // [B, dim]
-    T* __restrict__ gate_cache) {       // [B, dim] silu(h+x+b) for backward
+    T* __restrict__ gate_cache) {       // [B, dim] cache gate_raw for backward
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total = batch_size * dim;
@@ -99,26 +99,27 @@ __global__ void DiagTripleRSelectiveOutput(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
+        float gp_val = static_cast<float>(gate_proj[idx]);
         float b_val = static_cast<float>(b_gate[d]);
 
-        // gate_raw = h + x + b_gate
-        float gate_raw = h_val + x_val + b_val;
+        // gate_raw = W_gate @ x + b_gate (W_gate @ x pre-computed)
+        float gate_raw = gp_val + b_val;
 
         // silu(gate_raw) = gate_raw * sigmoid(gate_raw)
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
         float silu_val = gate_raw * sigmoid_val;
 
-        // output = h * silu(h + x + b_gate)
+        // output = h * silu(W_gate @ x + b_gate)
         output[idx] = static_cast<T>(h_val * silu_val);
 
-        if (gate_cache) gate_cache[idx] = static_cast<T>(silu_val);
+        // Cache gate_raw for backward (not silu_val)
+        if (gate_cache) gate_cache[idx] = static_cast<T>(gate_raw);
     }
 }
 
 // =============================================================================
-// Backward: h+x Selective Output
-// output = h * silu(h + x + b_gate)
+// Backward: Learned Gate Projection Output
+// output = h * silu(W_gate @ x + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -126,11 +127,10 @@ __global__ void DiagTripleRSelectiveOutputBackward(
     const int batch_size,
     const int dim,
     const T* __restrict__ h,
-    const T* __restrict__ x,
-    const T* __restrict__ b_gate,
+    const T* __restrict__ gate_cache,    // [B, dim] cached gate_raw values
     const T* __restrict__ d_output,
-    T* __restrict__ dh,              // gradient to h (add to existing)
-    T* __restrict__ dx,              // gradient to x
+    T* __restrict__ dh,              // gradient to h
+    T* __restrict__ d_gate_proj,     // gradient to W_gate @ x (for W_gate gradient)
     float* __restrict__ d_b_gate) {  // accumulated gradient for b_gate
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -140,14 +140,12 @@ __global__ void DiagTripleRSelectiveOutputBackward(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
-        float b_val = static_cast<float>(b_gate[d]);
+        float gate_raw = static_cast<float>(gate_cache[idx]);
         float dout = static_cast<float>(d_output[idx]);
 
-        // Forward: gate_raw = h + x + b_gate
+        // Forward: gate_raw = W_gate @ x + b_gate
         //          silu = gate_raw * sigmoid(gate_raw)
         //          output = h * silu
-        float gate_raw = h_val + x_val + b_val;
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
         float silu_val = gate_raw * sigmoid_val;
 
@@ -155,17 +153,17 @@ __global__ void DiagTripleRSelectiveOutputBackward(
         //                   = sigmoid * (1 + gate_raw * (1 - sigmoid))
         float dsilu = sigmoid_val * (1.0f + gate_raw * (1.0f - sigmoid_val));
 
-        // d_output/d_h = silu + h * dsilu (through both paths)
-        float dh_val = dout * (silu_val + h_val * dsilu);
+        // d_output/d_h = silu (h only affects output through multiplication)
+        float dh_val = dout * silu_val;
 
-        // d_output/d_x = h * dsilu
-        float dx_val = dout * h_val * dsilu;
+        // d_output/d_gate_proj = h * dsilu
+        float d_gp_val = dout * h_val * dsilu;
 
-        // d_output/d_b_gate = h * dsilu (same as d_x)
+        // d_output/d_b_gate = h * dsilu (same as d_gate_proj)
         float db_val = dout * h_val * dsilu;
 
         dh[idx] = static_cast<T>(dh_val);
-        dx[idx] = static_cast<T>(dx_val);
+        d_gate_proj[idx] = static_cast<T>(d_gp_val);
         atomicAdd(&d_b_gate[d], db_val);
     }
 }
@@ -300,15 +298,16 @@ void DiagTripleRForward<T>::Run(
     const T* r_h,
     const T* r_delta,
     const T* W_delta,
-    const T* W_out,
+    const T* W_gate,     // [dim, dim] learned gate projection
     const T* b,
     const T* b_delta,
+    const T* b_gate,     // [dim] gate bias
     const T* x,
     T* h,
     T* output,
     T* v_cache,
     T* delta_cache,
-    T* compete_cache) {
+    T* gate_cache) {
 
     const int BD = batch_size_ * dim_;
     const int block_size = 256;
@@ -320,8 +319,10 @@ void DiagTripleRForward<T>::Run(
     // Allocate workspace for pre-computed projections
     T* all_wx_x;
     T* all_wdelta_x;
+    T* all_gate_proj;
     cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
     cudaMalloc(&all_wdelta_x, steps * BD * sizeof(T));
+    cudaMalloc(&all_gate_proj, steps * BD * sizeof(T));
 
     // Pre-compute W_x @ x for all timesteps
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -331,18 +332,22 @@ void DiagTripleRForward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha_one, W_delta, dim_, x, dim_, &beta_zero, all_wdelta_x, dim_);
 
+    // Pre-compute W_gate @ x for all timesteps (learned gate projection)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha_one, W_gate, dim_, x, dim_, &beta_zero, all_gate_proj, dim_);
+
     for (int t = 0; t < steps; ++t) {
         const T* h_prev = h + t * BD;
         T* h_out = h + (t + 1) * BD;
         T* output_t = output + t * BD;
 
-        const T* x_t = x + t * BD;  // Raw input for h+x gate
         const T* wx_x_t = all_wx_x + t * BD;
         const T* wdelta_x_t = all_wdelta_x + t * BD;
+        const T* gate_proj_t = all_gate_proj + t * BD;
 
         T* v_t = training_ ? v_cache + t * BD : nullptr;
         T* delta_t = training_ ? delta_cache + t * BD : nullptr;
-        T* gate_t = training_ ? compete_cache + t * BD : nullptr;  // Repurpose as gate cache
+        T* gate_t = training_ ? gate_cache + t * BD : nullptr;
 
         // Update kernel
         const int num_blocks = (BD + block_size - 1) / block_size;
@@ -359,19 +364,19 @@ void DiagTripleRForward<T>::Run(
             v_t,
             delta_t);
 
-        // h+x selective output: output = h * silu(h + x + b_gate)
-        // W_out parameter repurposed as b_gate [dim] bias vector
+        // Learned gate projection output: output = h * silu(W_gate @ x + b_gate)
         DiagTripleRSelectiveOutput<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_,
             h_out,
-            x_t,
-            W_out,  // Repurposed as b_gate [dim]
+            gate_proj_t,
+            b_gate,
             output_t,
             gate_t);
     }
 
     cudaFree(all_wx_x);
     cudaFree(all_wdelta_x);
+    cudaFree(all_gate_proj);
 }
 
 // =============================================================================
@@ -398,21 +403,22 @@ void DiagTripleRBackward<T>::Run(
     const T* r_h,
     const T* r_delta,
     const T* W_delta,
-    const T* W_out,   // Now b_gate [dim]
+    const T* W_gate,     // [dim, dim] learned gate projection
     const T* x,
     const T* h,
     const T* v_cache,
     const T* delta_cache,
-    const T* compete_cache,  // Now gate_cache
+    const T* gate_cache,
     const T* d_output,
     T* dx,
     T* dW_x,
     T* d_r_h,
     T* d_r_delta,
     T* dW_delta,
-    T* dW_out,   // Now d_b_gate [dim]
+    T* dW_gate,          // [dim, dim] gradient for gate projection
     T* db,
     T* db_delta,
+    T* db_gate,          // [dim] gradient for gate bias
     T* workspace) {
 
     const int BD = batch_size_ * dim_;
@@ -422,9 +428,9 @@ void DiagTripleRBackward<T>::Run(
     const T alpha_one = static_cast<T>(1.0f);
     const T beta_zero = static_cast<T>(0.0f);
 
-    // Workspace layout (simplified - no W_out GEMM needed)
+    // Workspace layout
     T* dh = workspace;                    // [BD]
-    T* dx_gate = workspace + BD;          // [BD] gradient from gate to x
+    T* d_gate_proj = workspace + BD;      // [BD] gradient for W_gate @ x
     T* dh_recurrent = workspace + 2 * BD; // [BD]
     T* dh_prev = workspace + 3 * BD;      // [BD]
     T* d_wx_x = workspace + 4 * BD;       // [BD]
@@ -451,16 +457,17 @@ void DiagTripleRBackward<T>::Run(
 
         const T* v_t = v_cache + t * BD;
         const T* delta_t = delta_cache + t * BD;
+        const T* gate_t = gate_cache + t * BD;
 
         T* dx_t = dx + t * BD;
         const int num_blocks = (BD + block_size - 1) / block_size;
 
-        // Backward through h+x selective output: output = h * silu(h + x + b_gate)
+        // Backward through learned gate projection: output = h * silu(W_gate @ x + b_gate)
         DiagTripleRSelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_,
-            h_out, x_t, W_out,  // W_out is b_gate
+            h_out, gate_t,  // gate_cache contains cached gate_raw values
             d_output_t,
-            dh, dx_gate, d_b_gate_f);
+            dh, d_gate_proj, d_b_gate_f);
 
         // Add recurrent gradient from next timestep: dh += dh_recurrent
         VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh, dh_recurrent);
@@ -485,7 +492,7 @@ void DiagTripleRBackward<T>::Run(
         // Save dh_prev for next iteration
         cudaMemcpyAsync(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
-        // Accumulate W_x gradient: dW_x += x^T @ d_wx_x (transposed for row-major/col-major compat)
+        // Accumulate W_x gradient: dW_x += d_wx_x @ x^T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha_one, x_t, dim_, d_wx_x, dim_, &alpha_one, dW_x, dim_);
 
@@ -493,13 +500,18 @@ void DiagTripleRBackward<T>::Run(
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha_one, x_t, dim_, d_wdelta_x, dim_, &alpha_one, dW_delta, dim_);
 
-        // dx = W_x^T @ d_wx_x + W_delta^T @ d_wdelta_x + dx_gate
-        // Start with dx_gate, then add the GEMM results
-        cudaMemcpyAsync(dx_t, dx_gate, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
+        // Accumulate W_gate gradient: dW_gate += d_gate_proj @ x^T
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha_one, x_t, dim_, d_gate_proj, dim_, &alpha_one, dW_gate, dim_);
+
+        // dx = W_x^T @ d_wx_x + W_delta^T @ d_wdelta_x + W_gate^T @ d_gate_proj
+        cudaMemsetAsync(dx_t, 0, BD * sizeof(T), stream_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha_one, W_x, dim_, d_wx_x, dim_, &alpha_one, dx_t, dim_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha_one, W_delta, dim_, d_wdelta_x, dim_, &alpha_one, dx_t, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha_one, W_gate, dim_, d_gate_proj, dim_, &alpha_one, dx_t, dim_);
     }
 
     // Copy float accumulators to output
@@ -508,7 +520,7 @@ void DiagTripleRBackward<T>::Run(
     CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, d_r_delta_f, d_r_delta);
     CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_f, db);
     CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, db_delta_f, db_delta);
-    CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, d_b_gate_f, dW_out);  // dW_out is now d_b_gate
+    CopyFloatToT<T><<<copy_blocks, block_size, 0, stream_>>>(dim_, d_b_gate_f, db_gate);
 }
 
 // Explicit instantiations

@@ -1,11 +1,8 @@
 """
-Level 0: Stock Elman - Basic tanh recurrence
+Level 0: Stock Elman - Basic tanh recurrence with learned gate projection
 
 h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-
-This is the simplest recurrent cell - just tanh activation on linear
-combination of input and previous hidden state. No gating, no output
-selectivity, no log-space.
+output_t = h_t * silu(W_gate @ x_t + b_gate)  -- x-only with learned projection
 
 Serves as baseline for ablation ladder.
 """
@@ -30,38 +27,39 @@ LEVEL_0_AVAILABLE = True  # PyTorch fallback always available
 
 
 class StockElmanFunction(torch.autograd.Function):
-    """Autograd function for Stock Elman with h+x selective gating."""
+    """Autograd function for Stock Elman with learned gate projection."""
 
     @staticmethod
-    def forward(ctx, training, x, h0, W_x, W_h, b, b_gate):
+    def forward(ctx, training, x, h0, W_x, W_h, W_gate, b, b_gate):
         h, output, v, gate_cache = hasty_pytorch_lib.stock_elman_forward(
             training,
             x.contiguous(),
             h0.contiguous(),
             W_x.contiguous(),
             W_h.contiguous(),
+            W_gate.contiguous(),
             b.contiguous(),
             b_gate.contiguous()
         )
         if training:
-            ctx.save_for_backward(x, W_x, W_h, b_gate, h, v, gate_cache)
+            ctx.save_for_backward(x, W_x, W_h, W_gate, b_gate, h, v, gate_cache)
         return output, h
 
     @staticmethod
     def backward(ctx, d_output, dh_unused):
-        x, W_x, W_h, b_gate, h, v, gate_cache = ctx.saved_tensors
-        dx, dW_x, dW_h, db, d_b_gate = hasty_pytorch_lib.stock_elman_backward(
-            W_x, W_h, b_gate, x, h, v, gate_cache, d_output.contiguous()
+        x, W_x, W_h, W_gate, b_gate, h, v, gate_cache = ctx.saved_tensors
+        dx, dW_x, dW_h, dW_gate, db, d_b_gate = hasty_pytorch_lib.stock_elman_backward(
+            W_x, W_h, W_gate, x, h, v, gate_cache, d_output.contiguous()
         )
-        return None, dx, None, dW_x, dW_h, db, d_b_gate
+        return None, dx, None, dW_x, dW_h, dW_gate, db, d_b_gate
 
 
 class StockElmanCell(nn.Module):
     """
-    Stock Elman cell - Level 0 of ablation ladder with h+x selective gating.
+    Stock Elman cell - Level 0 of ablation ladder with learned gate projection.
 
     h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-    output_t = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
+    output_t = h_t * silu(W_gate @ x_t + b_gate)  -- x-only with learned projection
 
     Args:
         dim: Hidden dimension
@@ -82,7 +80,8 @@ class StockElmanCell(nn.Module):
         self.W_x = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
 
-        # h+x selective gate bias
+        # Gate projection: output = h * silu(W_gate @ x + b_gate)
+        self.W_gate = nn.Parameter(torch.empty(dim, dim))
         self.b_gate = nn.Parameter(torch.zeros(dim))
 
         # Recurrence matrix with optional constraints
@@ -96,6 +95,7 @@ class StockElmanCell(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_x)
+        nn.init.xavier_uniform_(self.W_gate)
         if self.w_h_mode == 'scaled_orthogonal':
             nn.init.orthogonal_(self.W_h_base)
         else:
@@ -146,7 +146,7 @@ class StockElmanCell(nn.Module):
         if HASTE_AVAILABLE and x.is_cuda:
             return StockElmanFunction.apply(
                 self.training, x, h0,
-                self.W_x, W_h, self.b, self.b_gate
+                self.W_x, W_h, self.W_gate, self.b, self.b_gate
             )
 
         # PyTorch fallback
@@ -155,7 +155,7 @@ class StockElmanCell(nn.Module):
         return self._forward_pytorch(x, h0, W_h)
 
     def _forward_pytorch(self, x, h0, W_h):
-        """Pure PyTorch implementation with h+x selective gating."""
+        """Pure PyTorch implementation with learned gate projection."""
         T, B, D = x.shape
         h_list = [h0]
         output_list = []
@@ -169,8 +169,9 @@ class StockElmanCell(nn.Module):
             h_new = torch.tanh(raw)
             h_list.append(h_new)
 
-            # h+x selective output: output = h * silu(h + x + b_gate)
-            gate = F.silu(h_new + x_t + self.b_gate)
+            # Learned gate projection: output = h * silu(W_gate @ x + b_gate)
+            gate_proj = x_t @ self.W_gate.T + self.b_gate
+            gate = F.silu(gate_proj)
             output = h_new * gate
             output_list.append(output)
 
@@ -181,21 +182,38 @@ class StockElmanCell(nn.Module):
 
 class StockElman(nn.Module):
     """
-    Stock Elman layer - Level 0 with projections and h+x selective gating.
+    Stock Elman layer - Level 0 with projections and learned gate projection.
 
     Wraps StockElmanCell with input/output projections for use in LM.
-    Now includes h+x selective output: output = h * silu(h + x + b_gate)
+    Uses learned gate projection: output = h * silu(W_gate @ x + b_gate)
+
+    Optional conv1d for local context (like Mamba2).
     """
 
     def __init__(self, dim, expansion=1.0, dropout=0.0,
-                 r_h_mode='spectral_norm', r_h_init_gain=1.0, **kwargs):
+                 r_h_mode='spectral_norm', r_h_init_gain=1.0,
+                 use_conv=False, d_conv=4, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
         self.r_h_mode = r_h_mode
+        self.use_conv = use_conv
 
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
+
+        # Optional conv1d for local context (like Mamba2)
+        if use_conv:
+            self.conv1d = nn.Conv1d(
+                in_channels=self.d_inner,
+                out_channels=self.d_inner,
+                kernel_size=d_conv,
+                padding=d_conv - 1,  # Causal padding
+                groups=self.d_inner,  # Depthwise
+                bias=True,
+            )
+        else:
+            self.conv1d = None
 
         # Elman cell (use r_h_mode as w_h_mode for consistency)
         self.cell = StockElmanCell(self.d_inner, w_h_mode=r_h_mode, w_h_init_gain=r_h_init_gain)
@@ -227,10 +245,19 @@ class StockElman(nn.Module):
         # Project input
         x_proj = self.in_proj(x)  # [B, T, d_inner]
 
+        # Optional conv1d for local context
+        if self.use_conv and self.conv1d is not None:
+            # Conv1d expects [B, C, T]
+            x_conv = x_proj.transpose(1, 2)  # [B, d_inner, T]
+            x_conv = self.conv1d(x_conv)  # [B, d_inner, T + d_conv - 1]
+            x_conv = x_conv[:, :, :T]  # Causal: keep only first T
+            x_conv = x_conv.transpose(1, 2)  # [B, T, d_inner]
+            x_proj = F.silu(x_conv)  # SiLU activation after conv
+
         # Transpose for cell: [T, B, d_inner]
         x_rnn = x_proj.permute(1, 0, 2).contiguous()
 
-        # Run cell - returns (output, h_all) with h+x gating
+        # Run cell - returns (output, h_all) with learned gate projection
         cell_out, h_all = self.cell(x_rnn, h0)  # [T, B, d_inner], [T+1, B, d_inner]
         h_final = h_all[-1]  # [B, d_inner]
 

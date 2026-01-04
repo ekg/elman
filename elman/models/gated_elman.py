@@ -1,8 +1,9 @@
 """
-Level 1: Gated Elman - Input-dependent delta gate
+Level 1: Gated Elman - Input-dependent delta gate with learned gate projection
 
 delta = sigmoid(W_delta @ x_t + b_delta)
 h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+output_t = h_t * silu(W_gate @ x_t + b_gate)  -- x-only with learned projection
 
 This adds a discretization gate to control memory/update tradeoff per position.
 The gate decides how much to keep from previous state vs new candidate.
@@ -29,10 +30,10 @@ LEVEL_1_AVAILABLE = True  # PyTorch fallback always available
 
 
 class GatedElmanFunction(torch.autograd.Function):
-    """Autograd function for Gated Elman with h+x selective gating."""
+    """Autograd function for Gated Elman with learned gate projection."""
 
     @staticmethod
-    def forward(ctx, training, x, h0, W_x, W_h, W_delta, b, b_delta, b_gate):
+    def forward(ctx, training, x, h0, W_x, W_h, W_delta, W_gate, b, b_delta, b_gate):
         h, output, v, delta_cache, gate_cache = hasty_pytorch_lib.gated_elman_forward(
             training,
             x.contiguous(),
@@ -40,30 +41,31 @@ class GatedElmanFunction(torch.autograd.Function):
             W_x.contiguous(),
             W_h.contiguous(),
             W_delta.contiguous(),
+            W_gate.contiguous(),
             b.contiguous(),
             b_delta.contiguous(),
             b_gate.contiguous()
         )
         if training:
-            ctx.save_for_backward(x, W_x, W_h, W_delta, b_gate, h, v, delta_cache, gate_cache)
+            ctx.save_for_backward(x, W_x, W_h, W_delta, W_gate, b_gate, h, v, delta_cache, gate_cache)
         return output, h
 
     @staticmethod
     def backward(ctx, d_output, dh_unused):
-        x, W_x, W_h, W_delta, b_gate, h, v, delta_cache, gate_cache = ctx.saved_tensors
-        dx, dW_x, dW_h, dW_delta, db, db_delta, d_b_gate = hasty_pytorch_lib.gated_elman_backward(
-            W_x, W_h, W_delta, b_gate, x, h, v, delta_cache, gate_cache, d_output.contiguous()
+        x, W_x, W_h, W_delta, W_gate, b_gate, h, v, delta_cache, gate_cache = ctx.saved_tensors
+        dx, dW_x, dW_h, dW_delta, dW_gate, db, db_delta, d_b_gate = hasty_pytorch_lib.gated_elman_backward(
+            W_x, W_h, W_delta, W_gate, x, h, v, delta_cache, gate_cache, d_output.contiguous()
         )
-        return None, dx, None, dW_x, dW_h, dW_delta, db, db_delta, d_b_gate
+        return None, dx, None, dW_x, dW_h, dW_delta, dW_gate, db, db_delta, d_b_gate
 
 
 class GatedElmanCell(nn.Module):
     """
-    Gated Elman cell - Level 1 with h+x selective gating.
+    Gated Elman cell - Level 1 with learned gate projection.
 
     delta = sigmoid(W_delta @ x_t + b_delta)
     h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-    output_t = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
+    output_t = h_t * silu(W_gate @ x_t + b_gate)  -- x-only with learned projection
 
     Args:
         dim: Hidden dimension
@@ -82,7 +84,8 @@ class GatedElmanCell(nn.Module):
         self.W_x = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
 
-        # h+x selective gate bias
+        # Gate projection: output = h * silu(W_gate @ x + b_gate)
+        self.W_gate = nn.Parameter(torch.empty(dim, dim))
         self.b_gate = nn.Parameter(torch.zeros(dim))
 
         # Recurrence matrix with optional constraints
@@ -100,6 +103,7 @@ class GatedElmanCell(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_x)
+        nn.init.xavier_uniform_(self.W_gate)
         if self.w_h_mode == 'scaled_orthogonal':
             nn.init.orthogonal_(self.W_h_base)
         else:
@@ -151,7 +155,7 @@ class GatedElmanCell(nn.Module):
         if HASTE_AVAILABLE and x.is_cuda:
             return GatedElmanFunction.apply(
                 self.training, x, h0,
-                self.W_x, W_h, self.W_delta,
+                self.W_x, W_h, self.W_delta, self.W_gate,
                 self.b, self.b_delta, self.b_gate
             )
 
@@ -159,7 +163,7 @@ class GatedElmanCell(nn.Module):
         return self._forward_pytorch(x, h0, W_h)
 
     def _forward_pytorch(self, x, h0, W_h):
-        """Pure PyTorch implementation with h+x selective gating."""
+        """Pure PyTorch implementation with learned gate projection."""
         T, B, D = x.shape
         h_list = [h0]
         output_list = []
@@ -180,8 +184,9 @@ class GatedElmanCell(nn.Module):
             h_new = (1 - delta) * h_prev + delta * candidate
             h_list.append(h_new)
 
-            # h+x selective output: output = h * silu(h + x + b_gate)
-            gate = F.silu(h_new + x_t + self.b_gate)
+            # Learned gate projection: output = h * silu(W_gate @ x + b_gate)
+            gate_proj = x_t @ self.W_gate.T + self.b_gate
+            gate = F.silu(gate_proj)
             output = h_new * gate
             output_list.append(output)
 
@@ -192,10 +197,10 @@ class GatedElmanCell(nn.Module):
 
 class GatedElman(nn.Module):
     """
-    Gated Elman layer - Level 1 with projections and h+x selective gating.
+    Gated Elman layer - Level 1 with projections and learned gate projection.
 
     Adds input-dependent gating to stock Elman.
-    Now includes h+x selective output: output = h * silu(h + x + b_gate)
+    Uses learned gate projection: output = h * silu(W_gate @ x + b_gate)
     """
 
     def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0,
@@ -242,7 +247,7 @@ class GatedElman(nn.Module):
         # Transpose for cell: [T, B, d_inner]
         x_rnn = x_proj.permute(1, 0, 2).contiguous()
 
-        # Run cell - returns (output, h_all) with h+x gating
+        # Run cell - returns (output, h_all) with learned gate projection
         cell_out, h_all = self.cell(x_rnn, h0)  # [T, B, d_inner], [T+1, B, d_inner]
         h_final = h_all[-1]  # [B, d_inner]
 

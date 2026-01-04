@@ -15,7 +15,7 @@ namespace {
 using torch::Tensor;
 
 // =============================================================================
-// Level 0: Stock Elman
+// Level 0: Stock Elman (with learned gate projection)
 // =============================================================================
 
 std::vector<Tensor> stock_elman_forward(
@@ -24,8 +24,9 @@ std::vector<Tensor> stock_elman_forward(
     Tensor h0,          // [B, dim]
     Tensor W_x,         // [dim, dim]
     Tensor W_h,         // [dim, dim]
+    Tensor W_gate,      // [dim, dim] gate projection
     Tensor b,           // [dim]
-    Tensor b_gate) {    // [dim] h+x gate bias
+    Tensor b_gate) {    // [dim] gate bias
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -35,6 +36,7 @@ std::vector<Tensor> stock_elman_forward(
     CHECK_INPUT(h0);
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_gate);
 
@@ -62,6 +64,7 @@ std::vector<Tensor> stock_elman_forward(
             time_steps,
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
@@ -77,7 +80,7 @@ std::vector<Tensor> stock_elman_forward(
 std::vector<Tensor> stock_elman_backward(
     Tensor W_x,
     Tensor W_h,
-    Tensor b_gate,
+    Tensor W_gate,
     Tensor x,
     Tensor h,
     Tensor v,
@@ -90,7 +93,7 @@ std::vector<Tensor> stock_elman_backward(
 
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
-    CHECK_INPUT(b_gate);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(x);
     CHECK_INPUT(h);
     CHECK_INPUT(v);
@@ -103,14 +106,15 @@ std::vector<Tensor> stock_elman_backward(
     Tensor dx = torch::empty_like(x);
     Tensor dW_x = torch::zeros({dim, dim}, options);
     Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
     Tensor d_b_gate = torch::zeros({dim}, options);
 
-    // Workspace: (T+3)*B*dim + ceil(2*dim*4/sizeof(T)) for db and d_b_gate accumulators
+    // Workspace: (2*T+2)*B*dim + ceil(2*dim*4/sizeof(T)) for db and d_b_gate accumulators
     const int64_t elem_size = x.element_size();
-    const int64_t workspace_elems = (time_steps + 3) * batch_size * dim;
+    const int64_t workspace_elems = (2 * time_steps + 2) * batch_size * dim;
     const int64_t float_bytes = 2 * dim * sizeof(float);
-    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;  // Round up
+    const int64_t float_elems = (float_bytes + elem_size - 1) / elem_size;
     Tensor workspace = torch::empty({workspace_elems + float_elems}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
@@ -125,7 +129,7 @@ std::vector<Tensor> stock_elman_backward(
             time_steps,
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
-            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
@@ -134,12 +138,13 @@ std::vector<Tensor> stock_elman_backward(
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(d_b_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dW_h, db, d_b_gate};
+    return {dx, dW_x, dW_h, dW_gate, db, d_b_gate};
 }
 
 // =============================================================================
@@ -415,6 +420,7 @@ std::vector<Tensor> gated_elman_forward(
     Tensor W_x,
     Tensor W_h,
     Tensor W_delta,
+    Tensor W_gate,
     Tensor b,
     Tensor b_delta,
     Tensor b_gate) {
@@ -428,6 +434,7 @@ std::vector<Tensor> gated_elman_forward(
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
     CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
     CHECK_INPUT(b_gate);
@@ -459,6 +466,7 @@ std::vector<Tensor> gated_elman_forward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
             ptr<scalar_t>(b_gate),
@@ -477,7 +485,7 @@ std::vector<Tensor> gated_elman_backward(
     Tensor W_x,
     Tensor W_h,
     Tensor W_delta,
-    Tensor b_gate,
+    Tensor W_gate,
     Tensor x,
     Tensor h,
     Tensor v,
@@ -496,12 +504,13 @@ std::vector<Tensor> gated_elman_backward(
     Tensor dW_x = torch::zeros({dim, dim}, options);
     Tensor dW_h = torch::zeros({dim, dim}, options);
     Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor d_b_gate = torch::zeros({dim}, options);
 
     // Workspace: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
-    //            [dh: BD] [dx_gate: BD]
+    //            [dh: BD] [d_gate_proj: BD]
     //            [db_float: dim] [db_delta_float: dim] [db_gate_float: dim]
     const int64_t elem_size = x.element_size();
     const int64_t BD = batch_size * dim;
@@ -523,7 +532,7 @@ std::vector<Tensor> gated_elman_backward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
@@ -534,13 +543,14 @@ std::vector<Tensor> gated_elman_backward(
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
             ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
             ptr<scalar_t>(d_b_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dW_h, dW_delta, db, db_delta, d_b_gate};
+    return {dx, dW_x, dW_h, dW_delta, dW_gate, db, db_delta, d_b_gate};
 }
 
 // =============================================================================
@@ -554,6 +564,7 @@ std::vector<Tensor> selective_elman_forward(
     Tensor W_x,
     Tensor W_h,
     Tensor W_delta,
+    Tensor W_gate,
     Tensor b,
     Tensor b_delta,
     Tensor b_gate) {
@@ -567,6 +578,7 @@ std::vector<Tensor> selective_elman_forward(
     CHECK_INPUT(W_x);
     CHECK_INPUT(W_h);
     CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
     CHECK_INPUT(b_gate);
@@ -598,6 +610,7 @@ std::vector<Tensor> selective_elman_forward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
             ptr<scalar_t>(b_gate),
@@ -616,7 +629,7 @@ std::vector<Tensor> selective_elman_backward(
     Tensor W_x,
     Tensor W_h,
     Tensor W_delta,
-    Tensor b_gate,
+    Tensor W_gate,
     Tensor x,
     Tensor h,
     Tensor v,
@@ -635,6 +648,7 @@ std::vector<Tensor> selective_elman_backward(
     Tensor dW_x = torch::zeros({dim, dim}, options);
     Tensor dW_h = torch::zeros({dim, dim}, options);
     Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor db_gate = torch::zeros({dim}, options);
@@ -660,7 +674,7 @@ std::vector<Tensor> selective_elman_backward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(W_h),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
@@ -671,13 +685,14 @@ std::vector<Tensor> selective_elman_backward(
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dW_h),
             ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
             ptr<scalar_t>(db_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dW_h, dW_delta, db, db_delta, db_gate};
+    return {dx, dW_x, dW_h, dW_delta, dW_gate, db, db_delta, db_gate};
 }
 
 // =============================================================================
@@ -691,6 +706,7 @@ std::vector<Tensor> diagonal_selective_forward(
     Tensor W_x,
     Tensor r_h,         // [dim] diagonal, not matrix
     Tensor W_delta,
+    Tensor W_gate,      // [dim, dim] gate projection
     Tensor b,
     Tensor b_delta,
     Tensor b_gate) {
@@ -704,6 +720,7 @@ std::vector<Tensor> diagonal_selective_forward(
     CHECK_INPUT(W_x);
     CHECK_INPUT(r_h);
     CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
     CHECK_INPUT(b_gate);
@@ -735,6 +752,7 @@ std::vector<Tensor> diagonal_selective_forward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(r_h),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
             ptr<scalar_t>(b_gate),
@@ -753,7 +771,7 @@ std::vector<Tensor> diagonal_selective_backward(
     Tensor W_x,
     Tensor r_h,
     Tensor W_delta,
-    Tensor b_gate,
+    Tensor W_gate,      // [dim, dim] gate projection
     Tensor x,
     Tensor h,
     Tensor v,
@@ -772,6 +790,7 @@ std::vector<Tensor> diagonal_selective_backward(
     Tensor dW_x = torch::zeros({dim, dim}, options);
     Tensor dr_h = torch::zeros({dim}, options);  // Diagonal gradient
     Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);  // Gate projection gradient
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor db_gate = torch::zeros({dim}, options);
@@ -797,7 +816,7 @@ std::vector<Tensor> diagonal_selective_backward(
             ptr<scalar_t>(W_x),
             ptr<scalar_t>(r_h),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
@@ -808,13 +827,14 @@ std::vector<Tensor> diagonal_selective_backward(
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(dr_h),
             ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
             ptr<scalar_t>(db_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, dr_h, dW_delta, db, db_delta, db_gate};
+    return {dx, dW_x, dr_h, dW_delta, dW_gate, db, db_delta, db_gate};
 }
 
 // =============================================================================
@@ -960,9 +980,10 @@ std::vector<Tensor> linear_triple_r_forward(
     Tensor R_x,
     Tensor R_delta,
     Tensor W_delta,
+    Tensor W_gate,      // [dim, dim] learned gate projection
     Tensor b,
     Tensor b_delta,
-    Tensor b_gate) {    // [dim] h+x gate bias
+    Tensor b_gate) {    // [dim] gate bias
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -974,6 +995,7 @@ std::vector<Tensor> linear_triple_r_forward(
     CHECK_INPUT(R_x);
     CHECK_INPUT(R_delta);
     CHECK_INPUT(W_delta);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
     CHECK_INPUT(b_gate);
@@ -1006,6 +1028,7 @@ std::vector<Tensor> linear_triple_r_forward(
             ptr<scalar_t>(R_x),
             ptr<scalar_t>(R_delta),
             ptr<scalar_t>(W_delta),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
             ptr<scalar_t>(b_gate),
@@ -1025,7 +1048,7 @@ std::vector<Tensor> linear_triple_r_backward(
     Tensor R_x,
     Tensor R_delta,
     Tensor W_delta,
-    Tensor b_gate,
+    Tensor W_gate,      // [dim, dim] learned gate projection
     Tensor x,
     Tensor h,
     Tensor v,
@@ -1045,6 +1068,7 @@ std::vector<Tensor> linear_triple_r_backward(
     Tensor dR_x = torch::zeros({dim, dim}, options);
     Tensor dR_delta = torch::zeros({dim, dim}, options);
     Tensor dW_delta = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
     Tensor db_gate = torch::zeros({dim}, options);
@@ -1063,7 +1087,7 @@ std::vector<Tensor> linear_triple_r_backward(
             ptr<scalar_t>(R_x),
             ptr<scalar_t>(R_delta),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v),
@@ -1075,12 +1099,13 @@ std::vector<Tensor> linear_triple_r_backward(
             ptr<scalar_t>(dR_x),
             ptr<scalar_t>(dR_delta),
             ptr<scalar_t>(dW_delta),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
             ptr<scalar_t>(db_gate));
     }));
 
-    return {dx, dR_h, dR_x, dR_delta, dW_delta, db, db_delta, db_gate};
+    return {dx, dR_h, dR_x, dR_delta, dW_delta, dW_gate, db, db_delta, db_gate};
 }
 
 // =============================================================================
@@ -2582,9 +2607,10 @@ std::vector<Tensor> diag_triple_r_forward(
     Tensor r_h,
     Tensor r_delta,
     Tensor W_delta,
-    Tensor W_out,
+    Tensor W_gate,     // [dim, dim] learned gate projection
     Tensor b,
     Tensor b_delta,
+    Tensor b_gate,     // [dim] gate bias
     int n_groups) {
 
     const auto time_steps = x.size(0);
@@ -2597,9 +2623,10 @@ std::vector<Tensor> diag_triple_r_forward(
     CHECK_INPUT(r_h);
     CHECK_INPUT(r_delta);
     CHECK_INPUT(W_delta);
-    CHECK_INPUT(W_out);
+    CHECK_INPUT(W_gate);
     CHECK_INPUT(b);
     CHECK_INPUT(b_delta);
+    CHECK_INPUT(b_gate);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
@@ -2610,8 +2637,8 @@ std::vector<Tensor> diag_triple_r_forward(
                               : torch::empty({0}, options);
     Tensor delta_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
                                   : torch::empty({0}, options);
-    Tensor compete_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
-                                    : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
 
     h[0] = h0;
 
@@ -2629,18 +2656,19 @@ std::vector<Tensor> diag_triple_r_forward(
             ptr<scalar_t>(r_h),
             ptr<scalar_t>(r_delta),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(b),
             ptr<scalar_t>(b_delta),
+            ptr<scalar_t>(b_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(output),
             training ? ptr<scalar_t>(v_cache) : nullptr,
             training ? ptr<scalar_t>(delta_cache) : nullptr,
-            training ? ptr<scalar_t>(compete_cache) : nullptr);
+            training ? ptr<scalar_t>(gate_cache) : nullptr);
     }));
 
-    return {h, output, v_cache, delta_cache, compete_cache};
+    return {h, output, v_cache, delta_cache, gate_cache};
 }
 
 std::vector<Tensor> diag_triple_r_backward(
@@ -2648,12 +2676,12 @@ std::vector<Tensor> diag_triple_r_backward(
     Tensor r_h,
     Tensor r_delta,
     Tensor W_delta,
-    Tensor W_out,
+    Tensor W_gate,     // [dim, dim] learned gate projection
     Tensor x,
     Tensor h,
     Tensor v_cache,
     Tensor delta_cache,
-    Tensor compete_cache,
+    Tensor gate_cache,
     Tensor d_output,
     int n_groups) {
 
@@ -2669,9 +2697,10 @@ std::vector<Tensor> diag_triple_r_backward(
     Tensor d_r_h = torch::zeros({dim}, options);
     Tensor d_r_delta = torch::zeros({dim}, options);
     Tensor dW_delta = torch::zeros({dim, dim}, options);
-    Tensor dW_out = torch::zeros({dim}, options);  // Now d_b_gate [dim] not [dim, dim]
+    Tensor dW_gate = torch::zeros({dim, dim}, options);  // [dim, dim] gradient for gate projection
     Tensor db = torch::zeros({dim}, options);
     Tensor db_delta = torch::zeros({dim}, options);
+    Tensor db_gate = torch::zeros({dim}, options);       // [dim] gradient for gate bias
 
     // Workspace: 6*BD T elements + 5*dim floats (d_r_h, d_r_delta, db, db_delta, d_b_gate)
     const int64_t elem_size = x.element_size();
@@ -2695,25 +2724,26 @@ std::vector<Tensor> diag_triple_r_backward(
             ptr<scalar_t>(r_h),
             ptr<scalar_t>(r_delta),
             ptr<scalar_t>(W_delta),
-            ptr<scalar_t>(W_out),
+            ptr<scalar_t>(W_gate),
             ptr<scalar_t>(x),
             ptr<scalar_t>(h),
             ptr<scalar_t>(v_cache),
             ptr<scalar_t>(delta_cache),
-            ptr<scalar_t>(compete_cache),
+            ptr<scalar_t>(gate_cache),
             ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_x),
             ptr<scalar_t>(d_r_h),
             ptr<scalar_t>(d_r_delta),
             ptr<scalar_t>(dW_delta),
-            ptr<scalar_t>(dW_out),
+            ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_delta),
+            ptr<scalar_t>(db_gate),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_x, d_r_h, d_r_delta, dW_delta, dW_out, db, db_delta};
+    return {dx, dW_x, d_r_h, d_r_delta, dW_delta, dW_gate, db, db_delta, db_gate};
 }
 
 }  // anonymous namespace

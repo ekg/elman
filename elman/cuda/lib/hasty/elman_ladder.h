@@ -26,9 +26,9 @@ namespace v0 {
 namespace elman_ladder {
 
 // =============================================================================
-// Level 0: Stock Elman (h+x gating)
+// Level 0: Stock Elman (learned gate projection)
 // h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-// output = h * silu(h + x + b_gate)
+// output = h * silu(W_gate @ x + b_gate)  -- x-only with learned projection
 // =============================================================================
 
 template<typename T>
@@ -44,13 +44,14 @@ struct StockElmanForward {
         int steps,
         const T* W_x,       // [dim, dim]
         const T* W_h,       // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection
         const T* b,         // [dim]
-        const T* b_gate,    // [dim] h+x gate bias
+        const T* b_gate,    // [dim] gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] hidden states
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation for backward
-        T* gate_cache);     // [T, B, dim] gate cache for backward
+        T* gate_cache);     // [T, B, dim] gate cache for backward (stores gate_raw)
 
 private:
     bool training_;
@@ -74,7 +75,7 @@ struct StockElmanBackward {
         int steps,
         const T* W_x,
         const T* W_h,
-        const T* b_gate,    // [dim]
+        const T* W_gate,    // [dim, dim] gate projection
         const T* x,
         const T* h,
         const T* v,
@@ -83,9 +84,10 @@ struct StockElmanBackward {
         T* dx,              // [T, B, dim]
         T* dW_x,            // [dim, dim]
         T* dW_h,            // [dim, dim]
+        T* dW_gate,         // [dim, dim] gradient for gate projection
         T* db,              // [dim]
         T* d_b_gate,        // [dim]
-        T* workspace);      // [(T+3)*B*dim + ceil(2*dim*4/sizeof(T))]
+        T* workspace);      // [(2*T+2)*B*dim + ceil(2*dim*4/sizeof(T))]
 
 private:
     int batch_size_;
@@ -242,10 +244,10 @@ private:
 };
 
 // =============================================================================
-// Level 1: Gated Elman with h+x selective output
+// Level 1: Gated Elman with learned gate projection
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-// output = h_t * silu(h_t + x_t + b_gate)
+// output = h_t * silu(W_gate @ x_t + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -262,15 +264,16 @@ struct GatedElmanForward {
         const T* W_x,       // [dim, dim]
         const T* W_h,       // [dim, dim]
         const T* W_delta,   // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
-        const T* b_gate,    // [dim] h+x gate bias
+        const T* b_gate,    // [dim] gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] hidden states
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
         T* delta_cache,     // [T, B, dim] cached delta for backward
-        T* gate_cache);     // [T, B, dim] cached gate for backward
+        T* gate_cache);     // [T, B, dim] cached gate_raw for backward
 
 private:
     bool training_;
@@ -293,7 +296,7 @@ struct GatedElmanBackward {
         const T* W_x,
         const T* W_h,
         const T* W_delta,
-        const T* b_gate,
+        const T* W_gate,    // [dim, dim] gate projection
         const T* x,
         const T* h,
         const T* v,
@@ -304,6 +307,7 @@ struct GatedElmanBackward {
         T* dW_x,
         T* dW_h,
         T* dW_delta,
+        T* dW_gate,         // [dim, dim] gradient for gate projection
         T* db,
         T* db_delta,
         T* d_b_gate,
@@ -317,11 +321,10 @@ private:
 };
 
 // =============================================================================
-// Level 2: Selective Elman
-// Same recurrence as Gated Elman, with h+x selective output:
+// Level 2: Selective Elman with learned gate projection
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-// output = h_t * silu(h_t + x_t + b_gate)
+// output = h_t * silu(W_gate @ x_t + b_gate)
 // =============================================================================
 
 template<typename T>
@@ -338,15 +341,16 @@ struct SelectiveElmanForward {
         const T* W_x,       // [dim, dim]
         const T* W_h,       // [dim, dim]
         const T* W_delta,   // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
-        const T* b_gate,    // [dim] h+x gate bias
+        const T* b_gate,    // [dim] gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] internal hidden
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
         T* delta_cache,     // [T, B, dim] cached delta
-        T* gate_cache);     // [T, B, dim] cached silu for backward
+        T* gate_cache);     // [T, B, dim] cached gate_raw for backward
 
 private:
     bool training_;
@@ -369,7 +373,7 @@ struct SelectiveElmanBackward {
         const T* W_x,
         const T* W_h,
         const T* W_delta,
-        const T* b_gate,
+        const T* W_gate,    // [dim, dim] gate projection
         const T* x,
         const T* h,
         const T* v,
@@ -380,6 +384,7 @@ struct SelectiveElmanBackward {
         T* dW_x,
         T* dW_h,
         T* dW_delta,
+        T* dW_gate,         // [dim, dim] gradient for gate projection
         T* db,
         T* db_delta,
         T* db_gate,
@@ -393,11 +398,11 @@ private:
 };
 
 // =============================================================================
-// Level 3: Diagonal Selective Elman
+// Level 3: Diagonal Selective Elman (learned gate projection)
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + r_h * h_{t-1} + b)
 // where r_h is a VECTOR (diagonal), not full matrix
-// output = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
+// output = h_t * silu(W_gate @ x_t + b_gate)  -- learned gate projection
 // =============================================================================
 
 template<typename T>
@@ -414,15 +419,16 @@ struct DiagonalSelectiveElmanForward {
         const T* W_x,       // [dim, dim]
         const T* r_h,       // [dim] DIAGONAL decay
         const T* W_delta,   // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection
         const T* b,         // [dim]
         const T* b_delta,   // [dim]
-        const T* b_gate,    // [dim] h+x gate bias
+        const T* b_gate,    // [dim] gate bias
         const T* x,         // [T, B, dim]
         T* h,               // [T+1, B, dim] internal hidden
         T* output,          // [T, B, dim] selective output
         T* v,               // [T, B, dim] pre-activation
         T* delta_cache,     // [T, B, dim]
-        T* gate_cache);     // [T, B, dim] cached silu
+        T* gate_cache);     // [T, B, dim] cached gate_raw
 
 private:
     bool training_;
@@ -445,7 +451,7 @@ struct DiagonalSelectiveElmanBackward {
         const T* W_x,
         const T* r_h,
         const T* W_delta,
-        const T* b_gate,
+        const T* W_gate,    // [dim, dim] gate projection
         const T* x,
         const T* h,
         const T* v,
@@ -456,6 +462,7 @@ struct DiagonalSelectiveElmanBackward {
         T* dW_x,
         T* dr_h,            // [dim] gradient for diagonal decay
         T* dW_delta,
+        T* dW_gate,         // [dim, dim] gradient for gate projection
         T* db,
         T* db_delta,
         T* db_gate,
@@ -1213,12 +1220,12 @@ private:
 };
 
 // =============================================================================
-// Level 5: Linear Triple R Elman
+// Level 5: Linear Triple R Elman (learned gate projection)
 // Full Triple R architecture in linear space:
 // v = R_x @ x + R_h @ h_prev + b
 // delta = sigmoid(W_delta @ x + R_delta @ h_prev + b_delta)
 // h_new = (1-delta) * h_prev + delta * tanh(v)
-// output = h * silu(h + x + b_gate)  -- h+x selective gating
+// output = h * silu(W_gate @ x + b_gate)  -- learned gate projection
 // =============================================================================
 
 template<typename T>
@@ -1236,15 +1243,16 @@ struct LinearTripleRForward {
         const T* R_x,        // [dim, dim] input mixing
         const T* R_delta,    // [dim, dim] gate modulation
         const T* W_delta,    // [dim, dim] gate input path
+        const T* W_gate,     // [dim, dim] gate projection
         const T* b,          // [dim]
         const T* b_delta,    // [dim]
-        const T* b_gate,     // [dim] h+x gate bias
+        const T* b_gate,     // [dim] gate bias
         const T* x,          // [T, B, dim]
         T* h,                // [T+1, B, dim]
         T* output,           // [T, B, dim]
         T* v,                // [T, B, dim]
         T* delta_cache,      // [T, B, dim]
-        T* gate_cache);      // [T, B, dim]
+        T* gate_cache);      // [T, B, dim] cached gate_raw
 
 private:
     bool training_;
@@ -1268,7 +1276,7 @@ struct LinearTripleRBackward {
         const T* R_x,
         const T* R_delta,
         const T* W_delta,
-        const T* b_gate,
+        const T* W_gate,     // [dim, dim] gate projection
         const T* x,
         const T* h,
         const T* v,
@@ -1280,6 +1288,7 @@ struct LinearTripleRBackward {
         T* dR_x,
         T* dR_delta,
         T* dW_delta,
+        T* dW_gate,          // [dim, dim] gradient for gate projection
         T* db,
         T* db_delta,
         T* db_gate);
@@ -1410,15 +1419,16 @@ struct DiagTripleRForward {
         const T* r_h,           // [dim] diagonal recurrence
         const T* r_delta,       // [dim] diagonal delta modulation
         const T* W_delta,       // [dim, dim]
-        const T* W_out,         // [dim] b_gate for h+x selective output
+        const T* W_gate,        // [dim, dim] learned gate projection
         const T* b,             // [dim]
         const T* b_delta,       // [dim]
+        const T* b_gate,        // [dim] gate bias
         const T* x,             // [T, B, dim]
         T* h,                   // [T+1, B, dim]
         T* output,              // [T, B, dim]
         T* v_cache,             // [T, B, dim] for backward
         T* delta_cache,         // [T, B, dim] for backward
-        T* compete_cache);      // [T, B, dim] gate_cache for backward
+        T* gate_cache);         // [T, B, dim] for backward
 
 private:
     bool training_;
@@ -1444,21 +1454,22 @@ struct DiagTripleRBackward {
         const T* r_h,           // [dim]
         const T* r_delta,       // [dim]
         const T* W_delta,       // [dim, dim]
-        const T* W_out,         // [dim] b_gate
+        const T* W_gate,        // [dim, dim] learned gate projection
         const T* x,             // [T, B, dim]
         const T* h,             // [T+1, B, dim]
         const T* v_cache,       // [T, B, dim]
         const T* delta_cache,   // [T, B, dim]
-        const T* compete_cache, // [T, B, dim] gate_cache
+        const T* gate_cache,    // [T, B, dim]
         const T* d_output,      // [T, B, dim]
         T* dx,                  // [T, B, dim]
         T* dW_x,                // [dim, dim]
         T* d_r_h,               // [dim]
         T* d_r_delta,           // [dim]
         T* dW_delta,            // [dim, dim]
-        T* dW_out,              // [dim] d_b_gate
+        T* dW_gate,             // [dim, dim] gradient for gate projection
         T* db,                  // [dim]
         T* db_delta,            // [dim]
+        T* db_gate,             // [dim] gradient for gate bias
         T* workspace);          // [6*B*dim + ceil(5*dim*sizeof(float)/sizeof(T))]
 
 private:

@@ -33,6 +33,33 @@ Usage:
 """
 
 # Import ladder levels
+
+# Pure Elman (no output gating) - true baseline
+try:
+    from .pure_elman import PureElman, PureElmanCell, PURE_ELMAN_AVAILABLE
+except ImportError:
+    PureElman = None
+    PureElmanCell = None
+    PURE_ELMAN_AVAILABLE = False
+
+# X-Gated Elman (x-only output gating)
+try:
+    from .x_gated_elman import XGatedElman, XGatedElmanCell, X_GATED_ELMAN_AVAILABLE
+except ImportError:
+    XGatedElman = None
+    XGatedElmanCell = None
+    X_GATED_ELMAN_AVAILABLE = False
+
+# Diagonal Elman (linear diagonal recurrence + x-only gating)
+try:
+    from .diagonal_elman import DiagonalElman, DiagonalElmanCell
+    DIAGONAL_ELMAN_AVAILABLE = True
+except ImportError:
+    DiagonalElman = None
+    DiagonalElmanCell = None
+    DIAGONAL_ELMAN_AVAILABLE = False
+
+# Stock Elman with h+x output gating
 try:
     from .stock_elman import StockElman, StockElmanCell, LEVEL_0_AVAILABLE
 except ImportError:
@@ -156,6 +183,27 @@ except ImportError:
     DiagTripleRCell = None
     LEVEL_7_AVAILABLE = False
 
+# Level 8: Low-Rank Elman with big hidden state
+try:
+    from .lowrank_elman import (
+        LowRankElman, LowRankElmanCell, LEVEL_8_AVAILABLE
+    )
+except ImportError:
+    LowRankElman = None
+    LowRankElmanCell = None
+    LEVEL_8_AVAILABLE = False
+
+# Level 9: Selective Elman with input-dependent B, C, dt
+try:
+    from .selective_elman import (
+        SelectiveElman, SelectiveElmanCell, SELECTIVE_ELMAN_AVAILABLE
+    )
+    LEVEL_9_AVAILABLE = SELECTIVE_ELMAN_AVAILABLE
+except ImportError:
+    SelectiveElman = None
+    SelectiveElmanCell = None
+    LEVEL_9_AVAILABLE = False
+
 # Language model wrapper
 try:
     from .ladder_lm import LadderLM, create_ladder_model
@@ -191,8 +239,14 @@ except ImportError:
 def get_available_levels():
     """Return dict of available ladder levels."""
     levels = {
-        # Linear-space levels (0-7)
-        0: ("Stock Elman", LEVEL_0_AVAILABLE, StockElman),
+        # Pure Elman (no output gating) - true baseline
+        'pure': ("Pure Elman (no gating)", PURE_ELMAN_AVAILABLE, PureElman),
+        # X-Gated (x-only gating) - intermediate between pure and h+x
+        'x_gated': ("X-Gated Elman (x-only)", X_GATED_ELMAN_AVAILABLE, XGatedElman),
+        # Diagonal (linear diagonal recurrence + x-only gating)
+        'diagonal': ("Diagonal Linear (x-gate)", DIAGONAL_ELMAN_AVAILABLE, DiagonalElman),
+        # Linear-space levels (0-9)
+        0: ("Stock Elman (h+x gating)", LEVEL_0_AVAILABLE, StockElman),
         1: ("Gated Elman", LEVEL_1_AVAILABLE, GatedElman),
         2: ("Selective Elman", LEVEL_2_AVAILABLE, SelectiveElman),
         3: ("Diagonal Selective", LEVEL_3_AVAILABLE, DiagonalSelective),
@@ -200,6 +254,8 @@ def get_available_levels():
         5: ("Linear Triple R", LEVEL_5_AVAILABLE, LinearTripleR),
         6: ("Linear Polynomial", LEVEL_6_AVAILABLE, LinearPolynomial),
         7: ("Diagonal Triple R", LEVEL_7_AVAILABLE, DiagTripleR),
+        8: ("Low-Rank Big Hidden", LEVEL_8_AVAILABLE, LowRankElman),
+        9: ("Selective Elman (B,C,dt)", LEVEL_9_AVAILABLE, SelectiveElman),
         # Log-space levels (log_0 to log_6)
         'log_0': ("Log-Space Polynomial", LOGSPACE_LEVEL_0_AVAILABLE, LogSpacePolynomial),
         'log_1': ("Log-Space Selective", LOGSPACE_LEVEL_1_AVAILABLE, LogSpaceSelective),
@@ -216,7 +272,7 @@ def get_ladder_level(level):
     """Get the module class for a specific ladder level."""
     levels = get_available_levels()
     if level not in levels:
-        raise ValueError(f"Invalid level {level}. Must be 0-6 or log_0 to log_6.")
+        raise ValueError(f"Invalid level {level}. Must be 'pure', 0-9, or log_0 to log_6.")
     name, available, cls = levels[level]
     if not available:
         raise ImportError(f"Level {level} ({name}) is not available.")
@@ -224,6 +280,10 @@ def get_ladder_level(level):
 
 
 __all__ = [
+    # Pure, X-Gated, and Diagonal variants
+    'PureElman', 'PureElmanCell', 'PURE_ELMAN_AVAILABLE',
+    'XGatedElman', 'XGatedElmanCell', 'X_GATED_ELMAN_AVAILABLE',
+    'DiagonalElman', 'DiagonalElmanCell', 'DIAGONAL_ELMAN_AVAILABLE',
     # Linear-space level classes (0-7)
     'StockElman', 'StockElmanCell',
     'GatedElman', 'GatedElmanCell',

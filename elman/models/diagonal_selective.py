@@ -8,8 +8,8 @@ Same recurrence as Level 2, but W_h becomes diagonal r_h:
 The hidden-to-hidden transition is now element-wise (diagonal matrix).
 This matches Mamba2's approach with diagonal A matrix.
 
-With h+x output selectivity:
-    output_t = h_t * silu(h_t + x_t + b_gate)
+With learned gate projection:
+    output_t = h_t * silu(W_gate @ x_t + b_gate)
 
 Key insight: Diagonal r_h prevents eigenvalue blowup at depth.
 """
@@ -31,10 +31,10 @@ LEVEL_3_AVAILABLE = True  # PyTorch fallback always available
 
 
 class DiagonalSelectiveFunction(torch.autograd.Function):
-    """Autograd function for Diagonal Selective Elman with h+x gating (Haste kernel)."""
+    """Autograd function for Diagonal Selective Elman with learned gate projection."""
 
     @staticmethod
-    def forward(ctx, training, x, h0, W_x, r_h, W_delta, b, b_delta, b_gate):
+    def forward(ctx, training, x, h0, W_x, r_h, W_delta, W_gate, b, b_delta, b_gate):
         h, output, v, delta_cache, gate_cache = hasty_pytorch_lib.diagonal_selective_forward(
             training,
             x.contiguous(),
@@ -42,22 +42,23 @@ class DiagonalSelectiveFunction(torch.autograd.Function):
             W_x.contiguous(),
             r_h.contiguous(),
             W_delta.contiguous(),
+            W_gate.contiguous(),
             b.contiguous(),
             b_delta.contiguous(),
             b_gate.contiguous()
         )
         if training:
-            ctx.save_for_backward(x, W_x, r_h, W_delta, b_gate, h, v, delta_cache, gate_cache)
+            ctx.save_for_backward(x, W_x, r_h, W_delta, W_gate, h, v, delta_cache, gate_cache)
         return output, h
 
     @staticmethod
     def backward(ctx, d_output, dh_unused):
-        x, W_x, r_h, W_delta, b_gate, h, v, delta_cache, gate_cache = ctx.saved_tensors
-        dx, dW_x, dr_h, dW_delta, db, db_delta, db_gate = hasty_pytorch_lib.diagonal_selective_backward(
-            W_x, r_h, W_delta, b_gate, x, h, v, delta_cache, gate_cache,
+        x, W_x, r_h, W_delta, W_gate, h, v, delta_cache, gate_cache = ctx.saved_tensors
+        dx, dW_x, dr_h, dW_delta, dW_gate, db, db_delta, db_gate = hasty_pytorch_lib.diagonal_selective_backward(
+            W_x, r_h, W_delta, W_gate, x, h, v, delta_cache, gate_cache,
             d_output.contiguous()
         )
-        return None, dx, None, dW_x, dr_h, dW_delta, db, db_delta, db_gate
+        return None, dx, None, dW_x, dr_h, dW_delta, dW_gate, db, db_delta, db_gate
 
 
 class DiagonalSelectiveCell(nn.Module):
@@ -68,8 +69,8 @@ class DiagonalSelectiveCell(nn.Module):
         delta = sigmoid(W_delta @ x_t + b_delta)
         h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + r_h * h_{t-1} + b)
 
-    h+x Output selectivity:
-        output_t = h_t * silu(h_t + x_t + b_gate)
+    Learned gate projection output:
+        output_t = h_t * silu(W_gate @ x_t + b_gate)
 
     Args:
         dim: Hidden dimension
@@ -90,13 +91,15 @@ class DiagonalSelectiveCell(nn.Module):
         self.W_delta = nn.Parameter(torch.empty(dim, dim))
         self.b_delta = nn.Parameter(torch.full((dim,), delta_init))
 
-        # h+x selective gate bias
+        # Learned gate projection: output = h * silu(W_gate @ x + b_gate)
+        self.W_gate = nn.Parameter(torch.empty(dim, dim))
         self.b_gate = nn.Parameter(torch.zeros(dim))
 
         self._init_weights()
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_x)
+        nn.init.xavier_uniform_(self.W_gate)
         # r_h already initialized to 0 (stable default)
         nn.init.xavier_uniform_(self.W_delta, gain=0.1)
 
@@ -107,7 +110,7 @@ class DiagonalSelectiveCell(nn.Module):
             h0: [B, dim] initial hidden state
 
         Returns:
-            output: [T, B, dim] h+x selective output
+            output: [T, B, dim] selective output with learned gate projection
             h: [T+1, B, dim] all hidden states including h0
         """
         T, B, D = x.shape
@@ -119,7 +122,7 @@ class DiagonalSelectiveCell(nn.Module):
         if HASTE_AVAILABLE and x.is_cuda:
             return DiagonalSelectiveFunction.apply(
                 self.training, x, h0,
-                self.W_x, self.r_h, self.W_delta,
+                self.W_x, self.r_h, self.W_delta, self.W_gate,
                 self.b, self.b_delta, self.b_gate
             )
 
@@ -127,7 +130,7 @@ class DiagonalSelectiveCell(nn.Module):
         return self._forward_pytorch(x, h0)
 
     def _forward_pytorch(self, x, h0):
-        """Pure PyTorch implementation with h+x selective gating."""
+        """Pure PyTorch implementation with learned gate projection."""
         T, B, D = x.shape
         h_list = [h0]
         output_list = []
@@ -148,8 +151,9 @@ class DiagonalSelectiveCell(nn.Module):
             h_new = (1 - delta) * h_prev + delta * candidate
             h_list.append(h_new)
 
-            # h+x selective output: output = h * silu(h + x + b_gate)
-            gate = F.silu(h_new + x_t + self.b_gate)
+            # Learned gate projection: output = h * silu(W_gate @ x + b_gate)
+            gate_proj = x_t @ self.W_gate.T + self.b_gate
+            gate = F.silu(gate_proj)
             output = h_new * gate
             output_list.append(output)
 
@@ -165,7 +169,7 @@ class DiagonalSelective(nn.Module):
     Same as Level 2 but with diagonal r_h instead of full W_h.
     This is a key architectural choice matching Mamba2's diagonal A.
 
-    Uses h+x selective gating: output = h * silu(h + x + b_gate)
+    Uses learned gate projection: output = h * silu(W_gate @ x + b_gate)
     """
 
     def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0, **kwargs):
@@ -248,8 +252,9 @@ if __name__ == "__main__":
     loss.backward()
     print("Backward passed!")
 
-    # Verify r_h is diagonal (vector, not matrix)
+    # Verify r_h is diagonal (vector, not matrix) and W_gate is matrix
     print(f"r_h shape: {model.cell.r_h.shape} (should be [{model.d_inner}])")
+    print(f"W_gate shape: {model.cell.W_gate.shape} (should be [{model.d_inner}, {model.d_inner}])")
     print(f"b_gate shape: {model.cell.b_gate.shape} (should be [{model.d_inner}])")
 
     params = sum(p.numel() for p in model.parameters())

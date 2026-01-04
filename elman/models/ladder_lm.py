@@ -230,9 +230,12 @@ def create_ladder_model(
     """
     Create a LadderLM with approximately target_params parameters.
 
+    Uses dynamic parameter counting: creates 1-layer and 2-layer models to
+    compute exact params_per_layer, then determines depth to reach target.
+
     Args:
         target_params: Target parameter count (e.g., "100m", "500m", "1b")
-        level: Ablation ladder level (0-3)
+        level: Ablation ladder level (0-7 or log_0 to log_6)
         vocab_size: Vocabulary size
         expansion: Hidden state expansion
         n_groups: Number of groups for compete softmax
@@ -251,27 +254,60 @@ def create_ladder_model(
     else:
         target_count = int(target)
 
-    # Model size configurations (dim, depth, expansion)
-    # Tuned for vocab_size ~50k (tiktoken p50k_base)
-    configs = {
-        50_000_000: (512, 8, 1.5),       # ~50M
-        100_000_000: (768, 12, 1.5),     # ~100M
-        200_000_000: (1024, 16, 1.5),    # ~200M
-        350_000_000: (1024, 20, 2.0),    # ~350M
-        500_000_000: (1024, 24, 2.5),    # ~500M
-        700_000_000: (1280, 24, 2.0),    # ~700M
-        1_000_000_000: (1536, 28, 2.0),  # ~1B
-        1_300_000_000: (1792, 32, 2.0),  # ~1.3B
+    # Dimension configs based on target size (expansion can vary per level)
+    # Format: target_params -> (dim, default_expansion)
+    dim_configs = {
+        50_000_000: (512, 1.5),
+        100_000_000: (768, 1.5),
+        200_000_000: (1024, 1.5),
+        350_000_000: (1024, 2.0),
+        500_000_000: (1024, 2.5),
+        700_000_000: (1280, 2.0),
+        1_000_000_000: (1536, 2.0),
+        1_300_000_000: (1792, 2.0),
     }
 
-    # Find closest config
-    closest = min(configs.keys(), key=lambda x: abs(x - target_count))
-    dim, depth, default_expansion = configs[closest]
+    # Find closest dim config
+    closest = min(dim_configs.keys(), key=lambda x: abs(x - target_count))
+    dim, default_expansion = dim_configs[closest]
 
     # Use provided expansion or default from config
     if expansion == 1.0:
         expansion = default_expansion
 
+    # Create a 1-layer model to count base params (embeddings, output, etc)
+    model_1layer = LadderLM(
+        vocab_size=vocab_size, dim=dim, depth=1, level=level,
+        expansion=expansion, n_groups=n_groups,
+        r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
+    )
+    params_1layer = model_1layer.get_num_params()
+
+    # Create a 2-layer model to compute params per layer
+    model_2layer = LadderLM(
+        vocab_size=vocab_size, dim=dim, depth=2, level=level,
+        expansion=expansion, n_groups=n_groups,
+        r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
+    )
+    params_2layer = model_2layer.get_num_params()
+
+    # Compute params per layer
+    params_per_layer = params_2layer - params_1layer
+    base_params = params_1layer - params_per_layer  # embedding + output
+
+    # Clean up probe models
+    del model_1layer, model_2layer
+
+    # Calculate depth needed to reach target
+    if params_per_layer > 0:
+        depth = max(1, round((target_count - base_params) / params_per_layer))
+    else:
+        depth = 12  # fallback
+
+    # Ensure reasonable depth bounds
+    depth = max(4, min(depth, 48))
+
+    # Create the actual model
     model = LadderLM(
         vocab_size=vocab_size,
         dim=dim,

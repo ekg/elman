@@ -4,7 +4,7 @@
 // delta = sigmoid(W_delta @ x_t + b_delta)
 // h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + r_h * h_{t-1} + b)
 // where r_h is a VECTOR (diagonal), not full matrix
-// output_t = h_t * silu(h_t + x_t + b_gate)  -- h+x selective gating
+// output_t = h_t * silu(W_gate @ x_t + b_gate)  -- learned gate projection
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -58,14 +58,14 @@ __global__ void DiagonalSelectiveGatedUpdate(
     }
 }
 
-// Kernel: h+x selective output
-// output = h * silu(h + x + b_gate)
+// Kernel: Learned gate projection output
+// output = h * silu(W_gate @ x + b_gate)
 template<typename T>
 __global__ void SelectiveOutputForward(
     const int batch_size,
     const int dim,
     const T* __restrict__ h,
-    const T* __restrict__ x,
+    const T* __restrict__ gate_proj,   // [B, dim] pre-computed W_gate @ x
     const T* __restrict__ b_gate,
     T* __restrict__ output,
     T* __restrict__ gate_cache) {
@@ -75,30 +75,30 @@ __global__ void SelectiveOutputForward(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
+        float gp_val = static_cast<float>(gate_proj[idx]);
         float b_val = static_cast<float>(b_gate[d]);
 
-        float gate_raw = h_val + x_val + b_val;
+        float gate_raw = gp_val + b_val;
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
         float silu_val = gate_raw * sigmoid_val;
 
         output[idx] = static_cast<T>(h_val * silu_val);
-        if (gate_cache) gate_cache[idx] = static_cast<T>(silu_val);
+        // Cache gate_raw for backward (not silu_val)
+        if (gate_cache) gate_cache[idx] = static_cast<T>(gate_raw);
     }
 }
 
-// Backward through h+x selective output
+// Backward through learned gate projection output
+// output = h * silu(gate_raw) where gate_raw = W_gate @ x + b_gate
 template<typename T>
 __global__ void SelectiveOutputBackward(
     const int batch_size,
     const int dim,
     const T* __restrict__ h,
-    const T* __restrict__ x,
-    const T* __restrict__ b_gate,
-    const T* __restrict__ gate_cache,
+    const T* __restrict__ gate_cache,   // [B, dim] gate_raw cached from forward
     const T* __restrict__ d_output,
     T* __restrict__ dh,
-    T* __restrict__ dx,
+    T* __restrict__ d_gate_proj,        // [B, dim] gradient for W_gate @ x
     float* __restrict__ db_gate) {
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -106,22 +106,23 @@ __global__ void SelectiveOutputBackward(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
-        float b_val = static_cast<float>(b_gate[d]);
-        float silu_val = static_cast<float>(gate_cache[idx]);
+        float gate_raw = static_cast<float>(gate_cache[idx]);
         float dout = static_cast<float>(d_output[idx]);
 
-        float gate_raw = h_val + x_val + b_val;
+        // Recompute silu from gate_raw
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
+        float silu_val = gate_raw * sigmoid_val;
         float dsilu_dgate = sigmoid_val * (1.0f + gate_raw * (1.0f - sigmoid_val));
 
-        float dh_val = dout * (silu_val + h_val * dsilu_dgate);
+        // dh = d_output * silu(gate_raw)
+        float dh_val = dout * silu_val;
         dh[idx] = static_cast<T>(dh_val);
 
-        float dx_val = dout * h_val * dsilu_dgate;
-        dx[idx] = static_cast<T>(dx_val);
+        // d_gate_proj = d_output * h * dsilu/dgate
+        float dgate = dout * h_val * dsilu_dgate;
+        d_gate_proj[idx] = static_cast<T>(dgate);
 
-        atomicAdd(&db_gate[d], dx_val);
+        atomicAdd(&db_gate[d], dgate);
     }
 }
 
@@ -238,6 +239,7 @@ void DiagonalSelectiveElmanForward<T>::Run(
     const T* W_x,
     const T* r_h,
     const T* W_delta,
+    const T* W_gate,
     const T* b,
     const T* b_delta,
     const T* b_gate,
@@ -257,11 +259,12 @@ void DiagonalSelectiveElmanForward<T>::Run(
 
     // =========================================================================
     // HASTE PATTERN: Pre-compute input projections for ALL timesteps
-    // Reduces from 2*T GEMMs to 2 big GEMMs (much more efficient)
+    // Reduces from 3*T GEMMs to 3 big GEMMs (much more efficient)
     // =========================================================================
-    T *all_wx_x, *all_delta_raw;
+    T *all_wx_x, *all_delta_raw, *all_gate_proj;
     cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
     cudaMalloc(&all_delta_raw, steps * BD * sizeof(T));
+    cudaMalloc(&all_gate_proj, steps * BD * sizeof(T));
 
     // Pre-compute W_x @ x for ALL timesteps in one GEMM
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -271,11 +274,15 @@ void DiagonalSelectiveElmanForward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
 
-    // Per-timestep: diagonal gated update + h+x selective output
+    // Pre-compute W_gate @ x for ALL timesteps in one GEMM (learned gate projection)
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_gate, dim_, x, dim_, &beta_zero, all_gate_proj, dim_);
+
+    // Per-timestep: diagonal gated update + learned gate projection output
     for (int t = 0; t < steps; ++t) {
         const T* wx_x_t = all_wx_x + t * BD;
         const T* delta_raw_t = all_delta_raw + t * BD;
-        const T* x_t = x + t * BD;
+        const T* gate_proj_t = all_gate_proj + t * BD;
         const T* h_prev = h + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
@@ -287,13 +294,14 @@ void DiagonalSelectiveElmanForward<T>::Run(
         DiagonalSelectiveGatedUpdate<T><<<num_blocks, block_size, 0, stream_>>>(
             batch_size_, dim_, h_prev, wx_x_t, r_h, delta_raw_t, b, b_delta, h_t, v_t, delta_t);
 
-        // h+x selective output: output = h * silu(h + x + b_gate)
+        // Learned gate projection output: output = h * silu(W_gate @ x + b_gate)
         SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_t, x_t, b_gate, out_t, gate_t);
+            batch_size_, dim_, h_t, gate_proj_t, b_gate, out_t, gate_t);
     }
 
     cudaFree(all_wx_x);
     cudaFree(all_delta_raw);
+    cudaFree(all_gate_proj);
 }
 
 // =============================================================================
@@ -317,7 +325,7 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     const T* W_x,
     const T* r_h,
     const T* W_delta,
-    const T* b_gate,
+    const T* W_gate,
     const T* x,
     const T* h,
     const T* v,
@@ -328,6 +336,7 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     T* dW_x,
     T* dr_h,
     T* dW_delta,
+    T* dW_gate,
     T* db,
     T* db_delta,
     T* db_gate,
@@ -342,7 +351,7 @@ void DiagonalSelectiveElmanBackward<T>::Run(
 
     // ==========================================================================
     // WORKSPACE LAYOUT: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
-    //                   [dh_selective: BD] [dx_selective: BD]
+    //                   [dh_selective: BD] [d_gate_proj: BD]
     //                   [dr_h_float: dim] [db_float: dim] [db_delta_float: dim]
     //                   [db_gate_float: dim]
     // ==========================================================================
@@ -351,7 +360,7 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     T* dh_recurrent = workspace + 2 * BD;
     T* dh_prev = workspace + 3 * BD;
     T* dh_selective = workspace + 4 * BD;
-    T* dx_selective = workspace + 5 * BD;
+    T* d_gate_proj = workspace + 5 * BD;
     float* dr_h_float = reinterpret_cast<float*>(workspace + 6 * BD);
     float* db_float = dr_h_float + dim_;
     float* db_delta_float = db_float + dim_;
@@ -367,6 +376,7 @@ void DiagonalSelectiveElmanBackward<T>::Run(
     // Zero weight gradients (async)
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_gate, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -378,10 +388,10 @@ void DiagonalSelectiveElmanBackward<T>::Run(
         const T* d_out_t = d_output + t * BD;
         T* dx_t = dx + t * BD;
 
-        // Backward through h+x selective output
+        // Backward through learned gate projection output
         SelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_t, x_t, b_gate, gate_t,
-            d_out_t, dh_selective, dx_selective, db_gate_float);
+            batch_size_, dim_, h_t, gate_t,
+            d_out_t, dh_selective, d_gate_proj, db_gate_float);
 
         // Add dh_recurrent to dh_selective
         if (t < steps - 1) {
@@ -395,25 +405,26 @@ void DiagonalSelectiveElmanBackward<T>::Run(
             nullptr,  // dh_recurrent added above
             dv, d_delta_raw, dh_prev, dr_h_float, db_float, db_delta_float);
 
-        // dx = dx_selective + dv @ W_x + d_delta_raw @ W_delta
-        cudaMemcpyAsync(dx_t, dx_selective, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
+        // dx = W_x @ dv + W_delta @ d_delta_raw + W_gate @ d_gate_proj
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
-            dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &alpha, dx_t, dim_);
+            dim_, batch_size_, dim_, &alpha, W_x, dim_, dv, dim_, &beta_zero, dx_t, dim_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, batch_size_, dim_, &alpha, W_delta, dim_, d_delta_raw, dim_, &alpha, dx_t, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha, W_gate, dim_, d_gate_proj, dim_, &alpha, dx_t, dim_);
 
-        // dh_recurrent = dv (through r_h) + dh_prev (through gated path)
-        // DiagonalSelectiveGatedBackward already computes this in dh_prev
-        VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(
-            BD, dh_prev, dh_recurrent);  // Add old recurrent to dh_prev
+        // dh_prev from DiagonalSelectiveGatedBackward is the correct gradient to propagate
+        // (dh_selective already had dh_recurrent added before the call)
         // Copy to dh_recurrent for next iteration
         cudaMemcpyAsync(dh_recurrent, dh_prev, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
 
-        // Weight gradients
+        // Weight gradients: dW = d_proj @ x.T
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, dv, dim_, x_t, dim_, &alpha, dW_x, dim_);
         blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, batch_size_, &alpha, d_delta_raw, dim_, x_t, dim_, &alpha, dW_delta, dim_);
+        blas<T>::gemm(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_, &alpha, d_gate_proj, dim_, x_t, dim_, &alpha, dW_gate, dim_);
     }
 
     // Copy float gradients to T type using parallel kernel

@@ -165,16 +165,17 @@ __global__ void CopyFloatToT(
     }
 }
 
-// h+x Selective Output: output = h * silu(h + x + b_gate)
+// Learned gate projection: output = h * silu(W_gate @ x + b_gate)
+// gate_proj is pre-computed as W_gate @ x before calling this kernel
 template<typename T>
 __global__ void SelectiveOutputForward(
     const int batch_size,
     const int dim,
-    const T* __restrict__ h,
-    const T* __restrict__ x,
-    const T* __restrict__ b_gate,
-    T* __restrict__ output,
-    T* __restrict__ gate_cache) {
+    const T* __restrict__ h,            // [B, dim]
+    const T* __restrict__ gate_proj,    // [B, dim] pre-computed W_gate @ x
+    const T* __restrict__ b_gate,       // [dim] learned gate bias
+    T* __restrict__ output,             // [B, dim]
+    T* __restrict__ gate_cache) {       // [B, dim] gate_raw for backward
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total = batch_size * dim;
@@ -183,29 +184,33 @@ __global__ void SelectiveOutputForward(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
+        float gp_val = static_cast<float>(gate_proj[idx]);
         float b_val = static_cast<float>(b_gate[d]);
 
-        float gate_raw = h_val + x_val + b_val;
+        float gate_raw = gp_val + b_val;
+        // Cache gate_raw for backward
+        if (gate_cache) gate_cache[idx] = static_cast<T>(gate_raw);
+
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
         float silu_val = gate_raw * sigmoid_val;
 
         output[idx] = static_cast<T>(h_val * silu_val);
-        if (gate_cache) gate_cache[idx] = static_cast<T>(silu_val);
     }
 }
 
+// Backward through output = h * silu(gate_raw)
+// gate_raw = W_gate @ x + b_gate (cached)
+// Returns: dh, d_gate_proj (for dW_gate computation via GEMM)
 template<typename T>
 __global__ void SelectiveOutputBackward(
     const int batch_size,
     const int dim,
-    const T* __restrict__ h,
-    const T* __restrict__ x,
-    const T* __restrict__ b_gate,
-    const T* __restrict__ d_output,
-    T* __restrict__ dh,
-    T* __restrict__ dx,
-    float* __restrict__ d_b_gate) {
+    const T* __restrict__ h,            // [B, dim]
+    const T* __restrict__ gate_cache,   // [B, dim] cached gate_raw
+    const T* __restrict__ d_output,     // [B, dim]
+    T* __restrict__ dh,                 // [B, dim]
+    T* __restrict__ d_gate_proj,        // [B, dim] gradient w.r.t. gate_proj
+    float* __restrict__ d_b_gate) {     // [dim] bias gradient
 
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total = batch_size * dim;
@@ -214,29 +219,24 @@ __global__ void SelectiveOutputBackward(
         const int d = idx % dim;
 
         float h_val = static_cast<float>(h[idx]);
-        float x_val = static_cast<float>(x[idx]);
-        float b_val = static_cast<float>(b_gate[d]);
+        float gate_raw = static_cast<float>(gate_cache[idx]);
         float dout = static_cast<float>(d_output[idx]);
 
-        float gate_raw = h_val + x_val + b_val;
         float sigmoid_val = 1.0f / (1.0f + expf(-gate_raw));
         float silu_val = gate_raw * sigmoid_val;
 
         // d_silu/d_gate_raw = sigmoid * (1 + gate_raw * (1 - sigmoid))
         float dsilu = sigmoid_val * (1.0f + gate_raw * (1.0f - sigmoid_val));
 
-        // d_output/d_h = silu + h * dsilu
-        float dh_val = dout * (silu_val + h_val * dsilu);
+        // d_output/d_h = silu (gate doesn't depend on h)
+        float dh_val = dout * silu_val;
 
-        // d_output/d_x = h * dsilu
-        float dx_val = dout * h_val * dsilu;
-
-        // d_output/d_b_gate = h * dsilu
-        float db_val = dout * h_val * dsilu;
+        // d_output/d_gate_raw = h * dsilu
+        float d_gate_raw = dout * h_val * dsilu;
 
         dh[idx] = static_cast<T>(dh_val);
-        dx[idx] = static_cast<T>(dx_val);
-        atomicAdd(&d_b_gate[d], db_val);
+        d_gate_proj[idx] = static_cast<T>(d_gate_raw);
+        atomicAdd(&d_b_gate[d], d_gate_raw);
     }
 }
 
@@ -279,6 +279,7 @@ void GatedElmanForward<T>::Run(
     const T* W_x,
     const T* W_h,
     const T* W_delta,
+    const T* W_gate,
     const T* b,
     const T* b_delta,
     const T* b_gate,
@@ -298,11 +299,12 @@ void GatedElmanForward<T>::Run(
 
     // =========================================================================
     // HASTE PATTERN: Pre-compute input projections for ALL timesteps
-    // Reduces from 2*T GEMMs to 2 big GEMMs
+    // Reduces from 3*T GEMMs to 3 big GEMMs
     // =========================================================================
-    T *all_wx_x, *all_delta_raw, *wh_h;
+    T *all_wx_x, *all_delta_raw, *all_gate_proj, *wh_h;
     cudaMalloc(&all_wx_x, steps * BD * sizeof(T));
     cudaMalloc(&all_delta_raw, steps * BD * sizeof(T));
+    cudaMalloc(&all_gate_proj, steps * BD * sizeof(T));
     cudaMalloc(&wh_h, BD * sizeof(T));
 
     // Pre-compute W_x @ x for ALL timesteps
@@ -313,12 +315,16 @@ void GatedElmanForward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
         dim_, steps * batch_size_, dim_, &alpha, W_delta, dim_, x, dim_, &beta_zero, all_delta_raw, dim_);
 
+    // Pre-compute W_gate @ x for ALL timesteps
+    blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+        dim_, steps * batch_size_, dim_, &alpha, W_gate, dim_, x, dim_, &beta_zero, all_gate_proj, dim_);
+
     // Only W_h @ h_prev per step (depends on h)
     for (int t = 0; t < steps; ++t) {
         const T* wx_x_t = all_wx_x + t * BD;
         const T* delta_raw_t = all_delta_raw + t * BD;
+        const T* gate_proj_t = all_gate_proj + t * BD;
         const T* h_prev = h + t * BD;
-        const T* x_t = x + t * BD;
         T* h_t = h + (t + 1) * BD;
         T* out_t = output + t * BD;
         T* v_t = training_ ? (v + t * BD) : nullptr;
@@ -334,13 +340,14 @@ void GatedElmanForward<T>::Run(
             batch_size_, dim_, h_prev, wx_x_t, wh_h, delta_raw_t,
             b, b_delta, h_t, v_t, delta_t);
 
-        // h+x selective output: output = h * silu(h + x + b_gate)
+        // Learned gate projection: output = h * silu(W_gate @ x + b_gate)
         SelectiveOutputForward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_t, x_t, b_gate, out_t, gate_t);
+            batch_size_, dim_, h_t, gate_proj_t, b_gate, out_t, gate_t);
     }
 
     cudaFree(all_wx_x);
     cudaFree(all_delta_raw);
+    cudaFree(all_gate_proj);
     cudaFree(wh_h);
 }
 
@@ -365,7 +372,7 @@ void GatedElmanBackward<T>::Run(
     const T* W_x,
     const T* W_h,
     const T* W_delta,
-    const T* b_gate,
+    const T* W_gate,
     const T* x,
     const T* h,
     const T* v,
@@ -376,6 +383,7 @@ void GatedElmanBackward<T>::Run(
     T* dW_x,
     T* dW_h,
     T* dW_delta,
+    T* dW_gate,
     T* db,
     T* db_delta,
     T* d_b_gate,
@@ -391,7 +399,7 @@ void GatedElmanBackward<T>::Run(
 
     // ==========================================================================
     // WORKSPACE LAYOUT: [dv: BD] [d_delta_raw: BD] [dh_recurrent: BD] [dh_prev: BD]
-    //                   [dh: BD] [dx_gate: BD]
+    //                   [dh: BD] [d_gate_proj: BD]
     //                   [db_float: dim] [db_delta_float: dim] [db_gate_float: dim]
     // ==========================================================================
     T* dv = workspace;
@@ -399,7 +407,7 @@ void GatedElmanBackward<T>::Run(
     T* dh_recurrent = workspace + 2 * BD;
     T* dh_prev = workspace + 3 * BD;
     T* dh = workspace + 4 * BD;
-    T* dx_gate = workspace + 5 * BD;
+    T* d_gate_proj = workspace + 5 * BD;
     float* db_float = reinterpret_cast<float*>(workspace + 6 * BD);
     float* db_delta_float = db_float + dim_;
     float* db_gate_float = db_delta_float + dim_;
@@ -414,6 +422,7 @@ void GatedElmanBackward<T>::Run(
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_delta, 0, dim_ * dim_ * sizeof(T), stream_);
+    cudaMemsetAsync(dW_gate, 0, dim_ * dim_ * sizeof(T), stream_);
 
     for (int t = steps - 1; t >= 0; --t) {
         const T* x_t = x + t * BD;
@@ -421,13 +430,14 @@ void GatedElmanBackward<T>::Run(
         const T* h_t = h + (t + 1) * BD;
         const T* v_t = v + t * BD;
         const T* delta_t = delta_cache + t * BD;
+        const T* gate_t = gate_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
         T* dx_t = dx + t * BD;
 
-        // Step 1: Backward through h+x selective output
+        // Step 1: Backward through learned gate projection output
         SelectiveOutputBackward<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, h_t, x_t, b_gate, d_out_t,
-            dh, dx_gate, db_gate_float);
+            batch_size_, dim_, h_t, gate_t, d_out_t,
+            dh, d_gate_proj, db_gate_float);
 
         // Step 2: Add recurrent gradient: dh += dh_recurrent
         VectorAddInplace<T><<<num_blocks, block_size, 0, stream_>>>(BD, dh, dh_recurrent);
@@ -437,9 +447,7 @@ void GatedElmanBackward<T>::Run(
             batch_size_, dim_, h_prev, v_t, delta_t, dh, nullptr,
             dv, d_delta_raw, dh_prev, db_float, db_delta_float);
 
-        // dx = dx_gate + dv @ W_x + d_delta_raw @ W_delta
-        cudaMemcpyAsync(dx_t, dx_gate, BD * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
-
+        // dx = dv @ W_x + d_delta_raw @ W_delta + d_gate_proj @ W_gate
         blas<T>::gemm(
             blas_handle_,
             CUBLAS_OP_N, CUBLAS_OP_N,
@@ -447,7 +455,7 @@ void GatedElmanBackward<T>::Run(
             &alpha,
             W_x, dim_,
             dv, dim_,
-            &beta_one,  // Add to existing
+            &beta_zero,
             dx_t, dim_);
 
         blas<T>::gemm(
@@ -457,6 +465,16 @@ void GatedElmanBackward<T>::Run(
             &alpha,
             W_delta, dim_,
             d_delta_raw, dim_,
+            &beta_one,  // Add to existing
+            dx_t, dim_);
+
+        blas<T>::gemm(
+            blas_handle_,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, batch_size_, dim_,
+            &alpha,
+            W_gate, dim_,
+            d_gate_proj, dim_,
             &beta_one,  // Add to existing
             dx_t, dim_);
 
@@ -506,6 +524,17 @@ void GatedElmanBackward<T>::Run(
             x_t, dim_,
             &alpha,
             dW_delta, dim_);
+
+        // dW_gate += d_gate_proj @ x_t^T
+        blas<T>::gemm(
+            blas_handle_,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, dim_, batch_size_,
+            &alpha,
+            d_gate_proj, dim_,
+            x_t, dim_,
+            &alpha,
+            dW_gate, dim_);
     }
 
     // Copy float bias gradients to T type

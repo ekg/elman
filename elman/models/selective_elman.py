@@ -1,137 +1,122 @@
 """
-Level 2: Selective Elman - Gated recurrence + h+x selective output
+Level 9: Selective Elman with Input-Dependent B, C, dt (like Mamba2)
 
-Same recurrence as Level 1:
-    delta = sigmoid(W_delta @ x_t + b_delta)
-    h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+Adds Mamba2-style input-dependent selectivity to stock Elman:
+- B: input-dependent write gating (what to write to hidden state)
+- C: input-dependent read gating (what to read from hidden state)
+- dt: input-dependent decay/update rate (how much to update hidden state)
 
-With h+x output selectivity:
-    output_t = h_t * silu(h_t + x_t + b_gate)
+Architecture:
+    # Input-dependent projections
+    B = sigmoid(W_B @ x + b_B)           # write gate [0,1]
+    C = sigmoid(W_C @ x + b_C)           # read gate [0,1]
+    dt = sigmoid(W_dt @ x + b_dt)        # update rate [0,1]
 
-Key insight: h+x gating makes output selection input-dependent like Mamba2.
+    # Recurrence with B modulating write
+    candidate = tanh(B * (W_x @ x) + W_h @ h_prev + b)
+    h_new = (1 - dt) * h_prev + dt * candidate
+
+    # Output with C modulating read
+    output = C * h_new * silu(h_new + x + b_gate)
 """
 
 import torch
-import os
-REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
 import torch.nn as nn
 import torch.nn.functional as F
 
 # Try to import Haste CUDA kernel
+import os
+REQUIRE_CUDA = os.environ.get('ELMAN_REQUIRE_CUDA', '0') == '1'
+
 try:
-    import hasty_pytorch_lib
-    HASTE_AVAILABLE = hasattr(hasty_pytorch_lib, 'selective_elman_forward')
-except ImportError:
+    import haste_pytorch_lib
+    HASTE_AVAILABLE = hasattr(haste_pytorch_lib, 'input_selective_elman_forward')
+except ImportError as e:
+    if REQUIRE_CUDA:
+        raise ImportError(f"CUDA kernels required but not available: {e}")
     HASTE_AVAILABLE = False
 
-LEVEL_2_AVAILABLE = True  # PyTorch fallback always available
+SELECTIVE_ELMAN_AVAILABLE = True
+LEVEL_2_AVAILABLE = True  # For backwards compat
 
 
-class SelectiveElmanFunction(torch.autograd.Function):
-    """Autograd function for Selective Elman with h+x gating (Haste kernel)."""
+class InputSelectiveElmanFunction(torch.autograd.Function):
+    """Autograd function for Input-Selective Elman with B, C, dt gates."""
 
     @staticmethod
-    def forward(ctx, training, x, h0, W_x, W_h, W_delta, b, b_delta, b_gate):
-        h, output, v, delta_cache, gate_cache = hasty_pytorch_lib.selective_elman_forward(
+    def forward(ctx, training, x, h0, W_x, W_h, W_B, W_C, W_dt, b, b_B, b_C, b_dt, b_gate):
+        h, output, v_cache, B_cache, C_cache, dt_cache = haste_pytorch_lib.input_selective_elman_forward(
             training,
             x.contiguous(),
             h0.contiguous(),
             W_x.contiguous(),
             W_h.contiguous(),
-            W_delta.contiguous(),
+            W_B.contiguous(),
+            W_C.contiguous(),
+            W_dt.contiguous(),
             b.contiguous(),
-            b_delta.contiguous(),
+            b_B.contiguous(),
+            b_C.contiguous(),
+            b_dt.contiguous(),
             b_gate.contiguous()
         )
         if training:
-            ctx.save_for_backward(x, W_x, W_h, W_delta, b_gate, h, v, delta_cache, gate_cache)
+            ctx.save_for_backward(x, W_x, W_h, W_B, W_C, W_dt, b_gate,
+                                  h, v_cache, B_cache, C_cache, dt_cache)
         return output, h
 
     @staticmethod
     def backward(ctx, d_output, dh_unused):
-        x, W_x, W_h, W_delta, b_gate, h, v, delta_cache, gate_cache = ctx.saved_tensors
-        dx, dW_x, dW_h, dW_delta, db, db_delta, db_gate = hasty_pytorch_lib.selective_elman_backward(
-            W_x, W_h, W_delta, b_gate, x, h, v, delta_cache, gate_cache,
-            d_output.contiguous()
+        x, W_x, W_h, W_B, W_C, W_dt, b_gate, h, v_cache, B_cache, C_cache, dt_cache = ctx.saved_tensors
+        dx, dW_x, dW_h, dW_B, dW_C, dW_dt, db, db_B, db_C, db_dt, db_gate = haste_pytorch_lib.input_selective_elman_backward(
+            W_x, W_h, W_B, W_C, W_dt, b_gate, x, h,
+            v_cache, B_cache, C_cache, dt_cache, d_output.contiguous()
         )
-        return None, dx, None, dW_x, dW_h, dW_delta, db, db_delta, db_gate
+        return None, dx, None, dW_x, dW_h, dW_B, dW_C, dW_dt, db, db_B, db_C, db_dt, db_gate
 
 
 class SelectiveElmanCell(nn.Module):
     """
-    Selective Elman cell - Level 2 with h+x selective gating.
+    Selective Elman cell with input-dependent B, C, dt.
 
-    Recurrence:
-        delta = sigmoid(W_delta @ x_t + b_delta)
-        h_t = (1 - delta) * h_{t-1} + delta * tanh(W_x @ x_t + W_h @ h_{t-1} + b)
-
-    h+x Output selectivity:
-        output_t = h_t * silu(h_t + x_t + b_gate)
-
-    Args:
-        dim: Hidden dimension
-        delta_init: Initial bias for delta gate (negative = keep more state)
-        w_h_mode: Constraint mode for W_h matrix
-        w_h_init_gain: Initial gain for W_h initialization
+    Like Mamba2's input-dependent selectivity but for Elman RNN.
     """
 
-    def __init__(self, dim, delta_init=-2.0,
-                 w_h_mode='spectral_norm', w_h_init_gain=1.0):
+    def __init__(self, dim, dt_init=-2.0):
         super().__init__()
         self.dim = dim
-        self.w_h_mode = w_h_mode
-        self.w_h_init_gain = w_h_init_gain
 
-        # Candidate computation weights
+        # Standard Elman weights
         self.W_x = nn.Parameter(torch.empty(dim, dim))
+        self.W_h = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
 
-        # h+x selective gate bias
+        # Input-dependent B (write gate)
+        self.W_B = nn.Parameter(torch.empty(dim, dim))
+        self.b_B = nn.Parameter(torch.zeros(dim))
+
+        # Input-dependent C (read gate)
+        self.W_C = nn.Parameter(torch.empty(dim, dim))
+        self.b_C = nn.Parameter(torch.zeros(dim))
+
+        # Input-dependent dt (update rate)
+        self.W_dt = nn.Parameter(torch.empty(dim, dim))
+        self.b_dt = nn.Parameter(torch.full((dim,), dt_init))
+
+        # Output gate bias (for h+x gating)
         self.b_gate = nn.Parameter(torch.zeros(dim))
-
-        # Recurrence matrix with optional constraints
-        if w_h_mode == 'scaled_orthogonal':
-            self.register_buffer('W_h_base', torch.empty(dim, dim))
-            self.w_h_log_scale = nn.Parameter(torch.tensor(-0.01))
-        else:
-            self.W_h = nn.Parameter(torch.empty(dim, dim))
-
-        # Delta (gate) computation
-        self.W_delta = nn.Parameter(torch.empty(dim, dim))
-        self.b_delta = nn.Parameter(torch.full((dim,), delta_init))
 
         self._init_weights()
 
     def _init_weights(self):
+        # Main weights
         nn.init.xavier_uniform_(self.W_x)
-        if self.w_h_mode == 'scaled_orthogonal':
-            nn.init.orthogonal_(self.W_h_base)
-        else:
-            nn.init.xavier_uniform_(self.W_h, gain=self.w_h_init_gain)
-        nn.init.xavier_uniform_(self.W_delta, gain=0.1)
+        nn.init.xavier_uniform_(self.W_h, gain=0.5)
 
-    def get_W_h(self):
-        """Get the effective W_h matrix with constraints applied."""
-        if self.w_h_mode == 'scaled_orthogonal':
-            scale = torch.sigmoid(self.w_h_log_scale)
-            return scale * self.W_h_base
-        elif self.w_h_mode == 'spectral_norm':
-            target_radius = 0.99
-            u = getattr(self, '_spectral_u', None)
-            if u is None or u.shape[0] != self.dim:
-                u = torch.randn(self.dim, device=self.W_h.device, dtype=self.W_h.dtype)
-                u = u / u.norm()
-            with torch.no_grad():
-                for _ in range(3):
-                    v = self.W_h.T @ u
-                    v = v / (v.norm() + 1e-8)
-                    u = self.W_h @ v
-                    u = u / (u.norm() + 1e-8)
-                self._spectral_u = u
-            sigma = (u @ self.W_h @ v).abs()
-            return self.W_h * (target_radius / (sigma + 1e-8))
-        else:
-            return self.W_h
+        # Selectivity weights - small init
+        nn.init.xavier_uniform_(self.W_B, gain=0.1)
+        nn.init.xavier_uniform_(self.W_C, gain=0.1)
+        nn.init.xavier_uniform_(self.W_dt, gain=0.1)
 
     def forward(self, x, h0=None):
         """
@@ -140,31 +125,31 @@ class SelectiveElmanCell(nn.Module):
             h0: [B, dim] initial hidden state
 
         Returns:
-            output: [T, B, dim] h+x selective output
-            h: [T+1, B, dim] all hidden states including h0
+            output: [T, B, dim] selective output
+            h: [T+1, B, dim] hidden states
         """
-        T, B, D = x.shape
+        T, batch, D = x.shape
 
         if h0 is None:
-            h0 = torch.zeros(B, self.dim, device=x.device, dtype=x.dtype)
-
-        # Get constrained W_h
-        W_h = self.get_W_h()
+            h0 = torch.zeros(batch, self.dim, device=x.device, dtype=x.dtype)
 
         # Use Haste kernel if available
         if HASTE_AVAILABLE and x.is_cuda:
-            return SelectiveElmanFunction.apply(
+            return InputSelectiveElmanFunction.apply(
                 self.training, x, h0,
-                self.W_x, W_h, self.W_delta,
-                self.b, self.b_delta, self.b_gate
+                self.W_x, self.W_h, self.W_B, self.W_C, self.W_dt,
+                self.b, self.b_B, self.b_C, self.b_dt, self.b_gate
             )
 
         # PyTorch fallback
-        return self._forward_pytorch(x, h0, W_h)
+        if REQUIRE_CUDA:
+            raise RuntimeError("CUDA kernels required (ELMAN_REQUIRE_CUDA=1) but not available")
+        return self._forward_pytorch(x, h0)
 
-    def _forward_pytorch(self, x, h0, W_h):
-        """Pure PyTorch implementation with h+x selective gating."""
-        T, B, D = x.shape
+    def _forward_pytorch(self, x, h0):
+        """PyTorch fallback implementation."""
+        T, batch, D = x.shape
+
         h_list = [h0]
         output_list = []
 
@@ -172,21 +157,23 @@ class SelectiveElmanCell(nn.Module):
             h_prev = h_list[-1]
             x_t = x[t]
 
-            # Delta gate: sigmoid(W_delta @ x + b_delta)
-            delta_raw = x_t @ self.W_delta.T + self.b_delta
-            delta = torch.sigmoid(delta_raw)
+            # Input-dependent gates (like Mamba2's B, C, dt)
+            B = torch.sigmoid(x_t @ self.W_B.T + self.b_B)  # write gate
+            C = torch.sigmoid(x_t @ self.W_C.T + self.b_C)  # read gate
+            dt = torch.sigmoid(x_t @ self.W_dt.T + self.b_dt)  # update rate
 
-            # Candidate: tanh(W_x @ x + W_h @ h + b)
-            candidate_raw = x_t @ self.W_x.T + h_prev @ W_h.T + self.b
-            candidate = torch.tanh(candidate_raw)
+            # Candidate with B-modulated write
+            raw = B * (x_t @ self.W_x.T) + h_prev @ self.W_h.T + self.b
+            candidate = torch.tanh(raw)
 
-            # State update: interpolation between h_prev and candidate
-            h_new = (1 - delta) * h_prev + delta * candidate
-            h_list.append(h_new)
+            # Gated update with input-dependent dt
+            h_new = (1 - dt) * h_prev + dt * candidate
 
-            # h+x selective output: output = h * silu(h + x + b_gate)
+            # Output with C-modulated read and h+x gating
             gate = F.silu(h_new + x_t + self.b_gate)
-            output = h_new * gate
+            output = C * h_new * gate
+
+            h_list.append(h_new)
             output_list.append(output)
 
         h = torch.stack(h_list, dim=0)
@@ -196,34 +183,26 @@ class SelectiveElmanCell(nn.Module):
 
 class SelectiveElman(nn.Module):
     """
-    Selective Elman layer - Level 2 with projections and h+x selective gating.
+    Selective Elman layer with input-dependent B, C, dt.
 
-    Gated recurrence + h+x output selectivity.
-    Now includes h+x selective output: output = h * silu(h + x + b_gate)
+    Level 9 with Mamba2-style selectivity.
     """
 
-    def __init__(self, dim, expansion=1.0, delta_init=-2.0, dropout=0.0,
-                 r_h_mode='spectral_norm', r_h_init_gain=1.0, **kwargs):
+    def __init__(self, dim, expansion=1.0, dt_init=-2.0, dropout=0.0, **kwargs):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
-        self.r_h_mode = r_h_mode
 
         # Input projection
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
         # Selective Elman cell
-        self.cell = SelectiveElmanCell(
-            self.d_inner,
-            delta_init=delta_init,
-            w_h_mode=r_h_mode,
-            w_h_init_gain=r_h_init_gain
-        )
+        self.cell = SelectiveElmanCell(self.d_inner, dt_init=dt_init)
 
         # Output projection
         self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
 
-        # Optional dropout
+        # Dropout
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
         self._init_weights()
@@ -235,57 +214,72 @@ class SelectiveElman(nn.Module):
     def forward(self, x, h0=None, **kwargs):
         """
         Args:
-            x: [B, T, dim] input sequence
+            x: [B, T, dim] input
             h0: [B, d_inner] initial hidden state
 
         Returns:
-            output: [B, T, dim] output sequence
-            h_final: [B, d_inner] final hidden state
+            output: [B, T, dim]
+            h_final: [B, d_inner]
         """
         B, T, D = x.shape
 
-        # Project input
-        x_proj = self.in_proj(x)  # [B, T, d_inner]
+        # Project
+        x_proj = self.in_proj(x)
 
-        # Transpose for cell: [T, B, d_inner]
+        # Transpose for cell
         x_rnn = x_proj.permute(1, 0, 2).contiguous()
 
-        # Run cell - returns (output, h_all) with h+x gating
-        cell_out, h_all = self.cell(x_rnn, h0)  # [T, B, d_inner], [T+1, B, d_inner]
-        h_final = h_all[-1]  # [B, d_inner]
+        # Run cell
+        cell_out, h_all = self.cell(x_rnn, h0)
+        h_final = h_all[-1]
 
-        # Transpose back: [B, T, d_inner]
+        # Transpose back
         cell_out = cell_out.permute(1, 0, 2).contiguous()
 
-        # Apply dropout and project
+        # Project and dropout
         cell_out = self.dropout(cell_out)
         output = self.out_proj(cell_out)
 
         return output, h_final
 
-    def extra_repr(self):
-        return f'dim={self.dim}, d_inner={self.d_inner}, LEVEL=2_SELECTIVE'
+
+__all__ = ['SelectiveElman', 'SelectiveElmanCell', 'SELECTIVE_ELMAN_AVAILABLE', 'LEVEL_2_AVAILABLE']
 
 
 if __name__ == "__main__":
-    print("Testing SelectiveElman (Level 2)...")
-    print("=" * 60)
-    print(f"Haste CUDA kernel available: {HASTE_AVAILABLE}")
+    print("Testing Selective Elman (Level 9 with B, C, dt)...")
+    print(f"CUDA kernel available: {HASTE_AVAILABLE}")
 
-    # Test layer
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = SelectiveElman(dim=512, expansion=2.0).to(device).bfloat16()
-    x = torch.randn(2, 32, 512, device=device, dtype=torch.bfloat16)
+    dim = 512
+    model = SelectiveElman(dim, expansion=1.5).to(device).bfloat16()
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {params:,}")
 
+    x = torch.randn(2, 32, dim, device=device, dtype=torch.bfloat16)
     print("Testing forward...")
     out, h = model(x)
-    print(f"Input: {x.shape}, Output: {out.shape}, Hidden: {h.shape}")
+    print(f"Input: {x.shape} -> Output: {out.shape}, Hidden: {h.shape}")
 
     print("Testing backward...")
     loss = out.sum()
     loss.backward()
     print("Backward passed!")
 
-    params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {params:,}")
-    print("Level 2 (Selective Elman) test passed!")
+    # Speed comparison
+    if device == 'cuda':
+        import time
+        # Warmup
+        for _ in range(3):
+            out, h = model(x)
+        torch.cuda.synchronize()
+
+        # Time
+        start = time.time()
+        for _ in range(10):
+            out, h = model(x)
+        torch.cuda.synchronize()
+        elapsed = (time.time() - start) / 10
+
+        tokens = 2 * 32
+        print(f"Time: {elapsed*1000:.2f}ms, {tokens/elapsed:.0f} tok/s")
