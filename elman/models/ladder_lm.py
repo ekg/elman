@@ -1,9 +1,9 @@
 """
-Language Model wrapper for Elman Ablation Ladder.
+Language Model wrapper for E-Series Elman models.
 
-Supports:
-- Linear-space levels 0-3: Stock Elman through Diagonal Selective
-- Log-space levels: 'log_0' = LogSpacePolynomial (input-dependent α, polynomial activation)
+E-Series:
+    e0: Stock Elman - tanh + h*silu(W_gate@x) gating
+    e1: Mamba-Gated Elman - Mamba2-style split projection gating
 """
 
 import torch
@@ -11,26 +11,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .stock_elman import StockElman
-from .gated_elman import GatedElman
-from .selective_elman import SelectiveElman
-from .diagonal_selective import DiagonalSelective
-from .logspace_polynomial import LogSpacePolynomial
-from .logspace_selective import LogSpaceSelective
-from .logspace_diagonal_selective import LogSpaceDiagonalSelective
+from .mamba_gated_elman import MambaGatedElman
 
 
 def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer (0-6) or string ('log_0' to 'log_5')
+        level: Integer level (0 = StockElman, 1 = MambaGatedElman)
 
     Returns:
         Layer class
     """
-    # Import from parent module which has the full level definitions
-    from . import get_ladder_level as _get_ladder_level
-    return _get_ladder_level(level)
+    if level == 0:
+        return StockElman
+    elif level == 1:
+        return MambaGatedElman
+    raise ValueError(f"Invalid level {level}. Available: 0 (e0), 1 (e1)")
 
 
 class LadderLM(nn.Module):
@@ -203,17 +200,8 @@ class LadderLM(nn.Module):
 
     def extra_repr(self):
         level_names = {
-            0: "Stock Elman",
-            1: "Gated Elman",
-            2: "Selective Elman",
-            3: "Diagonal Selective",
-            'log_0': "Log-Space Polynomial",
-            'log_1': "Log-Space Selective",
-            'log_2': "Log-Space Diagonal Selective",
-            'log_3': "Log-Space Diagonal (Full)",
-            'log_4': "Log-Compute Full",
-            'log_5': "Log-Space Triple R",
-            'log_6': "Log-Space Diagonal Triple R",
+            0: "Stock Elman (e0)",
+            1: "Mamba-Gated Elman (e1)",
         }
         return f'level={self.level} ({level_names.get(self.level, "Unknown")}), dim={self.dim}, depth={self.depth}'
 

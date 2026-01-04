@@ -21,23 +21,9 @@ LOCAL_CFLAGS := -I/usr/include/eigen3 -I$(CUDA_HOME)/include -Ilib -O3
 LOCAL_LDFLAGS := -L$(CUDA_HOME)/lib64 -L. -lcudart -lcublas
 GPU_ARCH_FLAGS := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,code=sm_89
 
-# Elman Ladder CUDA object files (only files that exist in this repo)
+# E-Series CUDA kernels (archived kernels in lib/archive/)
 CUDA_OBJS := \
-	lib/stock_elman_gpu.o \
-	lib/gated_elman_gpu.o \
-	lib/selective_elman_gpu.o \
-	lib/diagonal_selective_gpu.o \
-	lib/full_recurrence_gpu.o \
-	lib/linear_triple_r_gpu.o \
-	lib/linear_polynomial_gpu.o \
-	lib/log_storage_diagonal_gpu.o \
-	lib/log_compute_full_gpu.o \
-	lib/logspace_triple_r_gpu.o \
-	lib/logspace_polynomial_gpu.o \
-	lib/logspace_selective_gpu.o \
-	lib/logspace_diagonal_selective_gpu.o \
-	lib/logspace_diagonal_triple_r_gpu.o \
-	lib/diagonal_triple_r_gpu.o
+	lib/stock_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
