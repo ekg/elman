@@ -131,7 +131,7 @@ __global__ void SlotTanhBackwardKernel(
 // =============================================================================
 // Backward: Through slot combine + gate
 // output = sum_s(C[s] * h[:, s, :]) * silu(z)
-// Computes dh (for each slot) and dz
+// Computes dh and dz (dC computed separately to avoid atomic contention)
 // =============================================================================
 template<typename T>
 __global__ void SlotCombineGateBackwardKernel(
@@ -143,8 +143,7 @@ __global__ void SlotCombineGateBackwardKernel(
     const T* __restrict__ C,           // [n_slots]
     const T* __restrict__ d_output,    // [B, dim]
     T* __restrict__ dh,                // [B, n_slots, dim]
-    T* __restrict__ dz,                // [B, dim]
-    float* __restrict__ dC) {          // [n_slots] accumulated
+    T* __restrict__ dz) {              // [B, dim]
 
     const int bd_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int total_bd = batch_size * dim;
@@ -161,7 +160,7 @@ __global__ void SlotCombineGateBackwardKernel(
         float silu_z = z_val * sigmoid_z;
         float dsilu_z = sigmoid_z * (1.0f + z_val * (1.0f - sigmoid_z));
 
-        // Recompute h_combined
+        // Recompute h_combined for dz
         float h_combined = 0.0f;
         for (int s = 0; s < n_slots; ++s) {
             int h_idx = (b_idx * n_slots + s) * dim + d;
@@ -172,16 +171,68 @@ __global__ void SlotCombineGateBackwardKernel(
         dz[bd_idx] = static_cast<T>(dout * h_combined * dsilu_z);
 
         // dh[s] = d_output * silu_z * C[s] for each slot
-        // dC[s] += d_output * silu_z * h[s] (accumulated)
         float d_hcomb = dout * silu_z;
         for (int s = 0; s < n_slots; ++s) {
             int h_idx = (b_idx * n_slots + s) * dim + d;
-            float c_val = static_cast<float>(C[s]);
-            float h_val = static_cast<float>(h[h_idx]);
-
-            dh[h_idx] = static_cast<T>(d_hcomb * c_val);
-            atomicAdd(&dC[s], d_hcomb * h_val);
+            dh[h_idx] = static_cast<T>(d_hcomb * static_cast<float>(C[s]));
         }
+    }
+}
+
+// =============================================================================
+// Backward: Compute dC with parallel reduction (no atomic contention)
+// dC[s] = sum_{b,d} d_output[b,d] * silu(z[b,d]) * h[b,s,d]
+// =============================================================================
+template<typename T>
+__global__ void SlotComputeDCKernel(
+    const int batch_size,
+    const int n_slots,
+    const int dim,
+    const T* __restrict__ h,           // [B, n_slots, dim]
+    const T* __restrict__ z,           // [B, dim]
+    const T* __restrict__ d_output,    // [B, dim]
+    float* __restrict__ dC) {          // [n_slots]
+
+    // One block per slot, threads reduce over B*D
+    const int slot = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int total_bd = batch_size * dim;
+
+    // Shared memory for block reduction
+    extern __shared__ float sdata[];
+
+    float local_sum = 0.0f;
+
+    // Each thread sums its portion
+    for (int bd_idx = tid; bd_idx < total_bd; bd_idx += blockDim.x) {
+        const int d = bd_idx % dim;
+        const int b_idx = bd_idx / dim;
+
+        float dout = static_cast<float>(d_output[bd_idx]);
+        float z_val = static_cast<float>(z[bd_idx]);
+        float sigmoid_z = 1.0f / (1.0f + expf(-z_val));
+        float silu_z = z_val * sigmoid_z;
+
+        int h_idx = (b_idx * n_slots + slot) * dim + d;
+        float h_val = static_cast<float>(h[h_idx]);
+
+        local_sum += dout * silu_z * h_val;
+    }
+
+    sdata[tid] = local_sum;
+    __syncthreads();
+
+    // Block reduction
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            sdata[tid] += sdata[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    // Write result (one atomic per slot, not per thread)
+    if (tid == 0) {
+        atomicAdd(&dC[slot], sdata[0]);
     }
 }
 
@@ -391,6 +442,9 @@ void SlotElmanBackward<T>::Run(
     cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
 
     // BPTT loop
+    const int dc_block_size = 256;
+    const size_t dc_shared_mem = dc_block_size * sizeof(float);
+
     for (int t = steps - 1; t >= 0; --t) {
         const T* h_t = h + (t + 1) * BSD;
         const T* z_t = z + t * BD;
@@ -400,10 +454,14 @@ void SlotElmanBackward<T>::Run(
         T* dv_t = dv_all + t * BSD;
         T* dv_sum_t = dv_sum_all + t * BD;
 
-        // Backward through combine + gate
+        // Backward through combine + gate (dh and dz only, dC computed separately)
         SlotCombineGateBackwardKernel<T><<<bd_blocks, block_size, 0, stream_>>>(
             batch_size_, n_slots_, dim_, h_t, z_t, C, d_out_t,
-            dh, dz_t, dC_float);
+            dh, dz_t);
+
+        // Compute dC with proper parallel reduction (one block per slot)
+        SlotComputeDCKernel<T><<<n_slots_, dc_block_size, dc_shared_mem, stream_>>>(
+            batch_size_, n_slots_, dim_, h_t, z_t, d_out_t, dC_float);
 
         // Add recurrent gradient
         VectorAddInplace<T><<<bsd_blocks, block_size, 0, stream_>>>(BSD, dh, dh_recurrent);
