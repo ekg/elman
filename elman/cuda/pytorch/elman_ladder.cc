@@ -271,16 +271,19 @@ std::vector<Tensor> mamba_gated_elman_backward(
 }
 
 // =============================================================================
-// E2: Slot-Based Elman (Mamba2-style multi-slot memory)
+// E2: Slot-Based Elman (with cuBLAS GEMMs - same as e0, more memory via slots)
+// h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
+// output = sum(C[s] * h_t[s]) * silu(z)
 // =============================================================================
 
 std::vector<Tensor> slot_elman_forward(
     bool training,
     Tensor x,           // [T, B, dim] pre-activated input
     Tensor z,           // [T, B, dim] gate input
-    Tensor h0,          // [B, dim, n_slots]
-    Tensor decay,       // [dim, n_slots]
-    Tensor B,           // [dim, n_slots]
+    Tensor h0,          // [B, n_slots, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
     Tensor C) {         // [n_slots]
 
     const auto time_steps = x.size(0);
@@ -291,15 +294,24 @@ std::vector<Tensor> slot_elman_forward(
     CHECK_INPUT(x);
     CHECK_INPUT(z);
     CHECK_INPUT(h0);
-    CHECK_INPUT(decay);
-    CHECK_INPUT(B);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
     CHECK_INPUT(C);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
 
-    Tensor h = torch::empty({time_steps + 1, batch_size, dim, n_slots}, options);
+    // h layout: [T+1, B, n_slots, dim] to enable batched GEMM
+    Tensor h = torch::empty({time_steps + 1, batch_size, n_slots, dim}, options);
     Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, n_slots, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Forward workspace: [T*B*dim + B*n_slots*dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t BSD = batch_size * n_slots * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BSD}, options);
 
     h[0] = h0;
 
@@ -312,25 +324,30 @@ std::vector<Tensor> slot_elman_forward(
 
         forward.Run(
             time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(C),
             ptr<scalar_t>(x),
             ptr<scalar_t>(z),
-            ptr<scalar_t>(decay),
-            ptr<scalar_t>(B),
-            ptr<scalar_t>(C),
             ptr<scalar_t>(h),
-            ptr<scalar_t>(output));
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace),
+            at::cuda::getCurrentCUDABlasHandle());
     }));
 
-    return {h, output};
+    return {h, output, v};
 }
 
 std::vector<Tensor> slot_elman_backward(
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor C,           // [n_slots]
     Tensor x,           // [T, B, dim]
     Tensor z,           // [T, B, dim]
-    Tensor h,           // [T+1, B, dim, n_slots]
-    Tensor decay,       // [dim, n_slots]
-    Tensor B,           // [dim, n_slots]
-    Tensor C,           // [n_slots]
+    Tensor h,           // [T+1, B, n_slots, dim]
+    Tensor v,           // [T, B, n_slots, dim]
     Tensor d_output) {  // [T, B, dim]
 
     const auto time_steps = x.size(0);
@@ -338,12 +355,13 @@ std::vector<Tensor> slot_elman_backward(
     const auto dim = x.size(2);
     const auto n_slots = C.size(0);
 
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(C);
     CHECK_INPUT(x);
     CHECK_INPUT(z);
     CHECK_INPUT(h);
-    CHECK_INPUT(decay);
-    CHECK_INPUT(B);
-    CHECK_INPUT(C);
+    CHECK_INPUT(v);
     CHECK_INPUT(d_output);
 
     const auto options = x.options();
@@ -351,22 +369,18 @@ std::vector<Tensor> slot_elman_backward(
 
     Tensor dx = torch::empty_like(x);
     Tensor dz = torch::empty_like(z);
-    Tensor d_decay = torch::zeros({dim, n_slots}, options);
-    Tensor dB = torch::zeros({dim, n_slots}, options);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
     Tensor dC = torch::zeros({n_slots}, options);
 
-    // Workspace layout: [dh_prev: BDS] [dh_next: BDS] [dh_comb: BD] [d_decay_float: D_S] [dB_float: D_S] [dC_float: n_slots]
-    // All in T units, float arrays need sizeof(float)/sizeof(T) multiplier
+    // Workspace: [dv_all: T*BSD] [dh: BSD] [dh_recurrent: BSD] [dv_sum: T*BD] [db_float: dim] [dC_float: n_slots]
     const int64_t BD = batch_size * dim;
-    const int64_t BDS = batch_size * dim * n_slots;
-    const int64_t D_S = dim * n_slots;
-    // Float arrays: need (2*D_S + n_slots) floats = ceil((2*D_S + n_slots) * sizeof(float) / sizeof(T)) T elements
-    // For bfloat16/half: sizeof(T)=2, sizeof(float)=4, so multiply by 2
-    // For float: sizeof(T)=4, sizeof(float)=4, so multiply by 1
-    // Use worst case (2x) to be safe
-    const int64_t float_elements = 2 * D_S + n_slots;
-    const int64_t float_in_T = (float_elements * sizeof(float) + sizeof(float) - 1) / sizeof(float);  // ceil
-    const int64_t workspace_size = 2 * BDS + BD + float_in_T * 2;  // *2 for bfloat16 worst case
+    const int64_t BSD = batch_size * n_slots * dim;
+    // Float elements: dim + n_slots for db_float and dC_float
+    const int64_t float_elements = dim + n_slots;
+    const int64_t float_in_T = (float_elements * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = time_steps * BSD + 2 * BSD + time_steps * BD + float_in_T * 2;
 
     Tensor workspace = torch::empty({workspace_size}, options);
 
@@ -379,22 +393,25 @@ std::vector<Tensor> slot_elman_backward(
 
         backward.Run(
             time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(C),
             ptr<scalar_t>(x),
             ptr<scalar_t>(z),
             ptr<scalar_t>(h),
-            ptr<scalar_t>(decay),
-            ptr<scalar_t>(B),
-            ptr<scalar_t>(C),
+            ptr<scalar_t>(v),
             ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dz),
-            ptr<scalar_t>(d_decay),
-            ptr<scalar_t>(dB),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
             ptr<scalar_t>(dC),
-            ptr<scalar_t>(workspace));
+            ptr<scalar_t>(workspace),
+            at::cuda::getCurrentCUDABlasHandle());
     }));
 
-    return {dx, dz, d_decay, dB, dC};
+    return {dx, dz, dW_x, dW_h, db, dC};
 }
 
 }  // anonymous namespace

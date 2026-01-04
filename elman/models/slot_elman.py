@@ -1,23 +1,17 @@
 """
-E2: Slot-Based Elman - Mamba2-style multi-slot memory
+E2: Slot-Based Elman - Multi-slot memory with cuBLAS GEMMs
 
-Architecture insight from Mamba2:
-- Mamba2 uses h ∈ R^(d × d_state) with d_state=64
-- Each slot has diagonal decay (no O(d²) matmul)
-- This gives 64x more memory capacity while keeping O(d) compute per slot
+Architecture (same GEMMs as e0, but with n_slots independent hidden states):
+    h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
+    output = sum(C[s] * h_t[s]) * silu(z)
 
-E2 Design:
-    h ∈ R^(B, d, n_slots)           # n_slots independent memory vectors
-    a ∈ R^(d, n_slots)              # Diagonal decay per slot (0-1)
-    B ∈ R^(d, n_slots)              # Input-to-slot projection (per-element)
-
-    h_t[:,i] = a[:,i] * h_{t-1}[:,i] + B[:,i] * x_t  # Diagonal recurrence
-    output = h_t.sum(dim=-1) * silu(z)              # Combine slots + gate
+Key optimization: Batch slots into GEMM by treating [B, n_slots, d] as [B*n_slots, d]
+This gives same GEMM speed as e0 but with n_slots more memory capacity.
 
 Key differences from e1:
-- e1: h ∈ R^d with full W_h matmul (O(d²) per step)
-- e2: h ∈ R^(d, n_slots) with diagonal decay (O(d * n_slots) per step)
-- e2 has n_slots × more memory with similar compute (when n_slots << d)
+- e1: h ∈ R^d with one W_h matmul per step
+- e2: h ∈ R^(n_slots, d) with batched W_h matmul (all slots in one GEMM)
+- e2 has n_slots × more memory with ~same compute
 """
 
 import torch
@@ -33,83 +27,99 @@ except ImportError:
 
 
 class SlotElmanFunction(torch.autograd.Function):
-    """CUDA-accelerated slot elman autograd function."""
+    """CUDA-accelerated slot elman autograd function with cuBLAS GEMMs."""
 
     @staticmethod
-    def forward(ctx, training, x, z, h0, decay, B, C):
-        h, output = hasty_pytorch_lib.slot_elman_forward(training, x, z, h0, decay, B, C)
-        ctx.save_for_backward(x, z, h, decay, B, C)
+    def forward(ctx, training, x, z, h0, W_x, W_h, b, C):
+        h, output, v = hasty_pytorch_lib.slot_elman_forward(
+            training, x, z, h0, W_x, W_h, b, C
+        )
+        ctx.save_for_backward(W_x, W_h, C, x, z, h, v)
         return h, output
 
     @staticmethod
     def backward(ctx, dh, d_output):
-        x, z, h, decay, B, C = ctx.saved_tensors
-        dx, dz, d_decay, dB, dC = hasty_pytorch_lib.slot_elman_backward(
-            x, z, h, decay, B, C, d_output.contiguous()
+        W_x, W_h, C, x, z, h, v = ctx.saved_tensors
+        dx, dz, dW_x, dW_h, db, dC = hasty_pytorch_lib.slot_elman_backward(
+            W_x, W_h, C, x, z, h, v, d_output.contiguous()
         )
-        return None, dx, dz, None, d_decay, dB, dC
+        return None, dx, dz, None, dW_x, dW_h, db, dC
 
 
 class SlotElmanCell(nn.Module):
     """
-    E2 Elman cell with slot-based memory.
+    E2 Elman cell with slot-based memory and cuBLAS GEMMs.
 
-    Each slot has:
-    - Diagonal decay a[:,i] ∈ (0, 1) learned per dimension
-    - Input contribution B[:,i] * x_t
+    Each slot has full W_h recurrence (not diagonal):
+    h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)
+    output = sum(C[s] * h_t[s]) * silu(z)
 
-    h_t[:,i] = a[:,i] * h_{t-1}[:,i] + B[:,i] * silu(x_t)
-    output = sum(h_t, dim=-1) * silu(z_t)
+    Slots are batched into a single GEMM for efficiency.
     """
 
-    def __init__(self, dim, n_slots=64, init_decay=0.9):
+    def __init__(self, dim, n_slots=64, spectral_radius=0.99):
         super().__init__()
         self.dim = dim
         self.n_slots = n_slots
+        self.spectral_radius = spectral_radius
 
-        # Diagonal decay per slot - learned, constrained to (0, 1) via sigmoid
-        # Initialize to achieve init_decay after sigmoid
-        init_logit = torch.logit(torch.tensor(init_decay))
-        self.decay_logits = nn.Parameter(torch.full((dim, n_slots), init_logit.item()))
+        # Same as e0: input and recurrent projections
+        self.W_x = nn.Parameter(torch.empty(dim, dim))
+        self.W_h = nn.Parameter(torch.empty(dim, dim))
+        self.b = nn.Parameter(torch.zeros(dim))
 
-        # Input-to-slot projection (element-wise, not matmul)
-        # Each slot gets a different weighted view of the input
-        self.B = nn.Parameter(torch.empty(dim, n_slots))
-
-        # Slot combination weights (optional, can just sum)
+        # Slot combination weights
         self.C = nn.Parameter(torch.ones(n_slots) / n_slots)
 
         self._init_weights()
 
     def _init_weights(self):
-        # Initialize B with small values - each slot gets different input mixing
-        nn.init.normal_(self.B, mean=0.0, std=0.02)
+        # Xavier initialization for input projection
+        nn.init.xavier_uniform_(self.W_x)
+
+        # Scaled initialization for recurrent - start with small spectral radius
+        nn.init.orthogonal_(self.W_h)
+        with torch.no_grad():
+            self.W_h.mul_(self.spectral_radius * 0.5)
+
+    def _get_normalized_Wh(self):
+        """Spectral normalization to keep radius < spectral_radius."""
+        W = self.W_h
+        # Power iteration estimate of spectral norm
+        u = torch.randn(W.shape[0], device=W.device, dtype=W.dtype)
+        for _ in range(3):
+            v = F.normalize(W.T @ u, dim=0)
+            u = F.normalize(W @ v, dim=0)
+        sigma = (u @ W @ v).item()
+        if sigma > self.spectral_radius:
+            return W * (self.spectral_radius / sigma)
+        return W
 
     def forward(self, x, z, h0=None):
         """
         Args:
             x: [T, B, dim] input for RNN (pre-activated)
             z: [T, B, dim] input for gating
-            h0: [B, dim, n_slots] initial hidden state
+            h0: [B, n_slots, dim] initial hidden state
 
         Returns:
             output: [T, B, dim] gated output
-            h: [T+1, B, dim, n_slots] all hidden states
+            h: [T+1, B, n_slots, dim] all hidden states
         """
         T, B_size, D = x.shape
 
         if h0 is None:
-            h0 = torch.zeros(B_size, D, self.n_slots, device=x.device, dtype=x.dtype)
+            h0 = torch.zeros(B_size, self.n_slots, D, device=x.device, dtype=x.dtype)
 
-        # Get decay in (0, 1) range
-        decay = torch.sigmoid(self.decay_logits)  # [dim, n_slots]
+        # Get spectrally normalized W_h
+        W_h = self._get_normalized_Wh()
 
         # Use CUDA kernel if available
         if SLOT_CUDA_AVAILABLE and x.is_cuda:
             h, output = SlotElmanFunction.apply(
                 self.training, x.contiguous(), z.contiguous(),
-                h0.contiguous(), decay.contiguous(),
-                self.B.contiguous(), self.C.contiguous()
+                h0.contiguous(), self.W_x.contiguous(),
+                W_h.contiguous(), self.b.contiguous(), self.C.contiguous()
             )
             return output, h
 
@@ -118,35 +128,41 @@ class SlotElmanCell(nn.Module):
         output_list = []
 
         for t in range(T):
-            h_prev = h_list[-1]  # [B, dim, n_slots]
+            h_prev = h_list[-1]  # [B, n_slots, dim]
             x_t = x[t]  # [B, dim]
             z_t = z[t]  # [B, dim]
 
-            # Diagonal recurrence per slot:
-            # h_new[:,i] = decay[:,i] * h_prev[:,i] + B[:,i] * x_t
-            # Expand x_t to [B, dim, 1] for broadcasting
-            x_expanded = x_t.unsqueeze(-1)  # [B, dim, 1]
+            # W_x @ x is same for all slots - broadcast
+            Wx = x_t @ self.W_x.T  # [B, dim]
 
-            # h_new = decay * h_prev + B * x_t
-            h_new = decay * h_prev + self.B * x_expanded  # [B, dim, n_slots]
+            # W_h @ h_prev for each slot (can batch in PyTorch too)
+            # h_prev: [B, n_slots, dim] -> treat as [B*n_slots, dim]
+            h_flat = h_prev.reshape(B_size * self.n_slots, D)
+            Rh_flat = h_flat @ W_h.T  # [B*n_slots, dim]
+            Rh = Rh_flat.reshape(B_size, self.n_slots, D)  # [B, n_slots, dim]
+
+            # h_new = tanh(Wx + Rh + b), broadcast Wx across slots
+            h_new = torch.tanh(Wx.unsqueeze(1) + Rh + self.b)  # [B, n_slots, dim]
             h_list.append(h_new)
 
-            # Combine slots with learned weights
-            # h_combined = sum_i(C[i] * h_new[:,:,i])
-            h_combined = (h_new * self.C).sum(dim=-1)  # [B, dim]
+            # Combine slots with learned weights: sum(C[s] * h_new[:, s, :])
+            h_combined = (h_new * self.C.unsqueeze(0).unsqueeze(-1)).sum(dim=1)  # [B, dim]
 
             # Mamba2-style gating
             output = h_combined * F.silu(z_t)  # [B, dim]
             output_list.append(output)
 
-        h = torch.stack(h_list, dim=0)  # [T+1, B, dim, n_slots]
+        h = torch.stack(h_list, dim=0)  # [T+1, B, n_slots, dim]
         output = torch.stack(output_list, dim=0)  # [T, B, dim]
         return output, h
 
 
 class SlotElman(nn.Module):
     """
-    E2: Slot-Based Elman with Mamba2-style multi-slot memory.
+    E2: Slot-Based Elman with cuBLAS GEMMs.
+
+    Same architecture as e1 (Mamba-gated), but with n_slots independent
+    hidden states batched into a single GEMM call.
 
     Architecture:
         x, z = split(in_proj(x))    # Split into RNN input and gate
@@ -160,8 +176,8 @@ class SlotElman(nn.Module):
         self,
         dim,
         expansion=1.0,
-        n_slots=64,
-        init_decay=0.9,
+        n_slots=8,
+        spectral_radius=0.99,
         dropout=0.0,
         use_conv=False,
         d_conv=4,
@@ -187,11 +203,11 @@ class SlotElman(nn.Module):
                 bias=True,
             )
 
-        # Slot-based Elman cell
+        # Slot-based Elman cell with cuBLAS GEMMs
         self.cell = SlotElmanCell(
             self.d_inner,
             n_slots=n_slots,
-            init_decay=init_decay
+            spectral_radius=spectral_radius
         )
 
         # Output projection
@@ -209,11 +225,11 @@ class SlotElman(nn.Module):
         """
         Args:
             x: [B, T, dim] input sequence
-            h0: [B, d_inner, n_slots] initial hidden state
+            h0: [B, n_slots, d_inner] initial hidden state
 
         Returns:
             output: [B, T, dim] output sequence
-            h_final: [B, d_inner, n_slots] final hidden state
+            h_final: [B, n_slots, d_inner] final hidden state
         """
         B, T, D = x.shape
 
@@ -236,7 +252,7 @@ class SlotElman(nn.Module):
 
         # Run slot-based cell
         cell_out, h_all = self.cell(x_rnn, z_rnn, h0)
-        h_final = h_all[-1]  # [B, d_inner, n_slots]
+        h_final = h_all[-1]  # [B, n_slots, d_inner]
 
         # Transpose back and project
         cell_out = cell_out.permute(1, 0, 2).contiguous()
@@ -250,16 +266,16 @@ class SlotElman(nn.Module):
 
 
 if __name__ == "__main__":
-    print("Testing SlotElman (E2)...")
+    print("Testing SlotElman (E2) with cuBLAS GEMMs...")
     print("=" * 60)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # Test basic
-    model = SlotElman(dim=512, expansion=2.0, n_slots=64).to(device).bfloat16()
+    model = SlotElman(dim=512, expansion=2.0, n_slots=8).to(device).bfloat16()
     x = torch.randn(2, 32, 512, device=device, dtype=torch.bfloat16)
 
-    print(f"Testing forward with n_slots=64...")
+    print(f"Testing forward with n_slots=8...")
     out, h = model(x)
     print(f"Input: {x.shape}")
     print(f"Output: {out.shape}")
@@ -276,19 +292,13 @@ if __name__ == "__main__":
 
     from mamba_gated_elman import MambaGatedElman
     e1 = MambaGatedElman(dim=512, expansion=2.0).to(device)
-    e2 = SlotElman(dim=512, expansion=2.0, n_slots=64).to(device)
+    e2 = SlotElman(dim=512, expansion=2.0, n_slots=8).to(device)
 
     e1_params = sum(p.numel() for p in e1.parameters())
     e2_params = sum(p.numel() for p in e2.parameters())
 
     print(f"E1 (Mamba-Gated): {e1_params:,} params")
-    print(f"E2 (Slot, 64 slots): {e2_params:,} params")
-    print(f"E2 memory slots: 64x more memory capacity")
+    print(f"E2 (Slot, 8 slots): {e2_params:,} params")
+    print(f"E2 memory: 8 independent hidden states per layer")
 
-    # Memory per step comparison
-    d_inner = 1024  # 512 * 2
-    print(f"\nMemory per step:")
-    print(f"  E1: {d_inner} floats")
-    print(f"  E2: {d_inner * 64} floats (64 slots)")
-
-    print("\nE2 (Slot Elman) test passed!")
+    print("\nE2 (Slot Elman with cuBLAS GEMMs) test passed!")

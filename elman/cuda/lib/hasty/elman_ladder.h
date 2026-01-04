@@ -159,9 +159,10 @@ private:
 };
 
 // =============================================================================
-// E2: Slot-Based Elman (Mamba2-style multi-slot memory)
-// h_t[:, i] = decay[:, i] * h_{t-1}[:, i] + B[:, i] * x_t
-// output = sum_i(C[i] * h_t[:, i]) * silu(z)
+// E2: Slot-Based Elman (with cuBLAS GEMMs - same speed as e0, more memory)
+// h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
+// output = sum(C[s] * h_t[s]) * silu(z)
+// Key: Batch slots into GEMM by treating [B, n_slots, d] as [B*n_slots, d]
 // =============================================================================
 
 template<typename T>
@@ -175,13 +176,17 @@ struct SlotElmanForward {
 
     void Run(
         int steps,
-        const T* x,           // [T, B, dim] pre-activated input
-        const T* z,           // [T, B, dim] gate input
-        const T* decay,       // [dim, n_slots] sigmoid-normalized
-        const T* B,           // [dim, n_slots]
+        const T* W_x,         // [dim, dim]
+        const T* W_h,         // [dim, dim]
+        const T* b,           // [dim]
         const T* C,           // [n_slots]
-        T* h,                 // [T+1, B, dim, n_slots] hidden states
-        T* output);           // [T, B, dim] output
+        const T* x,           // [T, B, dim]
+        const T* z,           // [T, B, dim]
+        T* h,                 // [T+1, B, n_slots, dim]
+        T* output,            // [T, B, dim]
+        T* v,                 // [T, B, n_slots, dim] pre-activation cache
+        T* workspace,         // [T*B*dim + B*n_slots*dim]
+        cublasHandle_t blas_handle);
 
 private:
     bool training_;
@@ -201,19 +206,22 @@ struct SlotElmanBackward {
 
     void Run(
         int steps,
+        const T* W_x,         // [dim, dim]
+        const T* W_h,         // [dim, dim]
+        const T* C,           // [n_slots]
         const T* x,           // [T, B, dim]
         const T* z,           // [T, B, dim]
-        const T* h,           // [T+1, B, dim, n_slots]
-        const T* decay,       // [dim, n_slots]
-        const T* B,           // [dim, n_slots]
-        const T* C,           // [n_slots]
+        const T* h,           // [T+1, B, n_slots, dim]
+        const T* v,           // [T, B, n_slots, dim]
         const T* d_output,    // [T, B, dim]
         T* dx,                // [T, B, dim]
         T* dz,                // [T, B, dim]
-        T* d_decay,           // [dim, n_slots]
-        T* dB,                // [dim, n_slots]
+        T* dW_x,              // [dim, dim]
+        T* dW_h,              // [dim, dim]
+        T* db,                // [dim]
         T* dC,                // [n_slots]
-        T* workspace);        // [2 * B * dim * n_slots]
+        T* workspace,         // [(T+2)*B*n_slots*dim + T*B*dim + dim + n_slots]
+        cublasHandle_t blas_handle);
 
 private:
     int batch_size_;
