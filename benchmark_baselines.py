@@ -63,6 +63,8 @@ def get_args():
                         help="Warmup steps")
     parser.add_argument("--max_steps", type=int, default=1000,
                         help="Max training steps")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Training timeout in seconds (overrides max_steps)")
     parser.add_argument("--log_interval", type=int, default=50,
                         help="Log every N steps")
     parser.add_argument("--output", type=str, default="benchmark_results",
@@ -96,8 +98,11 @@ def train_model(model, dataset, args, model_name, output_dir):
     model = model.to(device=device, dtype=dtype)
     num_params = model.get_num_params()
 
+    timeout = args.timeout
+    mode = f"timeout={timeout}s" if timeout else f"steps={args.max_steps}"
+
     print(f"\n{'='*60}")
-    print(f"Training: {model_name}")
+    print(f"Training: {model_name} ({mode})")
     print(f"Parameters: {format_params(num_params)}")
     print(f"{'='*60}")
 
@@ -134,9 +139,18 @@ def train_model(model, dataset, args, model_name, output_dir):
     optimizer.train()
     start_time = time.time()
     tokens_seen = 0
+    step = 0
+    max_steps = args.max_steps if not timeout else 1000000  # effectively unlimited if timeout
 
-    for step in range(1, args.max_steps + 1):
+    while step < max_steps:
+        step += 1
         step_start = time.time()
+
+        # Check timeout
+        elapsed = time.time() - start_time
+        if timeout and elapsed >= timeout:
+            print(f"[{model_name}] Timeout reached at {elapsed:.1f}s")
+            break
 
         # Get batch - DocumentStreamDataset uses __getitem__ per sample
         batch_chunks = []
@@ -177,7 +191,7 @@ def train_model(model, dataset, args, model_name, output_dir):
 
             print(f"[{model_name}] step {step:4d} | loss {loss_val:.4f} | "
                   f"ppl {perplexity:.1f} | grad {grad_val:.2f} | "
-                  f"{tps:.0f} tok/s | {step_time_ms:.0f}ms/step")
+                  f"{tps:.0f} tok/s | {elapsed:.1f}s | {step_time_ms:.0f}ms/step")
 
             results["losses"].append(loss_val)
             results["grad_norms"].append(grad_val)
@@ -193,6 +207,7 @@ def train_model(model, dataset, args, model_name, output_dir):
                     "lr": lr,
                     "tokens_seen": tokens_seen,
                     "tokens_per_sec": tps,
+                    "elapsed_s": elapsed,
                     "step_time_ms": step_time_ms,
                 }
                 f.write(json.dumps(record) + "\n")
@@ -203,9 +218,12 @@ def train_model(model, dataset, args, model_name, output_dir):
     results["final_grad_norm"] = sum(results["grad_norms"][-last_n:]) / last_n if results["grad_norms"] else 0
     results["avg_step_time_ms"] = sum(results["step_times_ms"]) / len(results["step_times_ms"]) if results["step_times_ms"] else 0
     results["total_time_s"] = time.time() - start_time
+    results["total_steps"] = step
+    results["tokens_seen"] = tokens_seen
 
     print(f"\n{model_name} Final: loss={results['final_loss']:.4f}, "
           f"grad={results['final_grad_norm']:.2f}, "
+          f"steps={step}, tokens={tokens_seen:,}, "
           f"time={results['total_time_s']:.1f}s")
 
     # Clear GPU memory
@@ -315,16 +333,18 @@ def main():
         all_results.append(results)
 
     # Summary
-    print("\n" + "="*70)
+    print("\n" + "="*90)
     print("BENCHMARK SUMMARY")
-    print("="*70)
-    print(f"{'Model':<15} {'Params':<12} {'Final Loss':<12} {'Grad Norm':<12} {'Time (s)':<10}")
-    print("-"*70)
+    print("="*90)
+    print(f"{'Model':<15} {'Params':<12} {'Loss':<10} {'Steps':<8} {'Tokens':<12} {'tok/s':<10} {'Time':<8}")
+    print("-"*90)
 
     for r in sorted(all_results, key=lambda x: x["final_loss"]):
+        tps = r.get('tokens_seen', 0) / r['total_time_s'] if r['total_time_s'] > 0 else 0
         print(f"{r['model']:<15} {format_params(r['num_params']):<12} "
-              f"{r['final_loss']:<12.4f} {r['final_grad_norm']:<12.2f} "
-              f"{r['total_time_s']:<10.1f}")
+              f"{r['final_loss']:<10.4f} {r.get('total_steps', 0):<8} "
+              f"{r.get('tokens_seen', 0):<12,} {tps:<10.0f} "
+              f"{r['total_time_s']:<8.1f}s")
 
     # Save summary
     summary_path = output_dir / "summary.json"
