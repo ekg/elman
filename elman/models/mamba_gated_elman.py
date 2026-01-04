@@ -19,6 +19,33 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    MAMBA_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'mamba_gated_elman_forward')
+except ImportError:
+    MAMBA_CUDA_AVAILABLE = False
+
+
+class MambaGatedElmanFunction(torch.autograd.Function):
+    """CUDA-accelerated mamba-gated elman autograd function."""
+
+    @staticmethod
+    def forward(ctx, training, x, z, h0, W_x, W_h, b):
+        h, output, v = hasty_pytorch_lib.mamba_gated_elman_forward(
+            training, x, z, h0, W_x, W_h, b
+        )
+        ctx.save_for_backward(W_x, W_h, x, z, h, v)
+        return h, output
+
+    @staticmethod
+    def backward(ctx, dh, d_output):
+        W_x, W_h, x, z, h, v = ctx.saved_tensors
+        dx, dz, dW_x, dW_h, db = hasty_pytorch_lib.mamba_gated_elman_backward(
+            W_x, W_h, x, z, h, v, d_output.contiguous()
+        )
+        return None, dx, dz, None, dW_x, dW_h, db
+
 
 class MambaGatedElmanCell(nn.Module):
     """
@@ -84,7 +111,20 @@ class MambaGatedElmanCell(nn.Module):
 
         W_h = self.get_W_h()
 
-        # PyTorch loop (could be replaced with CUDA kernel)
+        # Use CUDA kernel if available
+        if MAMBA_CUDA_AVAILABLE and x.is_cuda:
+            h, output = MambaGatedElmanFunction.apply(
+                self.training,
+                x.contiguous(),
+                z.contiguous(),
+                h0.contiguous(),
+                self.W_x.contiguous(),
+                W_h.contiguous(),
+                self.b.contiguous()
+            )
+            return output, h
+
+        # PyTorch fallback
         h_list = [h0]
         output_list = []
 

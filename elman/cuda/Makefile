@@ -23,7 +23,9 @@ GPU_ARCH_FLAGS := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,c
 
 # E-Series CUDA kernels (archived kernels in lib/archive/)
 CUDA_OBJS := \
-	lib/stock_elman_gpu.o
+	lib/stock_elman_gpu.o \
+	lib/mamba_gated_elman_gpu.o \
+	lib/slot_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
