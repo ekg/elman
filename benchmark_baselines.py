@@ -47,7 +47,7 @@ def get_args():
     parser.add_argument("--data", type=str, required=True,
                         help="Path to training data")
     parser.add_argument("--model", type=str, default="all",
-                        choices=["all", "gru", "lstm", "mamba2", "pure", "x_gated", "diagonal",
+                        choices=["all", "gru", "lstm", "mamba2", "pure", "auto", "ssm", "x_gated", "diagonal",
                                  "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
                                  "log_0", "log_1", "log_2", "log_3", "log_4", "log_5", "log_6"],
                         help="Model to benchmark (default: all)")
@@ -283,6 +283,20 @@ def main():
             model = create_ladder_model(
                 target_params=args.params,
                 level='diagonal',
+                vocab_size=args.vocab_size,
+            )
+        elif model_name == "auto":
+            # Auto Elman (autonomous hidden, input-only gating)
+            model = create_ladder_model(
+                target_params=args.params,
+                level='auto',
+                vocab_size=args.vocab_size,
+            )
+        elif model_name == "ssm":
+            # SSM Elman (Mamba2-style diagonal SSM)
+            model = create_ladder_model(
+                target_params=args.params,
+                level='ssm',
                 vocab_size=args.vocab_size,
             )
         elif model_name.startswith("log_") or model_name.isdigit():

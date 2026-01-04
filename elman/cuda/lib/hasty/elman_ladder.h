@@ -99,6 +99,151 @@ private:
 };
 
 // =============================================================================
+// Auto Elman - Autonomous hidden state with input-only gating
+// h_t = tanh(W_h @ h_{t-1} + b_h)           -- hidden evolves autonomously
+// output_t = h_t * silu(W_gate @ x_t + b_gate)  -- input only selects output
+// =============================================================================
+
+template<typename T>
+struct AutoElmanForward {
+    AutoElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,       // [dim, dim] hidden-to-hidden
+        const T* W_gate,    // [dim, dim] input gate projection
+        const T* b_h,       // [dim] hidden bias
+        const T* b_gate,    // [dim] gate bias
+        const T* x,         // [T, B, dim] input (only used for gating)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* gate_cache);     // [T, B, dim] gate cache
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct AutoElmanBackward {
+    AutoElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,
+        const T* W_gate,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* gate_cache,
+        const T* d_output,
+        T* dx,              // [T, B, dim] gradient only from gate
+        T* dW_h,            // [dim, dim]
+        T* dW_gate,         // [dim, dim]
+        T* db_h,            // [dim]
+        T* db_gate,         // [dim]
+        T* workspace);      // [(2*T+2)*B*dim + ceil(2*dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// SSM Elman - Mamba2-style state space model with learned gate
+// B_t = W_B @ x_t                           (input projection)
+// C_t = W_C @ x_t                           (output projection)
+// dt_t = softplus(W_dt @ x_t + b_dt)        (input-dependent timestep)
+// A = sigmoid(a_log)                        (learned diagonal decay)
+// h_t = A * h_{t-1} + W_h @ h_{t-1} + dt_t * B_t   (SSM + mixing)
+// y_t = C_t * h_t                           (selective output)
+// =============================================================================
+
+template<typename T>
+struct SSMElmanForward {
+    SSMElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_B,       // [dim, dim] input -> B
+        const T* W_C,       // [dim, dim] input -> C
+        const T* W_h,       // [dim, dim] hidden -> hidden mixing
+        const T* W_dt,      // [dim, dim] input -> dt
+        const T* a_log,     // [dim] log decay (before sigmoid)
+        const T* b_dt,      // [dim] dt bias
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim] hidden states
+        T* y,               // [T, B, dim] output
+        T* B_proj_cache,    // [T, B, dim] B projections (for backward)
+        T* C_proj_cache,    // [T, B, dim] C projections (for backward)
+        T* dt_cache);       // [T, B, dim] pre-softplus dt values
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SSMElmanBackward {
+    SSMElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_B,
+        const T* W_C,
+        const T* W_h,
+        const T* W_dt,
+        const T* a_log,
+        const T* x,
+        const T* h,
+        const T* B_proj_cache,
+        const T* C_proj_cache,
+        const T* dt_cache,
+        const T* dy,
+        T* dx,
+        T* dW_B,
+        T* dW_C,
+        T* dW_h,
+        T* dW_dt,
+        T* da_log,
+        T* db_dt,
+        T* workspace);      // [4*T*B*dim + 3*B*dim + 2*dim*sizeof(float)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // X-Gated Elman (x-only gating with learned W_gate)
 // h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
 // output = h * silu(W_gate @ x + b_gate)  -- x-only with learned projection
