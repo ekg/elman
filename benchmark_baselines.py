@@ -33,6 +33,14 @@ from elman.models import create_ladder_model
 from elman.models.gru_baseline import create_gru_model, GRULM
 from elman.models.lstm_baseline import create_lstm_model, LSTMLM
 from elman.data import DocumentStreamDataset
+from elman.data.dataset import FastTokenizedDataset, TokenizedStreamDataset
+
+# Optional tiktoken
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
 
 # Optional Mamba2
 try:
@@ -71,6 +79,11 @@ def get_args():
                         help="Output directory")
     parser.add_argument("--vocab_size", type=int, default=256,
                         help="Vocabulary size (default: 256 for byte-level)")
+    parser.add_argument("--tokenizer", type=str, default="byte",
+                        choices=["byte", "p50k_base", "cl100k_base"],
+                        help="Tokenizer (byte=256 vocab, p50k_base=50k, cl100k_base=100k)")
+    parser.add_argument("--streaming", action="store_true",
+                        help="Use streaming tokenization (CPU parallel) instead of pre-tokenized cache")
 
     return parser.parse_args()
 
@@ -90,7 +103,7 @@ def get_lr(step, warmup_steps, max_lr, max_steps):
     return max_lr * 0.5 * (1 + math.cos(math.pi * progress))
 
 
-def train_model(model, dataset, args, model_name, output_dir):
+def train_model(model, dataset, args, model_name, output_dir, use_batched_dataset=False):
     """Train a model and return final metrics."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16
@@ -104,6 +117,7 @@ def train_model(model, dataset, args, model_name, output_dir):
     print(f"\n{'='*60}")
     print(f"Training: {model_name} ({mode})")
     print(f"Parameters: {format_params(num_params)}")
+    print(f"Vocab size: {args.vocab_size:,}")
     print(f"{'='*60}")
 
     optimizer = AdamWScheduleFree(
@@ -152,15 +166,20 @@ def train_model(model, dataset, args, model_name, output_dir):
             print(f"[{model_name}] Timeout reached at {elapsed:.1f}s")
             break
 
-        # Get batch - DocumentStreamDataset uses __getitem__ per sample
-        batch_chunks = []
-        batch_lengths = []
-        for _ in range(args.batch_size):
-            chunk, _, actual_length = dataset[0]
-            batch_chunks.append(chunk)
-            batch_lengths.append(actual_length)
-        batch = torch.stack(batch_chunks).to(device)
-        actual_lengths = torch.tensor(batch_lengths, device=device)
+        # Get batch
+        if use_batched_dataset:
+            # FastTokenizedDataset uses get_batch()
+            batch, _, actual_lengths = dataset.get_batch(device=device)
+        else:
+            # DocumentStreamDataset uses __getitem__ per sample
+            batch_chunks = []
+            batch_lengths = []
+            for _ in range(args.batch_size):
+                chunk, _, actual_length = dataset[0]
+                batch_chunks.append(chunk)
+                batch_lengths.append(actual_length)
+            batch = torch.stack(batch_chunks).to(device)
+            actual_lengths = torch.tensor(batch_lengths, device=device)
 
         # Forward - compute loss with padding mask
         optimizer.zero_grad()
@@ -250,13 +269,47 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create dataset - byte-level like train.py
+    # Setup tokenizer and vocab size
+    if args.tokenizer == "byte":
+        tokenizer = None
+        vocab_size = 256
+    else:
+        if not TIKTOKEN_AVAILABLE:
+            print("Error: tiktoken not installed. Install with: pip install tiktoken")
+            sys.exit(1)
+        tokenizer = tiktoken.get_encoding(args.tokenizer)
+        vocab_size = tokenizer.n_vocab
+        print(f"Using {args.tokenizer} tokenizer with vocab size {vocab_size:,}")
+
+    # Override vocab_size if tokenizer is set
+    if args.tokenizer != "byte":
+        args.vocab_size = vocab_size
+
+    # Create dataset
     print(f"Loading data from {args.data}...")
-    dataset = DocumentStreamDataset(
-        data_path=args.data,
-        chunk_size=args.chunk_size + 1,
-        seed=42,
-    )
+    if tokenizer is None:
+        dataset = DocumentStreamDataset(
+            data_path=args.data,
+            chunk_size=args.chunk_size + 1,
+            seed=42,
+        )
+    elif args.streaming:
+        print("Using streaming tokenization (CPU parallel)")
+        dataset = TokenizedStreamDataset(
+            data_path=args.data,
+            tokenizer=tokenizer,
+            batch_size=args.batch_size,
+            chunk_size=args.chunk_size + 1,
+            seed=42,
+        )
+    else:
+        dataset = FastTokenizedDataset(
+            data_path=args.data,
+            tokenizer=tokenizer,
+            batch_size=args.batch_size,
+            chunk_size=args.chunk_size + 1,
+            seed=42,
+        )
 
     # Models to benchmark
     if args.model == "all":
@@ -329,7 +382,8 @@ def main():
             print(f"Unknown model: {model_name}")
             continue
 
-        results = train_model(model, dataset, args, model_name, output_dir)
+        use_batched = (tokenizer is not None)
+        results = train_model(model, dataset, args, model_name, output_dir, use_batched_dataset=use_batched)
         all_results.append(results)
 
     # Summary

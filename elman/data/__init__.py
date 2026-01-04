@@ -4,7 +4,7 @@ Data loading utilities for Elman Ladder training.
 
 from .dataset import (
     DocumentStreamDataset, BatchedStreamDataset,
-    TokenizedStreamDataset, create_dataloader
+    TokenizedStreamDataset, FastTokenizedDataset, create_dataloader
 )
 from .tokenizers import (
     BaseTokenizer, ByteTokenizer, TikTokenTokenizer,
@@ -13,7 +13,7 @@ from .tokenizers import (
 
 __all__ = [
     'DocumentStreamDataset', 'BatchedStreamDataset', 'TokenizedStreamDataset',
-    'create_dataloader',
+    'FastTokenizedDataset', 'create_dataloader',
     'BaseTokenizer', 'ByteTokenizer', 'TikTokenTokenizer',
     'SentencePieceTokenizer', 'HuggingFaceTokenizer', 'get_tokenizer',
 ]

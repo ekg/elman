@@ -31,3 +31,6 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# PDF output
+*.pdf
