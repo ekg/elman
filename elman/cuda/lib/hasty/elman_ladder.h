@@ -466,6 +466,171 @@ private:
 };
 
 // =============================================================================
+// E5 Fused: Pure Low-Rank Elman with Optimized Fused Kernels
+// Same math as E5, but fuses tanh+gate into single kernel (3 ops/step vs 4)
+// =============================================================================
+
+template<typename T>
+struct PureLowRankElmanForwardFused {
+    PureLowRankElmanForwardFused(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,       // [dim, rank]
+        const T* V_h,       // [rank, dim]
+        const T* U_x,       // [dim, rank]
+        const T* V_x,       // [rank, dim]
+        const T* U_z,       // [dim, rank]
+        const T* V_z,       // [rank, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [2*T*BR + 2*T*BD + BR + BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    bool graph_captured_;
+    int captured_steps_;
+};
+
+template<typename T>
+struct PureLowRankElmanBackwardFused {
+    PureLowRankElmanBackwardFused(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,
+        const T* V_h,
+        const T* U_x,
+        const T* V_x,
+        const T* U_z,
+        const T* V_z,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dU_h,
+        T* dV_h,
+        T* dU_x,
+        T* dV_x,
+        T* dU_z,
+        T* dV_z,
+        T* db,
+        T* workspace);      // [5*BD + 7*BR + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E5 B2B: Pure Low-Rank Elman with CUTLASS B2B GEMM Fusion
+// Same math as E5, but fuses the two sequential GEMMs (V_h @ h, U_h @ result)
+// into a single kernel using CUTLASS two-tensor-op fusion.
+// Keeps intermediate result in shared memory, eliminating global memory roundtrip.
+//
+// Constraints: rank must be 64, 128, or 256 (ThreadblockShape requirement)
+// =============================================================================
+
+template<typename T>
+struct B2bLowRankElmanForward {
+    B2bLowRankElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,       // [dim, rank]
+        const T* V_h,       // [rank, dim]
+        const T* U_x,       // [dim, rank]
+        const T* V_x,       // [rank, dim]
+        const T* U_z,       // [dim, rank]
+        const T* V_z,       // [rank, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [2*T*BR + 2*T*BD + 2*BR + 2*BD]
+
+    bool isB2bSupported() const { return b2b_supported_; }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    bool b2b_supported_;
+};
+
+template<typename T>
+struct B2bLowRankElmanBackward {
+    B2bLowRankElmanBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,
+        const T* V_h,
+        const T* U_x,
+        const T* V_x,
+        const T* U_z,
+        const T* V_z,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dU_h,
+        T* dV_h,
+        T* dU_x,
+        T* dV_x,
+        T* dU_z,
+        T* dV_z,
+        T* db,
+        T* workspace);      // [5*BD + 7*BR + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E6: Diagonal Elman (per-channel scalar recurrence + low-rank mixing)
 // h_t = gate * h_{t-1} + (1 - gate) * x_t   (per-channel EMA)
 // y_t = U @ V @ h_t * silu(x_t)             (low-rank cross-channel mix)

@@ -869,6 +869,315 @@ std::vector<Tensor> pure_lowrank_elman_backward(
 }
 
 // =============================================================================
+// E5 Fused: Pure Low-Rank Elman with optimized kernel fusion
+// Same API as E5, but uses fused tanh+gate kernel (25% fewer kernel launches)
+// =============================================================================
+
+std::vector<Tensor> pure_lowrank_elman_forward_fused(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor U_h,         // [dim, rank]
+    Tensor V_h,         // [rank, dim]
+    Tensor U_x,         // [dim, rank]
+    Tensor V_x,         // [rank, dim]
+    Tensor U_z,         // [dim, rank]
+    Tensor V_z,         // [rank, dim]
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto rank = U_h.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(U_h);
+    CHECK_INPUT(V_h);
+    CHECK_INPUT(U_x);
+    CHECK_INPUT(V_x);
+    CHECK_INPUT(U_z);
+    CHECK_INPUT(V_z);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Workspace: [2*T*BR + 2*T*BD + BR + BD]
+    const int64_t BD = batch_size * dim;
+    const int64_t BR = batch_size * rank;
+    Tensor workspace = torch::empty({2 * time_steps * BR + 2 * time_steps * BD + BR + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "pure_lowrank_elman_forward_fused", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        PureLowRankElmanForwardFused<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, rank,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(U_h),
+            ptr<scalar_t>(V_h),
+            ptr<scalar_t>(U_x),
+            ptr<scalar_t>(V_x),
+            ptr<scalar_t>(U_z),
+            ptr<scalar_t>(V_z),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v};
+}
+
+std::vector<Tensor> pure_lowrank_elman_backward_fused(
+    Tensor U_h,         // [dim, rank]
+    Tensor V_h,         // [rank, dim]
+    Tensor U_x,         // [dim, rank]
+    Tensor V_x,         // [rank, dim]
+    Tensor U_z,         // [dim, rank]
+    Tensor V_z,         // [rank, dim]
+    Tensor x,           // [T, B, dim]
+    Tensor h,           // [T+1, B, dim]
+    Tensor v,           // [T, B, dim] pre-activation cache
+    Tensor d_output) {  // [T, B, dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto rank = U_h.size(1);
+
+    CHECK_INPUT(U_h);
+    CHECK_INPUT(V_h);
+    CHECK_INPUT(U_x);
+    CHECK_INPUT(V_x);
+    CHECK_INPUT(U_z);
+    CHECK_INPUT(V_z);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dU_h = torch::zeros({dim, rank}, options);
+    Tensor dV_h = torch::zeros({rank, dim}, options);
+    Tensor dU_x = torch::zeros({dim, rank}, options);
+    Tensor dV_x = torch::zeros({rank, dim}, options);
+    Tensor dU_z = torch::zeros({dim, rank}, options);
+    Tensor dV_z = torch::zeros({rank, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace: [5*BD + 7*BR + dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t BR = batch_size * rank;
+    const int64_t float_dim = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    Tensor workspace = torch::empty({5 * BD + 7 * BR + float_dim * 2}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "pure_lowrank_elman_backward_fused", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        PureLowRankElmanBackwardFused<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, rank,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(U_h),
+            ptr<scalar_t>(V_h),
+            ptr<scalar_t>(U_x),
+            ptr<scalar_t>(V_x),
+            ptr<scalar_t>(U_z),
+            ptr<scalar_t>(V_z),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dU_h),
+            ptr<scalar_t>(dV_h),
+            ptr<scalar_t>(dU_x),
+            ptr<scalar_t>(dV_x),
+            ptr<scalar_t>(dU_z),
+            ptr<scalar_t>(dV_z),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db};
+}
+
+// =============================================================================
+// E5 B2B: Pure Low-Rank Elman with CUTLASS B2B GEMM fusion
+// Fuses V_h @ h and U_h @ result into single kernel (keeps intermediate in smem)
+// Requires rank = 64, 128, or 256 (ThreadblockShape constraint)
+// =============================================================================
+
+std::vector<Tensor> b2b_lowrank_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor U_h,         // [dim, rank]
+    Tensor V_h,         // [rank, dim]
+    Tensor U_x,         // [dim, rank]
+    Tensor V_x,         // [rank, dim]
+    Tensor U_z,         // [dim, rank]
+    Tensor V_z,         // [rank, dim]
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto rank = U_h.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(U_h);
+    CHECK_INPUT(V_h);
+    CHECK_INPUT(U_x);
+    CHECK_INPUT(V_x);
+    CHECK_INPUT(U_z);
+    CHECK_INPUT(V_z);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Workspace: [2*T*BR + 2*T*BD + 2*BR + 2*BD]
+    const int64_t BD = batch_size * dim;
+    const int64_t BR = batch_size * rank;
+    Tensor workspace = torch::empty({2 * time_steps * BR + 2 * time_steps * BD + 2 * BR + 2 * BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "b2b_lowrank_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        B2bLowRankElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, rank,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(U_h),
+            ptr<scalar_t>(V_h),
+            ptr<scalar_t>(U_x),
+            ptr<scalar_t>(V_x),
+            ptr<scalar_t>(U_z),
+            ptr<scalar_t>(V_z),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v};
+}
+
+std::vector<Tensor> b2b_lowrank_elman_backward(
+    Tensor U_h,         // [dim, rank]
+    Tensor V_h,         // [rank, dim]
+    Tensor U_x,         // [dim, rank]
+    Tensor V_x,         // [rank, dim]
+    Tensor U_z,         // [dim, rank]
+    Tensor V_z,         // [rank, dim]
+    Tensor x,           // [T, B, dim]
+    Tensor h,           // [T+1, B, dim]
+    Tensor v,           // [T, B, dim] pre-activation cache
+    Tensor d_output) {  // [T, B, dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto rank = U_h.size(1);
+
+    CHECK_INPUT(U_h);
+    CHECK_INPUT(V_h);
+    CHECK_INPUT(U_x);
+    CHECK_INPUT(V_x);
+    CHECK_INPUT(U_z);
+    CHECK_INPUT(V_z);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dU_h = torch::zeros({dim, rank}, options);
+    Tensor dV_h = torch::zeros({rank, dim}, options);
+    Tensor dU_x = torch::zeros({dim, rank}, options);
+    Tensor dV_x = torch::zeros({rank, dim}, options);
+    Tensor dU_z = torch::zeros({dim, rank}, options);
+    Tensor dV_z = torch::zeros({rank, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace: [5*BD + 7*BR + dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t BR = batch_size * rank;
+    const int64_t float_dim = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    Tensor workspace = torch::empty({5 * BD + 7 * BR + float_dim * 2}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "b2b_lowrank_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        B2bLowRankElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, rank,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(U_h),
+            ptr<scalar_t>(V_h),
+            ptr<scalar_t>(U_x),
+            ptr<scalar_t>(V_x),
+            ptr<scalar_t>(U_z),
+            ptr<scalar_t>(V_z),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dU_h),
+            ptr<scalar_t>(dV_h),
+            ptr<scalar_t>(dU_x),
+            ptr<scalar_t>(dV_x),
+            ptr<scalar_t>(dU_z),
+            ptr<scalar_t>(dV_z),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db};
+}
+
+// =============================================================================
 // E6: Diagonal Elman (per-channel scalar recurrence + low-rank mixing)
 // =============================================================================
 
@@ -1014,6 +1323,14 @@ void elman_ladder_init(py::module& m) {
           "E5: Pure Low-Rank Elman forward");
     m.def("pure_lowrank_elman_backward", &pure_lowrank_elman_backward,
           "E5: Pure Low-Rank Elman backward");
+    m.def("pure_lowrank_elman_forward_fused", &pure_lowrank_elman_forward_fused,
+          "E5 Fused: Pure Low-Rank Elman forward (optimized)");
+    m.def("pure_lowrank_elman_backward_fused", &pure_lowrank_elman_backward_fused,
+          "E5 Fused: Pure Low-Rank Elman backward (optimized)");
+    m.def("b2b_lowrank_elman_forward", &b2b_lowrank_elman_forward,
+          "E5 B2B: Pure Low-Rank Elman forward (CUTLASS B2B fusion, requires rank=64/128/256)");
+    m.def("b2b_lowrank_elman_backward", &b2b_lowrank_elman_backward,
+          "E5 B2B: Pure Low-Rank Elman backward");
     m.def("diagonal_elman_forward", &diagonal_elman_forward,
           "E6: Diagonal Elman forward");
     m.def("diagonal_elman_backward", &diagonal_elman_backward,
