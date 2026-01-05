@@ -580,6 +580,7 @@ struct B2bLowRankElmanForward {
         T* workspace);      // [2*T*BR + 2*T*BD + 2*BR + 2*BD]
 
     bool isB2bSupported() const { return b2b_supported_; }
+    bool usesTiledB2b() const { return use_tiled_b2b_; }
 
 private:
     bool training_;
@@ -588,7 +589,8 @@ private:
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
-    bool b2b_supported_;
+    bool b2b_supported_;      // CUTLASS B2B GEMM (small dim only)
+    bool use_tiled_b2b_;      // Custom tiled B2B GEMM (any dim)
 };
 
 template<typename T>

@@ -23,6 +23,7 @@
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
 #include <type_traits>
+#include <limits>
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
@@ -34,6 +35,9 @@
 
 // B2B GEMM device header (from CUTLASS example 13)
 #include "cutlass_b2b/device/b2b_gemm.h"
+
+// Custom tiled B2B GEMM kernel for large dim
+#include "tiled_b2b_gemm_kernel.cuh"
 
 #include "hasty/elman_ladder.h"
 #include "blas.h"
@@ -106,16 +110,19 @@ struct B2bGemmTypes_Rank64 {
     using ElementAccumulator = float;  // Use fp32 accumulator for stability
     using ElementCompute = float;
 
-    // Threadblock tile sizes - N0 must equal rank (64)
-    using ThreadblockShape0 = cutlass::gemm::GemmShape<128, 64, 32>;  // M, N, K
-    using ThreadblockShape1 = cutlass::gemm::GemmShape<128, 128, 32>; // M, N, K (N=dim tiles)
+    // Threadblock tile sizes
+    // B2B constraints:
+    //   - ThreadblockShape0::kN >= rank (intermediate must fit in tile)
+    //   - ThreadblockShape1::kN >= dim (output must fit in tile)
+    // Using kN=256 for Shape1 to support dim up to 256
+    using ThreadblockShape0 = cutlass::gemm::GemmShape<128, 64, 32>;  // M, N>=rank=64, K
+    using ThreadblockShape1 = cutlass::gemm::GemmShape<128, 256, 32>; // M, N>=dim, K
     using WarpShape0 = cutlass::gemm::GemmShape<64, 32, 32>;
     using WarpShape1 = cutlass::gemm::GemmShape<64, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
     // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
-    // NOTE: This applies max(0, x) to intermediate values which is incorrect
-    // for our use case. TODO: Modify CUTLASS to support identity epilogue.
+    // Use threshold=-inf in Params to disable ReLU: max(-inf, x) = x
     using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
         InstructionShape::kM * InstructionShape::kN / 32,
@@ -172,15 +179,17 @@ struct B2bGemmTypes_Rank128 {
     using ElementAccumulator = float;
     using ElementCompute = float;
 
-    // N0 must equal rank (128)
-    using ThreadblockShape0 = cutlass::gemm::GemmShape<128, 128, 32>;
-    using ThreadblockShape1 = cutlass::gemm::GemmShape<128, 128, 32>;
+    // B2B constraints:
+    //   - ThreadblockShape0::kN >= rank (intermediate must fit in tile)
+    //   - ThreadblockShape1::kN >= dim (output must fit in tile)
+    using ThreadblockShape0 = cutlass::gemm::GemmShape<128, 128, 32>;  // M, N>=rank=128, K
+    using ThreadblockShape1 = cutlass::gemm::GemmShape<128, 256, 32>;  // M, N>=dim, K
     using WarpShape0 = cutlass::gemm::GemmShape<64, 64, 32>;
     using WarpShape1 = cutlass::gemm::GemmShape<64, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
     // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
-    // NOTE: This applies max(0, x) which is incorrect for our use case
+    // Use threshold=-inf in Params to disable ReLU: max(-inf, x) = x
     using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
         InstructionShape::kM * InstructionShape::kN / 32,
@@ -231,15 +240,17 @@ struct B2bGemmTypes_Rank256 {
     using ElementAccumulator = float;
     using ElementCompute = float;
 
-    // N0 must equal rank (256)
-    using ThreadblockShape0 = cutlass::gemm::GemmShape<64, 256, 32>;
-    using ThreadblockShape1 = cutlass::gemm::GemmShape<64, 256, 32>;
+    // B2B constraints:
+    //   - ThreadblockShape0::kN >= rank (intermediate must fit in tile)
+    //   - ThreadblockShape1::kN >= dim (output must fit in tile)
+    using ThreadblockShape0 = cutlass::gemm::GemmShape<64, 256, 32>;   // M, N>=rank=256, K
+    using ThreadblockShape1 = cutlass::gemm::GemmShape<64, 256, 32>;   // M, N>=dim, K
     using WarpShape0 = cutlass::gemm::GemmShape<32, 64, 32>;
     using WarpShape1 = cutlass::gemm::GemmShape<32, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
     // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
-    // NOTE: This applies max(0, x) which is incorrect for our use case
+    // Use threshold=-inf in Params to disable ReLU: max(-inf, x) = x
     using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
         InstructionShape::kM * InstructionShape::kN / 32,
@@ -294,6 +305,7 @@ void RunB2bGemm(
     const T* V_h,      // [rank, dim] row-major (interpreted as V_h^T column-major)
     const T* U_h,      // [dim, rank] row-major (interpreted as U_h^T column-major)
     T* output,         // [batch, dim] row-major
+    float* bias0_zeros, // [rank] zero-filled workspace for bias
     cudaStream_t stream) {
 
     using CutlassT = typename CutlassType<T>::type;
@@ -323,14 +335,16 @@ void RunB2bGemm(
         nullptr,
         LayoutRowMajor(rank));
 
-    // Scale0, Bias0: unused (identity epilogue for GEMM0)
-    // ElementScaleBias = float based on EpilogueOutputOp0::ElementCompute
+    // Scale0: not used with OnlyAlphaScaling
     cutlass::TensorRef<typename B2bGemmOp::ElementScaleBias, typename B2bGemmOp::LayoutScaleBias> ref_Scale0(
         nullptr,
         typename B2bGemmOp::LayoutScaleBias(0));
+
+    // Bias0: MUST be a valid zero-filled buffer (CUTLASS always loads from it)
+    // Size is (1, rank) with stride = rank
     cutlass::TensorRef<typename B2bGemmOp::ElementScaleBias, typename B2bGemmOp::LayoutScaleBias> ref_Bias0(
-        nullptr,
-        typename B2bGemmOp::LayoutScaleBias(0));
+        bias0_zeros,
+        typename B2bGemmOp::LayoutScaleBias(rank));
 
     // B1: U_h^T, ColumnMajor (rank × dim)
     // U_h stored as (dim, rank) row-major, reinterpreted as column-major with stride = rank
@@ -349,7 +363,10 @@ void RunB2bGemm(
         LayoutRowMajor(dim));
 
     // Epilogue params: alpha=1, beta=0 for both GEMMs (pure matrix multiply)
-    typename B2bGemmOp::EpilogueOutputOp0::Params epilogue0(1.0f, 0.0f);
+    // CRITICAL: Set threshold=-inf for epilogue0 to disable ReLU
+    // LinearCombinationRelu computes max(threshold, value), so -inf makes it identity
+    typename B2bGemmOp::EpilogueOutputOp0::Params epilogue0(
+        1.0f, 0.0f, -std::numeric_limits<float>::infinity());
     typename B2bGemmOp::EpilogueOutputOp1::Params epilogue1(1.0f, 0.0f);
 
     // Create Arguments with proper int64_t batch strides
@@ -405,6 +422,7 @@ RunB2bGemmDispatch(
     const T* V_h,
     const T* U_h,
     T* output,
+    float* bias0_zeros,
     cudaStream_t stream) {
 
     using CutlassT = typename CutlassType<T>::type;
@@ -412,15 +430,15 @@ RunB2bGemmDispatch(
     if (rank == 64) {
         using B2bTypes = B2bGemmTypes_Rank64<CutlassT>;
         RunB2bGemm<typename B2bTypes::B2bGemm, T>(
-            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+            batch_size, dim, rank, h_prev, V_h, U_h, output, bias0_zeros, stream);
     } else if (rank == 128) {
         using B2bTypes = B2bGemmTypes_Rank128<CutlassT>;
         RunB2bGemm<typename B2bTypes::B2bGemm, T>(
-            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+            batch_size, dim, rank, h_prev, V_h, U_h, output, bias0_zeros, stream);
     } else if (rank == 256) {
         using B2bTypes = B2bGemmTypes_Rank256<CutlassT>;
         RunB2bGemm<typename B2bTypes::B2bGemm, T>(
-            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+            batch_size, dim, rank, h_prev, V_h, U_h, output, bias0_zeros, stream);
     }
     // else: unsupported rank, caller should have validated
 }
@@ -436,6 +454,7 @@ RunB2bGemmDispatch(
     const T* /*V_h*/,
     const T* /*U_h*/,
     T* /*output*/,
+    float* /*bias0_zeros*/,
     cudaStream_t /*stream*/) {
     // B2B GEMM not supported for this type - caller should use cuBLAS fallback
 }
@@ -465,11 +484,13 @@ B2bLowRankElmanForward<T>::B2bLowRankElmanForward(
       rank_(rank),
       blas_handle_(blas_handle),
       stream_(stream),
-      // B2B GEMM disabled: CUTLASS B2B requires ReLU epilogue which breaks correctness
-      // TODO: Modify CUTLASS B2B to support identity epilogue (no activation)
-      // Infrastructure is in place - just need to enable when identity epilogue works
-      b2b_supported_(false) {}
-      // When ready: CutlassType<T>::supported && (rank == 64 || rank == 128 || rank == 256)
+      // CUTLASS B2B GEMM only works when dim <= 256 (ThreadblockShape1::kN constraint)
+      // For larger dim, fall back to cuBLAS sequential GEMMs
+      b2b_supported_(CutlassType<T>::supported && dim <= 256 &&
+                     (rank == 64 || rank == 128 || rank == 256)),
+      // Custom tiled kernel disabled - too slow without tensor cores (~57x slower than cuBLAS)
+      // Would need WMMA/MMA intrinsics to be competitive
+      use_tiled_b2b_(false) {}
 
 template<typename T>
 void B2bLowRankElmanForward<T>::Run(
@@ -497,12 +518,21 @@ void B2bLowRankElmanForward<T>::Run(
 
     // Workspace layout:
     // [tmp_Vx_all: T*BR] [tmp_UVx_all: T*BD] [tmp_Vz_all: T*BR] [tmp_UVz_all: T*BD]
-    // [tmp_UVh: BD] (for B2B output or sequential intermediate)
+    // [tmp_UVh: BD] [tmp_Vh: BR] [bias0_zeros: rank float]
     T* tmp_Vx_all = workspace;
     T* tmp_UVx_all = tmp_Vx_all + steps * BR;
     T* tmp_Vz_all = tmp_UVx_all + steps * BD;
     T* tmp_UVz_all = tmp_Vz_all + steps * BR;
     T* tmp_UVh = tmp_UVz_all + steps * BD;
+    T* tmp_Vh = tmp_UVh + BD;
+    // bias0_zeros is placed after tmp_Vh (which is BR elements)
+    // Convert to float* for CUTLASS epilogue (ElementScaleBias = float)
+    float* bias0_zeros = reinterpret_cast<float*>(tmp_Vh + BR);
+
+    // Zero out bias0_zeros once at the start (reused for all timesteps)
+    if (b2b_supported_) {
+        cudaMemsetAsync(bias0_zeros, 0, rank_ * sizeof(float), stream_);
+    }
 
     // Pre-compute V_x @ x for all timesteps (time-parallel)
     blas<T>::gemm(
@@ -541,8 +571,6 @@ void B2bLowRankElmanForward<T>::Run(
         &beta_zero, tmp_UVz_all, dim_);
 
     // Sequential recurrence with CUTLASS B2B GEMM when supported
-    T* tmp_Vh = tmp_UVh + BD;  // Additional workspace for fallback
-
     for (int t = 0; t < steps; ++t) {
         const T* h_prev = h + t * BD;
         T* h_curr = h + (t + 1) * BD;
@@ -552,13 +580,19 @@ void B2bLowRankElmanForward<T>::Run(
         T* out_t = output + t * BD;
 
         if (b2b_supported_) {
-            // Use CUTLASS B2B GEMM fusion for h path
+            // Use CUTLASS B2B GEMM fusion for h path (small dim only)
             // Computes: tmp_UVh = U_h @ (V_h @ h_prev)
             RunB2bGemmDispatch<T>(
                 batch_size_, dim_, rank_,
+                h_prev, V_h, U_h, tmp_UVh, bias0_zeros, stream_);
+        } else if (use_tiled_b2b_) {
+            // Use custom tiled B2B GEMM kernel for large dim
+            // Keeps intermediate in shared memory, tiles over K (GEMM0) and N (GEMM1)
+            LaunchTiledB2bGemm<T>(
+                batch_size_, dim_, rank_,
                 h_prev, V_h, U_h, tmp_UVh, stream_);
         } else {
-            // Fallback: sequential cuBLAS GEMMs
+            // Fallback: sequential cuBLAS GEMMs (for float/double or unsupported configs)
             // V_h @ h_prev -> tmp_Vh
             blas<T>::gemm(
                 blas_handle_,
