@@ -39,6 +39,9 @@
 // Custom tiled B2B GEMM kernel for large dim
 #include "tiled_b2b_gemm_kernel.cuh"
 
+// WMMA tensor core B2B GEMM kernel for large dim with good performance
+#include "wmma_b2b_gemm_kernel.cuh"
+
 #include "hasty/elman_ladder.h"
 #include "blas.h"
 #include "inline_ops.h"
@@ -485,12 +488,12 @@ B2bLowRankElmanForward<T>::B2bLowRankElmanForward(
       blas_handle_(blas_handle),
       stream_(stream),
       // CUTLASS B2B GEMM only works when dim <= 256 (ThreadblockShape1::kN constraint)
-      // For larger dim, fall back to cuBLAS sequential GEMMs
+      // For larger dim, use WMMA tensor core kernel
       b2b_supported_(CutlassType<T>::supported && dim <= 256 &&
                      (rank == 64 || rank == 128 || rank == 256)),
-      // Custom tiled kernel disabled - too slow without tensor cores (~57x slower than cuBLAS)
-      // Would need WMMA/MMA intrinsics to be competitive
-      use_tiled_b2b_(false) {}
+      // WMMA tensor core kernel for large dim - requires rank multiple of 16, max 256
+      use_tiled_b2b_(CutlassType<T>::supported && dim > 256 &&
+                     rank % 16 == 0 && rank <= 256) {}
 
 template<typename T>
 void B2bLowRankElmanForward<T>::Run(
@@ -586,9 +589,9 @@ void B2bLowRankElmanForward<T>::Run(
                 batch_size_, dim_, rank_,
                 h_prev, V_h, U_h, tmp_UVh, bias0_zeros, stream_);
         } else if (use_tiled_b2b_) {
-            // Use custom tiled B2B GEMM kernel for large dim
-            // Keeps intermediate in shared memory, tiles over K (GEMM0) and N (GEMM1)
-            LaunchTiledB2bGemm<T>(
+            // Use WMMA tensor core B2B GEMM kernel for large dim
+            // Keeps intermediate in shared memory, uses tensor cores for acceleration
+            LaunchWmmaB2bGemm<T>(
                 batch_size_, dim_, rank_,
                 h_prev, V_h, U_h, tmp_UVh, stream_);
         } else {
