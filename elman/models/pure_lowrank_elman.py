@@ -1,14 +1,16 @@
 """
-E6: Diagonal Elman - Per-channel scalar recurrence + low-rank mixing.
+E5: Pure Low-Rank Elman - No projections, all low-rank on full dim.
 
 Architecture:
-    h_t = sigmoid(a) * h_{t-1} + (1 - sigmoid(a)) * x_t  # per-channel EMA
-    y_t = U @ V @ h_t * silu(x_t)  # low-rank cross-channel mix
+    h_t = tanh(U_h @ V_h @ h_{t-1} + U_x @ V_x @ x_t + b)
+    y_t = h_t * silu(U_z @ V_z @ x_t)
 
-Key insight: Diagonal recurrence is O(dim), mixing is O(dim * rank).
-Allows MASSIVE depth: 743 layers at 50M with rank=64!
+Key insight: No in_proj/out_proj. Hidden state IS dim.
+All matrices factored as U @ V (low-rank).
 
-This is essentially a learnable EMA per channel with cross-channel mixing.
+With rank=64, dim=512:
+- 197k params/layer (vs 1.3M for E1)
+- 252 layers for 50M (vs 38 for E1)
 """
 
 import torch
@@ -23,55 +25,64 @@ except ImportError:
     HASTY_AVAILABLE = False
 
 
-class DiagonalElmanFunction(Function):
-    """CUDA-backed E6 forward/backward."""
+class PureLowRankElmanFunction(Function):
+    """CUDA-backed E5 forward/backward."""
 
     @staticmethod
-    def forward(ctx, x, h0, gate_logit, U, V, training):
-        h, output = hasty_pytorch_lib.diagonal_elman_forward(
-            training, x, h0, gate_logit, U, V
+    def forward(ctx, x, h0, U_h, V_h, U_x, V_x, U_z, V_z, b, training):
+        h, output, v = hasty_pytorch_lib.pure_lowrank_elman_forward(
+            training, x, h0, U_h, V_h, U_x, V_x, U_z, V_z, b
         )
         if training:
-            ctx.save_for_backward(gate_logit, U, V, x, h)
+            ctx.save_for_backward(U_h, V_h, U_x, V_x, U_z, V_z, x, h, v)
         return output, h
 
     @staticmethod
     def backward(ctx, grad_output, grad_h):
-        gate_logit, U, V, x, h = ctx.saved_tensors
-        dx, d_gate_logit, dU, dV = hasty_pytorch_lib.diagonal_elman_backward(
-            gate_logit, U, V, x, h, grad_output.contiguous()
+        U_h, V_h, U_x, V_x, U_z, V_z, x, h, v = ctx.saved_tensors
+        dx, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db = hasty_pytorch_lib.pure_lowrank_elman_backward(
+            U_h, V_h, U_x, V_x, U_z, V_z, x, h, v, grad_output.contiguous()
         )
-        return dx, None, d_gate_logit, dU, dV, None
+        return dx, None, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db, None
 
 
-class DiagonalElmanCell(nn.Module):
+class PureLowRankElmanCell(nn.Module):
     """
-    Diagonal Elman cell - per-channel scalar recurrence.
+    Pure low-rank Elman cell.
 
-    h[i]_t = gate[i] * h[i]_{t-1} + (1 - gate[i]) * x[i]_t
+    h_t = tanh(U_h @ V_h @ h_{t-1} + U_x @ V_x @ x_t + b)
     """
 
-    def __init__(self, dim, rank=64, gate_init=-2.0):
+    def __init__(self, dim, rank=64):
         super().__init__()
         self.dim = dim
         self.rank = rank
 
-        # Per-channel gate (controls decay vs input)
-        # Initialized to favor input slightly
-        self.gate_logit = nn.Parameter(torch.full((dim,), gate_init))
+        # Low-rank recurrence: W_h ≈ U_h @ V_h
+        self.U_h = nn.Parameter(torch.empty(dim, rank))
+        self.V_h = nn.Parameter(torch.empty(rank, dim))
 
-        # Low-rank cross-channel mixing
-        self.U = nn.Parameter(torch.empty(dim, rank))
-        self.V = nn.Parameter(torch.empty(rank, dim))
+        # Low-rank input: W_x ≈ U_x @ V_x
+        self.U_x = nn.Parameter(torch.empty(dim, rank))
+        self.V_x = nn.Parameter(torch.empty(rank, dim))
+
+        # Low-rank gate: W_z ≈ U_z @ V_z
+        self.U_z = nn.Parameter(torch.empty(dim, rank))
+        self.V_z = nn.Parameter(torch.empty(rank, dim))
+
+        self.b = nn.Parameter(torch.zeros(dim))
 
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.orthogonal_(self.U)
-        nn.init.orthogonal_(self.V)
-        with torch.no_grad():
-            self.U.mul_(0.5)
-            self.V.mul_(0.5)
+        # Initialize for stable gradients
+        for U, V in [(self.U_h, self.V_h), (self.U_x, self.V_x), (self.U_z, self.V_z)]:
+            nn.init.orthogonal_(U)
+            nn.init.orthogonal_(V)
+            # Scale so U @ V has reasonable norm
+            with torch.no_grad():
+                U.mul_(0.5)
+                V.mul_(0.5)
 
     def forward(self, x, h0=None):
         """
@@ -81,7 +92,7 @@ class DiagonalElmanCell(nn.Module):
 
         Returns:
             output: [T, B, dim] gated output
-            h: [T+1, B, dim] all hidden states (including h0)
+            h: [T+1, B, dim] all hidden states
         """
         T, B, D = x.shape
 
@@ -90,33 +101,41 @@ class DiagonalElmanCell(nn.Module):
 
         # CUDA kernel path
         if HASTY_AVAILABLE and x.is_cuda:
-            output, h = DiagonalElmanFunction.apply(
-                x, h0, self.gate_logit, self.U, self.V, self.training
+            output, h = PureLowRankElmanFunction.apply(
+                x, h0, self.U_h, self.V_h, self.U_x, self.V_x,
+                self.U_z, self.V_z, self.b, self.training
             )
             return output, h
 
         # PyTorch fallback
-        # Compute gates once
-        gate = torch.sigmoid(self.gate_logit)  # [dim]
-
         h_list = [h0]
         out_list = []
-        h_prev = h0
 
+        h_prev = h0
         for t in range(T):
-            # Per-channel gated update (like EMA)
-            h_new = gate * h_prev + (1 - gate) * x[t]
+            x_t = x[t]
+
+            # Low-rank recurrence
+            Vh = h_prev @ self.V_h.T  # [B, rank]
+            Uh = Vh @ self.U_h.T      # [B, dim]
+
+            # Low-rank input
+            Vx = x_t @ self.V_x.T     # [B, rank]
+            Ux = Vx @ self.U_x.T      # [B, dim]
+
+            # Combine and activate
+            pre = Uh + Ux + self.b
+            h_new = torch.tanh(pre)
             h_list.append(h_new)
 
-            # Low-rank cross-channel mixing
-            # h -> V -> rank -> U -> dim
-            Vh = h_new @ self.V.T  # [B, rank]
-            mixed = Vh @ self.U.T  # [B, dim]
+            # Low-rank gate
+            Vz = x_t @ self.V_z.T     # [B, rank]
+            Uz = Vz @ self.U_z.T      # [B, dim]
+            gate = F.silu(Uz)
 
-            # Gate with input
-            silu_gate = F.silu(x[t])
-            output = mixed * silu_gate
-            out_list.append(output)
+            # Gated output
+            out = h_new * gate
+            out_list.append(out)
 
             h_prev = h_new
 
@@ -125,33 +144,32 @@ class DiagonalElmanCell(nn.Module):
         return output, h
 
 
-class DiagonalElman(nn.Module):
+class PureLowRankElman(nn.Module):
     """
-    E6: Diagonal Elman layer.
+    E5: Pure Low-Rank Elman layer.
 
-    Per-channel recurrence + low-rank cross-channel mixing.
-    Super cheap: ~67k params/layer -> 743 layers at 50M!
+    No projections - hidden state IS dim.
+    All operations are low-rank.
     """
 
     def __init__(
         self,
         dim,
         rank=None,
-        gate_init=-2.0,
         dropout=0.0,
         **kwargs
     ):
         super().__init__()
         self.dim = dim
-        self.d_inner = dim
+        self.d_inner = dim  # No expansion!
 
-        # Default rank
+        # Default rank for ~200k params/layer
         if rank is None:
             rank = max(16, dim // 8)
         self.rank = rank
 
-        # Diagonal recurrence + mixing cell
-        self.cell = DiagonalElmanCell(dim, rank=rank, gate_init=gate_init)
+        # Just the cell, no projections
+        self.cell = PureLowRankElmanCell(dim, rank=rank)
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -181,21 +199,21 @@ class DiagonalElman(nn.Module):
         return output, h_final
 
     def extra_repr(self):
-        return f'dim={self.dim}, rank={self.rank}, LEVEL=6'
+        return f'dim={self.dim}, rank={self.rank}, LEVEL=5'
 
 
-# For compatibility with model registry
-DIAGONAL_ELMAN_AVAILABLE = True
+PureLowRankElmanCell = PureLowRankElmanCell  # export
 
 
 if __name__ == "__main__":
-    print("Testing DiagonalElman (E6)...")
+    print("Testing PureLowRankElman (E5)...")
     print("=" * 60)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    # Test model
     dim = 512
-    model = DiagonalElman(dim=dim, rank=64).to(device).bfloat16()
+    model = PureLowRankElman(dim=dim, rank=64).to(device).bfloat16()
     x = torch.randn(32, 512, dim, device=device, dtype=torch.bfloat16)
 
     print(f"Model: {model.extra_repr()}")
@@ -203,12 +221,12 @@ if __name__ == "__main__":
     params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {params:,}")
 
-    # Compare depths
+    # Compare to E1
     print(f"\nFor 50M model:")
     embed = 256 * dim
     target = 50_000_000
     depth = (target - embed) // params
-    print(f"  Depth: {depth} layers (!)")
+    print(f"  Depth: {depth} layers")
     print(f"  Compare to E1: ~38 layers")
 
     print("\nTesting forward...")
@@ -225,7 +243,7 @@ if __name__ == "__main__":
     # Benchmark
     import time
 
-    model = DiagonalElman(dim=dim, rank=64).to(device).bfloat16()
+    model = PureLowRankElman(dim=dim, rank=64).to(device).bfloat16()
     x = torch.randn(32, 512, dim, device=device, dtype=torch.bfloat16)
 
     # Warmup

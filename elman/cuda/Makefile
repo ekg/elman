@@ -25,7 +25,11 @@ GPU_ARCH_FLAGS := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,c
 CUDA_OBJS := \
 	lib/stock_elman_gpu.o \
 	lib/mamba_gated_elman_gpu.o \
-	lib/slot_elman_gpu.o
+	lib/slot_elman_gpu.o \
+	lib/lowrank_slot_elman_gpu.o \
+	lib/lowrank_elman_gpu.o \
+	lib/pure_lowrank_elman_gpu.o \
+	lib/diagonal_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

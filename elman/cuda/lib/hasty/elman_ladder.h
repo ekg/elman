@@ -311,6 +311,227 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E4: Low-Rank Elman (SVD-style for fat hidden state)
+// h_t = tanh(W_x @ x_t + U @ V @ h_{t-1} + b)
+// output = h_t * silu(z_t)
+// Key: U is [dim, rank], V is [rank, dim]. Same params as E1, 2x hidden dim.
+// =============================================================================
+
+template<typename T>
+struct LowRankElmanForward {
+    LowRankElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* U,         // [dim, rank]
+        const T* V,         // [rank, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim]
+        const T* z,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*B*dim + B*rank + B*dim]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LowRankElmanBackward {
+    LowRankElmanBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* U,
+        const T* V,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dU,
+        T* dV,
+        T* db,
+        T* workspace);      // [(steps+2)*B*dim + B*rank + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E5: Pure Low-Rank Elman (no projections, all low-rank on full dim)
+// h_t = tanh(U_h @ V_h @ h_{t-1} + U_x @ V_x @ x_t + b)
+// y_t = h_t * silu(U_z @ V_z @ x_t)
+// Key: No in_proj/out_proj. Hidden state IS dim. All ops are low-rank.
+// =============================================================================
+
+template<typename T>
+struct PureLowRankElmanForward {
+    PureLowRankElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,       // [dim, rank]
+        const T* V_h,       // [rank, dim]
+        const T* U_x,       // [dim, rank]
+        const T* V_x,       // [rank, dim]
+        const T* U_z,       // [dim, rank]
+        const T* V_z,       // [rank, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [2*T*BR + 2*T*BD + BR + BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct PureLowRankElmanBackward {
+    PureLowRankElmanBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,
+        const T* V_h,
+        const T* U_x,
+        const T* V_x,
+        const T* U_z,
+        const T* V_z,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dU_h,
+        T* dV_h,
+        T* dU_x,
+        T* dV_x,
+        T* dU_z,
+        T* dV_z,
+        T* db,
+        T* workspace);      // [4*BD + 6*BR + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E6: Diagonal Elman (per-channel scalar recurrence + low-rank mixing)
+// h_t = gate * h_{t-1} + (1 - gate) * x_t   (per-channel EMA)
+// y_t = U @ V @ h_t * silu(x_t)             (low-rank cross-channel mix)
+// Key: Diagonal recurrence is O(dim). Allows MASSIVE depth (~755 layers at 50M).
+// =============================================================================
+
+template<typename T>
+struct DiagonalElmanForward {
+    DiagonalElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* gate_logit,  // [dim] raw gate logits
+        const T* U,           // [dim, rank]
+        const T* V,           // [rank, dim]
+        const T* x,           // [T, B, dim]
+        T* h,                 // [T+1, B, dim]
+        T* output,            // [T, B, dim]
+        T* workspace);        // [BR + BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct DiagonalElmanBackward {
+    DiagonalElmanBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* gate_logit,
+        const T* U,
+        const T* V,
+        const T* x,
+        const T* h,
+        const T* d_output,
+        T* dx,
+        T* d_gate_logit,
+        T* dU,
+        T* dV,
+        T* workspace);      // [5*BD + 2*BR + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
