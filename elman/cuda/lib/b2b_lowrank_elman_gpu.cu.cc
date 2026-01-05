@@ -22,11 +22,15 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
+#include <type_traits>
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
+#include "cutlass/gemm/gemm.h"
 #include "cutlass/numeric_types.h"
-#include "cutlass/util/host_tensor.h"
+#include "cutlass/layout/matrix.h"
+#include "cutlass/tensor_ref.h"
+#include "cutlass/epilogue/thread/linear_combination_relu.h"
 
 // B2B GEMM device header (from CUTLASS example 13)
 #include "cutlass_b2b/device/b2b_gemm.h"
@@ -34,6 +38,21 @@
 #include "hasty/elman_ladder.h"
 #include "blas.h"
 #include "inline_ops.h"
+
+// Type mapping from CUDA to CUTLASS (only for supported types)
+template<typename T> struct CutlassType {
+    using type = void;  // Default: not supported
+    static constexpr bool supported = false;
+};
+template<> struct CutlassType<__nv_bfloat16> {
+    using type = cutlass::bfloat16_t;
+    static constexpr bool supported = true;
+};
+template<> struct CutlassType<__half> {
+    using type = cutlass::half_t;
+    static constexpr bool supported = true;
+};
+// Note: float and double are NOT supported by TensorOp B2B GEMM
 
 namespace {
 
@@ -94,12 +113,15 @@ struct B2bGemmTypes_Rank64 {
     using WarpShape1 = cutlass::gemm::GemmShape<64, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
-    // No intermediate activation - pure matrix multiply
-    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombination<
+    // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
+    // NOTE: This applies max(0, x) to intermediate values which is incorrect
+    // for our use case. TODO: Modify CUTLASS to support identity epilogue.
+    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
-        128 / cutlass::sizeof_bits<ElementOutput>::value,
+        InstructionShape::kM * InstructionShape::kN / 32,
         ElementAccumulator,
-        ElementCompute
+        ElementCompute,
+        cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling
     >;
 
     using EpilogueOutputOp1 = cutlass::epilogue::thread::LinearCombination<
@@ -109,7 +131,8 @@ struct B2bGemmTypes_Rank64 {
         ElementCompute
     >;
 
-    static constexpr bool SmemAccumulator = true;  // Keep intermediate in shared memory
+    // Use shared memory accumulator
+    static constexpr bool SmemAccumulator = true;
 
     // B2B GEMM device type
     // A0: h_prev^T (batch × dim) - RowMajor
@@ -156,11 +179,14 @@ struct B2bGemmTypes_Rank128 {
     using WarpShape1 = cutlass::gemm::GemmShape<64, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
-    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombination<
+    // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
+    // NOTE: This applies max(0, x) which is incorrect for our use case
+    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
-        128 / cutlass::sizeof_bits<ElementOutput>::value,
+        InstructionShape::kM * InstructionShape::kN / 32,
         ElementAccumulator,
-        ElementCompute
+        ElementCompute,
+        cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling
     >;
 
     using EpilogueOutputOp1 = cutlass::epilogue::thread::LinearCombination<
@@ -212,11 +238,14 @@ struct B2bGemmTypes_Rank256 {
     using WarpShape1 = cutlass::gemm::GemmShape<32, 64, 32>;
     using InstructionShape = cutlass::gemm::GemmShape<16, 8, 16>;
 
-    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombination<
+    // GEMM0 epilogue - LinearCombinationRelu required by CUTLASS B2B
+    // NOTE: This applies max(0, x) which is incorrect for our use case
+    using EpilogueOutputOp0 = cutlass::epilogue::thread::LinearCombinationRelu<
         ElementOutput,
-        128 / cutlass::sizeof_bits<ElementOutput>::value,
+        InstructionShape::kM * InstructionShape::kN / 32,
         ElementAccumulator,
-        ElementCompute
+        ElementCompute,
+        cutlass::epilogue::thread::ScaleType::OnlyAlphaScaling
     >;
 
     using EpilogueOutputOp1 = cutlass::epilogue::thread::LinearCombination<
@@ -251,6 +280,166 @@ struct B2bGemmTypes_Rank256 {
     >;
 };
 
+// =============================================================================
+// Helper to run CUTLASS B2B GEMM for h path: result = U_h @ V_h @ h_prev
+// Using transpose: result^T = h_prev^T @ V_h^T @ U_h^T
+// =============================================================================
+
+template<typename B2bGemmOp, typename T>
+void RunB2bGemm(
+    int batch_size,
+    int dim,
+    int rank,
+    const T* h_prev,   // [batch, dim] row-major
+    const T* V_h,      // [rank, dim] row-major (interpreted as V_h^T column-major)
+    const T* U_h,      // [dim, rank] row-major (interpreted as U_h^T column-major)
+    T* output,         // [batch, dim] row-major
+    cudaStream_t stream) {
+
+    using CutlassT = typename CutlassType<T>::type;
+    using LayoutRowMajor = cutlass::layout::RowMajor;
+    using LayoutColMajor = cutlass::layout::ColumnMajor;
+
+    // Problem sizes:
+    // GEMM0: h_prev^T (batch × dim) @ V_h^T (dim × rank) = intermediate (batch × rank)
+    // GEMM1: intermediate (batch × rank) @ U_h^T (rank × dim) = result (batch × dim)
+    cutlass::gemm::GemmCoord problem_size_0(batch_size, rank, dim);
+    cutlass::gemm::GemmCoord problem_size_1(batch_size, dim, rank);
+
+    // Create TensorRefs (non-const element types to match iterator expectations)
+    // A0: h_prev, RowMajor (batch × dim), stride = dim
+    cutlass::TensorRef<CutlassT, LayoutRowMajor> ref_A0(
+        reinterpret_cast<CutlassT*>(const_cast<T*>(h_prev)),
+        LayoutRowMajor(dim));
+
+    // B0: V_h^T, ColumnMajor (dim × rank)
+    // V_h stored as (rank, dim) row-major, reinterpreted as column-major with stride = dim
+    cutlass::TensorRef<CutlassT, LayoutColMajor> ref_B0(
+        reinterpret_cast<CutlassT*>(const_cast<T*>(V_h)),
+        LayoutColMajor(dim));
+
+    // C0: unused (no accumulation into intermediate), use dummy with proper stride
+    cutlass::TensorRef<CutlassT, LayoutRowMajor> ref_C0(
+        nullptr,
+        LayoutRowMajor(rank));
+
+    // Scale0, Bias0: unused (identity epilogue for GEMM0)
+    // ElementScaleBias = float based on EpilogueOutputOp0::ElementCompute
+    cutlass::TensorRef<typename B2bGemmOp::ElementScaleBias, typename B2bGemmOp::LayoutScaleBias> ref_Scale0(
+        nullptr,
+        typename B2bGemmOp::LayoutScaleBias(0));
+    cutlass::TensorRef<typename B2bGemmOp::ElementScaleBias, typename B2bGemmOp::LayoutScaleBias> ref_Bias0(
+        nullptr,
+        typename B2bGemmOp::LayoutScaleBias(0));
+
+    // B1: U_h^T, ColumnMajor (rank × dim)
+    // U_h stored as (dim, rank) row-major, reinterpreted as column-major with stride = rank
+    cutlass::TensorRef<CutlassT, LayoutColMajor> ref_B1(
+        reinterpret_cast<CutlassT*>(const_cast<T*>(U_h)),
+        LayoutColMajor(rank));
+
+    // C1: unused - for bias addition in final epilogue, pass null with stride 0
+    cutlass::TensorRef<CutlassT, LayoutRowMajor> ref_C1(
+        nullptr,
+        LayoutRowMajor::Stride(0));
+
+    // D1: output, RowMajor (batch × dim), stride = dim
+    cutlass::TensorRef<CutlassT, LayoutRowMajor> ref_D1(
+        reinterpret_cast<CutlassT*>(output),
+        LayoutRowMajor(dim));
+
+    // Epilogue params: alpha=1, beta=0 for both GEMMs (pure matrix multiply)
+    typename B2bGemmOp::EpilogueOutputOp0::Params epilogue0(1.0f, 0.0f);
+    typename B2bGemmOp::EpilogueOutputOp1::Params epilogue1(1.0f, 0.0f);
+
+    // Create Arguments with proper int64_t batch strides
+    typename B2bGemmOp::Arguments args{
+        cutlass::gemm::GemmUniversalMode::kGemm,
+        problem_size_0,
+        problem_size_1,
+        ref_A0,
+        ref_B0,
+        ref_C0,
+        ref_Scale0,
+        ref_Bias0,
+        ref_B1,
+        ref_C1,
+        ref_D1,
+        int64_t(0),  // batch_stride_A0
+        int64_t(0),  // batch_stride_B0
+        int64_t(0),  // batch_stride_B1
+        int64_t(0),  // batch_stride_C1
+        int64_t(0),  // batch_stride_D1
+        int64_t(0),  // batch_stride_Bias0
+        int64_t(0),  // batch_stride_Scale0
+        epilogue0,
+        epilogue1,
+        1   // batch_count
+    };
+
+    // Create and run B2B GEMM operator
+    B2bGemmOp b2b_gemm_op;
+    cutlass::Status status = b2b_gemm_op.can_implement(args);
+    if (status != cutlass::Status::kSuccess) {
+        // Fall back should not happen if we validated rank
+        return;
+    }
+
+    status = b2b_gemm_op.initialize(args, nullptr, stream);
+    if (status != cutlass::Status::kSuccess) {
+        return;
+    }
+
+    status = b2b_gemm_op(stream);
+    // Ignore status for now - caller should handle errors
+}
+
+// Dispatch to correct rank template - only for bf16/half
+template<typename T>
+typename std::enable_if<CutlassType<T>::supported>::type
+RunB2bGemmDispatch(
+    int batch_size,
+    int dim,
+    int rank,
+    const T* h_prev,
+    const T* V_h,
+    const T* U_h,
+    T* output,
+    cudaStream_t stream) {
+
+    using CutlassT = typename CutlassType<T>::type;
+
+    if (rank == 64) {
+        using B2bTypes = B2bGemmTypes_Rank64<CutlassT>;
+        RunB2bGemm<typename B2bTypes::B2bGemm, T>(
+            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+    } else if (rank == 128) {
+        using B2bTypes = B2bGemmTypes_Rank128<CutlassT>;
+        RunB2bGemm<typename B2bTypes::B2bGemm, T>(
+            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+    } else if (rank == 256) {
+        using B2bTypes = B2bGemmTypes_Rank256<CutlassT>;
+        RunB2bGemm<typename B2bTypes::B2bGemm, T>(
+            batch_size, dim, rank, h_prev, V_h, U_h, output, stream);
+    }
+    // else: unsupported rank, caller should have validated
+}
+
+// Fallback for unsupported types (float, double) - does nothing
+template<typename T>
+typename std::enable_if<!CutlassType<T>::supported>::type
+RunB2bGemmDispatch(
+    int /*batch_size*/,
+    int /*dim*/,
+    int /*rank*/,
+    const T* /*h_prev*/,
+    const T* /*V_h*/,
+    const T* /*U_h*/,
+    T* /*output*/,
+    cudaStream_t /*stream*/) {
+    // B2B GEMM not supported for this type - caller should use cuBLAS fallback
+}
+
 }  // anonymous namespace
 
 
@@ -276,7 +465,11 @@ B2bLowRankElmanForward<T>::B2bLowRankElmanForward(
       rank_(rank),
       blas_handle_(blas_handle),
       stream_(stream),
-      b2b_supported_(rank == 64 || rank == 128 || rank == 256) {}
+      // B2B GEMM disabled: CUTLASS B2B requires ReLU epilogue which breaks correctness
+      // TODO: Modify CUTLASS B2B to support identity epilogue (no activation)
+      // Infrastructure is in place - just need to enable when identity epilogue works
+      b2b_supported_(false) {}
+      // When ready: CutlassType<T>::supported && (rank == 64 || rank == 128 || rank == 256)
 
 template<typename T>
 void B2bLowRankElmanForward<T>::Run(
@@ -347,11 +540,8 @@ void B2bLowRankElmanForward<T>::Run(
         tmp_Vz_all, rank_,
         &beta_zero, tmp_UVz_all, dim_);
 
-    // Sequential recurrence
-    // Note: B2B fusion would be called here if rank is compatible
-    // For now, fall back to cuBLAS sequential GEMMs (B2B requires template specialization)
-
-    T* tmp_Vh = tmp_UVh + BD;  // Additional workspace
+    // Sequential recurrence with CUTLASS B2B GEMM when supported
+    T* tmp_Vh = tmp_UVh + BD;  // Additional workspace for fallback
 
     for (int t = 0; t < steps; ++t) {
         const T* h_prev = h + t * BD;
@@ -361,23 +551,32 @@ void B2bLowRankElmanForward<T>::Run(
         T* v_t = training_ ? v + t * BD : nullptr;
         T* out_t = output + t * BD;
 
-        // V_h @ h_prev -> tmp_Vh
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            rank_, batch_size_, dim_,
-            &alpha, V_h, dim_,
-            h_prev, dim_,
-            &beta_zero, tmp_Vh, rank_);
+        if (b2b_supported_) {
+            // Use CUTLASS B2B GEMM fusion for h path
+            // Computes: tmp_UVh = U_h @ (V_h @ h_prev)
+            RunB2bGemmDispatch<T>(
+                batch_size_, dim_, rank_,
+                h_prev, V_h, U_h, tmp_UVh, stream_);
+        } else {
+            // Fallback: sequential cuBLAS GEMMs
+            // V_h @ h_prev -> tmp_Vh
+            blas<T>::gemm(
+                blas_handle_,
+                CUBLAS_OP_T, CUBLAS_OP_N,
+                rank_, batch_size_, dim_,
+                &alpha, V_h, dim_,
+                h_prev, dim_,
+                &beta_zero, tmp_Vh, rank_);
 
-        // U_h @ tmp_Vh -> tmp_UVh
-        blas<T>::gemm(
-            blas_handle_,
-            CUBLAS_OP_T, CUBLAS_OP_N,
-            dim_, batch_size_, rank_,
-            &alpha, U_h, rank_,
-            tmp_Vh, rank_,
-            &beta_zero, tmp_UVh, dim_);
+            // U_h @ tmp_Vh -> tmp_UVh
+            blas<T>::gemm(
+                blas_handle_,
+                CUBLAS_OP_T, CUBLAS_OP_N,
+                dim_, batch_size_, rank_,
+                &alpha, U_h, rank_,
+                tmp_Vh, rank_,
+                &beta_zero, tmp_UVh, dim_);
+        }
 
         // Fused post-B2B kernel: add, tanh, gate
         PostB2BKernel<<<num_blocks, block_size, 0, stream_>>>(
