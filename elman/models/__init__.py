@@ -53,6 +53,14 @@ LEVEL_5_AVAILABLE = True
 from .diagonal_elman import DiagonalElman, DiagonalElmanCell
 LEVEL_6_AVAILABLE = True
 
+# E9: Hybrid Elman (dense core + diagonal memory)
+from .hybrid_elman import HybridElman, HybridElmanCell
+LEVEL_9_AVAILABLE = True
+
+# E10: Multi-Scale EMA Elman (E1 core + multiple EMA memory banks)
+from .multiscale_elman import MultiScaleElman, MultiScaleElmanCell
+LEVEL_10_AVAILABLE = True
+
 # Language model wrapper
 from .ladder_lm import LadderLM, create_ladder_model
 
@@ -75,6 +83,8 @@ def get_available_levels():
         4: ("Low-Rank Elman (e4)", LEVEL_4_AVAILABLE, LowRankElman),
         5: ("Pure Low-Rank Elman (e5)", LEVEL_5_AVAILABLE, PureLowRankElman),
         6: ("Diagonal Elman (e6)", LEVEL_6_AVAILABLE, DiagonalElman),
+        9: ("Hybrid Elman (e9)", LEVEL_9_AVAILABLE, HybridElman),
+        10: ("Multi-Scale EMA Elman (e10)", LEVEL_10_AVAILABLE, MultiScaleElman),
     }
     return levels
 
@@ -105,6 +115,10 @@ __all__ = [
     'PureLowRankElman', 'PureLowRankElmanCell', 'LEVEL_5_AVAILABLE',
     # E6: Diagonal Elman
     'DiagonalElman', 'DiagonalElmanCell', 'LEVEL_6_AVAILABLE',
+    # E9: Hybrid Elman
+    'HybridElman', 'HybridElmanCell', 'LEVEL_9_AVAILABLE',
+    # E10: Multi-Scale EMA Elman
+    'MultiScaleElman', 'MultiScaleElmanCell', 'LEVEL_10_AVAILABLE',
     # Language model wrapper
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline

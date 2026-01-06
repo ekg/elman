@@ -950,6 +950,168 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E9: Hybrid Elman (small dense core + large diagonal memory)
+// Core: h_core_t = tanh(W_x @ x_core + W_h @ h_core_prev + b)  [nonlinear mixing]
+// Memory: h_mem_t = sigmoid(a) * h_mem_prev + x_mem  [linear long-range storage]
+// Output: [h_core * silu(z_core), h_mem * silu(z_mem)]  (concatenated)
+// Key: Large hidden state (core_dim + mem_dim) with O(core_dim²) compute
+// =============================================================================
+
+template<typename T>
+struct HybridElmanForward {
+    HybridElmanForward(
+        bool training,
+        int batch_size,
+        int core_dim,
+        int mem_dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x_core,   // [core_dim, core_dim]
+        const T* W_h,        // [core_dim, core_dim]
+        const T* b_core,     // [core_dim]
+        const T* a_mem,      // [mem_dim] decay logits
+        const T* x_core,     // [T, B, core_dim] pre-activated
+        const T* z_core,     // [T, B, core_dim] gate
+        const T* x_mem,      // [T, B, mem_dim]
+        const T* z_mem,      // [T, B, mem_dim] gate
+        T* h_core,           // [T+1, B, core_dim]
+        T* h_mem,            // [T+1, B, mem_dim]
+        T* out_core,         // [T, B, core_dim]
+        T* out_mem,          // [T, B, mem_dim]
+        T* v_core,           // [T, B, core_dim] pre-activation cache
+        T* workspace);       // [T*B*core_dim + B*core_dim]
+
+private:
+    bool training_;
+    int batch_size_;
+    int core_dim_;
+    int mem_dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct HybridElmanBackward {
+    HybridElmanBackward(
+        int batch_size,
+        int core_dim,
+        int mem_dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x_core,
+        const T* W_h,
+        const T* a_mem,
+        const T* x_core,
+        const T* z_core,
+        const T* x_mem,
+        const T* z_mem,
+        const T* h_core,
+        const T* h_mem,
+        const T* v_core,
+        const T* d_out_core,
+        const T* d_out_mem,
+        T* dx_core,
+        T* dz_core,
+        T* dx_mem,
+        T* dz_mem,
+        T* dW_x_core,
+        T* dW_h,
+        T* db_core,
+        T* da_mem,
+        T* workspace);      // [(T+2)*B*core + B*mem + core + mem]
+
+private:
+    int batch_size_;
+    int core_dim_;
+    int mem_dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E10: Multi-Scale EMA Elman (multiple EMA memory banks with learned decay)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)  -- same as E1
+// m_i_t = alpha_i * m_i_prev + (1 - alpha_i) * h_t  -- k EMA banks
+// out = h * silu(z) + sum_i(m_i * silu(z_i))
+// Key: Multi-timescale memory with learned per-dimension decay, zero additional GEMMs
+// =============================================================================
+
+template<typename T>
+struct MultiScaleElmanForward {
+    MultiScaleElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_banks,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,        // [dim, dim]
+        const T* W_h,        // [dim, dim]
+        const T* b,          // [dim]
+        const T* a,          // [n_banks, dim] EMA decay logits
+        const T* x,          // [T, B, dim] pre-activated input
+        const T* z,          // [T, B, (1+n_banks)*dim] gates for h and each m_i
+        T* h,                // [T+1, B, dim] hidden states
+        T* m,                // [T+1, n_banks, B, dim] memory banks
+        T* output,           // [T, B, dim]
+        T* v,                // [T, B, dim] pre-activation cache
+        T* workspace);       // [T*BD + BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_banks_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct MultiScaleElmanBackward {
+    MultiScaleElmanBackward(
+        int batch_size,
+        int dim,
+        int n_banks,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* a,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* m,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* da,
+        T* workspace);      // [(T+2)*BD + 2*n_banks*BD + dim + n_banks*dim (floats)]
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_banks_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

@@ -18,13 +18,16 @@ from .lowrank_slot_elman import LowRankSlotElman
 from .lowrank_elman import LowRankElman
 from .pure_lowrank_elman import PureLowRankElman
 from .diagonal_elman import DiagonalElman
+from .scaled_lowrank_elman import ScaledLowRankElman
+from .hybrid_elman import HybridElman
+from .multiscale_elman import MultiScaleElman
 
 
 def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer level (0-6) or 'mamba2'
+        level: Integer level (0-6, 8-10) or 'mamba2'
 
     Returns:
         Layer class
@@ -37,11 +40,14 @@ def get_ladder_level(level):
         4: LowRankElman,
         5: PureLowRankElman,
         6: DiagonalElman,
+        8: ScaledLowRankElman,
+        9: HybridElman,
+        10: MultiScaleElman,
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-10, mamba2")
 
 
 class LadderLM(nn.Module):
@@ -70,11 +76,13 @@ class LadderLM(nn.Module):
         expansion=1.0,
         n_groups=32,
         n_slots=8,
+        n_banks=4,  # For E10 multi-scale: number of EMA memory banks
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
         r_h_mode='spectral_norm',
         r_h_init_gain=0.1,
+        core_ratio=0.125,  # For E9 hybrid: fraction of d_inner for dense core
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -82,6 +90,7 @@ class LadderLM(nn.Module):
         self.depth = depth
         self.level = level
         self.n_slots = n_slots
+        self.n_banks = n_banks
         self.rank = rank
         self.r_h_mode = r_h_mode
 
@@ -103,11 +112,13 @@ class LadderLM(nn.Module):
                 expansion=expansion,
                 n_groups=n_groups,
                 n_slots=n_slots,
+                n_banks=n_banks,  # For E10 multi-scale
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,
                 r_h_mode=r_h_mode,
                 r_h_init_gain=r_h_init_gain,
+                core_ratio=core_ratio,  # For E9 hybrid
             )
             for _ in range(depth)
         ])

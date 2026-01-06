@@ -40,7 +40,9 @@ CUDA_OBJS := \
 	lib/b2b_lowrank_elman_gpu.o \
 	lib/circulant_elman_gpu.o \
 	lib/monarch_elman_gpu.o \
-	lib/scaled_lowrank_elman_gpu.o
+	lib/scaled_lowrank_elman_gpu.o \
+	lib/hybrid_elman_gpu.o \
+	lib/multiscale_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

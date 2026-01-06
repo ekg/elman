@@ -1759,6 +1759,324 @@ std::vector<Tensor> scaled_lowrank_elman_backward(
     return {dx, dz, dU_h, dV_h, ds_h, dU_x, dV_x, ds_x, db};
 }
 
+// =============================================================================
+// E9: Hybrid Elman (small dense core + large diagonal memory)
+// =============================================================================
+
+std::vector<Tensor> hybrid_elman_forward(
+    bool training,
+    Tensor x_core,      // [T, B, core_dim] pre-activated
+    Tensor z_core,      // [T, B, core_dim] gate
+    Tensor x_mem,       // [T, B, mem_dim]
+    Tensor z_mem,       // [T, B, mem_dim] gate
+    Tensor h0_core,     // [B, core_dim]
+    Tensor h0_mem,      // [B, mem_dim]
+    Tensor W_x_core,    // [core_dim, core_dim]
+    Tensor W_h,         // [core_dim, core_dim]
+    Tensor b_core,      // [core_dim]
+    Tensor a_mem) {     // [mem_dim] decay logits
+
+    const auto time_steps = x_core.size(0);
+    const auto batch_size = x_core.size(1);
+    const auto core_dim = x_core.size(2);
+    const auto mem_dim = x_mem.size(2);
+
+    CHECK_INPUT(x_core);
+    CHECK_INPUT(z_core);
+    CHECK_INPUT(x_mem);
+    CHECK_INPUT(z_mem);
+    CHECK_INPUT(h0_core);
+    CHECK_INPUT(h0_mem);
+    CHECK_INPUT(W_x_core);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b_core);
+    CHECK_INPUT(a_mem);
+
+    const auto options = x_core.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h_core = torch::empty({time_steps + 1, batch_size, core_dim}, options);
+    Tensor h_mem = torch::empty({time_steps + 1, batch_size, mem_dim}, options);
+    Tensor out_core = torch::empty({time_steps, batch_size, core_dim}, options);
+    Tensor out_mem = torch::empty({time_steps, batch_size, mem_dim}, options);
+    Tensor v_core = training ? torch::empty({time_steps, batch_size, core_dim}, options)
+                              : torch::empty({0}, options);
+
+    // Workspace: [T*B*core_dim + B*core_dim]
+    const int64_t B_core = batch_size * core_dim;
+    Tensor workspace = torch::empty({time_steps * B_core + B_core}, options);
+
+    h_core[0] = h0_core;
+    h_mem[0] = h0_mem;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x_core.scalar_type(), "hybrid_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        HybridElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, core_dim, mem_dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x_core),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b_core),
+            ptr<scalar_t>(a_mem),
+            ptr<scalar_t>(x_core),
+            ptr<scalar_t>(z_core),
+            ptr<scalar_t>(x_mem),
+            ptr<scalar_t>(z_mem),
+            ptr<scalar_t>(h_core),
+            ptr<scalar_t>(h_mem),
+            ptr<scalar_t>(out_core),
+            ptr<scalar_t>(out_mem),
+            training ? ptr<scalar_t>(v_core) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h_core, h_mem, out_core, out_mem, v_core};
+}
+
+std::vector<Tensor> hybrid_elman_backward(
+    Tensor W_x_core,
+    Tensor W_h,
+    Tensor a_mem,
+    Tensor x_core,
+    Tensor z_core,
+    Tensor x_mem,
+    Tensor z_mem,
+    Tensor h_core,
+    Tensor h_mem,
+    Tensor v_core,
+    Tensor d_out_core,
+    Tensor d_out_mem) {
+
+    const auto time_steps = x_core.size(0);
+    const auto batch_size = x_core.size(1);
+    const auto core_dim = x_core.size(2);
+    const auto mem_dim = x_mem.size(2);
+
+    CHECK_INPUT(W_x_core);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(a_mem);
+    CHECK_INPUT(x_core);
+    CHECK_INPUT(z_core);
+    CHECK_INPUT(x_mem);
+    CHECK_INPUT(z_mem);
+    CHECK_INPUT(h_core);
+    CHECK_INPUT(h_mem);
+    CHECK_INPUT(v_core);
+    CHECK_INPUT(d_out_core);
+    CHECK_INPUT(d_out_mem);
+
+    const auto options = x_core.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx_core = torch::empty_like(x_core);
+    Tensor dz_core = torch::empty_like(z_core);
+    Tensor dx_mem = torch::empty_like(x_mem);
+    Tensor dz_mem = torch::empty_like(z_mem);
+    Tensor dW_x_core = torch::zeros({core_dim, core_dim}, options);
+    Tensor dW_h = torch::zeros({core_dim, core_dim}, options);
+    Tensor db_core = torch::zeros({core_dim}, options);
+    Tensor da_mem = torch::zeros({mem_dim}, options);
+
+    // Workspace: [(T+2)*B*core + 2*B*mem + core + mem (floats)]
+    const int64_t B_core = batch_size * core_dim;
+    const int64_t B_mem = batch_size * mem_dim;
+    const int64_t float_space = (core_dim + mem_dim) * sizeof(float);
+    const int64_t T_space = (float_space + sizeof(float) - 1) / sizeof(float);
+    Tensor workspace = torch::empty({(time_steps + 2) * B_core + 2 * B_mem + T_space}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x_core.scalar_type(), "hybrid_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        HybridElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, core_dim, mem_dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x_core),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(a_mem),
+            ptr<scalar_t>(x_core),
+            ptr<scalar_t>(z_core),
+            ptr<scalar_t>(x_mem),
+            ptr<scalar_t>(z_mem),
+            ptr<scalar_t>(h_core),
+            ptr<scalar_t>(h_mem),
+            ptr<scalar_t>(v_core),
+            ptr<scalar_t>(d_out_core),
+            ptr<scalar_t>(d_out_mem),
+            ptr<scalar_t>(dx_core),
+            ptr<scalar_t>(dz_core),
+            ptr<scalar_t>(dx_mem),
+            ptr<scalar_t>(dz_mem),
+            ptr<scalar_t>(dW_x_core),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db_core),
+            ptr<scalar_t>(da_mem),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx_core, dz_core, dx_mem, dz_mem, dW_x_core, dW_h, db_core, da_mem};
+}
+
+// =============================================================================
+// E10: Multi-Scale EMA Elman (multiple EMA memory banks with learned decay)
+// =============================================================================
+
+std::vector<Tensor> multiscale_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, (1+n_banks)*dim] gates
+    Tensor h0,          // [B, dim]
+    Tensor m0,          // [n_banks, B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
+    Tensor a) {         // [n_banks, dim] EMA decay logits
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_banks = a.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(m0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+    CHECK_INPUT(a);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor m = torch::empty({time_steps + 1, n_banks, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+    m[0] = m0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "multiscale_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        MultiScaleElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_banks,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(a),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(m),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, m, output, v};
+}
+
+std::vector<Tensor> multiscale_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor a,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor m,
+    Tensor v,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_banks = a.size(0);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(a);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(m);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor da = torch::zeros({n_banks, dim}, options);
+
+    // Workspace: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD]
+    //            [dm: n_banks*BD] [dm_recurrent: n_banks*BD]
+    //            [dh_ema_float: BD floats] [db_float: dim floats] [da_float: n_banks*dim floats]
+    const int64_t BD = batch_size * dim;
+    // Float buffers: BD + dim + n_banks*dim floats
+    // Compute how many T elements are needed to hold all the float buffers
+    // (assuming bfloat16/float16 is 2 bytes, float is 4 bytes)
+    const int64_t float_elems = BD + dim + n_banks * dim;
+    const int64_t float_bytes = float_elems * sizeof(float);
+    // Round up to nearest T element
+    const int64_t float_space_in_T = (float_bytes + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 2) * BD + 2 * n_banks * BD + float_space_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "multiscale_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        MultiScaleElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_banks,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(a),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(m),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(da),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, db, da};
+}
+
 }  // anonymous namespace
 
 
@@ -1811,4 +2129,12 @@ void elman_ladder_init(py::module& m) {
           "E8: Scaled Low-Rank Elman forward (learn to sparsify)");
     m.def("scaled_lowrank_elman_backward", &scaled_lowrank_elman_backward,
           "E8: Scaled Low-Rank Elman backward");
+    m.def("hybrid_elman_forward", &hybrid_elman_forward,
+          "E9: Hybrid Elman forward (dense core + diagonal memory)");
+    m.def("hybrid_elman_backward", &hybrid_elman_backward,
+          "E9: Hybrid Elman backward");
+    m.def("multiscale_elman_forward", &multiscale_elman_forward,
+          "E10: Multi-Scale EMA Elman forward (learned decay memory banks)");
+    m.def("multiscale_elman_backward", &multiscale_elman_backward,
+          "E10: Multi-Scale EMA Elman backward");
 }
