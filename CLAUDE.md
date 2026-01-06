@@ -1,27 +1,28 @@
-# Elman Project Guidelines
+# Elman RNN Research Guidelines
+
+## Current Best Model
+
+**E1 (Gated Elman) d1280×6** - 1.43 loss, 254K tok/s at 50M params
+- Beats Mamba2 (1.53 loss, 101K tok/s) by 3× throughput
+- Sweet spot: depth=6, wider is better up to a point
+
+## Model Variants
+
+| Model | Description | Status |
+|-------|-------------|--------|
+| E0 | Stock Elman: h = tanh(W_h @ h + W_x @ x) | Baseline |
+| E1 | + h+x selective gating | **Best** |
+| E5 | Low-rank: U @ V @ h instead of W @ h | Slower |
 
 ## Critical Design Principles
 
-1. **NO PARALLEL SCAN** - We are testing nonlinear recurrent systems. Parallel scan only works for linear systems. All recurrence must be sequential.
+1. **NO PARALLEL SCAN** - We test nonlinear recurrence. Sequential only.
 
-2. **ALL models must use cuBLAS GEMMs** - This is the key to performance. Element-wise diagonal operations are memory-bound and slow. Follow e0's pattern:
+2. **ALL models must use cuBLAS GEMMs** - Element-wise ops are memory-bound.
    - Pre-compute W_x @ x for ALL timesteps (one big GEMM)
    - Per-timestep W_h @ h_prev (GEMM)
 
-3. **Same number of layers across models** - For fair comparison, models should have similar depth. If a model has fewer params per layer, increase d_inner, don't increase depth.
-
-## E2 Architecture Fix Needed
-
-The current e2 (SlotElman) uses diagonal decay per slot with NO GEMMs - this is wrong:
-- Current: h_t[:,s] = decay[:,s] * h_{t-1}[:,s] + B[:,s] * x (element-wise, O(d*n_slots))
-- Correct: Each slot should have full W_h matmul like e0
-
-Correct e2 design should be:
-- n_slots independent Elman cells, each with W_x, W_h GEMMs
-- Batch slots together for efficient GEMM: [B*n_slots, d] @ W_h
-- Combine slots for output
-
-This gives same depth as e0 with n_slots more memory capacity.
+3. **Wider + shallower wins** - But not too shallow (depth=6 optimal)
 
 ## Model Implementation Rules
 
@@ -61,21 +62,13 @@ This gives same depth as e0 with n_slots more memory capacity.
 4. Test at multiple batch sizes to understand scaling behavior
 5. Use Last-100-step averaged loss for fair comparison (not instantaneous)
 
-## Current Model Hierarchy
+## Latest Benchmark Results (50M params, 10 min training, Last-100 avg)
 
-- `pure`: No output gating (h only)
-- `x_gated`: X-only gating (h * silu(x + b)) - **BEST SIMPLE ELMAN**
-- `diagonal`: Linear diagonal recurrence + x-gating - **WORSE LOSS** (no tanh hurts)
-- `0` (Level 0): H+X gating (h * silu(h + x + b))
-- Higher levels: Various selective mechanisms
+| Model | Loss | Throughput |
+|-------|------|------------|
+| E1 d1280×6 | 1.43 | 254K tok/s |
+| E1 d1024×10 | 1.45 | 214K tok/s |
+| Mamba2 | 1.53 | 101K tok/s |
+| E5 d1536 r270 | 1.61 | 81K tok/s |
 
-## Benchmark Results (batch=32, 500 steps, 50M params)
-
-| Model | Loss | Tok/s |
-|-------|------|-------|
-| Mamba2 | 1.95 | 100k |
-| X-Gated | 2.03 | 35k |
-| Level 0 | 2.05 | 34k |
-| Diagonal | 2.52 | 39k | ← tanh is important!
-
-**Key finding**: Linear recurrence (no tanh) loses too much expressivity. The x-gate alone cannot replace tanh as the nonlinearity.
+**Key finding**: E1's throughput advantage (3×) dominates. Low-rank (E5) is theoretically interesting but slower in practice.

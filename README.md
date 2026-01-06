@@ -1,163 +1,89 @@
-# Elman Ladder Research
+# Elman RNN Research
 
-A research framework for exploring non-linear, non-associative recurrent architectures that can compete with linear state-space models like Mamba2.
+**Can simple Elman RNNs compete with modern SSMs like Mamba2?**
 
-## Research Objective
+Yes. With proper CUDA kernels and hyperparameter tuning, a 6-layer Elman RNN beats Mamba2 in wall-clock training time.
 
-**Core hypothesis**: Non-linearity and non-associativity in recurrent models can provide more expressivity than linear SSMs like Mamba2, but we need numerically stable implementations to fairly test this.
+## Key Results (50M params, 10 minutes training)
 
-Modern SSMs like Mamba2 achieve stability through:
-1. Log-space computation preventing overflow/underflow
-2. Bounded gradients via softmax weights from logsumexp
-3. Linear state updates enabling parallel scan
+| Model | Loss | Throughput | Notes |
+|-------|------|------------|-------|
+| **E1 d1280×6** | **1.43** | **254K tok/s** | Simple gated Elman |
+| E1 d1024×10 | 1.45 | 214K tok/s | Deeper but slower |
+| Mamba2 | 1.53 | 101K tok/s | SSM baseline |
+| E5 d1536 r270 | 1.61 | 81K tok/s | Low-rank Elman |
 
-The Elman architecture uses `tanh(W_h @ h)` which is:
-- **Non-linear**: tanh squashes values
-- **Non-associative**: `tanh(A + B) != tanh(A) + tanh(B)`
+**Finding**: E1's 3× throughput advantage over Mamba2 dominates. Simpler is faster.
 
-This should provide more expressivity, but naively implementing it causes:
-- Gradient vanishing through depth (tanh saturation)
-- Numerical instability in long sequences
-- No parallel scan (sequential by nature)
+## Model Variants
 
-This repository implements the "Elman Ladder" - a 7-level ablation study that progressively adds complexity to measure the cost/benefit of each architectural choice.
-
-## The Elman Ladder
-
-### Linear-Space Levels (0-3)
-| Level | Name | Key Change | Associative? | Parallel? |
-|-------|------|------------|--------------|-----------|
-| 0 | Stock Elman | Pure `h = tanh(W_x @ x + W_h @ h + b)` | No | No |
-| 1 | Gated Elman | Add discretization: `h = (1-δ)*h + δ*cand` | No | No |
-| 2 | Selective Elman | Add compete softmax output | No | No |
-| 3 | Diagonal Selective | Diagonal `r_h` instead of full `W_h` | No | No |
-
-### Log-Space Polynomial Levels (log_0, log_1, log_2) - **RECOMMENDED**
-| Level | Name | Key Change | Gradient Stability |
-|-------|------|------------|-------------------|
-| log_0 | Log-Space Polynomial | Polynomial activation `α*log\|v\|` with input-dependent α | Bounded |
-| log_1 | Log-Space Selective | + compete×silu output | Bounded |
-| log_2 | Log-Space Diagonal Selective | + diagonal r_h in log-space | Bounded |
-
-### Experimental Levels (4-6)
-| Level | Name | Key Change |
-|-------|------|------------|
-| 4 | Log-Storage | Store h as (log\|h\|, sign(h)) |
-| 5 | Log-Compute | Log-space matrix multiply |
-| 6 | Log-Space Triple R | Full log-space with Triple R |
-
-See [docs/ladder.md](docs/ladder.md) for detailed documentation.
-
-## Comparison with Mamba2
-
-| Aspect | Mamba2 | Elman (Level 0-3) | Elman (Level 4-6) |
-|--------|--------|-------------------|-------------------|
-| State update | Linear | Non-linear (tanh) | Non-linear |
-| Associative | Yes | No | No |
-| Parallel scan | Yes | No | No (sequential) |
-| Numerical stability | Excellent (log-space) | Moderate | Good (log-space) |
-| Gradient flow | Bounded (softmax) | Vanishes at depth | Research frontier |
-
-## Installation
-
-Uses the existing `mingru` micromamba environment:
-
-```bash
-micromamba activate mingru
-pip install -r requirements.txt
+### E0: Stock Elman
 ```
+h_t = tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+```
+
+### E1: Gated Elman (best)
+```
+h_t = tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+y_t = h_t * silu(W_g @ [h_t, x_t] + b_g)  # h+x selective gating
+```
+
+### E5: Low-Rank Elman
+```
+h_t = tanh(U_h @ V_h @ h_{t-1} + U_x @ V_x @ x_t + b)
+```
+Uses rank-r factorization. Fewer params per layer but slower due to extra matmuls.
+
+## Architecture Insights
+
+1. **Wider + shallower wins** - d1280×6 beats d1024×10 beats d768×18
+2. **But not too shallow** - depth=6 is optimal; depth=2-3 hurts loss significantly
+3. **Low-rank hurts throughput** - E5's factorization adds latency that outweighs param savings
+4. **CUDA GEMMs are key** - All ops must be batched matmuls, not element-wise
 
 ## Quick Start
 
-### Training (8 GPU DDP with tiktoken - default)
-
 ```bash
-# Set library path
-export LD_LIBRARY_PATH=$HOME/.local/lib/python3.12/site-packages/torch/lib:$LD_LIBRARY_PATH
+# Activate environment
+micromamba activate mingru
 
-# Train log-space polynomial (recommended)
-torchrun --nproc_per_node=8 train_ladder.py --level log_0 --params 100m --data /path/to/data.txt
+# Build CUDA kernels
+cd elman/cuda && make && pip install -e . && cd ../..
 
-# Train stock Elman baseline
-torchrun --nproc_per_node=8 train_ladder.py --level 0 --params 100m --data /path/to/data.txt
+# Train E1 (best model)
+python train_ladder.py --level 1 --params 50m --data data/pile.txt
 ```
 
-**Default settings**: DDP, CUDA, bf16, tiktoken (p50k_base ~50k vocab), AdamWScheduleFree
+## Data Format
 
-### Single GPU (for debugging)
+Raw text file, byte-level (vocab_size=256). No pretokenization - we mmap and sample randomly:
 
-```bash
-python train_ladder.py --level log_0 --params 10m --data /path/to/data.txt --no-ddp
+```python
+with open('data/pile.txt', 'rb') as f:
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+pos = np.random.randint(0, len(mm) - 513, size=batch_size)
 ```
-
-### Training with TBPTT
-
-TBPTT is **opt-in** via `--tbptt` flag:
-
-```bash
-torchrun --nproc_per_node=8 train_ladder.py --level log_0 --params 100m --data /path/to/data.txt --tbptt
-```
-
-### Data Format
-
-Raw text file. Documents separated by `0x1e` (ASCII record separator).
 
 ## Repository Structure
 
 ```
 elman/
 ├── elman/
-│   ├── models/     # Ladder implementations (Levels 0-6)
-│   ├── kernels/    # CUDA/Triton kernels
-│   └── data/       # Data loading utilities
-├── scripts/        # Training job scripts
-├── tests/          # Comparative tests
-├── docs/           # Documentation
-└── logs/           # Training logs
+│   ├── models/       # E0, E1, E5, Mamba2 wrapper
+│   ├── cuda/         # CUDA kernels (haste-based)
+│   └── data/         # Mmap data loading
+├── benchmark_results/ # All experiment logs
+├── train_ladder.py   # Main training script
+└── CLAUDE.md         # Development guidelines
 ```
 
-## Key Files
+## Current Research
 
-**Models:**
-- `elman/models/stock_elman.py` - Level 0: Pure Elman
-- `elman/models/gated_elman.py` - Level 1: Discretized Elman
-- `elman/models/selective_elman.py` - Level 2: With compete softmax
-- `elman/models/diagonal_selective.py` - Level 3: Diagonal hidden weight
-- `elman/models/logspace_polynomial.py` - Level log_0: Log-space polynomial **(RECOMMENDED)**
-- `elman/models/logspace_selective.py` - Level log_1: + compete×silu
-- `elman/models/logspace_diagonal_selective.py` - Level log_2: + diagonal r_h
-- `elman/models/ladder_lm.py` - Language model wrapper for all levels
+Exploring sparse/structured matrices for larger hidden states without O(n²) cost:
+- Monarch matrices (O(n√n))
+- Sparse + low-rank decomposition
+- Learned random projections
 
-**Data:**
-- `elman/data/dataset.py` - Document-aware streaming datasets
-- `elman/data/tokenizers.py` - Byte-level and tiktoken tokenizers
+## Citation
 
-**Training:**
-- `train_ladder.py` - Main training script (DDP, schedule-free, tiktoken defaults)
-
-**CUDA Kernels:**
-- `elman/cuda/` - Haste-based CUDA kernels
-
-Build CUDA kernels:
-```bash
-cd elman/cuda
-make
-pip install -e .
-```
-
-## Current Status
-
-### Production Ready
-- **Levels 0-3**: Linear-space, CUDA kernels, verified to 1B params
-- **Levels log_0, log_1, log_2**: Log-space polynomial with CUDA kernels, bounded gradients
-
-### Experimental
-- Levels 4-6: Theoretical framework, implementation in progress
-
-See [docs/logspace.md](docs/logspace.md) for log-space implementation details.
-
-## Related Work
-
-- [gruboros](../gruboros) - Original research codebase
-- [Mamba2](https://arxiv.org/abs/2405.21060) - State-space model with log-space computation
-- [FlashRNN](https://github.com/NX-AI/flashrnn) - Fast RNN kernels
+This is research code exploring the question: how far can simple RNNs go with modern engineering?
