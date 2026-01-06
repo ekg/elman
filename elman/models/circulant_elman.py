@@ -21,11 +21,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Try to import CUDA kernel
-# NOTE: CUDA kernel disabled until cuFFT bugs are fixed
 try:
     import hasty_pytorch_lib
-    # CIRCULANT_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'circulant_elman_forward')
-    CIRCULANT_CUDA_AVAILABLE = False  # Disabled - use PyTorch fallback
+    CIRCULANT_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'circulant_elman_forward')
 except ImportError:
     CIRCULANT_CUDA_AVAILABLE = False
 
@@ -142,7 +140,8 @@ class CirculantElmanCell(nn.Module):
     def get_spectral_radius(self):
         """Return the spectral radius of the circulant recurrence matrix."""
         with torch.no_grad():
-            fft_c_h = torch.fft.fft(self.c_h)
+            # FFT doesn't support bfloat16, cast to float32
+            fft_c_h = torch.fft.fft(self.c_h.float())
             return fft_c_h.abs().max().item()
 
     def forward(self, x, h0=None):

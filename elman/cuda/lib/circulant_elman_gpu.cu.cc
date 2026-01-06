@@ -381,7 +381,8 @@ void CirculantElmanForward<T>::Run(
     T* output,              // [T, B, dim]
     T* v,                   // [T, B, dim] pre-activation cache
     T* gate_cache,          // [T, B, dim] gate cache for backward
-    T* workspace) {
+    float* fft_workspace,   // Complex workspace for FFT operations (float32)
+    T* gate_proj) {         // [T, B, dim] pre-computed gate projections
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
@@ -391,19 +392,17 @@ void CirculantElmanForward<T>::Run(
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int num_blocks_dim = (dim_ + block_size - 1) / block_size;
 
-    // Workspace layout:
+    // FFT workspace layout (all float32/cufftComplex):
     // [fft_c_h: dim complex] [fft_c_x: dim complex]
     // [c_h_complex: dim complex] [c_x_complex: dim complex]
     // [h_complex: BD complex] [x_complex: BD complex] [result_complex: BD complex]
-    // [gate_proj: T*BD] (real, for W_gate @ x)
-    cufftComplex* fft_c_h = reinterpret_cast<cufftComplex*>(workspace);
+    cufftComplex* fft_c_h = reinterpret_cast<cufftComplex*>(fft_workspace);
     cufftComplex* fft_c_x = fft_c_h + dim_;
     cufftComplex* c_h_complex = fft_c_x + dim_;
     cufftComplex* c_x_complex = c_h_complex + dim_;
     cufftComplex* h_complex = c_x_complex + dim_;
     cufftComplex* x_complex = h_complex + BD;
     cufftComplex* result_complex = x_complex + BD;
-    T* gate_proj = reinterpret_cast<T*>(result_complex + BD);
 
     // Pre-compute FFT(c_h) and FFT(c_x)
     RealToComplex<T><<<num_blocks_dim, block_size, 0, stream_>>>(dim_, c_h, c_h_complex);
@@ -513,48 +512,50 @@ void CirculantElmanBackward<T>::Run(
     T* dW_gate,
     T* db,
     T* d_b_gate,
-    T* workspace) {
+    float* fft_workspace,
+    T* work_T) {
 
     static const T alpha = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
     static const T beta_one = static_cast<T>(1.0);
 
     const int BD = batch_size_ * dim_;
+    const int TBD = steps * BD;
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
     const int num_blocks_dim = (dim_ + block_size - 1) / block_size;
+    const int num_blocks_TBD = (TBD + block_size - 1) / block_size;
 
-    // Workspace layout:
+    // FFT workspace layout (all float32/cufftComplex):
     // [fft_c_h: dim complex] [fft_c_x: dim complex]
     // [d_fft_c_h: dim complex] [d_fft_c_x: dim complex]
-    // [d_c_h_complex: dim complex] [d_c_x_complex: dim complex]
     // [c_h_complex: dim complex] [c_x_complex: dim complex]
-    // [dv_all: T*BD] [d_gate_proj_all: T*BD]
-    // [dh: BD] [dh_recurrent: BD]
     // [dv_complex: BD complex] [h_prev_complex: BD complex] [x_complex: BD complex]
     // [dh_prev_complex: BD complex]
+    // [d_c_h_complex: dim complex] [d_c_x_complex: dim complex]
     // [db_float: dim] [d_b_gate_float: dim]
-    cufftComplex* fft_c_h = reinterpret_cast<cufftComplex*>(workspace);
+    cufftComplex* fft_c_h = reinterpret_cast<cufftComplex*>(fft_workspace);
     cufftComplex* fft_c_x = fft_c_h + dim_;
     cufftComplex* d_fft_c_h = fft_c_x + dim_;
     cufftComplex* d_fft_c_x = d_fft_c_h + dim_;
-    cufftComplex* d_c_h_complex = d_fft_c_x + dim_;
-    cufftComplex* d_c_x_complex = d_c_h_complex + dim_;
-    cufftComplex* c_h_complex = d_c_x_complex + dim_;
+    cufftComplex* c_h_complex = d_fft_c_x + dim_;
     cufftComplex* c_x_complex = c_h_complex + dim_;
-
-    T* dv_all = reinterpret_cast<T*>(c_x_complex + dim_);
-    T* d_gate_proj_all = dv_all + steps * BD;
-    T* dh = d_gate_proj_all + steps * BD;
-    T* dh_recurrent = dh + BD;
-
-    cufftComplex* dv_complex = reinterpret_cast<cufftComplex*>(dh_recurrent + BD);
+    cufftComplex* dv_complex = c_x_complex + dim_;
     cufftComplex* h_prev_complex = dv_complex + BD;
     cufftComplex* x_complex = h_prev_complex + BD;
     cufftComplex* dh_prev_complex = x_complex + BD;
+    cufftComplex* d_c_h_complex = dh_prev_complex + BD;
+    cufftComplex* d_c_x_complex = d_c_h_complex + dim_;
 
-    float* db_float = reinterpret_cast<float*>(dh_prev_complex + BD);
+    // Float accumulators after complex arrays
+    float* db_float = reinterpret_cast<float*>(d_c_x_complex + dim_);
     float* d_b_gate_float = db_float + dim_;
+
+    // Model dtype workspace: [dh: BD] [dh_recurrent: BD] [dv_all: T*BD] [d_gate_proj_all: T*BD]
+    T* dh = work_T;
+    T* dh_recurrent = dh + BD;
+    T* dv_all = dh_recurrent + BD;
+    T* d_gate_proj_all = dv_all + TBD;
 
     // Initialize gradients
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);

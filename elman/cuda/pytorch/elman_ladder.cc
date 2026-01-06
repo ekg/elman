@@ -1331,11 +1331,16 @@ std::vector<Tensor> circulant_elman_forward(
     Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
                                  : torch::empty({0}, options);
 
-    // Workspace for FFT: complex arrays for h, x, and intermediates
-    // Need: 2*dim (FFT of c_h, c_x) + 3*B*dim (complex h, complex x, complex result) per timestep
-    // Complex arrays need 2x floats per element
+    // Workspace for FFT (all float32 for cuFFT compatibility):
+    // [fft_c_h: dim complex] [fft_c_x: dim complex] [c_h_complex: dim complex] [c_x_complex: dim complex]
+    // [h_complex: BD complex] [x_complex: BD complex] [result_complex: BD complex]
+    // Total: 4*dim + 3*BD complex = (4*dim + 3*BD) * 2 floats
     const int64_t BD = batch_size * dim;
-    Tensor workspace = torch::empty({(2 * dim + 4 * BD) * 2}, torch::dtype(torch::kFloat32).device(options.device()));
+    const int64_t fft_workspace_floats = (4 * dim + 3 * BD) * 2;
+    Tensor fft_workspace = torch::empty({fft_workspace_floats}, torch::dtype(torch::kFloat32).device(options.device()));
+
+    // Separate workspace for gate_proj (in model dtype)
+    Tensor gate_proj = torch::empty({time_steps, batch_size, dim}, options);
 
     h[0] = h0;
 
@@ -1359,7 +1364,8 @@ std::vector<Tensor> circulant_elman_forward(
             ptr<scalar_t>(output),
             training ? ptr<scalar_t>(v) : nullptr,
             training ? ptr<scalar_t>(gate_cache) : nullptr,
-            reinterpret_cast<typename native_type<scalar_t>::T*>(workspace.data_ptr<float>()));
+            fft_workspace.data_ptr<float>(),
+            ptr<scalar_t>(gate_proj));
     }));
 
     return {h, output, v, gate_cache};
@@ -1399,7 +1405,13 @@ std::vector<Tensor> circulant_elman_backward(
     Tensor db_gate = torch::zeros({dim}, options);
 
     const int64_t BD = batch_size * dim;
-    Tensor workspace = torch::empty({(2 * dim + 6 * BD) * 2}, torch::dtype(torch::kFloat32).device(options.device()));
+    // FFT workspace (float32): 8 complex arrays of dim + 4 complex arrays of BD + 2 float arrays of dim
+    // Each complex = 2 floats, so: (8*dim + 4*BD)*2 + 2*dim = 18*dim + 8*BD
+    const int64_t fft_workspace_floats = 18 * dim + 8 * BD;
+    Tensor fft_workspace = torch::empty({fft_workspace_floats}, torch::dtype(torch::kFloat32).device(options.device()));
+    // Model dtype workspace: dh, dh_recurrent, dv_all, d_gate_proj_all
+    // Size: (2 + 2*T) * BD
+    Tensor work_T = torch::empty({(2 + 2 * time_steps) * BD}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "circulant_elman_backward", ([&] {
@@ -1425,7 +1437,8 @@ std::vector<Tensor> circulant_elman_backward(
             ptr<scalar_t>(dW_gate),
             ptr<scalar_t>(db),
             ptr<scalar_t>(db_gate),
-            reinterpret_cast<typename native_type<scalar_t>::T*>(workspace.data_ptr<float>()));
+            fft_workspace.data_ptr<float>(),
+            ptr<scalar_t>(work_T));
     }));
 
     return {dx, d_c_h, d_c_x, dW_gate, db, db_gate};

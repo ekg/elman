@@ -668,7 +668,8 @@ struct CirculantElmanForward {
         T* output,            // [T, B, dim]
         T* v,                 // [T, B, dim] pre-activation cache
         T* gate_cache,        // [T, B, dim] gate cache for backward
-        T* workspace);        // Complex workspace for FFT operations
+        float* fft_workspace, // Complex workspace for FFT operations (float32)
+        T* gate_proj);        // [T, B, dim] pre-computed gate projections
 
 private:
     bool training_;
@@ -706,7 +707,8 @@ struct CirculantElmanBackward {
         T* dW_gate,         // [dim, dim] gradient for W_gate
         T* db,              // [dim]
         T* d_b_gate,        // [dim]
-        T* workspace);      // Complex workspace for FFT operations
+        float* fft_workspace,  // Complex workspace for FFT operations (float32)
+        T* work_T);         // Workspace in model dtype [2*BD]
 
 private:
     int batch_size_;
