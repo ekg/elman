@@ -4,6 +4,7 @@ Language Model wrapper for E-Series Elman models.
 E-Series:
     e0: Stock Elman - tanh + h*silu(W_gate@x) gating
     e1: Mamba-Gated Elman - Mamba2-style split projection gating
+    e2: Slot Elman - Multi-slot memory (64x like Mamba2)
 """
 
 import torch
@@ -12,22 +13,35 @@ import torch.nn.functional as F
 
 from .stock_elman import StockElman
 from .mamba_gated_elman import MambaGatedElman
+from .slot_elman import SlotElman
+from .lowrank_slot_elman import LowRankSlotElman
+from .lowrank_elman import LowRankElman
+from .pure_lowrank_elman import PureLowRankElman
+from .diagonal_elman import DiagonalElman
 
 
 def get_ladder_level(level):
     """Get the module class for a specific ladder level.
 
     Args:
-        level: Integer level (0 = StockElman, 1 = MambaGatedElman)
+        level: Integer level (0-6) or 'mamba2'
 
     Returns:
         Layer class
     """
-    if level == 0:
-        return StockElman
-    elif level == 1:
-        return MambaGatedElman
-    raise ValueError(f"Invalid level {level}. Available: 0 (e0), 1 (e1)")
+    levels = {
+        0: StockElman,
+        1: MambaGatedElman,
+        2: SlotElman,
+        3: LowRankSlotElman,
+        4: LowRankElman,
+        5: PureLowRankElman,
+        6: DiagonalElman,
+        'mamba2': 'mamba2',  # Special case - handled separately
+    }
+    if level in levels:
+        return levels[level]
+    raise ValueError(f"Invalid level {level}. Available: 0-6, mamba2")
 
 
 class LadderLM(nn.Module):
@@ -55,6 +69,8 @@ class LadderLM(nn.Module):
         level=0,
         expansion=1.0,
         n_groups=32,
+        n_slots=8,
+        rank=None,
         delta_init=-2.0,
         dropout=0.0,
         r_h_mode='spectral_norm',
@@ -65,6 +81,8 @@ class LadderLM(nn.Module):
         self.dim = dim
         self.depth = depth
         self.level = level
+        self.n_slots = n_slots
+        self.rank = rank
         self.r_h_mode = r_h_mode
 
         # Get the layer class for this level
@@ -84,6 +102,8 @@ class LadderLM(nn.Module):
                 dim=dim,
                 expansion=expansion,
                 n_groups=n_groups,
+                n_slots=n_slots,
+                rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,
                 r_h_mode=r_h_mode,
@@ -202,6 +222,8 @@ class LadderLM(nn.Module):
         level_names = {
             0: "Stock Elman (e0)",
             1: "Mamba-Gated Elman (e1)",
+            2: "Slot Elman (e2)",
+            3: "Low-Rank Slot Elman (e3)",
         }
         return f'level={self.level} ({level_names.get(self.level, "Unknown")}), dim={self.dim}, depth={self.depth}'
 
@@ -212,6 +234,7 @@ def create_ladder_model(
     vocab_size: int = 256,
     expansion: float = 1.0,
     n_groups: int = 32,
+    n_slots: int = 8,
     r_h_mode: str = 'spectral_norm',
     r_h_init_gain: float = 0.1,
 ):
@@ -223,16 +246,22 @@ def create_ladder_model(
 
     Args:
         target_params: Target parameter count (e.g., "100m", "500m", "1b")
-        level: Ablation ladder level (0-7 or log_0 to log_6)
+        level: Ablation ladder level (0-3) or 'mamba2'
         vocab_size: Vocabulary size
         expansion: Hidden state expansion
         n_groups: Number of groups for compete softmax
+        n_slots: Number of slots for E2/E3 (default: 8)
         r_h_mode: Constraint mode for R_h matrix (for log-space levels)
         r_h_init_gain: Initial gain for R_h orthogonal initialization
 
     Returns:
-        LadderLM model
+        LadderLM or Mamba2LM model
     """
+    # Handle mamba2 specially
+    if level == 'mamba2':
+        from .mamba2_baseline import create_mamba2_model
+        return create_mamba2_model(target_params=target_params, vocab_size=vocab_size)
+
     # Parse target
     target = target_params.lower()
     if target.endswith('m'):
@@ -266,7 +295,7 @@ def create_ladder_model(
     # Create a 1-layer model to count base params (embeddings, output, etc)
     model_1layer = LadderLM(
         vocab_size=vocab_size, dim=dim, depth=1, level=level,
-        expansion=expansion, n_groups=n_groups,
+        expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
     )
     params_1layer = model_1layer.get_num_params()
@@ -274,7 +303,7 @@ def create_ladder_model(
     # Create a 2-layer model to compute params per layer
     model_2layer = LadderLM(
         vocab_size=vocab_size, dim=dim, depth=2, level=level,
-        expansion=expansion, n_groups=n_groups,
+        expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
     )
     params_2layer = model_2layer.get_num_params()
@@ -303,6 +332,7 @@ def create_ladder_model(
         level=level,
         expansion=expansion,
         n_groups=n_groups,
+        n_slots=n_slots,
         r_h_mode=r_h_mode,
         r_h_init_gain=r_h_init_gain,
     )

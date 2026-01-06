@@ -1,0 +1,20 @@
+=== E5 Rank/Dim Sweep ===
+Data: /home/erikg/elman/data/fineweb_100mb.txt
+Steps: 1000
+Batch: 32 x Chunk: 512 = 16384 tokens/step
+Output: benchmark_results/e5_rank_sweep_20260105_201706
+
+Starting E5 variants...
+PIDs: 652012 652013 652014 652015
+Waiting for completion...
+
+=== RESULTS ===
+
+Config                     Params   Final Loss        tok/s
+------------------------------------------------------------
+e5_d1024_r192                                              
+e5_d1536_r256                                              
+e5_d512_r256                                               
+e5_d768_r192                                               
+
+Done! Results in benchmark_results/e5_rank_sweep_20260105_201706

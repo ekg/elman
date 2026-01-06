@@ -4,15 +4,16 @@ Elman Models - E-Series for Mamba2 comparison
 E-Series:
     e0: Stock Elman - tanh recurrence + h*silu(W_gate@x) gating
     e1: Mamba-Gated Elman - Mamba2-style split projection gating
+    e2: Slot Elman - Multi-slot memory (64x more capacity like Mamba2)
 
-Both support:
-    - Spectral normalization on W_h (radius < 0.99)
+All support:
     - Optional conv1d for local context
+    - Mamba2-style silu gating
 
 Archived experimental levels are in elman/models/archive/.
 
 Usage:
-    from elman.models import StockElman, MambaGatedElman
+    from elman.models import StockElman, MambaGatedElman, SlotElman
     from elman.models import LadderLM, create_ladder_model
 
     # Create an e0 model
@@ -20,6 +21,9 @@ Usage:
 
     # Create an e1 model
     model = create_ladder_model("500m", level=1)
+
+    # Create an e2 model (64 memory slots)
+    model = create_ladder_model("500m", level=2)
 """
 
 # E0: Stock Elman (base of e-series)
@@ -28,6 +32,26 @@ from .stock_elman import StockElman, StockElmanCell, LEVEL_0_AVAILABLE
 # E1: Mamba-Gated Elman (Mamba2-style split projection)
 from .mamba_gated_elman import MambaGatedElman, MambaGatedElmanCell
 LEVEL_1_AVAILABLE = True
+
+# E2: Slot Elman (Multi-slot memory like Mamba2)
+from .slot_elman import SlotElman, SlotElmanCell
+LEVEL_2_AVAILABLE = True
+
+# E3: Low-Rank Slot Elman (independent low-rank W_h per slot)
+from .lowrank_slot_elman import LowRankSlotElman, LowRankSlotElmanCell
+LEVEL_3_AVAILABLE = True
+
+# E4: Low-Rank Elman (SVD-style for fat hidden state)
+from .lowrank_elman import LowRankElman, LowRankElmanCell
+LEVEL_4_AVAILABLE = True
+
+# E5: Pure Low-Rank Elman (no projections, all low-rank on full dim)
+from .pure_lowrank_elman import PureLowRankElman, PureLowRankElmanCell
+LEVEL_5_AVAILABLE = True
+
+# E6: Diagonal Elman (per-channel scalar recurrence + low-rank mix)
+from .diagonal_elman import DiagonalElman, DiagonalElmanCell
+LEVEL_6_AVAILABLE = True
 
 # Language model wrapper
 from .ladder_lm import LadderLM, create_ladder_model
@@ -46,6 +70,11 @@ def get_available_levels():
     levels = {
         0: ("Stock Elman (e0)", LEVEL_0_AVAILABLE, StockElman),
         1: ("Mamba-Gated Elman (e1)", LEVEL_1_AVAILABLE, MambaGatedElman),
+        2: ("Slot Elman (e2)", LEVEL_2_AVAILABLE, SlotElman),
+        3: ("Low-Rank Slot Elman (e3)", LEVEL_3_AVAILABLE, LowRankSlotElman),
+        4: ("Low-Rank Elman (e4)", LEVEL_4_AVAILABLE, LowRankElman),
+        5: ("Pure Low-Rank Elman (e5)", LEVEL_5_AVAILABLE, PureLowRankElman),
+        6: ("Diagonal Elman (e6)", LEVEL_6_AVAILABLE, DiagonalElman),
     }
     return levels
 
@@ -66,6 +95,16 @@ __all__ = [
     'StockElman', 'StockElmanCell', 'LEVEL_0_AVAILABLE',
     # E1: Mamba-Gated Elman
     'MambaGatedElman', 'MambaGatedElmanCell', 'LEVEL_1_AVAILABLE',
+    # E2: Slot Elman
+    'SlotElman', 'SlotElmanCell', 'LEVEL_2_AVAILABLE',
+    # E3: Low-Rank Slot Elman
+    'LowRankSlotElman', 'LowRankSlotElmanCell', 'LEVEL_3_AVAILABLE',
+    # E4: Low-Rank Elman
+    'LowRankElman', 'LowRankElmanCell', 'LEVEL_4_AVAILABLE',
+    # E5: Pure Low-Rank Elman
+    'PureLowRankElman', 'PureLowRankElmanCell', 'LEVEL_5_AVAILABLE',
+    # E6: Diagonal Elman
+    'DiagonalElman', 'DiagonalElmanCell', 'LEVEL_6_AVAILABLE',
     # Language model wrapper
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline

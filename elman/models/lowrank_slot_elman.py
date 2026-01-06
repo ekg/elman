@@ -28,6 +28,13 @@ try:
 except ImportError:
     LOWRANK_SLOT_CUDA_AVAILABLE = False
 
+# Try to import Triton diagonal kernel
+try:
+    from elman.kernels.diag_slot_triton import diag_slot_recurrence
+    DIAG_TRITON_AVAILABLE = True
+except ImportError:
+    DIAG_TRITON_AVAILABLE = False
+
 
 class LowRankSlotElmanFunction(torch.autograd.Function):
     """CUDA-accelerated low-rank slot elman autograd function."""
@@ -51,33 +58,40 @@ class LowRankSlotElmanFunction(torch.autograd.Function):
 
 class LowRankSlotElmanCell(nn.Module):
     """
-    E3 Elman cell with low-rank per-slot recurrence.
+    E3 Elman cell with per-slot recurrence.
 
-    Each slot has unique dynamics via low-rank factorization:
-    h_t[s] = tanh(W_x @ x + U_s @ (V_s @ h_prev[s]) + b)
+    Options:
+    - diag=False: Low-rank W_h = U_s @ V_s (more expressive, slower)
+    - diag=True:  Diagonal A_s (fast! like Mamba)
 
-    Matches Mamba2 structure:
-    - n_slots ↔ n_heads
-    - rank ↔ d_state
+    Recurrence:
+    - Low-rank: h_t[s] = tanh(W_x @ x + U_s @ (V_s @ h_prev[s]) + b)
+    - Diagonal: h_t[s] = tanh(W_x @ x + A_s * h_prev[s] + b)
+
+    Output: sum(C[s] * h_t[s]) * silu(z)
     """
 
-    def __init__(self, dim, n_slots=8, rank=None, spectral_radius=0.99):
+    def __init__(self, dim, n_slots=8, rank=None, spectral_radius=0.99, diag=False):
         super().__init__()
         self.dim = dim
         self.n_slots = n_slots
-        # Default rank = dim / 4 (like Mamba2's d_state relative to d_model)
-        self.rank = rank if rank is not None else dim // 4
         self.spectral_radius = spectral_radius
+        self.diag = diag
+        # Default rank = 64 (fixed for speed; dim // 4 was too slow)
+        self.rank = rank if rank is not None else 64
 
         # Shared input projection (same for all slots)
         self.W_x = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
 
-        # Per-slot low-rank recurrence: W_h_s = U_s @ V_s
-        # U_s: [dim, rank] - output projection per slot
-        # V_s: [rank, dim] - input projection per slot
-        self.U = nn.Parameter(torch.empty(n_slots, dim, self.rank))
-        self.V = nn.Parameter(torch.empty(n_slots, self.rank, dim))
+        if diag:
+            # Per-slot diagonal recurrence: A_s in (0, spectral_radius)
+            # Shape: [n_slots, dim] - unique decay per slot per dimension
+            self.A_raw = nn.Parameter(torch.zeros(n_slots, dim))
+        else:
+            # Per-slot low-rank recurrence: W_h_s = U_s @ V_s
+            self.U = nn.Parameter(torch.empty(n_slots, dim, self.rank))
+            self.V = nn.Parameter(torch.empty(n_slots, self.rank, dim))
 
         # Slot combination weights
         self.C = nn.Parameter(torch.ones(n_slots) / n_slots)
@@ -88,16 +102,21 @@ class LowRankSlotElmanCell(nn.Module):
         # Xavier for input projection
         nn.init.xavier_uniform_(self.W_x)
 
-        # Initialize U and V such that U @ V has small spectral norm
-        # Each slot starts with orthogonal initialization scaled down
-        for s in range(self.n_slots):
-            # V_s: [rank, dim] - orthogonal rows
-            nn.init.orthogonal_(self.V[s])
-            # U_s: [dim, rank] - orthogonal columns, scaled
-            nn.init.orthogonal_(self.U[s])
-            with torch.no_grad():
-                self.U[s].mul_(self.spectral_radius * 0.3)
-                self.V[s].mul_(0.5)
+        if self.diag:
+            # Init A_raw near 0 -> A = sigmoid(0) * radius = 0.5 * radius
+            nn.init.zeros_(self.A_raw)
+        else:
+            # Initialize U and V for small spectral norm
+            for s in range(self.n_slots):
+                nn.init.orthogonal_(self.V[s])
+                nn.init.orthogonal_(self.U[s])
+                with torch.no_grad():
+                    self.U[s].mul_(self.spectral_radius * 0.3)
+                    self.V[s].mul_(0.5)
+
+    def _get_A(self):
+        """Get diagonal decay in (0, spectral_radius)."""
+        return torch.sigmoid(self.A_raw) * self.spectral_radius
 
     def forward(self, x, z, h0=None):
         """
@@ -119,8 +138,8 @@ class LowRankSlotElmanCell(nn.Module):
             # Transpose from user [B, n_slots, dim] to CUDA [n_slots, B, dim]
             h0_cuda = h0.permute(1, 0, 2).contiguous()
 
-        # Use CUDA kernel if available
-        if LOWRANK_SLOT_CUDA_AVAILABLE and x.is_cuda:
+        # Use CUDA kernel if available (low-rank only)
+        if not self.diag and LOWRANK_SLOT_CUDA_AVAILABLE and x.is_cuda:
             h, output = LowRankSlotElmanFunction.apply(
                 self.training, x.contiguous(), z.contiguous(),
                 h0_cuda, self.W_x.contiguous(),
@@ -129,11 +148,33 @@ class LowRankSlotElmanCell(nn.Module):
             )
             return output, h
 
-        # PyTorch fallback (uses [B, n_slots, dim] layout)
+        # Use Triton for diagonal if available
+        if self.diag and DIAG_TRITON_AVAILABLE and x.is_cuda:
+            # Compute Wx = W_x @ x for all timesteps
+            Wx = torch.matmul(x, self.W_x.T)  # [T, B, dim]
+
+            if h0 is None:
+                h0_triton = torch.zeros(B_size, self.n_slots, D, device=x.device, dtype=x.dtype)
+            else:
+                h0_triton = h0
+
+            A = self._get_A()  # [n_slots, dim]
+            output, h = diag_slot_recurrence(
+                Wx.contiguous(), z.contiguous(), h0_triton.contiguous(),
+                A.contiguous(), self.b.contiguous(), self.C.contiguous()
+            )
+            # h is [T+1, B, S, D], need to transpose to [T+1, S, B, D] for CUDA layout
+            h = h.permute(0, 2, 1, 3).contiguous()
+            return output, h
+
+        # PyTorch fallback
         if h0 is None:
             h0_fallback = torch.zeros(B_size, self.n_slots, D, device=x.device, dtype=x.dtype)
         else:
             h0_fallback = h0
+
+        if self.diag:
+            A = self._get_A()  # [n_slots, dim]
 
         h_list = [h0_fallback]
         output_list = []
@@ -146,49 +187,48 @@ class LowRankSlotElmanCell(nn.Module):
             # Shared W_x @ x
             Wx = x_t @ self.W_x.T  # [B, dim]
 
-            # Low-rank recurrence for each slot
-            h_new_list = []
-            for s in range(self.n_slots):
-                h_s = h_prev[:, s, :]  # [B, dim]
-                # V_s @ h_s: [B, dim] @ [dim, rank] = [B, rank]
-                Vh_s = h_s @ self.V[s].T
-                # U_s @ Vh_s: [B, rank] @ [rank, dim] = [B, dim]
-                Uh_s = Vh_s @ self.U[s].T
-                # h_new = tanh(Wx + Uh + b)
-                h_new_s = torch.tanh(Wx + Uh_s + self.b)
-                h_new_list.append(h_new_s)
+            if self.diag:
+                # Diagonal recurrence: A_s * h_prev[:, s, :]
+                Rh = A.unsqueeze(0) * h_prev  # [B, n_slots, dim]
+                h_new = torch.tanh(Wx.unsqueeze(1) + Rh + self.b)
+            else:
+                # Low-rank recurrence for each slot
+                h_new_list = []
+                for s in range(self.n_slots):
+                    h_s = h_prev[:, s, :]
+                    Vh_s = h_s @ self.V[s].T
+                    Uh_s = Vh_s @ self.U[s].T
+                    h_new_s = torch.tanh(Wx + Uh_s + self.b)
+                    h_new_list.append(h_new_s)
+                h_new = torch.stack(h_new_list, dim=1)
 
-            h_new = torch.stack(h_new_list, dim=1)  # [B, n_slots, dim]
             h_list.append(h_new)
 
             # Combine slots
-            h_combined = (h_new * self.C.view(1, -1, 1)).sum(dim=1)  # [B, dim]
+            h_combined = (h_new * self.C.view(1, -1, 1)).sum(dim=1)
 
             # Gating
             output = h_combined * F.silu(z_t)
             output_list.append(output)
 
-        h = torch.stack(h_list, dim=0)  # [T+1, B, n_slots, dim]
-        # Transpose to match CUDA layout [T+1, n_slots, B, dim]
+        h = torch.stack(h_list, dim=0)
         h = h.permute(0, 2, 1, 3).contiguous()
-        output = torch.stack(output_list, dim=0)  # [T, B, dim]
+        output = torch.stack(output_list, dim=0)
         return output, h
 
 
 class LowRankSlotElman(nn.Module):
     """
-    E3: Low-Rank Slot Elman with independent dynamics per slot.
+    E3: Slot Elman with per-slot dynamics.
 
-    Matches Mamba2 architecture:
-        - in_proj splits into x and z branches
-        - n_slots independent recurrent tracks (like n_heads)
-        - rank bottleneck per slot (like d_state)
-        - out_proj combines back
+    Options:
+        - diag=True:  Diagonal A per slot (fast! uses Triton)
+        - diag=False: Low-rank U @ V per slot (more expressive, slower)
 
     Architecture:
         x, z = split(in_proj(x))
         x = silu(x)
-        h = lowrank_slot_cell(x, z)
+        h = slot_cell(x, z)  # per-slot recurrence
         output = out_proj(h)
     """
 
@@ -202,14 +242,16 @@ class LowRankSlotElman(nn.Module):
         dropout=0.0,
         use_conv=False,
         d_conv=4,
+        diag=True,  # Default to diagonal for speed (3.9M tok/s!)
         **kwargs
     ):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
         self.n_slots = n_slots
-        # Match Mamba2: rank ~ d_state, typically d_inner / 4
-        self.rank = rank if rank is not None else self.d_inner // 4
+        self.diag = diag
+        # Default rank=64 for speed (d_inner/4 was too slow)
+        self.rank = rank if rank is not None else 64
         self.use_conv = use_conv
 
         # Mamba2-style: project to 2*d_inner, then split
@@ -226,12 +268,13 @@ class LowRankSlotElman(nn.Module):
                 bias=True,
             )
 
-        # Low-rank slot cell
+        # Slot cell (diagonal or low-rank)
         self.cell = LowRankSlotElmanCell(
             self.d_inner,
             n_slots=n_slots,
             rank=self.rank,
-            spectral_radius=spectral_radius
+            spectral_radius=spectral_radius,
+            diag=diag,
         )
 
         # Output projection
@@ -287,7 +330,8 @@ class LowRankSlotElman(nn.Module):
         return output, h_final
 
     def extra_repr(self):
-        return f'dim={self.dim}, d_inner={self.d_inner}, n_slots={self.n_slots}, rank={self.rank}, LEVEL=3_LOWRANK'
+        mode = "diag" if self.diag else f"lowrank(r={self.rank})"
+        return f'dim={self.dim}, d_inner={self.d_inner}, n_slots={self.n_slots}, mode={mode}, LEVEL=3'
 
 
 if __name__ == "__main__":
@@ -298,7 +342,7 @@ if __name__ == "__main__":
     print(f"CUDA kernel available: {LOWRANK_SLOT_CUDA_AVAILABLE}")
 
     # Create model matching Mamba2 structure
-    model = LowRankSlotElman(dim=512, expansion=2.0, n_slots=8, rank=256).to(device).bfloat16()
+    model = LowRankSlotElman(dim=512, expansion=2.0, n_slots=8, rank=64).to(device).bfloat16()
     x = torch.randn(2, 32, 512, device=device, dtype=torch.bfloat16)
 
     print(f"n_slots={model.n_slots}, rank={model.rank}, d_inner={model.d_inner}")

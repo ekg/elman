@@ -1,0 +1,170 @@
+E4 Benchmark Results
+====================
+Date: Mon Jan  5 07:52:14 AM UTC 2026
+Steps: 1000, Batch: 32, Chunk: 512
+
+=== e1_baseline ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓ <-- TRAINING
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7b8c583c6d50> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+
+Model Parameters: 49,714,944 (49.71M)
+  Embedding: 131,072
+  Layers: 21 x 512d
+  Layer 0: 2,360,064 params
+
+
+Step   1000 | Loss 1.5884 | PPL 4.9 | LR 3.00e-04 | Grad 2.05 | Tok/s 54,236 | Mem 821MB | Elapsed 302.1s
+  >>> Saved: output/e4_benchmark_20260105_074302/e1_baseline/level1_step001000_loss1.5884.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.5884
+Total tokens: 16,384,000
+Total time: 302.4s
+Parameters: 49,714,944 (49.71M)
+
+=== mamba2 ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x78d075d56b40> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+
+Model Parameters: 50,928,750 (50.93M)
+  Embedding: 172,032
+  Layers: 18 x 672d
+  Layer 0: 2,818,399 params
+
+
+Step   1000 | Loss 1.5646 | PPL 4.8 | LR 3.00e-04 | Grad 1.32 | Tok/s 110,922 | Mem 321MB | Elapsed 147.7s
+  >>> Saved: output/e4_benchmark_20260105_074302/mamba2/levelmamba2_step001000_loss1.5646.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.5646
+Total tokens: 16,384,000
+Total time: 148.1s
+Parameters: 50,928,750 (50.93M)
+
+=== e4_2x ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+  Level 5: Pure Low-Rank Elman (e5) ✓
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x71d9f675ea20> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=17, params=49,187,840
+
+Model Parameters: 49,187,840 (49.19M)
+  Embedding: 131,072
+  Layers: 17 x 512d
+  Layer 0: 2,884,608 params
+
+
+Step   1000 | Loss 1.6728 | PPL 5.3 | LR 3.00e-04 | Grad 2.50 | Tok/s 30,113 | Mem 851MB | Elapsed 544.1s
+  >>> Saved: output/e4_benchmark_20260105_074302/e4_2x/level4_step001000_loss1.6728.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6728
+Total tokens: 16,384,000
+Total time: 544.4s
+Parameters: 49,187,840 (49.19M)
+
+=== e5_r64 ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓ <-- TRAINING
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x771fee66ffe0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Traceback (most recent call last):
+  File "/home/erikg/elman/train_ladder.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train_ladder.py", line 274, in train
+    model = create_ladder_model(
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 291, in create_ladder_model
+
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 291, in create_ladder_model
+    model_1layer = LadderLM(
+                   ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 85, in __init__
+    LayerClass = get_ladder_level(level)
+                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 42, in get_ladder_level
+    raise ValueError(f"Invalid level {level}. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2")
+ValueError: Invalid level 5. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2
+
+=== e6_r64 ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓
+  Level 6: Diagonal Elman (e6) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7b13aa9ba5a0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Traceback (most recent call last):
+  File "/home/erikg/elman/train_ladder.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train_ladder.py", line 274, in train
+    model = create_ladder_model(
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 291, in create_ladder_model
+
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 291, in create_ladder_model
+    model_1layer = LadderLM(
+                   ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 85, in __init__
+    LayerClass = get_ladder_level(level)
+                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 42, in get_ladder_level
+    raise ValueError(f"Invalid level {level}. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2")
+ValueError: Invalid level 6. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2
+

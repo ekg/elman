@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "/home/erikg/elman/train_ladder.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train_ladder.py", line 235, in train
+    dist.init_process_group(backend='nccl')
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 81, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/distributed/c10d_logger.py", line 95, in wrapper
+    func_return = func(*args, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py", line 1762, in init_process_group
+    store, rank, world_size = next(rendezvous_iterator)
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/distributed/rendezvous.py", line 267, in _env_rendezvous_handler
+    rank = int(_get_env_or_raise("RANK"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/distributed/rendezvous.py", line 252, in _get_env_or_raise
+    raise _env_error(env_var)
+ValueError: Error initializing torch.distributed using env:// rendezvous: environment variable RANK expected, but not set

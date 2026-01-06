@@ -1,0 +1,60 @@
+Using p50k_base tokenizer with vocab size 50,281
+Loading data from data/fineweb_500mb.txt...
+Pre-tokenizing data/fineweb_500mb.txt...
+  Tokenized 0/521,845,311 chars...
+  Tokenized 100,000,000/521,845,311 chars...
+  Tokenized 200,000,000/521,845,311 chars...
+  Tokenized 300,000,000/521,845,311 chars...
+  Tokenized 400,000,000/521,845,311 chars...
+  Tokenized 500,000,000/521,845,311 chars...
+Saved 113,733,867 tokens to data/fineweb_500mb.txt.p50k_base.tokens.npy
+Loaded 113,733,867 tokens from cache: data/fineweb_500mb.txt.p50k_base.tokens.npy
+
+Creating 0 model with ~500m parameters...
+Created Level 0 model: dim=1024, depth=18, params=499,885,056
+
+============================================================
+Training: 0 (timeout=1000.0s)
+Parameters: 499.89M
+Vocab size: 50,281
+============================================================
+[0] step    1 | loss 11.0625 | ppl 63735.7 | grad 4.28 | 27036 tok/s | 1.8s | 1808ms/step
+[0] step   20 | loss 9.1250 | ppl 9182.0 | grad 1.91 | 29951 tok/s | 32.8s | 1643ms/step
+[0] step   40 | loss 7.7812 | ppl 2395.3 | grad 1.82 | 29409 tok/s | 66.9s | 1730ms/step
+[0] step   60 | loss 6.9688 | ppl 1062.9 | grad 1.14 | 28886 tok/s | 102.1s | 1787ms/step
+[0] step   80 | loss 6.5938 | ppl 730.5 | grad 0.78 | 28474 tok/s | 138.1s | 1823ms/step
+[0] step  100 | loss 6.5000 | ppl 665.1 | grad 1.08 | 28180 tok/s | 174.4s | 1824ms/step
+[0] step  120 | loss 6.3125 | ppl 551.4 | grad 0.75 | 27960 tok/s | 210.9s | 1839ms/step
+[0] step  140 | loss 6.1875 | ppl 486.6 | grad 0.89 | 27819 tok/s | 247.4s | 1822ms/step
+[0] step  160 | loss 6.1250 | ppl 457.1 | grad 0.73 | 27688 tok/s | 284.0s | 1821ms/step
+[0] step  180 | loss 6.0000 | ppl 403.4 | grad 0.69 | 27582 tok/s | 320.8s | 1841ms/step
+[0] step  200 | loss 5.9688 | ppl 391.0 | grad 0.78 | 27498 tok/s | 357.5s | 1841ms/step
+[0] step  220 | loss 5.9688 | ppl 391.0 | grad 0.77 | 27427 tok/s | 394.3s | 1841ms/step
+[0] step  240 | loss 5.8438 | ppl 345.1 | grad 0.71 | 27370 tok/s | 431.0s | 1836ms/step
+[0] step  260 | loss 5.8438 | ppl 345.1 | grad 0.67 | 27323 tok/s | 467.7s | 1839ms/step
+[0] step  280 | loss 5.8438 | ppl 345.1 | grad 0.71 | 27291 tok/s | 504.3s | 1826ms/step
+[0] step  300 | loss 5.8438 | ppl 345.1 | grad 0.77 | 27265 tok/s | 540.8s | 1825ms/step
+[0] step  320 | loss 5.6875 | ppl 295.2 | grad 0.73 | 27243 tok/s | 577.3s | 1829ms/step
+[0] step  340 | loss 5.7188 | ppl 304.5 | grad 0.73 | 27220 tok/s | 614.0s | 1822ms/step
+[0] step  360 | loss 5.6562 | ppl 286.1 | grad 0.71 | 27200 tok/s | 650.5s | 1835ms/step
+[0] step  380 | loss 5.5625 | ppl 260.5 | grad 0.78 | 27184 tok/s | 687.1s | 1829ms/step
+[0] step  400 | loss 5.6250 | ppl 277.3 | grad 0.76 | 27169 tok/s | 723.7s | 1824ms/step
+[0] step  420 | loss 5.6562 | ppl 286.1 | grad 0.75 | 27155 tok/s | 760.2s | 1827ms/step
+[0] step  440 | loss 5.6250 | ppl 277.3 | grad 0.73 | 27141 tok/s | 796.8s | 1825ms/step
+[0] step  460 | loss 5.6250 | ppl 277.3 | grad 0.77 | 27128 tok/s | 833.4s | 1835ms/step
+[0] step  480 | loss 5.5938 | ppl 268.7 | grad 0.79 | 27119 tok/s | 870.0s | 1832ms/step
+[0] step  500 | loss 5.6875 | ppl 295.2 | grad 0.79 | 27110 tok/s | 906.5s | 1827ms/step
+[0] step  520 | loss 5.5938 | ppl 268.7 | grad 0.79 | 27100 tok/s | 943.1s | 1835ms/step
+[0] step  540 | loss 5.6250 | ppl 277.3 | grad 0.80 | 27088 tok/s | 979.9s | 1837ms/step
+[0] Timeout reached at 1000.1s
+
+0 Final: loss=6.2723, grad=0.99, steps=552, tokens=27,082,752, time=1000.1s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+0               499.89M      6.2723     552      27,082,752   27080      1000.1  s
+
+Results saved to: benchmark_results

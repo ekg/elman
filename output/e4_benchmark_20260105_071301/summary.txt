@@ -1,0 +1,236 @@
+E4 Benchmark Results
+====================
+Date: Mon Jan  5 07:27:21 AM UTC 2026
+Steps: 1000, Batch: 32, Chunk: 512
+
+=== e0_stock ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓ <-- TRAINING
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x784cfda9fad0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 0 model: dim=512, depth=19, params=48,742,912
+
+Model Parameters: 48,742,912 (48.74M)
+  Embedding: 131,072
+  Layers: 19 x 512d
+  Layer 0: 2,557,440 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.6347 | PPL 5.1 | LR 3.00e-04 | Grad 2.20 | Tok/s 45,305 | Mem 765MB | Elapsed 361.6s
+  >>> Saved: output/e4_benchmark_20260105_071301/e0_stock/level0_step001000_loss1.6347.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6347
+Total tokens: 16,384,000
+Total time: 362.1s
+Parameters: 48,742,912 (48.74M)
+
+=== e1_baseline ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓ <-- TRAINING
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7f4eb7a125a0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+
+Model Parameters: 49,714,944 (49.71M)
+  Embedding: 131,072
+  Layers: 21 x 512d
+  Layer 0: 2,360,064 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.5914 | PPL 4.9 | LR 3.00e-04 | Grad 2.02 | Tok/s 42,055 | Mem 821MB | Elapsed 389.6s
+  >>> Saved: output/e4_benchmark_20260105_071301/e1_baseline/level1_step001000_loss1.5914.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.5914
+Total tokens: 16,384,000
+Total time: 390.0s
+Parameters: 49,714,944 (49.71M)
+
+=== e4_1.5x ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7e1a483b54f0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=25, params=50,941,696
+
+Model Parameters: 50,941,696 (50.94M)
+  Embedding: 131,072
+  Layers: 25 x 512d
+  Layer 0: 2,031,360 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.6694 | PPL 5.3 | LR 3.00e-04 | Grad 2.70 | Tok/s 19,744 | Mem 921MB | Elapsed 829.8s
+  >>> Saved: output/e4_benchmark_20260105_071301/e4_1.5x/level4_step001000_loss1.6694.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6694
+Total tokens: 16,384,000
+Total time: 830.2s
+Parameters: 50,941,696 (50.94M)
+
+=== e4_2x ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x755d6346ad50> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=17, params=49,187,840
+
+Model Parameters: 49,187,840 (49.19M)
+  Embedding: 131,072
+  Layers: 17 x 512d
+  Layer 0: 2,884,608 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.6762 | PPL 5.3 | LR 3.00e-04 | Grad 2.50 | Tok/s 29,782 | Mem 851MB | Elapsed 550.1s
+  >>> Saved: output/e4_benchmark_20260105_071301/e4_2x/level4_step001000_loss1.6762.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6762
+Total tokens: 16,384,000
+Total time: 550.4s
+Parameters: 49,187,840 (49.19M)
+
+=== e4_3x ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x726baf61a900> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=10, params=49,954,816
+
+Model Parameters: 49,954,816 (49.95M)
+  Embedding: 131,072
+  Layers: 10 x 512d
+  Layer 0: 4,981,248 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.6806 | PPL 5.4 | LR 3.00e-04 | Grad 2.14 | Tok/s 44,102 | Mem 796MB | Elapsed 371.5s
+  >>> Saved: output/e4_benchmark_20260105_071301/e4_3x/level4_step001000_loss1.6806.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6806
+Total tokens: 16,384,000
+Total time: 371.8s
+Parameters: 49,954,816 (49.95M)
+
+=== e4_4x ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7def8fab9a00> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=7, params=53,368,832
+
+Model Parameters: 53,368,832 (53.37M)
+  Embedding: 131,072
+  Layers: 7 x 512d
+  Layer 0: 7,604,224 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.6886 | PPL 5.4 | LR 3.00e-04 | Grad 1.78 | Tok/s 62,629 | Mem 779MB | Elapsed 261.6s
+  >>> Saved: output/e4_benchmark_20260105_071301/e4_4x/level4_step001000_loss1.6886.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6886
+Total tokens: 16,384,000
+Total time: 262.0s
+Parameters: 53,368,832 (53.37M)
+
+=== mamba2 ===
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x731e4eb2ad50> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+
+Model Parameters: 50,928,750 (50.93M)
+  Embedding: 172,032
+  Layers: 18 x 672d
+  Layer 0: 2,818,399 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+
+Step   1000 | Loss 1.5684 | PPL 4.8 | LR 3.00e-04 | Grad 1.34 | Tok/s 103,702 | Mem 676MB | Elapsed 158.0s
+  >>> Saved: output/e4_benchmark_20260105_071301/mamba2/levelmamba2_step001000_loss1.5684.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.5684
+Total tokens: 16,384,000
+Total time: 158.4s
+Parameters: 50,928,750 (50.93M)
+

@@ -1,0 +1,42 @@
+Loading data from data/fineweb_100mb.txt...
+
+Creating 0 model with ~50m parameters...
+Created Level 0 model: dim=512, depth=19, params=48,742,912
+
+============================================================
+Training: 0 (steps=1000)
+Parameters: 48.74M
+Vocab size: 256
+============================================================
+[0] step    1 | loss 5.6562 | ppl 286.1 | grad 12.00 | 2773 tok/s | 0.7s | 736ms/step
+[0] step   50 | loss 2.2031 | ppl 9.1 | grad 4.41 | 6820 tok/s | 15.0s | 275ms/step
+[0] step  100 | loss 2.1562 | ppl 8.6 | grad 4.34 | 6922 tok/s | 29.6s | 282ms/step
+[0] step  150 | loss 1.8906 | ppl 6.6 | grad 3.58 | 6980 tok/s | 44.0s | 277ms/step
+[0] step  200 | loss 1.6172 | ppl 5.0 | grad 2.20 | 7017 tok/s | 58.4s | 411ms/step
+[0] step  250 | loss 1.6562 | ppl 5.2 | grad 2.73 | 7021 tok/s | 72.9s | 277ms/step
+[0] step  300 | loss 1.7656 | ppl 5.8 | grad 2.55 | 7019 tok/s | 87.5s | 278ms/step
+[0] step  350 | loss 1.7109 | ppl 5.5 | grad 2.56 | 7013 tok/s | 102.2s | 296ms/step
+[0] step  400 | loss 1.5781 | ppl 4.8 | grad 2.44 | 7020 tok/s | 116.7s | 276ms/step
+[0] step  450 | loss 1.6172 | ppl 5.0 | grad 2.25 | 7005 tok/s | 131.6s | 278ms/step
+[0] step  500 | loss 1.5625 | ppl 4.8 | grad 2.67 | 7000 tok/s | 146.3s | 277ms/step
+[0] step  550 | loss 1.5625 | ppl 4.8 | grad 2.58 | 7003 tok/s | 160.9s | 280ms/step
+[0] step  600 | loss 1.8359 | ppl 6.3 | grad 3.55 | 6988 tok/s | 175.8s | 278ms/step
+[0] step  650 | loss 1.4766 | ppl 4.4 | grad 3.14 | 6975 tok/s | 190.9s | 278ms/step
+[0] step  700 | loss 1.4297 | ppl 4.2 | grad 3.12 | 6973 tok/s | 205.6s | 285ms/step
+[0] step  750 | loss 1.5234 | ppl 4.6 | grad 2.56 | 6945 tok/s | 221.2s | 283ms/step
+[0] step  800 | loss 1.8516 | ppl 6.4 | grad 3.28 | 6951 tok/s | 235.7s | 277ms/step
+[0] step  850 | loss 1.5625 | ppl 4.8 | grad 2.95 | 6949 tok/s | 250.5s | 276ms/step
+[0] step  900 | loss 1.5469 | ppl 4.7 | grad 3.50 | 6949 tok/s | 265.3s | 353ms/step
+[0] step  950 | loss 1.5312 | ppl 4.6 | grad 2.61 | 6961 tok/s | 279.5s | 276ms/step
+[0] step 1000 | loss 1.8047 | ppl 6.1 | grad 3.38 | 6974 tok/s | 293.7s | 279ms/step
+
+0 Final: loss=1.8828, grad=3.45, steps=1000, tokens=2,048,000, time=293.7s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+0               48.74M       1.8828     1000     2,048,000    6974       293.7   s
+
+Results saved to: benchmark_results/eseries_run

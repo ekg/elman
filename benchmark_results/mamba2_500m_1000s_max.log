@@ -1,0 +1,29 @@
+Using p50k_base tokenizer with vocab size 50,281
+Loading data from data/fineweb_500mb.txt...
+Loaded 113,733,867 tokens from cache: data/fineweb_500mb.txt.p50k_base.tokens.npy
+
+Creating mamba2 model with ~500m parameters...
+Created Mamba2 model: dim=1536, depth=24, expand=2, params=428,730,240
+
+============================================================
+Training: mamba2 (timeout=1000.0s)
+Parameters: 428.73M
+Vocab size: 50,281
+============================================================
+[mamba2] step    1 | loss 11.1250 | ppl 67846.3 | grad 2.91 | 790 tok/s | 62.2s | 62183ms/step
+Traceback (most recent call last):
+  File "/home/erikg/elman/benchmark_baselines.py", line 411, in <module>
+    main()
+  File "/home/erikg/elman/benchmark_baselines.py", line 375, in main
+    results = train_model(model, dataset, args, model_name, output_dir, use_batched_dataset=use_batched)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/benchmark_baselines.py", line 187, in train_model
+    loss.backward()
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.60 GiB. GPU 0 has a total capacity of 47.38 GiB of which 2.77 GiB is free. Including non-PyTorch memory, this process has 44.60 GiB memory in use. Of the allocated memory 39.58 GiB is allocated by PyTorch, and 4.04 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

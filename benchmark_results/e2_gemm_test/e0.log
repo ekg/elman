@@ -1,0 +1,21 @@
+Using device: cuda
+Output directory: output/level0_50m_20260104_152558
+Created Level 0 model: dim=512, depth=19, params=48,742,912
+Model: Level 0, 48,742,912 parameters
+
+Starting training from step 0...
+Batch size: 8, Chunk size: 256
+Gradient accumulation: 1, Effective batch: 8
+
+step     10 | loss 5.6587 | lr 2.70e-06 | grad 14.38 | tok/s 10430
+step     20 | loss 5.6221 | lr 5.70e-06 | grad 14.25 | tok/s 12515
+step     30 | loss 5.5188 | lr 8.70e-06 | grad 11.81 | tok/s 12665
+step     40 | loss 5.2764 | lr 1.17e-05 | grad 11.19 | tok/s 12560
+step     50 | loss 5.0245 | lr 1.47e-05 | grad 11.62 | tok/s 12648
+step     60 | loss 4.6515 | lr 1.77e-05 | grad 8.75 | tok/s 12639
+step     70 | loss 4.2429 | lr 2.07e-05 | grad 7.88 | tok/s 12533
+step     80 | loss 3.8922 | lr 2.37e-05 | grad 8.06 | tok/s 12629
+step     90 | loss 3.6297 | lr 2.67e-05 | grad 7.66 | tok/s 12661
+step    100 | loss 3.3968 | lr 2.97e-05 | grad 7.66 | tok/s 12616
+
+Training complete! Final step: 100

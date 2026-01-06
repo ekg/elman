@@ -1,0 +1,48 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7959557b99a0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+
+Model Parameters: 50,928,750 (50.93M)
+  Embedding: 172,032
+  Layers: 18 x 672d
+  Layer 0: 2,818,399 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+Logging to: output/e5_dim_benchmark_20260105_085253/mamba2/steps.jsonl
+
+Starting training for 1000 steps...
+Batch size per GPU: 32, World size: 1
+Effective batch size: 32
+Tokens per step: 16,384
+
+Step    100 | Loss 2.7357 | PPL 15.4 | LR 3.00e-04 | Grad 1.02 | Tok/s 57,562 | Mem 676MB | Elapsed 28.5s
+Step    200 | Loss 1.9765 | PPL 7.2 | LR 3.00e-04 | Grad 1.33 | Tok/s 75,691 | Mem 676MB | Elapsed 43.3s
+Step    300 | Loss 1.7783 | PPL 5.9 | LR 3.00e-04 | Grad 1.14 | Tok/s 84,455 | Mem 676MB | Elapsed 58.2s
+Step    400 | Loss 1.7350 | PPL 5.7 | LR 3.00e-04 | Grad 3.02 | Tok/s 90,301 | Mem 676MB | Elapsed 72.6s
+Step    500 | Loss 1.7463 | PPL 5.7 | LR 3.00e-04 | Grad 1.95 | Tok/s 94,396 | Mem 676MB | Elapsed 86.8s
+Step    600 | Loss 1.6653 | PPL 5.3 | LR 3.00e-04 | Grad 1.89 | Tok/s 97,119 | Mem 676MB | Elapsed 101.2s
+Step    700 | Loss 1.6751 | PPL 5.3 | LR 3.00e-04 | Grad 2.52 | Tok/s 98,381 | Mem 676MB | Elapsed 116.6s
+Step    800 | Loss 1.6399 | PPL 5.2 | LR 3.00e-04 | Grad 1.67 | Tok/s 99,756 | Mem 676MB | Elapsed 131.4s
+Step    900 | Loss 1.7700 | PPL 5.9 | LR 3.00e-04 | Grad 1.45 | Tok/s 100,802 | Mem 676MB | Elapsed 146.3s
+Step   1000 | Loss 1.5670 | PPL 4.8 | LR 3.00e-04 | Grad 1.30 | Tok/s 101,422 | Mem 676MB | Elapsed 161.5s
+  >>> Saved: output/e5_dim_benchmark_20260105_085253/mamba2/levelmamba2_step001000_loss1.5670.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.5670
+Total tokens: 16,384,000
+Total time: 162.0s
+Parameters: 50,928,750 (50.93M)

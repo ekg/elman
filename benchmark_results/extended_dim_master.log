@@ -1,0 +1,321 @@
+======================================================================
+Extended Dimension Tests - E5 large dims + E1 depth/width variants
+All ~50M params, 1000 steps, Last-100 averaged loss
+======================================================================
+Launching e5_d3072_r133 on GPU 0 (batch=128)...
+Launching e5_d4096_r99 on GPU 1 (batch=128)...
+Launching e5_d6144_r65 on GPU 2 (batch=64)...
+Launching e1_d256_deep on GPU 3 (batch=256)...
+Launching e1_d512_mid on GPU 4 (batch=256)...
+Launching e1_d1024_wide on GPU 5 (batch=256)...
+Launching e5_d1536_r270 on GPU 6 (batch=256)...
+Launching e5_d2048_r200 on GPU 7 (batch=256)...
+
+All 8 experiments launched!
+Waiting for completion...
+
+
+--- Progress ---
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 100 | Loss 1.8438 | Avg100 2.2246 | 233581 tok/s
+e1_d1024_wide: Step 100 | Loss 1.7734 | Avg100 2.1082 | 454218 tok/s
+
+--- Progress ---
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 200 | Loss 1.7344 | Avg100 1.7634 | 241925 tok/s
+e1_d1024_wide: Step 300 | Loss 1.5938 | Avg100 1.6291 | 449958 tok/s
+
+--- Progress ---
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 300 | Loss 1.6406 | Avg100 1.6805 | 247153 tok/s
+e1_d1024_wide: Step 500 | Loss 1.5781 | Avg100 1.5609 | 444685 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 100 | Loss 2.5781 | Avg100 4.6359 | 37689 tok/s
+e5_d6144_r65: Step 100 | Loss 3.7812 | Avg100 8.3564 | 21543 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 400 | Loss 1.6016 | Avg100 1.6420 | 249640 tok/s
+e1_d1024_wide: Step 700 | Loss 1.5312 | Avg100 1.5288 | 442476 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 100 | Loss 2.5781 | Avg100 4.6359 | 37689 tok/s
+e5_d4096_r99: Step 100 | Loss 2.8906 | Avg100 5.8459 | 35442 tok/s
+e5_d6144_r65: Step 100 | Loss 3.7812 | Avg100 8.3564 | 21543 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 500 | Loss 1.6328 | Avg100 1.6082 | 251138 tok/s
+e1_d1024_wide: Step 900 | Loss 1.4453 | Avg100 1.5030 | 441261 tok/s
+e5_d1536_r270: Step 100 | Loss 2.0312 | Avg100 2.6385 | 80718 tok/s
+e5_d2048_r200: Step 100 | Loss 2.0938 | Avg100 3.1128 | 81527 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 100 | Loss 2.5781 | Avg100 4.6359 | 37689 tok/s
+e5_d4096_r99: Step 100 | Loss 2.8906 | Avg100 5.8459 | 35442 tok/s
+e5_d6144_r65: Step 100 | Loss 3.7812 | Avg100 8.3564 | 21543 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 600 | Loss 1.5625 | Avg100 1.5911 | 252246 tok/s
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 100 | Loss 2.0312 | Avg100 2.6385 | 80718 tok/s
+e5_d2048_r200: Step 100 | Loss 2.0938 | Avg100 3.1128 | 81527 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 200 | Loss 2.1562 | Avg100 2.3141 | 38526 tok/s
+e5_d4096_r99: Step 100 | Loss 2.8906 | Avg100 5.8459 | 35442 tok/s
+e5_d6144_r65: Step 200 | Loss 3.3438 | Avg100 3.4534 | 22252 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 800 | Loss 1.5781 | Avg100 1.5674 | 253871 tok/s
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 200 | Loss 1.7344 | Avg100 1.8354 | 80816 tok/s
+e5_d2048_r200: Step 200 | Loss 1.7812 | Avg100 1.8952 | 83077 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 200 | Loss 2.1562 | Avg100 2.3141 | 38526 tok/s
+e5_d4096_r99: Step 200 | Loss 2.6875 | Avg100 2.7586 | 36413 tok/s
+e5_d6144_r65: Step 200 | Loss 3.3438 | Avg100 3.4534 | 22252 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: Step 900 | Loss 1.5000 | Avg100 1.5516 | 254469 tok/s
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 200 | Loss 1.7344 | Avg100 1.8354 | 80816 tok/s
+e5_d2048_r200: Step 200 | Loss 1.7812 | Avg100 1.8952 | 83077 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 200 | Loss 2.1562 | Avg100 2.3141 | 38526 tok/s
+e5_d4096_r99: Step 200 | Loss 2.6875 | Avg100 2.7586 | 36413 tok/s
+e5_d6144_r65: Step 300 | Loss 3.2344 | Avg100 3.2958 | 22456 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 200 | Loss 1.7344 | Avg100 1.8354 | 80816 tok/s
+e5_d2048_r200: Step 200 | Loss 1.7812 | Avg100 1.8952 | 83077 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 300 | Loss 2.0000 | Avg100 2.0459 | 38815 tok/s
+e5_d4096_r99: Step 300 | Loss 2.5938 | Avg100 2.6352 | 37039 tok/s
+e5_d6144_r65: Step 300 | Loss 3.2344 | Avg100 3.2958 | 22456 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 300 | Loss 1.5938 | Avg100 1.6578 | 80833 tok/s
+e5_d2048_r200: Step 300 | Loss 1.6250 | Avg100 1.6924 | 84058 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 300 | Loss 2.0000 | Avg100 2.0459 | 38815 tok/s
+e5_d4096_r99: Step 300 | Loss 2.5938 | Avg100 2.6352 | 37039 tok/s
+e5_d6144_r65: Step 300 | Loss 3.2344 | Avg100 3.2958 | 22456 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 300 | Loss 1.5938 | Avg100 1.6578 | 80833 tok/s
+e5_d2048_r200: Step 300 | Loss 1.6250 | Avg100 1.6924 | 84058 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 300 | Loss 2.0000 | Avg100 2.0459 | 38815 tok/s
+e5_d4096_r99: Step 300 | Loss 2.5938 | Avg100 2.6352 | 37039 tok/s
+e5_d6144_r65: Step 400 | Loss 3.0938 | Avg100 3.1014 | 22525 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 300 | Loss 1.5938 | Avg100 1.6578 | 80833 tok/s
+e5_d2048_r200: Step 400 | Loss 1.5547 | Avg100 1.6144 | 84531 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 400 | Loss 1.8438 | Avg100 1.8923 | 38961 tok/s
+e5_d4096_r99: Step 400 | Loss 2.5000 | Avg100 2.4978 | 37464 tok/s
+e5_d6144_r65: Step 400 | Loss 3.0938 | Avg100 3.1014 | 22525 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 400 | Loss 1.5547 | Avg100 1.5909 | 80791 tok/s
+e5_d2048_r200: Step 400 | Loss 1.5547 | Avg100 1.6144 | 84531 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 400 | Loss 1.8438 | Avg100 1.8923 | 38961 tok/s
+e5_d4096_r99: Step 400 | Loss 2.5000 | Avg100 2.4978 | 37464 tok/s
+e5_d6144_r65: Step 500 | Loss 2.8750 | Avg100 2.9872 | 22621 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 400 | Loss 1.5547 | Avg100 1.5909 | 80791 tok/s
+e5_d2048_r200: Step 400 | Loss 1.5547 | Avg100 1.6144 | 84531 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 500 | Loss 1.7578 | Avg100 1.7995 | 39050 tok/s
+e5_d4096_r99: Step 400 | Loss 2.5000 | Avg100 2.4978 | 37464 tok/s
+e5_d6144_r65: Step 500 | Loss 2.8750 | Avg100 2.9872 | 22621 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 400 | Loss 1.5547 | Avg100 1.5909 | 80791 tok/s
+e5_d2048_r200: Step 500 | Loss 1.5703 | Avg100 1.5643 | 84834 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 500 | Loss 1.7578 | Avg100 1.7995 | 39050 tok/s
+e5_d4096_r99: Step 500 | Loss 2.3125 | Avg100 2.3766 | 37690 tok/s
+e5_d6144_r65: Step 600 | Loss 2.8125 | Avg100 2.8920 | 22686 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 500 | Loss 1.5547 | Avg100 1.5441 | 80881 tok/s
+e5_d2048_r200: Step 500 | Loss 1.5703 | Avg100 1.5643 | 84834 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 500 | Loss 1.7578 | Avg100 1.7995 | 39050 tok/s
+e5_d4096_r99: Step 500 | Loss 2.3125 | Avg100 2.3766 | 37690 tok/s
+e5_d6144_r65: Step 600 | Loss 2.8125 | Avg100 2.8920 | 22686 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 500 | Loss 1.5547 | Avg100 1.5441 | 80881 tok/s
+e5_d2048_r200: Step 600 | Loss 1.5000 | Avg100 1.5310 | 85049 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 600 | Loss 1.7188 | Avg100 1.7391 | 39109 tok/s
+e5_d4096_r99: Step 500 | Loss 2.3125 | Avg100 2.3766 | 37690 tok/s
+e5_d6144_r65: Step 600 | Loss 2.8125 | Avg100 2.8920 | 22686 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 600 | Loss 1.4844 | Avg100 1.5143 | 80855 tok/s
+e5_d2048_r200: Step 600 | Loss 1.5000 | Avg100 1.5310 | 85049 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 600 | Loss 1.7188 | Avg100 1.7391 | 39109 tok/s
+e5_d4096_r99: Step 600 | Loss 2.2031 | Avg100 2.2686 | 37694 tok/s
+e5_d6144_r65: Step 700 | Loss 2.7500 | Avg100 2.7739 | 22732 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 600 | Loss 1.4844 | Avg100 1.5143 | 80855 tok/s
+e5_d2048_r200: Step 600 | Loss 1.5000 | Avg100 1.5310 | 85049 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 600 | Loss 1.7188 | Avg100 1.7391 | 39109 tok/s
+e5_d4096_r99: Step 600 | Loss 2.2031 | Avg100 2.2686 | 37694 tok/s
+e5_d6144_r65: Step 700 | Loss 2.7500 | Avg100 2.7739 | 22732 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 600 | Loss 1.4844 | Avg100 1.5143 | 80855 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5078 | Avg100 1.5084 | 85201 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 700 | Loss 1.7031 | Avg100 1.7095 | 39151 tok/s
+e5_d4096_r99: Step 600 | Loss 2.2031 | Avg100 2.2686 | 37694 tok/s
+e5_d6144_r65: Step 800 | Loss 2.7656 | Avg100 2.6773 | 22766 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 700 | Loss 1.5000 | Avg100 1.4935 | 80798 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5078 | Avg100 1.5084 | 85201 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 700 | Loss 1.7031 | Avg100 1.7095 | 39151 tok/s
+e5_d4096_r99: Step 700 | Loss 2.1250 | Avg100 2.1698 | 37778 tok/s
+e5_d6144_r65: Step 800 | Loss 2.7656 | Avg100 2.6773 | 22766 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 700 | Loss 1.5000 | Avg100 1.4935 | 80798 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5078 | Avg100 1.5084 | 85201 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 700 | Loss 1.7031 | Avg100 1.7095 | 39151 tok/s
+e5_d4096_r99: Step 700 | Loss 2.1250 | Avg100 2.1698 | 37778 tok/s
+e5_d6144_r65: Step 800 | Loss 2.7656 | Avg100 2.6773 | 22766 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 700 | Loss 1.5000 | Avg100 1.4935 | 80798 tok/s
+e5_d2048_r200: Step 800 | Loss 1.4844 | Avg100 1.4894 | 85309 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 800 | Loss 1.5938 | Avg100 1.6668 | 39183 tok/s
+e5_d4096_r99: Step 700 | Loss 2.1250 | Avg100 2.1698 | 37778 tok/s
+e5_d6144_r65: Step 900 | Loss 2.5000 | Avg100 2.5764 | 22793 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 800 | Loss 1.4844 | Avg100 1.4763 | 80630 tok/s
+e5_d2048_r200: Step 800 | Loss 1.4844 | Avg100 1.4894 | 85309 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 800 | Loss 1.5938 | Avg100 1.6668 | 39183 tok/s
+e5_d4096_r99: Step 800 | Loss 1.9766 | Avg100 2.0641 | 37702 tok/s
+e5_d6144_r65: Step 900 | Loss 2.5000 | Avg100 2.5764 | 22793 tok/s
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 800 | Loss 1.4844 | Avg100 1.4763 | 80630 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4677 | 85396 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 900 | Loss 1.6484 | Avg100 1.6368 | 39208 tok/s
+e5_d4096_r99: Step 800 | Loss 1.9766 | Avg100 2.0641 | 37702 tok/s
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4582 | 80399 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4677 | 85396 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 900 | Loss 1.6484 | Avg100 1.6368 | 39208 tok/s
+e5_d4096_r99: Step 800 | Loss 1.9766 | Avg100 2.0641 | 37702 tok/s
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4582 | 80399 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4677 | 85396 tok/s
+
+--- Progress ---
+e5_d3072_r133: Step 900 | Loss 1.6484 | Avg100 1.6368 | 39208 tok/s
+e5_d4096_r99: Step 900 | Loss 1.9531 | Avg100 1.9671 | 37568 tok/s
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4582 | 80399 tok/s
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4554 | Final=1.4219 | Params=49,803,264
+
+--- Progress ---
+e5_d3072_r133: DONE: e5_d3072_r133 | Last100=1.6225 | Final=1.6641 | Params=50,006,016
+e5_d4096_r99: Step 900 | Loss 1.9531 | Avg100 1.9671 | 37568 tok/s
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4455 | Final=1.4141 | Params=50,254,848
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4554 | Final=1.4219 | Params=49,803,264
+
+--- Progress ---
+e5_d3072_r133: DONE: e5_d3072_r133 | Last100=1.6225 | Final=1.6641 | Params=50,006,016
+e5_d4096_r99: Step 900 | Loss 1.9531 | Avg100 1.9671 | 37568 tok/s
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4455 | Final=1.4141 | Params=50,254,848
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4554 | Final=1.4219 | Params=49,803,264
+
+--- Progress ---
+e5_d3072_r133: DONE: e5_d3072_r133 | Last100=1.6225 | Final=1.6641 | Params=50,006,016
+e5_d4096_r99: DONE: e5_d4096_r99 | Last100=1.9002 | Final=1.9141 | Params=49,963,008
+e5_d6144_r65: DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+e1_d256_deep: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. G
+e1_d512_mid: DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+e1_d1024_wide: DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4455 | Final=1.4141 | Params=50,254,848
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4554 | Final=1.4219 | Params=49,803,264
+
+======================================================================
+FINAL RESULTS - Last 100 Step Average Loss
+======================================================================
+DONE: e5_d3072_r133 | Last100=1.6225 | Final=1.6641 | Params=50,006,016
+DONE: e5_d4096_r99 | Last100=1.9002 | Final=1.9141 | Params=49,963,008
+DONE: e5_d6144_r65 | Last100=2.4897 | Final=2.4688 | Params=49,876,992
+DONE: e1_d512_mid | Last100=1.5446 | Final=1.5156 | Params=27,689,472
+DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952
+DONE: e5_d1536_r270 | Last100=1.4455 | Final=1.4141 | Params=50,254,848
+DONE: e5_d2048_r200 | Last100=1.4554 | Final=1.4219 | Params=49,803,264
+
+======================================================================

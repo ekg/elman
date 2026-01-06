@@ -1,0 +1,13 @@
+Loading data from data/fineweb_100mb.txt...
+
+Creating 2 model with ~50m parameters...
+Created Level 2 model: dim=512, depth=39, params=50,014,656
+
+============================================================
+Training: 2 (steps=1000)
+Parameters: 50.01M
+Vocab size: 256
+============================================================
+[2] step    1 | loss 8.5625 | ppl 5231.7 | grad 9.06 | 1416 tok/s | 1.4s | 1444ms/step
+[2] step   50 | loss 2.8125 | ppl 16.7 | grad 1.44 | 1954 tok/s | 52.4s | 1043ms/step
+[2] step  100 | loss 2.7031 | ppl 14.9 | grad 2.00 | 1958 tok/s | 104.6s | 1044ms/step

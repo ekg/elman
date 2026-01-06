@@ -1,0 +1,27 @@
+Loading data from data/fineweb_100mb.txt...
+
+Creating 1 model with ~50m parameters...
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+
+============================================================
+Training: 1 (steps=100)
+Parameters: 49.71M
+Vocab size: 256
+============================================================
+[1] step    1 | loss 5.6562 | ppl 286.1 | grad 14.50 | 5205 tok/s | 6.3s | 6293ms/step
+[1] step   20 | loss 3.5625 | ppl 35.3 | grad 5.59 | 6062 tok/s | 108.1s | 5254ms/step
+[1] step   40 | loss 2.6094 | ppl 13.6 | grad 4.41 | 6110 tok/s | 214.5s | 5247ms/step
+[1] step   60 | loss 2.2031 | ppl 9.1 | grad 4.75 | 6032 tok/s | 325.9s | 5871ms/step
+[1] step   80 | loss 2.1406 | ppl 8.5 | grad 3.22 | 5935 tok/s | 441.7s | 5863ms/step
+[1] step  100 | loss 2.0156 | ppl 7.5 | grad 3.48 | 5873 tok/s | 557.9s | 5865ms/step
+
+1 Final: loss=3.0312, grad=5.99, steps=100, tokens=3,276,800, time=557.9s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+1               49.71M       3.0312     100      3,276,800    5873       557.9   s
+
+Results saved to: benchmark_results

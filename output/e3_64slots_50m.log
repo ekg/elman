@@ -1,0 +1,38 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓ <-- TRAINING
+======================================================================
+Tokenizer: TikTokenTokenizer(encoding=p50k_base, vocab_size=50281) (vocab_size=50,281)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 3 model: dim=512, depth=14, params=50,628,720
+
+Model Parameters: 50,628,720 (50.63M)
+  Embedding: 25,743,872
+  Layers: 14 x 512d
+  Layer 0: 1,776,392 params
+
+Loading data from data/fineweb_100mb.txt...
+Using streaming tiktoken tokenization
+Loaded 22,734,396 tokens from cache: data/fineweb_100mb.txt.p50k_base.tokens.npy
+Using AdamWScheduleFree optimizer
+Logging to: output/e3_64slots_50m/steps.jsonl
+
+Starting training for 2000 steps...
+Batch size per GPU: 32, World size: 1
+Effective batch size: 32
+Tokens per step: 16,384
+
+Traceback (most recent call last):
+  File "/home/erikg/elman/train_ladder.py", line 617, in <module>
+    train(args)
+  File "/home/erikg/elman/train_ladder.py", line 464, in train
+    hidden_state = [reset_hidden(h, reset_mask) for h in hidden_state]
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/train_ladder.py", line 460, in reset_hidden
+    return h * (~reset_mask).to(h.dtype)
+           ~~^~~~~~~~~~~~~~~~~~~~~~~~~~~
+RuntimeError: The size of tensor a (8) must match the size of tensor b (32) at non-singleton dimension 1

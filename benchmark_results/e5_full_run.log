@@ -1,0 +1,15 @@
+Creating E5 model: dim=1536, rank=270, depth=20
+e5_50m_d1536_r270: params=50,254,848, depth=20, batch=256
+Memory-mapping data/pile.txt...
+Mapped 1,307,910,802,540 bytes (1307.9 GB)
+Step 100 | Loss 1.9453 | PPL 7.0 | 74414 tok/s
+Step 200 | Loss 1.7031 | PPL 5.5 | 74236 tok/s
+Step 300 | Loss 1.6016 | PPL 5.0 | 73386 tok/s
+Step 400 | Loss 1.5859 | PPL 4.9 | 74053 tok/s
+Step 500 | Loss 1.5078 | PPL 4.5 | 74761 tok/s
+Step 600 | Loss 1.5781 | PPL 4.8 | 75320 tok/s
+Step 700 | Loss 1.4688 | PPL 4.3 | 75700 tok/s
+Step 800 | Loss 1.4844 | PPL 4.4 | 76015 tok/s
+Step 900 | Loss 1.4453 | PPL 4.2 | 76222 tok/s
+Step 1000 | Loss 1.4688 | PPL 4.3 | 76421 tok/s
+DONE: e5_50m_d1536_r270 | Final loss: 1.4688

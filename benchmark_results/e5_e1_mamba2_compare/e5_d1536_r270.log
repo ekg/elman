@@ -1,0 +1,12 @@
+e5_d1536_r270: params=50,254,848, dim=1536, rank=270, depth=20
+Step 100 | Loss 2.0312 | Avg100 2.6383 | 82046 tok/s
+Step 200 | Loss 1.7266 | Avg100 1.8352 | 81709 tok/s
+Step 300 | Loss 1.6016 | Avg100 1.6573 | 81556 tok/s
+Step 400 | Loss 1.5391 | Avg100 1.5917 | 81490 tok/s
+Step 500 | Loss 1.5547 | Avg100 1.5443 | 81431 tok/s
+Step 600 | Loss 1.4766 | Avg100 1.5165 | 81386 tok/s
+Step 700 | Loss 1.4922 | Avg100 1.4948 | 81351 tok/s
+Step 800 | Loss 1.4922 | Avg100 1.4779 | 81303 tok/s
+Step 900 | Loss 1.4062 | Avg100 1.4583 | 81255 tok/s
+Step 1000 | Loss 1.4141 | Avg100 1.4463 | 81219 tok/s
+DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,848

@@ -1,0 +1,12 @@
+e5_d2048_r200: params=49,803,264, dim=2048, rank=200, depth=20
+Step 100 | Loss 2.0938 | Avg100 3.1125 | 87149 tok/s
+Step 200 | Loss 1.7734 | Avg100 1.8945 | 87005 tok/s
+Step 300 | Loss 1.6328 | Avg100 1.6910 | 86924 tok/s
+Step 400 | Loss 1.5703 | Avg100 1.6157 | 86917 tok/s
+Step 500 | Loss 1.5781 | Avg100 1.5633 | 86804 tok/s
+Step 600 | Loss 1.5000 | Avg100 1.5323 | 86805 tok/s
+Step 700 | Loss 1.5000 | Avg100 1.5073 | 86806 tok/s
+Step 800 | Loss 1.5000 | Avg100 1.4898 | 86797 tok/s
+Step 900 | Loss 1.4141 | Avg100 1.4691 | 86768 tok/s
+Step 1000 | Loss 1.4219 | Avg100 1.4565 | 86742 tok/s
+DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,264

@@ -1,0 +1,5 @@
+e5_d1536_r270: params=50,254,848
+Step 100 | 160s | Loss 2.0312 | Avg100 2.6390 | 81757 tok/s
+Step 200 | 321s | Loss 1.7266 | Avg100 1.8350 | 81548 tok/s
+Step 300 | 483s | Loss 1.5938 | Avg100 1.6584 | 81458 tok/s
+DONE: e5_d1536_r270 | Steps=374 | Time=602s | Last100=1.6071 | 81487 tok/s

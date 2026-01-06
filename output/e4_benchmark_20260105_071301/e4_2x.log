@@ -1,0 +1,46 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x755d6346ad50> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=17, params=49,187,840
+
+Model Parameters: 49,187,840 (49.19M)
+  Embedding: 131,072
+  Layers: 17 x 512d
+  Layer 0: 2,884,608 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+Logging to: output/e4_benchmark_20260105_071301/e4_2x/steps.jsonl
+
+Starting training for 1000 steps...
+Batch size per GPU: 32, World size: 1
+Effective batch size: 32
+Tokens per step: 16,384
+
+Step    100 | Loss 2.9215 | PPL 18.6 | LR 3.00e-04 | Grad 1.51 | Tok/s 29,141 | Mem 851MB | Elapsed 56.2s
+Step    200 | Loss 2.1593 | PPL 8.7 | LR 3.00e-04 | Grad 2.05 | Tok/s 29,354 | Mem 851MB | Elapsed 111.6s
+Step    300 | Loss 1.9309 | PPL 6.9 | LR 3.00e-04 | Grad 1.77 | Tok/s 29,387 | Mem 851MB | Elapsed 167.3s
+Step    400 | Loss 1.8764 | PPL 6.5 | LR 3.00e-04 | Grad 4.22 | Tok/s 29,411 | Mem 851MB | Elapsed 222.8s
+Step    500 | Loss 1.8814 | PPL 6.6 | LR 3.00e-04 | Grad 3.19 | Tok/s 29,406 | Mem 851MB | Elapsed 278.6s
+Step    600 | Loss 1.7856 | PPL 6.0 | LR 3.00e-04 | Grad 3.64 | Tok/s 29,422 | Mem 851MB | Elapsed 334.1s
+Step    700 | Loss 1.7998 | PPL 6.0 | LR 3.00e-04 | Grad 4.50 | Tok/s 29,430 | Mem 851MB | Elapsed 389.7s
+Step    800 | Loss 1.7553 | PPL 5.8 | LR 3.00e-04 | Grad 2.77 | Tok/s 29,578 | Mem 851MB | Elapsed 443.1s
+Step    900 | Loss 1.8462 | PPL 6.3 | LR 3.00e-04 | Grad 2.77 | Tok/s 29,680 | Mem 851MB | Elapsed 496.8s
+Step   1000 | Loss 1.6762 | PPL 5.3 | LR 3.00e-04 | Grad 2.50 | Tok/s 29,782 | Mem 851MB | Elapsed 550.1s
+  >>> Saved: output/e4_benchmark_20260105_071301/e4_2x/level4_step001000_loss1.6762.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.6762
+Total tokens: 16,384,000
+Total time: 550.4s
+Parameters: 49,187,840 (49.19M)

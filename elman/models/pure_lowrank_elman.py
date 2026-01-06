@@ -46,6 +46,50 @@ class PureLowRankElmanFunction(Function):
         return dx, None, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db, None
 
 
+class PureLowRankElmanFusedFunction(Function):
+    """CUDA-backed E5 forward/backward with fused kernel optimization.
+
+    Fuses tanh + gate into single kernel, reducing kernel launches by 25%.
+    """
+
+    @staticmethod
+    def forward(ctx, x, h0, U_h, V_h, U_x, V_x, U_z, V_z, b, training):
+        h, output, v = hasty_pytorch_lib.pure_lowrank_elman_forward_fused(
+            training, x, h0, U_h, V_h, U_x, V_x, U_z, V_z, b
+        )
+        if training:
+            ctx.save_for_backward(U_h, V_h, U_x, V_x, U_z, V_z, x, h, v)
+        return output, h
+
+    @staticmethod
+    def backward(ctx, grad_output, grad_h):
+        U_h, V_h, U_x, V_x, U_z, V_z, x, h, v = ctx.saved_tensors
+        dx, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db = hasty_pytorch_lib.pure_lowrank_elman_backward_fused(
+            U_h, V_h, U_x, V_x, U_z, V_z, x, h, v, grad_output.contiguous()
+        )
+        return dx, None, dU_h, dV_h, dU_x, dV_x, dU_z, dV_z, db, None
+
+
+class CUDAGraphCache:
+    """Cache for CUDA graphs keyed by (batch_size, seq_len)."""
+
+    def __init__(self):
+        self.graphs = {}  # (B, T) -> (graph, static_inputs, static_outputs)
+
+    def get(self, key):
+        return self.graphs.get(key)
+
+    def set(self, key, value):
+        self.graphs[key] = value
+
+    def clear(self):
+        self.graphs.clear()
+
+
+# Global graph cache (per-module caching handled via module attribute)
+_global_graph_cache = CUDAGraphCache()
+
+
 class PureLowRankElmanCell(nn.Module):
     """
     Pure low-rank Elman cell.
@@ -53,10 +97,12 @@ class PureLowRankElmanCell(nn.Module):
     h_t = tanh(U_h @ V_h @ h_{t-1} + U_x @ V_x @ x_t + b)
     """
 
-    def __init__(self, dim, rank=64):
+    def __init__(self, dim, rank=64, use_fused=True, use_cuda_graph=False):
         super().__init__()
         self.dim = dim
         self.rank = rank
+        self.use_fused = use_fused
+        self.use_cuda_graph = use_cuda_graph
 
         # Low-rank recurrence: W_h ≈ U_h @ V_h
         self.U_h = nn.Parameter(torch.empty(dim, rank))
@@ -72,6 +118,10 @@ class PureLowRankElmanCell(nn.Module):
 
         self.b = nn.Parameter(torch.zeros(dim))
 
+        # CUDA Graph state
+        self._graph_cache = {}  # (B, T, training) -> (graph, static_x, static_h0, static_out, static_h)
+        self._graphed_forward = None
+
         self._init_weights()
 
     def _init_weights(self):
@@ -83,6 +133,60 @@ class PureLowRankElmanCell(nn.Module):
             with torch.no_grad():
                 U.mul_(0.5)
                 V.mul_(0.5)
+
+    def _run_kernel(self, x, h0):
+        """Run the CUDA kernel (fused or non-fused)."""
+        if self.use_fused:
+            return PureLowRankElmanFusedFunction.apply(
+                x, h0, self.U_h, self.V_h, self.U_x, self.V_x,
+                self.U_z, self.V_z, self.b, self.training
+            )
+        else:
+            return PureLowRankElmanFunction.apply(
+                x, h0, self.U_h, self.V_h, self.U_x, self.V_x,
+                self.U_z, self.V_z, self.b, self.training
+            )
+
+    def _run_with_cuda_graph(self, x, h0):
+        """Run forward pass with CUDA Graph capture/replay.
+
+        Note: Returns views of static buffers. Caller must not modify outputs
+        after subsequent calls, or clone if needed.
+        """
+        T, B, D = x.shape
+        cache_key = (B, T, self.training)
+
+        if cache_key not in self._graph_cache:
+            # First call with this shape - capture the graph
+            # Allocate static buffers
+            static_x = torch.empty_like(x)
+            static_h0 = torch.empty_like(h0)
+
+            # Warmup run (required before capture)
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):
+                static_x.copy_(x)
+                static_h0.copy_(h0)
+                static_out, static_h = self._run_kernel(static_x, static_h0)
+            torch.cuda.current_stream().wait_stream(s)
+
+            # Capture the graph
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                static_out, static_h = self._run_kernel(static_x, static_h0)
+
+            self._graph_cache[cache_key] = (graph, static_x, static_h0, static_out, static_h)
+
+        # Replay the graph
+        graph, static_x, static_h0, static_out, static_h = self._graph_cache[cache_key]
+        static_x.copy_(x)
+        static_h0.copy_(h0)
+        graph.replay()
+
+        # Return views - no clone for maximum performance
+        # If caller needs to preserve outputs across calls, they should clone
+        return static_out, static_h
 
     def forward(self, x, h0=None):
         """
@@ -101,11 +205,11 @@ class PureLowRankElmanCell(nn.Module):
 
         # CUDA kernel path
         if HASTY_AVAILABLE and x.is_cuda:
-            output, h = PureLowRankElmanFunction.apply(
-                x, h0, self.U_h, self.V_h, self.U_x, self.V_x,
-                self.U_z, self.V_z, self.b, self.training
-            )
-            return output, h
+            # CUDA Graph path (inference only - training needs gradient flow)
+            if self.use_cuda_graph and not self.training:
+                return self._run_with_cuda_graph(x, h0)
+            # Standard kernel path
+            return self._run_kernel(x, h0)
 
         # PyTorch fallback
         h_list = [h0]
@@ -157,11 +261,15 @@ class PureLowRankElman(nn.Module):
         dim,
         rank=None,
         dropout=0.0,
+        use_fused=True,
+        use_cuda_graph=False,
         **kwargs
     ):
         super().__init__()
         self.dim = dim
         self.d_inner = dim  # No expansion!
+        self.use_fused = use_fused
+        self.use_cuda_graph = use_cuda_graph
 
         # Default rank for ~200k params/layer
         if rank is None:
@@ -169,7 +277,7 @@ class PureLowRankElman(nn.Module):
         self.rank = rank
 
         # Just the cell, no projections
-        self.cell = PureLowRankElmanCell(dim, rank=rank)
+        self.cell = PureLowRankElmanCell(dim, rank=rank, use_fused=use_fused, use_cuda_graph=use_cuda_graph)
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -199,7 +307,7 @@ class PureLowRankElman(nn.Module):
         return output, h_final
 
     def extra_repr(self):
-        return f'dim={self.dim}, rank={self.rank}, LEVEL=5'
+        return f'dim={self.dim}, rank={self.rank}, fused={self.use_fused}, cuda_graph={self.use_cuda_graph}, LEVEL=5'
 
 
 PureLowRankElmanCell = PureLowRankElmanCell  # export

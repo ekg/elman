@@ -1,0 +1,41 @@
+Loading data from data/fineweb_100mb.txt...
+
+Creating 1 model with ~50m parameters...
+Created Level 1 model: dim=512, depth=16, params=50,516,992
+
+============================================================
+Training: 1
+Parameters: 50.52M
+============================================================
+[1] step    1 | loss 5.6562 | ppl 286.1 | grad 11.12 | 1801 tok/s | 1135ms/step
+[1] step   50 | loss 2.8906 | ppl 18.0 | grad 1.89 | 3256 tok/s | 616ms/step
+[1] step  100 | loss 2.7188 | ppl 15.2 | grad 3.14 | 3318 tok/s | 643ms/step
+[1] step  150 | loss 2.4688 | ppl 11.8 | grad 2.78 | 3332 tok/s | 670ms/step
+[1] step  200 | loss 2.2188 | ppl 9.2 | grad 2.38 | 3323 tok/s | 593ms/step
+[1] step  250 | loss 2.2031 | ppl 9.1 | grad 3.06 | 3340 tok/s | 585ms/step
+[1] step  300 | loss 2.3906 | ppl 10.9 | grad 2.44 | 3303 tok/s | 695ms/step
+[1] step  350 | loss 2.3750 | ppl 10.8 | grad 2.52 | 3293 tok/s | 674ms/step
+[1] step  400 | loss 2.2656 | ppl 9.6 | grad 2.73 | 3274 tok/s | 680ms/step
+[1] step  450 | loss 2.2031 | ppl 9.1 | grad 2.41 | 3262 tok/s | 676ms/step
+[1] step  500 | loss 2.2188 | ppl 9.2 | grad 2.78 | 3270 tok/s | 569ms/step
+[1] step  550 | loss 2.2500 | ppl 9.5 | grad 2.95 | 3286 tok/s | 649ms/step
+[1] step  600 | loss 2.3125 | ppl 10.1 | grad 3.39 | 3282 tok/s | 611ms/step
+[1] step  650 | loss 2.2031 | ppl 9.1 | grad 3.94 | 3295 tok/s | 565ms/step
+[1] step  700 | loss 2.1094 | ppl 8.2 | grad 4.19 | 3298 tok/s | 592ms/step
+[1] step  750 | loss 2.1875 | ppl 8.9 | grad 3.09 | 3316 tok/s | 569ms/step
+[1] step  800 | loss 2.4531 | ppl 11.6 | grad 3.19 | 3332 tok/s | 566ms/step
+[1] step  850 | loss 2.0781 | ppl 8.0 | grad 3.47 | 3345 tok/s | 568ms/step
+[1] step  900 | loss 2.1562 | ppl 8.6 | grad 3.39 | 3344 tok/s | 577ms/step
+[1] step  950 | loss 2.1094 | ppl 8.2 | grad 3.50 | 3348 tok/s | 642ms/step
+[1] step 1000 | loss 2.2656 | ppl 9.6 | grad 2.92 | 3346 tok/s | 628ms/step
+
+1 Final: loss=2.4635, grad=3.39, time=612.1s
+
+======================================================================
+BENCHMARK SUMMARY
+======================================================================
+Model           Params       Final Loss   Grad Norm    Time (s)  
+----------------------------------------------------------------------
+1               50.52M       2.4635       3.39         612.1     
+
+Results saved to: benchmark_results/50m_20260104_000029

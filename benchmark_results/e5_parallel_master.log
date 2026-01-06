@@ -1,0 +1,63 @@
+============================================================
+Running E5 50M variants in parallel
+============================================================
+Launching e5_d768_r539 on GPU 0...
+Launching e5_d1024_r404 on GPU 1...
+Launching e5_d1536_r270 on GPU 2...
+Launching e5_d2048_r200 on GPU 3...
+
+All 4 experiments launched!
+Waiting for completion...
+
+
+--- Progress ---
+
+--- Progress ---
+
+--- Progress ---
+
+--- Progress ---
+
+--- Progress ---
+
+--- Progress ---
+
+--- Progress ---
+e5_d768_r539: RUNNING | Tokenized 10
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: RUNNING | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d1536_r270: RUNNING | torch.OutOf
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: DONE | torch.OutOf
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: RUNNING | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d1536_r270: RUNNING | to
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: DONE | torch.OutOfMemoryErr
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: RUNNING | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d1536_r270: RUN
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: DONE | torch.OutOfMemoryError: CUDA 
+--- Progress ---
+e5_d768_r539: RUNNING | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: RUNNING | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d1536_
+--- Progress ---
+e5_d768_r539: DONE | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: DONE | torch.OutOfMemoryError: CUDA out of memor
+--- Progress ---
+e5_d768_r539: DONE | Loaded 104,901,312 tokens from cache: data/fineweb_100mb.txt
+e5_d1024_r404: DONE | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d1536_r270: DONE | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+e5_d2048_r200: DONE | torch.OutOfMemoryError: CUDA out of memory. Tried to allocat
+
+============================================================
+RESULTS
+============================================================

@@ -1,0 +1,12 @@
+e5_d4096_r64_d5: params=8,982,528, depth=5, hidden=4096, rank=64
+Step 100 | Loss 2.7188 | PPL 15.2 | 48196 tok/s
+Step 200 | Loss 2.3438 | PPL 10.4 | 48322 tok/s
+Step 300 | Loss 2.3750 | PPL 10.8 | 48985 tok/s
+Step 400 | Loss 3.5781 | PPL 35.8 | 49265 tok/s
+Step 500 | Loss 2.3750 | PPL 10.8 | 49425 tok/s
+Step 600 | Loss 2.5469 | PPL 12.8 | 50241 tok/s
+Step 700 | Loss 2.3906 | PPL 10.9 | 51089 tok/s
+Step 800 | Loss 2.0781 | PPL 8.0 | 51748 tok/s
+Step 900 | Loss 2.3281 | PPL 10.3 | 52236 tok/s
+Step 1000 | Loss 1.8047 | PPL 6.1 | 52419 tok/s
+DONE: e5_d4096_r64_d5 | Final loss: 1.8047

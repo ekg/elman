@@ -1,0 +1,4 @@
+
+Benchmarking E5 backends on byte-level Pile
+Config: dim=768, depth=56, rank=192
+Training: batch=32, seq=512, steps=1000

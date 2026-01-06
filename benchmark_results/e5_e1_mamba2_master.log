@@ -1,0 +1,326 @@
+======================================================================
+E5 vs E1 vs Mamba2 Comparison - 50M params, 1000 steps, batch=256
+Reports last-100-step average loss
+======================================================================
+Launching e5_d768_r539 on GPU 0...
+Launching e5_d1024_r404 on GPU 1...
+Launching e5_d1536_r270 on GPU 2...
+Launching e5_d2048_r200 on GPU 3...
+Launching e1_50m on GPU 4...
+Launching mamba2_50m on GPU 5...
+
+All 6 experiments launched!
+Waiting for completion...
+
+
+--- Progress ---
+
+--- Progress ---
+e1_50m: Step 100 | Loss 1.7578 | Avg100 2.1396 | 174461 tok/s
+
+--- Progress ---
+e1_50m: Step 200 | Loss 1.6562 | Avg100 1.6867 | 174935 tok/s
+mamba2_50m: Step 100 | Loss 1.7344 | Avg100 2.1245 | 95990 tok/s
+
+--- Progress ---
+e1_50m: Step 300 | Loss 1.5703 | Avg100 1.6089 | 178868 tok/s
+mamba2_50m: Step 100 | Loss 1.7344 | Avg100 2.1245 | 95990 tok/s
+
+--- Progress ---
+e5_d1024_r404: Step 100 | Loss 1.9844 | Avg100 2.3932 | 87147 tok/s
+e5_d1536_r270: Step 100 | Loss 2.0312 | Avg100 2.6383 | 82046 tok/s
+e5_d2048_r200: Step 100 | Loss 2.0938 | Avg100 3.1125 | 87149 tok/s
+e1_50m: Step 400 | Loss 1.5312 | Avg100 1.5716 | 179298 tok/s
+mamba2_50m: Step 200 | Loss 1.6406 | Avg100 1.6791 | 99736 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 100 | Loss 1.9453 | Avg100 2.3243 | 59428 tok/s
+e5_d1024_r404: Step 100 | Loss 1.9844 | Avg100 2.3932 | 87147 tok/s
+e5_d1536_r270: Step 100 | Loss 2.0312 | Avg100 2.6383 | 82046 tok/s
+e5_d2048_r200: Step 100 | Loss 2.0938 | Avg100 3.1125 | 87149 tok/s
+e1_50m: Step 400 | Loss 1.5312 | Avg100 1.5716 | 179298 tok/s
+mamba2_50m: Step 200 | Loss 1.6406 | Avg100 1.6791 | 99736 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 100 | Loss 1.9453 | Avg100 2.3243 | 59428 tok/s
+e5_d1024_r404: Step 100 | Loss 1.9844 | Avg100 2.3932 | 87147 tok/s
+e5_d1536_r270: Step 100 | Loss 2.0312 | Avg100 2.6383 | 82046 tok/s
+e5_d2048_r200: Step 100 | Loss 2.0938 | Avg100 3.1125 | 87149 tok/s
+e1_50m: Step 500 | Loss 1.5625 | Avg100 1.5392 | 177622 tok/s
+mamba2_50m: Step 300 | Loss 1.5547 | Avg100 1.5936 | 101574 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 100 | Loss 1.9453 | Avg100 2.3243 | 59428 tok/s
+e5_d1024_r404: Step 200 | Loss 1.7344 | Avg100 1.8155 | 87860 tok/s
+e5_d1536_r270: Step 200 | Loss 1.7266 | Avg100 1.8352 | 81709 tok/s
+e5_d2048_r200: Step 200 | Loss 1.7734 | Avg100 1.8945 | 87005 tok/s
+e1_50m: Step 600 | Loss 1.5000 | Avg100 1.5212 | 176370 tok/s
+mamba2_50m: Step 300 | Loss 1.5547 | Avg100 1.5936 | 101574 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 100 | Loss 1.9453 | Avg100 2.3243 | 59428 tok/s
+e5_d1024_r404: Step 200 | Loss 1.7344 | Avg100 1.8155 | 87860 tok/s
+e5_d1536_r270: Step 200 | Loss 1.7266 | Avg100 1.8352 | 81709 tok/s
+e5_d2048_r200: Step 200 | Loss 1.7734 | Avg100 1.8945 | 87005 tok/s
+e1_50m: Step 700 | Loss 1.5156 | Avg100 1.5076 | 175518 tok/s
+mamba2_50m: Step 400 | Loss 1.5234 | Avg100 1.5542 | 102547 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 200 | Loss 1.7500 | Avg100 1.8176 | 59200 tok/s
+e5_d1024_r404: Step 300 | Loss 1.6094 | Avg100 1.6638 | 88097 tok/s
+e5_d1536_r270: Step 200 | Loss 1.7266 | Avg100 1.8352 | 81709 tok/s
+e5_d2048_r200: Step 300 | Loss 1.6328 | Avg100 1.6910 | 86924 tok/s
+e1_50m: Step 700 | Loss 1.5156 | Avg100 1.5076 | 175518 tok/s
+mamba2_50m: Step 400 | Loss 1.5234 | Avg100 1.5542 | 102547 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 200 | Loss 1.7500 | Avg100 1.8176 | 59200 tok/s
+e5_d1024_r404: Step 300 | Loss 1.6094 | Avg100 1.6638 | 88097 tok/s
+e5_d1536_r270: Step 300 | Loss 1.6016 | Avg100 1.6573 | 81556 tok/s
+e5_d2048_r200: Step 300 | Loss 1.6328 | Avg100 1.6910 | 86924 tok/s
+e1_50m: Step 800 | Loss 1.5000 | Avg100 1.4968 | 175033 tok/s
+mamba2_50m: Step 500 | Loss 1.5547 | Avg100 1.5205 | 103163 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 200 | Loss 1.7500 | Avg100 1.8176 | 59200 tok/s
+e5_d1024_r404: Step 400 | Loss 1.5469 | Avg100 1.6016 | 88235 tok/s
+e5_d1536_r270: Step 300 | Loss 1.6016 | Avg100 1.6573 | 81556 tok/s
+e5_d2048_r200: Step 300 | Loss 1.6328 | Avg100 1.6910 | 86924 tok/s
+e1_50m: Step 900 | Loss 1.4219 | Avg100 1.4820 | 174904 tok/s
+mamba2_50m: Step 500 | Loss 1.5547 | Avg100 1.5205 | 103163 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 200 | Loss 1.7500 | Avg100 1.8176 | 59200 tok/s
+e5_d1024_r404: Step 400 | Loss 1.5469 | Avg100 1.6016 | 88235 tok/s
+e5_d1536_r270: Step 400 | Loss 1.5391 | Avg100 1.5917 | 81490 tok/s
+e5_d2048_r200: Step 400 | Loss 1.5703 | Avg100 1.6157 | 86917 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 600 | Loss 1.4609 | Avg100 1.4910 | 103549 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 300 | Loss 1.6328 | Avg100 1.6900 | 59121 tok/s
+e5_d1024_r404: Step 400 | Loss 1.5469 | Avg100 1.6016 | 88235 tok/s
+e5_d1536_r270: Step 400 | Loss 1.5391 | Avg100 1.5917 | 81490 tok/s
+e5_d2048_r200: Step 400 | Loss 1.5703 | Avg100 1.6157 | 86917 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 600 | Loss 1.4609 | Avg100 1.4910 | 103549 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 300 | Loss 1.6328 | Avg100 1.6900 | 59121 tok/s
+e5_d1024_r404: Step 500 | Loss 1.5781 | Avg100 1.5560 | 88299 tok/s
+e5_d1536_r270: Step 400 | Loss 1.5391 | Avg100 1.5917 | 81490 tok/s
+e5_d2048_r200: Step 500 | Loss 1.5781 | Avg100 1.5633 | 86804 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 700 | Loss 1.4766 | Avg100 1.4805 | 103788 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 300 | Loss 1.6328 | Avg100 1.6900 | 59121 tok/s
+e5_d1024_r404: Step 500 | Loss 1.5781 | Avg100 1.5560 | 88299 tok/s
+e5_d1536_r270: Step 500 | Loss 1.5547 | Avg100 1.5443 | 81431 tok/s
+e5_d2048_r200: Step 500 | Loss 1.5781 | Avg100 1.5633 | 86804 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 700 | Loss 1.4766 | Avg100 1.4805 | 103788 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 400 | Loss 1.5781 | Avg100 1.6284 | 59064 tok/s
+e5_d1024_r404: Step 600 | Loss 1.4922 | Avg100 1.5285 | 88210 tok/s
+e5_d1536_r270: Step 500 | Loss 1.5547 | Avg100 1.5443 | 81431 tok/s
+e5_d2048_r200: Step 500 | Loss 1.5781 | Avg100 1.5633 | 86804 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 800 | Loss 1.4609 | Avg100 1.4616 | 103951 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 400 | Loss 1.5781 | Avg100 1.6284 | 59064 tok/s
+e5_d1024_r404: Step 600 | Loss 1.4922 | Avg100 1.5285 | 88210 tok/s
+e5_d1536_r270: Step 500 | Loss 1.5547 | Avg100 1.5443 | 81431 tok/s
+e5_d2048_r200: Step 600 | Loss 1.5000 | Avg100 1.5323 | 86805 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 800 | Loss 1.4609 | Avg100 1.4616 | 103951 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 400 | Loss 1.5781 | Avg100 1.6284 | 59064 tok/s
+e5_d1024_r404: Step 600 | Loss 1.4922 | Avg100 1.5285 | 88210 tok/s
+e5_d1536_r270: Step 600 | Loss 1.4766 | Avg100 1.5165 | 81386 tok/s
+e5_d2048_r200: Step 600 | Loss 1.5000 | Avg100 1.5323 | 86805 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 900 | Loss 1.3906 | Avg100 1.4490 | 104087 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 400 | Loss 1.5781 | Avg100 1.6284 | 59064 tok/s
+e5_d1024_r404: Step 700 | Loss 1.5078 | Avg100 1.5082 | 88232 tok/s
+e5_d1536_r270: Step 600 | Loss 1.4766 | Avg100 1.5165 | 81386 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5000 | Avg100 1.5073 | 86806 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 900 | Loss 1.3906 | Avg100 1.4490 | 104087 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 500 | Loss 1.5938 | Avg100 1.5814 | 59029 tok/s
+e5_d1024_r404: Step 700 | Loss 1.5078 | Avg100 1.5082 | 88232 tok/s
+e5_d1536_r270: Step 600 | Loss 1.4766 | Avg100 1.5165 | 81386 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5000 | Avg100 1.5073 | 86806 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: Step 900 | Loss 1.3906 | Avg100 1.4490 | 104087 tok/s
+
+--- Progress ---
+e5_d768_r539: Step 500 | Loss 1.5938 | Avg100 1.5814 | 59029 tok/s
+e5_d1024_r404: Step 800 | Loss 1.4844 | Avg100 1.4918 | 88248 tok/s
+e5_d1536_r270: Step 700 | Loss 1.4922 | Avg100 1.4948 | 81351 tok/s
+e5_d2048_r200: Step 700 | Loss 1.5000 | Avg100 1.5073 | 86806 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 500 | Loss 1.5938 | Avg100 1.5814 | 59029 tok/s
+e5_d1024_r404: Step 800 | Loss 1.4844 | Avg100 1.4918 | 88248 tok/s
+e5_d1536_r270: Step 700 | Loss 1.4922 | Avg100 1.4948 | 81351 tok/s
+e5_d2048_r200: Step 800 | Loss 1.5000 | Avg100 1.4898 | 86797 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 500 | Loss 1.5938 | Avg100 1.5814 | 59029 tok/s
+e5_d1024_r404: Step 800 | Loss 1.4844 | Avg100 1.4918 | 88248 tok/s
+e5_d1536_r270: Step 800 | Loss 1.4922 | Avg100 1.4779 | 81303 tok/s
+e5_d2048_r200: Step 800 | Loss 1.5000 | Avg100 1.4898 | 86797 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 600 | Loss 1.5156 | Avg100 1.5520 | 58989 tok/s
+e5_d1024_r404: Step 900 | Loss 1.4219 | Avg100 1.4730 | 88225 tok/s
+e5_d1536_r270: Step 800 | Loss 1.4922 | Avg100 1.4779 | 81303 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4691 | 86768 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 600 | Loss 1.5156 | Avg100 1.5520 | 58989 tok/s
+e5_d1024_r404: Step 900 | Loss 1.4219 | Avg100 1.4730 | 88225 tok/s
+e5_d1536_r270: Step 800 | Loss 1.4922 | Avg100 1.4779 | 81303 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4691 | 86768 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 600 | Loss 1.5156 | Avg100 1.5520 | 58989 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4583 | 81255 tok/s
+e5_d2048_r200: Step 900 | Loss 1.4141 | Avg100 1.4691 | 86768 tok/s
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 600 | Loss 1.5156 | Avg100 1.5520 | 58989 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4583 | 81255 tok/s
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 700 | Loss 1.5312 | Avg100 1.5304 | 58961 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: Step 900 | Loss 1.4062 | Avg100 1.4583 | 81255 tok/s
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 700 | Loss 1.5312 | Avg100 1.5304 | 58961 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 700 | Loss 1.5312 | Avg100 1.5304 | 58961 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 800 | Loss 1.5156 | Avg100 1.5130 | 58956 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 800 | Loss 1.5156 | Avg100 1.5130 | 58956 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 800 | Loss 1.5156 | Avg100 1.5130 | 58956 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 800 | Loss 1.5156 | Avg100 1.5130 | 58956 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 900 | Loss 1.4375 | Avg100 1.4927 | 58965 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 900 | Loss 1.4375 | Avg100 1.4927 | 58965 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 900 | Loss 1.4375 | Avg100 1.4927 | 58965 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: Step 900 | Loss 1.4375 | Avg100 1.4927 | 58965 tok/s
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+--- Progress ---
+e5_d768_r539: DONE: e5_d768_r539 | Last100=1.4815 | Final=1.4531 | Params=49,918,464
+e5_d1024_r404: DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,15
+e5_d1536_r270: DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,84
+e5_d2048_r200: DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,26
+e1_50m: DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+mamba2_50m: DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+======================================================================
+FINAL RESULTS - Last 100 Step Average Loss
+======================================================================
+DONE: e5_d768_r539 | Last100=1.4815 | Final=1.4531 | Params=49,918,464
+DONE: e5_d1024_r404 | Last100=1.4620 | Final=1.4297 | Params=49,969,152
+DONE: e5_d1536_r270 | Last100=1.4463 | Final=1.4141 | Params=50,254,848
+DONE: e5_d2048_r200 | Last100=1.4565 | Final=1.4219 | Params=49,803,264
+DONE: e1_50m | Last100=1.4742 | Final=1.4375 | Params=49,714,944
+DONE: mamba2_50m | Last100=1.4422 | Final=1.4062 | Params=50,928,750
+
+======================================================================

@@ -1,0 +1,12 @@
+e1_d1024_wide: params=26,493,952, dim=1024, depth=5, batch=256
+Step 100 | Loss 1.7734 | Avg100 2.1082 | 454218 tok/s
+Step 200 | Loss 1.6797 | Avg100 1.7073 | 454389 tok/s
+Step 300 | Loss 1.5938 | Avg100 1.6291 | 449958 tok/s
+Step 400 | Loss 1.5469 | Avg100 1.5921 | 446645 tok/s
+Step 500 | Loss 1.5781 | Avg100 1.5609 | 444685 tok/s
+Step 600 | Loss 1.5234 | Avg100 1.5423 | 443394 tok/s
+Step 700 | Loss 1.5312 | Avg100 1.5288 | 442476 tok/s
+Step 800 | Loss 1.5234 | Avg100 1.5184 | 441790 tok/s
+Step 900 | Loss 1.4453 | Avg100 1.5030 | 441261 tok/s
+Step 1000 | Loss 1.4609 | Avg100 1.4968 | 440836 tok/s
+DONE: e1_d1024_wide | Last100=1.4968 | Final=1.4609 | Params=26,493,952

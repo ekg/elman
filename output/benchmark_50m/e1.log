@@ -1,0 +1,44 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓ <-- TRAINING
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7e8604ec5760> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+
+Model Parameters: 49,714,944 (49.71M)
+  Embedding: 131,072
+  Layers: 21 x 512d
+  Layer 0: 2,360,064 params
+
+Loading data from data/pile.txt...
+Using AdamWScheduleFree optimizer
+Logging to: output/benchmark_50m/e1/steps.jsonl
+
+Starting training for 500 steps...
+Batch size per GPU: 32, World size: 1
+Effective batch size: 32
+Tokens per step: 16,384
+
+Step     50 | Loss 3.1260 | PPL 22.8 | LR 3.00e-04 | Grad 1.62 | Tok/s 38,705 | Mem 821MB | Elapsed 21.2s
+Step    100 | Loss 2.4611 | PPL 11.7 | LR 3.00e-04 | Grad 1.26 | Tok/s 41,710 | Mem 821MB | Elapsed 39.3s
+Step    150 | Loss 2.1559 | PPL 8.6 | LR 3.00e-04 | Grad 2.70 | Tok/s 42,808 | Mem 821MB | Elapsed 57.4s
+Step    200 | Loss 1.8804 | PPL 6.6 | LR 3.00e-04 | Grad 1.90 | Tok/s 43,390 | Mem 821MB | Elapsed 75.5s
+Step    250 | Loss 1.9007 | PPL 6.7 | LR 3.00e-04 | Grad 2.12 | Tok/s 43,758 | Mem 821MB | Elapsed 93.6s
+Step    300 | Loss 1.7213 | PPL 5.6 | LR 3.00e-04 | Grad 1.62 | Tok/s 44,009 | Mem 821MB | Elapsed 111.7s
+Step    350 | Loss 1.7415 | PPL 5.7 | LR 3.00e-04 | Grad 1.92 | Tok/s 44,196 | Mem 821MB | Elapsed 129.7s
+Step    400 | Loss 1.8061 | PPL 6.1 | LR 3.00e-04 | Grad 4.25 | Tok/s 44,333 | Mem 821MB | Elapsed 147.8s
+Step    450 | Loss 1.7724 | PPL 5.9 | LR 3.00e-04 | Grad 1.72 | Tok/s 44,444 | Mem 821MB | Elapsed 165.9s
+Step    500 | Loss 1.7936 | PPL 6.0 | LR 3.00e-04 | Grad 2.81 | Tok/s 44,545 | Mem 821MB | Elapsed 183.9s
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 1.7936
+Total tokens: 8,192,000
+Total time: 183.9s
+Parameters: 49,714,944 (49.71M)

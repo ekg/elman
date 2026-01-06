@@ -1,0 +1,18 @@
+usage: train_ladder.py [-h] [--level LEVEL] [--params PARAMS]
+                       [--expansion EXPANSION] [--n_groups N_GROUPS]
+                       [--r_h_mode {free,spectral_norm,scaled_orthogonal}]
+                       [--r_h_init_gain R_H_INIT_GAIN] --data DATA
+                       [--chunk_size CHUNK_SIZE]
+                       [--tokenizer {byte,tiktoken,sentencepiece,huggingface}]
+                       [--tokenizer_name TOKENIZER_NAME]
+                       [--batch_size BATCH_SIZE] [--grad_accum GRAD_ACCUM]
+                       [--lr LR] [--warmup_steps WARMUP_STEPS]
+                       [--max_steps MAX_STEPS] [--weight_decay WEIGHT_DECAY]
+                       [--grad_clip GRAD_CLIP] [--schedulefree]
+                       [--no-schedulefree] [--sf_beta SF_BETA]
+                       [--sf_beta2 SF_BETA2] [--output OUTPUT]
+                       [--log_interval LOG_INTERVAL]
+                       [--save_interval SAVE_INTERVAL] [--cuda] [--no-cuda]
+                       [--bf16] [--no-bf16] [--compile] [--ddp] [--no-ddp]
+                       [--tbptt]
+train_ladder.py: error: argument --level: invalid parse_level value: 'ssm'

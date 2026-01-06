@@ -1,61 +1,54 @@
 #!/bin/bash
-# Compare StockElman (level 0) vs LogSpacePolynomial (log_0) on The Pile
-# 500M params, tiktoken p50k_base (50k vocab), 8-way DDP, 16 batch/GPU
+# Run E0-E3 + Mamba2 training comparison in parallel
 
-set -e
+mkdir -p output/comparison_50m
 
-DATA="/mnt/nvme2n1/erikg/pile.txt"
-OUTPUT_BASE="outputs/comparison_$(date +%Y%m%d_%H%M%S)"
-MAX_STEPS=3000
-BATCH_SIZE=16
-CHUNK_SIZE=512
+echo "Starting training comparison at $(date)"
 
-# Common args
-COMMON_ARGS="--data $DATA \
-    --params 500m \
-    --tokenizer tiktoken \
-    --tokenizer_name p50k_base \
-    --batch_size $BATCH_SIZE \
-    --chunk_size $CHUNK_SIZE \
-    --max_steps $MAX_STEPS \
-    --warmup_steps 200 \
-    --lr 3e-4 \
-    --log_interval 10 \
-    --save_interval 500 \
-    --bf16 \
-    --ddp \
-    --tbptt"
+# E0 on GPU 0
+CUDA_VISIBLE_DEVICES=0 python train_ladder.py \
+    --level 0 --params 50m --data data/pile.txt --chunk_size 512 \
+    --tokenizer byte --batch_size 32 --max_steps 1000 --log_interval 100 \
+    --output output/comparison_50m/e0 --no-ddp \
+    > output/comparison_50m/e0.log 2>&1 &
 
-echo "=============================================="
-echo "Elman Ladder Comparison: Stock vs Log-Space Polynomial"
-echo "=============================================="
-echo "Data: $DATA"
-echo "Params: 500M"
-echo "Vocab: tiktoken p50k_base (~50k)"
-echo "Batch/GPU: $BATCH_SIZE, 8 GPUs = $(($BATCH_SIZE * 8)) effective"
-echo "Chunk size: $CHUNK_SIZE"
-echo "Max steps: $MAX_STEPS"
-echo "Output: $OUTPUT_BASE"
-echo "=============================================="
+# E1 on GPU 1
+CUDA_VISIBLE_DEVICES=1 python train_ladder.py \
+    --level 1 --params 50m --data data/pile.txt --chunk_size 512 \
+    --tokenizer byte --batch_size 32 --max_steps 1000 --log_interval 100 \
+    --output output/comparison_50m/e1 --no-ddp \
+    > output/comparison_50m/e1.log 2>&1 &
 
-# Run Level 0 (Stock Elman)
-echo ""
-echo ">>> Starting Level 0 (Stock Elman)..."
-torchrun --nproc_per_node=8 train_ladder.py \
-    --level 0 \
-    --output ${OUTPUT_BASE}/level0_stock \
-    $COMMON_ARGS
+# E2 on GPU 2
+CUDA_VISIBLE_DEVICES=2 python train_ladder.py \
+    --level 2 --params 50m --data data/pile.txt --chunk_size 512 \
+    --tokenizer byte --batch_size 32 --max_steps 1000 --log_interval 100 \
+    --output output/comparison_50m/e2 --no-ddp \
+    > output/comparison_50m/e2.log 2>&1 &
 
-# Run Log Level 0 (Log-Space Polynomial)
-echo ""
-echo ">>> Starting Log Level 0 (Log-Space Polynomial)..."
-torchrun --nproc_per_node=8 train_ladder.py \
-    --level log_0 \
-    --output ${OUTPUT_BASE}/log_0_polynomial \
-    $COMMON_ARGS
+# E3 on GPU 3
+CUDA_VISIBLE_DEVICES=3 python train_ladder.py \
+    --level 3 --params 50m --data data/pile.txt --chunk_size 512 \
+    --tokenizer byte --batch_size 32 --max_steps 1000 --log_interval 100 \
+    --output output/comparison_50m/e3 --no-ddp \
+    > output/comparison_50m/e3.log 2>&1 &
+
+echo "Started E0-E3, waiting 5s before starting Mamba2..."
+sleep 5
+
+# Mamba2 on GPU 4
+CUDA_VISIBLE_DEVICES=4 python train_ladder.py \
+    --level mamba2 --params 50m --data data/pile.txt --chunk_size 512 \
+    --tokenizer byte --batch_size 32 --max_steps 1000 --log_interval 100 \
+    --output output/comparison_50m/mamba2 --no-ddp \
+    > output/comparison_50m/mamba2.log 2>&1 &
+
+echo "All jobs started. Monitoring progress..."
+wait
 
 echo ""
-echo "=============================================="
-echo "Comparison complete!"
-echo "Results in: $OUTPUT_BASE"
-echo "=============================================="
+echo "=== Final Results ==="
+for model in e0 e1 e2 e3 mamba2; do
+    echo "--- $model ---"
+    tail -10 output/comparison_50m/$model.log 2>/dev/null | grep -E "Step|Complete|Final|Error"
+done

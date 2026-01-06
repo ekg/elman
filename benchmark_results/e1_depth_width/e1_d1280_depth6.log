@@ -1,0 +1,12 @@
+e1_d1280_depth6: params=49,505,280, dim=1280, depth=6
+Step 100 | Loss 1.7344 | Avg100 2.0874 | 265251 tok/s
+Step 200 | Loss 1.6406 | Avg100 1.6660 | 258587 tok/s
+Step 300 | Loss 1.5547 | Avg100 1.5884 | 253895 tok/s
+Step 400 | Loss 1.5078 | Avg100 1.5512 | 251405 tok/s
+Step 500 | Loss 1.5391 | Avg100 1.5190 | 249943 tok/s
+Step 600 | Loss 1.4766 | Avg100 1.4996 | 248996 tok/s
+Step 700 | Loss 1.4844 | Avg100 1.4850 | 248330 tok/s
+Step 800 | Loss 1.4688 | Avg100 1.4745 | 247832 tok/s
+Step 900 | Loss 1.4062 | Avg100 1.4576 | 247474 tok/s
+Step 1000 | Loss 1.4141 | Avg100 1.4490 | 247196 tok/s
+DONE: e1_d1280_depth6 | Last100=1.4490 | Params=49,505,280

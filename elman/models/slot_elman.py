@@ -48,25 +48,32 @@ class SlotElmanFunction(torch.autograd.Function):
 
 class SlotElmanCell(nn.Module):
     """
-    E2 Elman cell with slot-based memory and cuBLAS GEMMs.
+    E2 Elman cell with slot-based memory.
 
-    Each slot has full W_h recurrence (not diagonal):
-    h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)
-    output = sum(C[s] * h_t[s]) * silu(z)
+    Recurrence options:
+    - diag=False: h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)  (full matmul)
+    - diag=True:  h_t[s] = tanh(W_x @ x + A * h_prev[s] + b)    (diagonal, fast!)
 
-    Slots are batched into a single GEMM for efficiency.
+    Output: sum(C[s] * h_t[s]) * silu(z)
     """
 
-    def __init__(self, dim, n_slots=64, spectral_radius=0.99):
+    def __init__(self, dim, n_slots=64, spectral_radius=0.99, diag=False):
         super().__init__()
         self.dim = dim
         self.n_slots = n_slots
         self.spectral_radius = spectral_radius
+        self.diag = diag
 
-        # Same as e0: input and recurrent projections
+        # Input projection
         self.W_x = nn.Parameter(torch.empty(dim, dim))
-        self.W_h = nn.Parameter(torch.empty(dim, dim))
         self.b = nn.Parameter(torch.zeros(dim))
+
+        # Recurrence: full matrix or diagonal
+        if diag:
+            # Diagonal A in (-1, 1) for stability
+            self.A = nn.Parameter(torch.zeros(dim))
+        else:
+            self.W_h = nn.Parameter(torch.empty(dim, dim))
 
         # Slot combination weights
         self.C = nn.Parameter(torch.ones(n_slots) / n_slots)
@@ -74,18 +81,19 @@ class SlotElmanCell(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # Xavier initialization for input projection
         nn.init.xavier_uniform_(self.W_x)
 
-        # Scaled initialization for recurrent - start with small spectral radius
-        nn.init.orthogonal_(self.W_h)
-        with torch.no_grad():
-            self.W_h.mul_(self.spectral_radius * 0.5)
+        if self.diag:
+            # Init A near 0 (sigmoid(0) = 0.5, so decay ~0.5)
+            nn.init.zeros_(self.A)
+        else:
+            nn.init.orthogonal_(self.W_h)
+            with torch.no_grad():
+                self.W_h.mul_(self.spectral_radius * 0.5)
 
     def _get_normalized_Wh(self):
-        """Spectral normalization to keep radius < spectral_radius."""
+        """Spectral normalization for full W_h."""
         W = self.W_h
-        # Power iteration estimate of spectral norm
         u = torch.randn(W.shape[0], device=W.device, dtype=W.dtype)
         for _ in range(3):
             v = F.normalize(W.T @ u, dim=0)
@@ -94,6 +102,10 @@ class SlotElmanCell(nn.Module):
         if sigma > self.spectral_radius:
             return W * (self.spectral_radius / sigma)
         return W
+
+    def _get_A(self):
+        """Get diagonal recurrence in (0, spectral_radius) via sigmoid."""
+        return torch.sigmoid(self.A) * self.spectral_radius
 
     def forward(self, x, z, h0=None):
         """
@@ -111,11 +123,9 @@ class SlotElmanCell(nn.Module):
         if h0 is None:
             h0 = torch.zeros(B_size, self.n_slots, D, device=x.device, dtype=x.dtype)
 
-        # Get spectrally normalized W_h
-        W_h = self._get_normalized_Wh()
-
-        # Use CUDA kernel if available
-        if SLOT_CUDA_AVAILABLE and x.is_cuda:
+        # Use CUDA kernel if available (full W_h only)
+        if not self.diag and SLOT_CUDA_AVAILABLE and x.is_cuda:
+            W_h = self._get_normalized_Wh()
             h, output = SlotElmanFunction.apply(
                 self.training, x.contiguous(), z.contiguous(),
                 h0.contiguous(), self.W_x.contiguous(),
@@ -123,7 +133,12 @@ class SlotElmanCell(nn.Module):
             )
             return output, h
 
-        # PyTorch fallback
+        # PyTorch path (diagonal or fallback)
+        if self.diag:
+            A = self._get_A()  # [dim] in (0, spectral_radius)
+        else:
+            W_h = self._get_normalized_Wh()
+
         h_list = [h0]
         output_list = []
 
@@ -135,11 +150,14 @@ class SlotElmanCell(nn.Module):
             # W_x @ x is same for all slots - broadcast
             Wx = x_t @ self.W_x.T  # [B, dim]
 
-            # W_h @ h_prev for each slot (can batch in PyTorch too)
-            # h_prev: [B, n_slots, dim] -> treat as [B*n_slots, dim]
-            h_flat = h_prev.reshape(B_size * self.n_slots, D)
-            Rh_flat = h_flat @ W_h.T  # [B*n_slots, dim]
-            Rh = Rh_flat.reshape(B_size, self.n_slots, D)  # [B, n_slots, dim]
+            if self.diag:
+                # Diagonal recurrence: A * h_prev (element-wise, broadcast A)
+                Rh = A * h_prev  # [B, n_slots, dim]
+            else:
+                # Full W_h matmul: batch across slots
+                h_flat = h_prev.reshape(B_size * self.n_slots, D)
+                Rh_flat = h_flat @ W_h.T  # [B*n_slots, dim]
+                Rh = Rh_flat.reshape(B_size, self.n_slots, D)
 
             # h_new = tanh(Wx + Rh + b), broadcast Wx across slots
             h_new = torch.tanh(Wx.unsqueeze(1) + Rh + self.b)  # [B, n_slots, dim]
@@ -159,10 +177,7 @@ class SlotElmanCell(nn.Module):
 
 class SlotElman(nn.Module):
     """
-    E2: Slot-Based Elman with cuBLAS GEMMs.
-
-    Same architecture as e1 (Mamba-gated), but with n_slots independent
-    hidden states batched into a single GEMM call.
+    E2: Slot-Based Elman with multi-slot memory.
 
     Architecture:
         x, z = split(in_proj(x))    # Split into RNN input and gate
@@ -170,6 +185,10 @@ class SlotElman(nn.Module):
         x = silu(x)                 # Pre-activation
         h = slot_cell(x, z)         # Multi-slot RNN with gated output
         output = out_proj(h)        # Project back to dim
+
+    Recurrence options (via diag parameter):
+        diag=False: Full W_h matmul (more expressive, slower)
+        diag=True:  Diagonal A (like Mamba, much faster)
     """
 
     def __init__(
@@ -181,6 +200,7 @@ class SlotElman(nn.Module):
         dropout=0.0,
         use_conv=False,
         d_conv=4,
+        diag=False,  # Full W_h with CUDA kernel is faster than Python loop
         **kwargs
     ):
         super().__init__()
@@ -188,6 +208,7 @@ class SlotElman(nn.Module):
         self.d_inner = int(dim * expansion)
         self.n_slots = n_slots
         self.use_conv = use_conv
+        self.diag = diag
 
         # Mamba2-style: project to 2*d_inner, then split
         self.in_proj = nn.Linear(dim, 2 * self.d_inner, bias=False)
@@ -203,11 +224,12 @@ class SlotElman(nn.Module):
                 bias=True,
             )
 
-        # Slot-based Elman cell with cuBLAS GEMMs
+        # Slot-based Elman cell
         self.cell = SlotElmanCell(
             self.d_inner,
             n_slots=n_slots,
-            spectral_radius=spectral_radius
+            spectral_radius=spectral_radius,
+            diag=diag
         )
 
         # Output projection
@@ -262,7 +284,7 @@ class SlotElman(nn.Module):
         return output, h_final
 
     def extra_repr(self):
-        return f'dim={self.dim}, d_inner={self.d_inner}, n_slots={self.n_slots}, use_conv={self.use_conv}, LEVEL=2_SLOT'
+        return f'dim={self.dim}, d_inner={self.d_inner}, n_slots={self.n_slots}, diag={self.diag}, LEVEL=2_SLOT'
 
 
 if __name__ == "__main__":

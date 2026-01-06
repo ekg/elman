@@ -1,0 +1,10 @@
+
+Benchmarking E5 backends on byte-level Pile
+Config: dim=1536, depth=20, rank=270
+Training: batch=256, seq=512, steps=1000
+
+============================================================
+Backend: FUSED
+Model: dim=1536, depth=20, rank=270
+Parameters: 50,193,408
+============================================================

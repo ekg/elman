@@ -1,0 +1,22 @@
+{"type": "header", "timestamp": "2026-01-03T23:25:48.961966", "model": "3", "num_params": 48772096, "batch_size": 4, "chunk_size": 512, "lr": 0.0003}
+{"type": "step", "step": 1, "loss": 5.6875, "perplexity": 295.1548104863723, "grad_norm": NaN, "lr": 2.9999999999999997e-06, "tokens_seen": 2048, "tokens_per_sec": 1907.9458201453072, "step_time_ms": 1071.080207824707}
+{"type": "step", "step": 50, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00015, "tokens_seen": 102400, "tokens_per_sec": 3972.6613846547993, "step_time_ms": 509.90819931030273}
+{"type": "step", "step": 100, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0003, "tokens_seen": 204800, "tokens_per_sec": 4026.7192586144934, "step_time_ms": 491.8222427368164}
+{"type": "step", "step": 150, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0002977211629518312, "tokens_seen": 307200, "tokens_per_sec": 4062.1436377361233, "step_time_ms": 537.3601913452148}
+{"type": "step", "step": 200, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0002909538931178862, "tokens_seen": 409600, "tokens_per_sec": 4028.325832879766, "step_time_ms": 459.9299430847168}
+{"type": "step", "step": 250, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0002799038105676658, "tokens_seen": 512000, "tokens_per_sec": 4038.071768309424, "step_time_ms": 480.1616668701172}
+{"type": "step", "step": 300, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00026490666646784665, "tokens_seen": 614400, "tokens_per_sec": 4047.115659955078, "step_time_ms": 474.5440483093262}
+{"type": "step", "step": 350, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0002464181414529809, "tokens_seen": 716800, "tokens_per_sec": 4077.6389606804296, "step_time_ms": 499.6376037597656}
+{"type": "step", "step": 400, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.000225, "tokens_seen": 819200, "tokens_per_sec": 4086.52191952299, "step_time_ms": 495.3899383544922}
+{"type": "step", "step": 450, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00020130302149885031, "tokens_seen": 921600, "tokens_per_sec": 4088.2763711016255, "step_time_ms": 510.80989837646484}
+{"type": "step", "step": 500, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00017604722665003956, "tokens_seen": 1024000, "tokens_per_sec": 4084.4775909293467, "step_time_ms": 470.54481506347656}
+{"type": "step", "step": 550, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00015, "tokens_seen": 1126400, "tokens_per_sec": 4070.8482166390654, "step_time_ms": 500.4920959472656}
+{"type": "step", "step": 600, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.00012395277334996044, "tokens_seen": 1228800, "tokens_per_sec": 4067.9530023490547, "step_time_ms": 476.82833671569824}
+{"type": "step", "step": 650, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 9.869697850114969e-05, "tokens_seen": 1331200, "tokens_per_sec": 4073.2659031194326, "step_time_ms": 533.9035987854004}
+{"type": "step", "step": 700, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 7.500000000000002e-05, "tokens_seen": 1433600, "tokens_per_sec": 4069.027198756276, "step_time_ms": 522.1364498138428}
+{"type": "step", "step": 750, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 5.358185854701909e-05, "tokens_seen": 1536000, "tokens_per_sec": 4073.2294271370115, "step_time_ms": 455.69300651550293}
+{"type": "step", "step": 800, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 3.509333353215331e-05, "tokens_seen": 1638400, "tokens_per_sec": 4077.9107791569404, "step_time_ms": 501.9383430480957}
+{"type": "step", "step": 850, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 2.009618943233419e-05, "tokens_seen": 1740800, "tokens_per_sec": 4079.539351815872, "step_time_ms": 520.5123424530029}
+{"type": "step", "step": 900, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 9.046106882113751e-06, "tokens_seen": 1843200, "tokens_per_sec": 4073.6958450463103, "step_time_ms": 539.8597717285156}
+{"type": "step", "step": 950, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 2.2788370481687965e-06, "tokens_seen": 1945600, "tokens_per_sec": 4075.556386691381, "step_time_ms": 490.2663230895996}
+{"type": "step", "step": 1000, "loss": NaN, "perplexity": NaN, "grad_norm": NaN, "lr": 0.0, "tokens_seen": 2048000, "tokens_per_sec": 4079.9629874718653, "step_time_ms": 480.43179512023926}

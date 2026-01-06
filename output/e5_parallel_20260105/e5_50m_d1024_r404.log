@@ -1,0 +1,12 @@
+e5_50m_d1024_r404: params=49,969,152, depth=20, rank/dim=39.5%
+Step 100 | Loss 1.9609 | PPL 7.1 | 85182 tok/s
+Step 200 | Loss 1.7500 | PPL 5.8 | 84941 tok/s
+Step 300 | Loss 1.7969 | PPL 6.0 | 84872 tok/s
+Step 400 | Loss 1.5234 | PPL 4.6 | 84841 tok/s
+Step 500 | Loss 1.5938 | PPL 4.9 | 84823 tok/s
+Step 600 | Loss 1.7188 | PPL 5.6 | 84807 tok/s
+Step 700 | Loss 1.4297 | PPL 4.2 | 84798 tok/s
+Step 800 | Loss 1.9453 | PPL 7.0 | 84794 tok/s
+Step 900 | Loss 1.7344 | PPL 5.7 | 84782 tok/s
+Step 1000 | Loss 1.3984 | PPL 4.0 | 84773 tok/s
+DONE: e5_50m_d1024_r404 | Final loss: 1.3984

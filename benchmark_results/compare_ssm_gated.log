@@ -1,0 +1,9 @@
+usage: benchmark_baselines.py [-h] --data DATA
+                              [--model {all,gru,lstm,mamba2,pure,auto,ssm,x_gated,diagonal,0,1,2,3,4,5,6,7,8,9,log_0,log_1,log_2,log_3,log_4,log_5,log_6}]
+                              [--params PARAMS] [--batch_size BATCH_SIZE]
+                              [--chunk_size CHUNK_SIZE] [--lr LR]
+                              [--warmup_steps WARMUP_STEPS]
+                              [--max_steps MAX_STEPS]
+                              [--log_interval LOG_INTERVAL] [--output OUTPUT]
+                              [--vocab_size VOCAB_SIZE]
+benchmark_baselines.py: error: the following arguments are required: --data

@@ -1,0 +1,53 @@
+Using p50k_base tokenizer with vocab size 50,281
+Loading data from data/fineweb_500mb.txt...
+Loaded 113,733,867 tokens from cache: data/fineweb_500mb.txt.p50k_base.tokens.npy
+
+Creating mamba2 model with ~500m parameters...
+Created Mamba2 model: dim=1536, depth=24, expand=2, params=428,730,240
+
+============================================================
+Training: mamba2 (timeout=1000.0s)
+Parameters: 428.73M
+Vocab size: 50,281
+============================================================
+[mamba2] step    1 | loss 11.1250 | ppl 67846.3 | grad 2.91 | 2880 tok/s | 16.0s | 15993ms/step
+[mamba2] step   20 | loss 8.8750 | ppl 7150.9 | grad 2.44 | 19684 tok/s | 46.8s | 1642ms/step
+[mamba2] step   40 | loss 7.4062 | ppl 1646.2 | grad 1.75 | 22959 tok/s | 80.3s | 1698ms/step
+[mamba2] step   60 | loss 7.1875 | ppl 1322.8 | grad 1.77 | 24122 tok/s | 114.6s | 1735ms/step
+[mamba2] step   80 | loss 6.7812 | ppl 881.2 | grad 1.30 | 24686 tok/s | 149.3s | 1739ms/step
+[mamba2] step  100 | loss 6.6875 | ppl 802.3 | grad 1.50 | 25018 tok/s | 184.2s | 1743ms/step
+[mamba2] step  120 | loss 6.4062 | ppl 605.6 | grad 1.13 | 25249 tok/s | 219.0s | 1743ms/step
+[mamba2] step  140 | loss 6.2500 | ppl 518.0 | grad 1.16 | 25418 tok/s | 253.8s | 1740ms/step
+[mamba2] step  160 | loss 6.0938 | ppl 443.1 | grad 1.23 | 25547 tok/s | 288.6s | 1746ms/step
+[mamba2] step  180 | loss 6.0000 | ppl 403.4 | grad 0.62 | 25650 tok/s | 323.4s | 1735ms/step
+[mamba2] step  200 | loss 5.8750 | ppl 356.0 | grad 0.96 | 25732 tok/s | 358.1s | 1737ms/step
+[mamba2] step  220 | loss 5.8750 | ppl 356.0 | grad 0.57 | 25807 tok/s | 392.8s | 1732ms/step
+[mamba2] step  240 | loss 5.8125 | ppl 334.5 | grad 0.62 | 25873 tok/s | 427.4s | 1725ms/step
+[mamba2] step  260 | loss 5.7812 | ppl 324.2 | grad 0.82 | 25930 tok/s | 462.1s | 1731ms/step
+[mamba2] step  280 | loss 5.7188 | ppl 304.5 | grad 0.66 | 25978 tok/s | 496.7s | 1733ms/step
+[mamba2] step  300 | loss 5.6562 | ppl 286.1 | grad 0.71 | 26021 tok/s | 531.3s | 1734ms/step
+[mamba2] step  320 | loss 5.6875 | ppl 295.2 | grad 0.80 | 26056 tok/s | 565.9s | 1731ms/step
+[mamba2] step  340 | loss 5.5938 | ppl 268.7 | grad 0.61 | 26087 tok/s | 600.6s | 1736ms/step
+[mamba2] step  360 | loss 5.5938 | ppl 268.7 | grad 0.56 | 26115 tok/s | 635.2s | 1735ms/step
+[mamba2] step  380 | loss 5.5312 | ppl 252.5 | grad 0.58 | 26140 tok/s | 669.9s | 1731ms/step
+[mamba2] step  400 | loss 5.5000 | ppl 244.7 | grad 0.55 | 26162 tok/s | 704.5s | 1738ms/step
+[mamba2] step  420 | loss 5.5000 | ppl 244.7 | grad 0.52 | 26182 tok/s | 739.2s | 1727ms/step
+[mamba2] step  440 | loss 5.4375 | ppl 229.9 | grad 0.70 | 26198 tok/s | 773.9s | 1732ms/step
+[mamba2] step  460 | loss 5.4062 | ppl 222.8 | grad 0.53 | 26212 tok/s | 808.7s | 1738ms/step
+[mamba2] step  480 | loss 5.3750 | ppl 215.9 | grad 0.55 | 26224 tok/s | 843.4s | 1736ms/step
+[mamba2] step  500 | loss 5.4688 | ppl 237.2 | grad 0.52 | 26235 tok/s | 878.2s | 1740ms/step
+[mamba2] step  520 | loss 5.4062 | ppl 222.8 | grad 0.52 | 26245 tok/s | 913.0s | 1734ms/step
+[mamba2] step  540 | loss 5.3750 | ppl 215.9 | grad 0.53 | 26254 tok/s | 947.8s | 1740ms/step
+[mamba2] step  560 | loss 5.3750 | ppl 215.9 | grad 0.54 | 26262 tok/s | 982.6s | 1740ms/step
+[mamba2] Timeout reached at 1001.1s
+
+mamba2 Final: loss=6.1649, grad=0.95, steps=572, tokens=26,311,680, time=1001.1s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+mamba2          428.73M      6.1649     572      26,311,680   26282      1001.1  s
+
+Results saved to: benchmark_results

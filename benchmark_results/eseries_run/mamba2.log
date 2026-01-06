@@ -1,0 +1,42 @@
+Loading data from data/fineweb_100mb.txt...
+
+Creating mamba2 model with ~50m parameters...
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+
+============================================================
+Training: mamba2 (steps=1000)
+Parameters: 50.93M
+Vocab size: 256
+============================================================
+[mamba2] step    1 | loss 5.7188 | ppl 304.5 | grad 5.38 | 157 tok/s | 13.0s | 13005ms/step
+[mamba2] step   50 | loss 2.2656 | ppl 9.6 | grad 2.53 | 5669 tok/s | 18.1s | 107ms/step
+[mamba2] step  100 | loss 2.1562 | ppl 8.6 | grad 2.81 | 8764 tok/s | 23.4s | 106ms/step
+[mamba2] step  150 | loss 1.8672 | ppl 6.5 | grad 2.84 | 10716 tok/s | 28.7s | 106ms/step
+[mamba2] step  200 | loss 1.5391 | ppl 4.7 | grad 1.83 | 12065 tok/s | 34.0s | 106ms/step
+[mamba2] step  250 | loss 1.5547 | ppl 4.7 | grad 1.99 | 13448 tok/s | 38.1s | 78ms/step
+[mamba2] step  300 | loss 1.6875 | ppl 5.4 | grad 2.03 | 14631 tok/s | 42.0s | 79ms/step
+[mamba2] step  350 | loss 1.6875 | ppl 5.4 | grad 2.06 | 15614 tok/s | 45.9s | 78ms/step
+[mamba2] step  400 | loss 1.5078 | ppl 4.5 | grad 1.93 | 16349 tok/s | 50.1s | 107ms/step
+[mamba2] step  450 | loss 1.5859 | ppl 4.9 | grad 1.80 | 16609 tok/s | 55.5s | 107ms/step
+[mamba2] step  500 | loss 1.4688 | ppl 4.3 | grad 2.08 | 16825 tok/s | 60.9s | 108ms/step
+[mamba2] step  550 | loss 1.5156 | ppl 4.6 | grad 2.03 | 17004 tok/s | 66.2s | 108ms/step
+[mamba2] step  600 | loss 1.7969 | ppl 6.0 | grad 2.50 | 17153 tok/s | 71.6s | 107ms/step
+[mamba2] step  650 | loss 1.4141 | ppl 4.1 | grad 2.45 | 17286 tok/s | 77.0s | 107ms/step
+[mamba2] step  700 | loss 1.3828 | ppl 4.0 | grad 2.25 | 17399 tok/s | 82.4s | 107ms/step
+[mamba2] step  750 | loss 1.4766 | ppl 4.4 | grad 1.95 | 17496 tok/s | 87.8s | 107ms/step
+[mamba2] step  800 | loss 1.8281 | ppl 6.2 | grad 2.52 | 17678 tok/s | 92.7s | 103ms/step
+[mamba2] step  850 | loss 1.5312 | ppl 4.6 | grad 2.23 | 17836 tok/s | 97.6s | 106ms/step
+[mamba2] step  900 | loss 1.4922 | ppl 4.4 | grad 2.59 | 17896 tok/s | 103.0s | 108ms/step
+[mamba2] step  950 | loss 1.4844 | ppl 4.4 | grad 1.94 | 17955 tok/s | 108.4s | 108ms/step
+[mamba2] step 1000 | loss 1.7656 | ppl 5.8 | grad 2.42 | 18007 tok/s | 113.7s | 108ms/step
+
+mamba2 Final: loss=1.8441, grad=2.39, steps=1000, tokens=2,048,000, time=113.7s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+mamba2          50.93M       1.8441     1000     2,048,000    18007      113.7   s
+
+Results saved to: benchmark_results/eseries_run

@@ -1,0 +1,57 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓ <-- TRAINING
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x7c09cf7bebd0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Created Level 4 model: dim=512, depth=27, params=50,610,432
+
+Model Parameters: 50,610,432 (50.61M)
+  Embedding: 131,072
+  Layers: 27 x 512d
+  Layer 0: 1,868,544 params
+
+Loading data from /home/erikg/elman/data/pile.txt...
+Using AdamWScheduleFree optimizer
+Logging to: output/comparison_50m/e4/steps.jsonl
+
+Starting training for 2000 steps...
+Batch size per GPU: 32, World size: 1
+Effective batch size: 32
+Tokens per step: 16,384
+
+Step    100 | Loss 3.4126 | PPL 30.3 | LR 3.00e-04 | Grad 0.86 | Tok/s 15,992 | Mem 966MB | Elapsed 102.5s
+Step    200 | Loss 2.8121 | PPL 16.6 | LR 3.00e-04 | Grad 1.60 | Tok/s 16,046 | Mem 966MB | Elapsed 204.2s
+Step    300 | Loss 2.6279 | PPL 13.8 | LR 3.00e-04 | Grad 2.38 | Tok/s 16,068 | Mem 966MB | Elapsed 305.9s
+Step    400 | Loss 2.5388 | PPL 12.7 | LR 3.00e-04 | Grad 6.66 | Tok/s 16,075 | Mem 966MB | Elapsed 407.7s
+Step    500 | Loss 2.5247 | PPL 12.5 | LR 3.00e-04 | Grad 5.03 | Tok/s 16,063 | Mem 966MB | Elapsed 510.0s
+Step    600 | Loss 2.3649 | PPL 10.6 | LR 3.00e-04 | Grad 6.38 | Tok/s 16,051 | Mem 966MB | Elapsed 612.5s
+Step    700 | Loss 2.3840 | PPL 10.8 | LR 3.00e-04 | Grad 6.09 | Tok/s 16,045 | Mem 966MB | Elapsed 714.8s
+Step    800 | Loss 2.3141 | PPL 10.1 | LR 3.00e-04 | Grad 5.12 | Tok/s 16,040 | Mem 966MB | Elapsed 817.2s
+Step    900 | Loss 2.3190 | PPL 10.2 | LR 3.00e-04 | Grad 4.72 | Tok/s 16,034 | Mem 966MB | Elapsed 919.6s
+Step   1000 | Loss 2.2039 | PPL 9.1 | LR 3.00e-04 | Grad 5.72 | Tok/s 16,036 | Mem 966MB | Elapsed 1021.7s
+  >>> Saved: output/comparison_50m/e4/level4_step001000_loss2.2039.pt
+Step   1100 | Loss 2.3622 | PPL 10.6 | LR 3.00e-04 | Grad 10.94 | Tok/s 16,024 | Mem 966MB | Elapsed 1124.7s
+Step   1200 | Loss 2.1665 | PPL 8.7 | LR 3.00e-04 | Grad 5.78 | Tok/s 16,025 | Mem 966MB | Elapsed 1226.9s
+Step   1300 | Loss 2.1550 | PPL 8.6 | LR 3.00e-04 | Grad 7.38 | Tok/s 16,023 | Mem 966MB | Elapsed 1329.3s
+Step   1400 | Loss 2.2195 | PPL 9.2 | LR 3.00e-04 | Grad 12.56 | Tok/s 15,939 | Mem 966MB | Elapsed 1439.1s
+Step   1500 | Loss 2.1782 | PPL 8.8 | LR 3.00e-04 | Grad 10.56 | Tok/s 15,894 | Mem 966MB | Elapsed 1546.2s
+Step   1600 | Loss 2.2228 | PPL 9.2 | LR 3.00e-04 | Grad 6.47 | Tok/s 15,831 | Mem 966MB | Elapsed 1655.9s
+Step   1700 | Loss 2.1848 | PPL 8.9 | LR 3.00e-04 | Grad 7.25 | Tok/s 15,817 | Mem 966MB | Elapsed 1761.0s
+Step   1800 | Loss 2.2309 | PPL 9.3 | LR 3.00e-04 | Grad 7.19 | Tok/s 15,784 | Mem 966MB | Elapsed 1868.5s
+Step   1900 | Loss 2.1487 | PPL 8.6 | LR 3.00e-04 | Grad 6.25 | Tok/s 15,760 | Mem 966MB | Elapsed 1975.2s
+Step   2000 | Loss 2.1432 | PPL 8.5 | LR 3.00e-04 | Grad 8.19 | Tok/s 15,723 | Mem 966MB | Elapsed 2084.1s
+  >>> Saved: output/comparison_50m/e4/level4_step002000_loss2.1432.pt
+
+======================================================================
+Training Complete!
+======================================================================
+Final loss: 2.1432
+Total tokens: 32,768,000
+Total time: 2084.6s
+Parameters: 50,610,432 (50.61M)

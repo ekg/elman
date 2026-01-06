@@ -1,0 +1,12 @@
+e5_50m_d1536_r270: params=50,254,848, depth=20, batch=256
+Step 100 | Loss 2.0156 | PPL 7.5 | 79720 tok/s
+Step 200 | Loss 1.7422 | PPL 5.7 | 79714 tok/s
+Step 300 | Loss 1.7734 | PPL 5.9 | 79743 tok/s
+Step 400 | Loss 1.5156 | PPL 4.6 | 79801 tok/s
+Step 500 | Loss 1.5781 | PPL 4.8 | 79880 tok/s
+Step 600 | Loss 1.6953 | PPL 5.4 | 79949 tok/s
+Step 700 | Loss 1.4219 | PPL 4.1 | 79983 tok/s
+Step 800 | Loss 1.9297 | PPL 6.9 | 80005 tok/s
+Step 900 | Loss 1.7656 | PPL 5.8 | 80028 tok/s
+Step 1000 | Loss 1.3906 | PPL 4.0 | 80043 tok/s
+DONE: e5_50m_d1536_r270 | Final loss: 1.3906

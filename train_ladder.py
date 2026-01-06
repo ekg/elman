@@ -31,12 +31,14 @@ from schedulefree import AdamWScheduleFree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from elman.models import LadderLM, create_ladder_model, get_available_levels
-from elman.data import DocumentStreamDataset, BatchedStreamDataset, TokenizedStreamDataset
+from elman.data import DocumentStreamDataset, BatchedStreamDataset, TokenizedStreamDataset, FastTokenizedDataset
 from elman.data.tokenizers import get_tokenizer, ByteTokenizer, TikTokenTokenizer
 
 
 def parse_level(value):
-    """Parse level argument - can be int (0-6) or string ('log_0', etc.)"""
+    """Parse level argument - can be int (0-3), string ('log_0', etc.), or 'mamba2'"""
+    if value == 'mamba2':
+        return 'mamba2'
     if value.startswith('log_'):
         return value  # Return string for log-space levels
     return int(value)
@@ -54,6 +56,8 @@ def get_args():
                         help="Hidden state expansion factor")
     parser.add_argument("--n_groups", type=int, default=32,
                         help="Number of groups for compete softmax (levels 2+)")
+    parser.add_argument("--n_slots", type=int, default=8,
+                        help="Number of slots for E2/E3 (default: 8)")
     parser.add_argument("--r_h_mode", type=str, default="spectral_norm",
                         choices=["free", "spectral_norm", "scaled_orthogonal"],
                         help="R_h constraint mode for log-space levels (default: spectral_norm)")
@@ -273,6 +277,7 @@ def train(args):
         vocab_size=vocab_size,
         expansion=args.expansion,
         n_groups=args.n_groups,
+        n_slots=args.n_slots,
         r_h_mode=args.r_h_mode,
         r_h_init_gain=args.r_h_init_gain,
     )
@@ -307,8 +312,9 @@ def train(args):
             print(f"Using streaming {args.tokenizer} tokenization")
 
     if use_subword:
-        # Use TokenizedStreamDataset for subword tokenizers (tiktoken, etc.)
-        dataset = TokenizedStreamDataset(
+        # Use FastTokenizedDataset for subword tokenizers (tiktoken, etc.)
+        # Pre-tokenizes and caches for maximum throughput
+        dataset = FastTokenizedDataset(
             data_path=args.data,
             tokenizer=tokenizer,
             batch_size=args.batch_size,
@@ -425,19 +431,23 @@ def train(args):
         if step_logger:
             step_logger.start_step()
         # Get batch - different methods based on dataset type
+        actual_lengths = None
         if use_subword or args.tbptt:
             # TokenizedStreamDataset and BatchedStreamDataset: use get_batch()
-            batch, is_doc_end = dataset.get_batch(device=device)
+            batch, is_doc_end, actual_lengths = dataset.get_batch(device=device)
         else:
             # DocumentStreamDataset: single stream, no hidden state persistence
             batch_chunks = []
             batch_doc_ends = []
+            batch_lengths = []
             for _ in range(args.batch_size):
-                chunk, is_doc_end_single, _ = dataset[0]
+                chunk, is_doc_end_single, actual_len = dataset[0]
                 batch_chunks.append(chunk)
                 batch_doc_ends.append(is_doc_end_single)
+                batch_lengths.append(actual_len)
             batch = torch.stack(batch_chunks).to(device)
             is_doc_end = torch.tensor(batch_doc_ends, dtype=torch.bool, device=device)
+            actual_lengths = torch.tensor(batch_lengths, dtype=torch.long, device=device)
 
         # Reset hidden state at document boundaries (TBPTT or streaming tokenization)
         # Handle both tensor and tuple (log_h, sign_h) hidden states
@@ -446,8 +456,12 @@ def train(args):
                 return None
             if isinstance(h, tuple):
                 # Log-space layers return (log_h, sign_h) tuple
-                return tuple(elem * (~reset_mask).to(elem.dtype) for elem in h)
-            return h * (~reset_mask).to(h.dtype)
+                return tuple(reset_hidden(elem, reset_mask) for elem in h)
+            # Expand mask to match hidden state dimensions (handles E2/E3 multi-slot)
+            mask = ~reset_mask
+            while mask.ndim < h.ndim:
+                mask = mask.unsqueeze(-1)
+            return h * mask.to(h.dtype)
 
         if (args.tbptt or use_subword) and hidden_state is not None:
             reset_mask = is_doc_end.view(-1, 1)
@@ -468,20 +482,29 @@ def train(args):
         t_forward_start = time.time()
         with torch.amp.autocast('cuda', dtype=dtype, enabled=args.bf16):
             if args.tbptt or use_subword:
-                logits, (next_hidden, _) = model(x, return_prev_hiddens=True, prev_hiddens=hidden_state)
+                logits, (next_hidden, _) = model(x, return_prev_hiddens=True, prev_hiddens=hidden_state, actual_length=actual_lengths)
             else:
-                logits, _ = model(x, return_prev_hiddens=True)
+                logits, _ = model(x, return_prev_hiddens=True, actual_length=actual_lengths)
                 next_hidden = None
-            loss = F.cross_entropy(logits.view(-1, vocab_size), y.reshape(-1))
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        forward_time = (time.time() - t_forward_start) * 1000  # ms
+
+            # Mask out padded positions if actual_lengths is provided
+            if actual_lengths is not None:
+                positions = torch.arange(y.size(1), device=device).unsqueeze(0)
+                valid_mask = positions < (actual_lengths.unsqueeze(1) - 1)
+                y_masked = y.clone()
+                y_masked[~valid_mask] = -100
+                loss = F.cross_entropy(logits.view(-1, vocab_size), y_masked.reshape(-1), ignore_index=-100)
+            else:
+                loss = F.cross_entropy(logits.view(-1, vocab_size), y.reshape(-1))
+        # NOTE: Removed cuda.synchronize() - it kills pipelining and halves throughput
+        forward_time = (time.time() - t_forward_start) * 1000  # ms (approximate)
 
         # Backward pass
         t_backward_start = time.time()
         loss_scaled = loss / args.grad_accum
         loss_scaled.backward()
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        backward_time = (time.time() - t_backward_start) * 1000  # ms
+        # NOTE: Removed cuda.synchronize() - it kills pipelining and halves throughput
+        backward_time = (time.time() - t_backward_start) * 1000  # ms (approximate)
 
         # Update hidden state for TBPTT/streaming (detach from graph)
         # Handle both tensor and tuple (log_h, sign_h) hidden states
@@ -498,14 +521,17 @@ def train(args):
         # Update
         grad_norms = {}
         if (step + 1) % args.grad_accum == 0:
-            # Compute detailed gradient norms before clipping
-            model_for_grads = model.module if args.ddp else model
-            grad_norms = compute_grad_norms(model_for_grads)
-            grad_norm = grad_norms.get('total', 0.0)
+            # Only compute detailed grad norms on logging steps (expensive!)
+            if step % args.log_interval == args.log_interval - 1:
+                model_for_grads = model.module if args.ddp else model
+                grad_norms = compute_grad_norms(model_for_grads)
+                grad_norm = grad_norms.get('total', 0.0)
+            else:
+                grad_norm = 0.0  # Skip expensive computation
 
-            # Only clip if grad_clip > 0
+            # Only clip if grad_clip > 0 (also returns grad norm efficiently)
             if args.grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip).item()
             optimizer.step()
             optimizer.zero_grad()
         else:

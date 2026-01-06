@@ -1,0 +1,45 @@
+==============================================
+E4 vs E1 vs Mamba2 Benchmark
+==============================================
+Output: output/e4_benchmark_20260105_070446
+Steps: 1000, Params: 50m, Batch: 32, Chunk: 512
+
+Launching e1_baseline on GPU 0...
+Launching e4_exp1.0 on GPU 1...
+Launching e4_exp1.5 on GPU 2...
+Launching e4_exp2.0 on GPU 3...
+Launching e4_exp3.0 on GPU 4...
+Launching e4_exp4.0 on GPU 5...
+Launching mamba2 on GPU 6...
+Launching e0_stock on GPU 7...
+
+All 8 experiments launched!
+PIDs: 107234 107299 107365 107432 107499 107566 107633 107700
+
+Monitoring progress...
+
+✗ e1_baseline FAILED (exit code: 1)
+✗ e4_exp1.0 FAILED (exit code: 1)
+✗ e4_exp1.5 FAILED (exit code: 1)
+✗ e4_exp2.0 FAILED (exit code: 1)
+✗ e4_exp3.0 FAILED (exit code: 1)
+✗ e4_exp4.0 FAILED (exit code: 1)
+✗ mamba2 FAILED (exit code: 1)
+✗ e0_stock FAILED (exit code: 1)
+
+==============================================
+Results Summary
+==============================================
+Model               Loss      PPL      Tok/s       Params
+-----               ----      ---      -----       ------
+e1_baseline          N/A      N/A        N/A             
+e4_exp1.0            N/A      N/A        N/A             
+e4_exp1.5            N/A      N/A        N/A             
+e4_exp2.0            N/A      N/A        N/A             
+e4_exp3.0            N/A      N/A        N/A             
+e4_exp4.0            N/A      N/A        N/A             
+mamba2               N/A      N/A        N/A             
+e0_stock             N/A      N/A        N/A             
+
+Logs saved to: output/e4_benchmark_20260105_070446/
+Failed: 8/8

@@ -30,8 +30,19 @@ from schedulefree import AdamWScheduleFree
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from elman.models import create_ladder_model
-from elman.models.gru_baseline import create_gru_model, GRULM
-from elman.models.lstm_baseline import create_lstm_model, LSTMLM
+
+# Archived models - may not be available
+try:
+    from elman.models.archive.gru_baseline import create_gru_model, GRULM
+except ImportError:
+    create_gru_model = None
+    GRULM = None
+
+try:
+    from elman.models.archive.lstm_baseline import create_lstm_model, LSTMLM
+except ImportError:
+    create_lstm_model = None
+    LSTMLM = None
 from elman.data import DocumentStreamDataset
 from elman.data.dataset import FastTokenizedDataset, TokenizedStreamDataset
 
@@ -84,6 +95,12 @@ def get_args():
                         help="Tokenizer (byte=256 vocab, p50k_base=50k, cl100k_base=100k)")
     parser.add_argument("--streaming", action="store_true",
                         help="Use streaming tokenization (CPU parallel) instead of pre-tokenized cache")
+    parser.add_argument("--no_spectral_norm", action="store_true",
+                        help="Disable spectral normalization on W_h (test stability)")
+    parser.add_argument("--use_conv", action="store_true",
+                        help="Enable conv1d for local context (like Mamba2)")
+    parser.add_argument("--d_conv", type=int, default=4,
+                        help="Conv1d kernel size (default: 4)")
 
     return parser.parse_args()
 
@@ -373,10 +390,12 @@ def main():
         elif model_name.startswith("log_") or model_name.isdigit():
             # Elman ladder level (log_X or numeric 0-9)
             level = model_name if model_name.startswith("log_") else int(model_name)
+            r_h_mode = 'free' if args.no_spectral_norm else 'spectral_norm'
             model = create_ladder_model(
                 target_params=args.params,
                 level=level,
                 vocab_size=args.vocab_size,
+                r_h_mode=r_h_mode,
             )
         else:
             print(f"Unknown model: {model_name}")

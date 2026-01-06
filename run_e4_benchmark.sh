@@ -22,20 +22,19 @@ echo "Steps: $STEPS, Params: $PARAMS, Batch: $BATCH, Chunk: $CHUNK"
 echo ""
 
 # Define experiments: GPU MODEL_ARGS OUTPUT_NAME
-# E4 with larger hidden states trades depth for width
 declare -a EXPERIMENTS=(
     # Baselines
-    "0|--level 0|e0_stock"                           # E0: 19 layers, d_inner=768
-    "1|--level 1|e1_baseline"                        # E1: 21 layers, d_inner=768
+    "0|--level 1|e1_baseline"                        # E1: 21 layers
+    "1|--level mamba2|mamba2"                        # Mamba2: 18 layers
 
-    # E4 with increasing hidden state sizes
-    "2|--level 4 --expansion 1.5|e4_1.5x"            # d_inner=768, deeper
-    "3|--level 4 --expansion 2.0|e4_2x"              # d_inner=1024, 17 layers
-    "4|--level 4 --expansion 3.0|e4_3x"              # d_inner=1536, 10 layers
-    "5|--level 4 --expansion 4.0|e4_4x"              # d_inner=2048, 7 layers
+    # E4 with projections (for reference)
+    "2|--level 4 --expansion 2.0|e4_2x"              # E4: 17 layers
 
-    # Mamba2
-    "6|--level mamba2|mamba2"                        # Reference: dim=672, 18 layers
+    # E5: Pure low-rank (no projections!)
+    "3|--level 5|e5_r64"                             # E5: ~252 layers, rank=64
+
+    # E6: Diagonal + mix (ultra cheap)
+    "4|--level 6|e6_r64"                             # E6: ~755 layers, rank=64
 )
 
 # Launch all experiments in parallel

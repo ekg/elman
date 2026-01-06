@@ -1,0 +1,22 @@
+{
+  "level": "4",
+  "params": "50m",
+  "num_params": 49954816,
+  "vocab_size": 256,
+  "tokenizer": "byte",
+  "tokenizer_name": "p50k_base",
+  "chunk_size": 512,
+  "batch_size": 32,
+  "grad_accum": 1,
+  "lr": 0.0003,
+  "warmup_steps": 1000,
+  "max_steps": 1000,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+  "world_size": 1,
+  "dtype": "torch.bfloat16",
+  "tbptt": false,
+  "tokens_per_step": 16384,
+  "r_h_mode": "spectral_norm",
+  "r_h_init_gain": 0.1
+}

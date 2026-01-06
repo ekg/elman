@@ -1,0 +1,28 @@
+======================================================================
+Elman Ablation Ladder Training
+======================================================================
+  Level 0: Stock Elman (e0) ✓
+  Level 1: Mamba-Gated Elman (e1) ✓
+  Level 2: Slot Elman (e2) ✓
+  Level 3: Low-Rank Slot Elman (e3) ✓
+  Level 4: Low-Rank Elman (e4) ✓
+  Level 5: Pure Low-Rank Elman (e5) ✓ <-- TRAINING
+  Level 6: Diagonal Elman (e6) ✓
+======================================================================
+Tokenizer: <elman.data.tokenizers.ByteTokenizer object at 0x771fee66ffe0> (vocab_size=256)
+Device: cuda, dtype: torch.bfloat16, world_size: 1
+Traceback (most recent call last):
+  File "/home/erikg/elman/train_ladder.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train_ladder.py", line 274, in train
+    model = create_ladder_model(
+            ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 291, in create_ladder_model
+    model_1layer = LadderLM(
+                   ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 85, in __init__
+    LayerClass = get_ladder_level(level)
+                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 42, in get_ladder_level
+    raise ValueError(f"Invalid level {level}. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2")
+ValueError: Invalid level 5. Available: 0 (e0), 1 (e1), 2 (e2), 3 (e3), 4 (e4), mamba2
