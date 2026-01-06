@@ -38,12 +38,28 @@ This gives same depth as e0 with n_slots more memory capacity.
 
 5. **Header declarations go in** `elman/cuda/lib/hasty/elman_ladder.h`
 
+## Data Handling Rules
+
+1. **NEVER pretokenize data** - No .npy token files, no preprocessing pipelines
+2. **Use memory-mapped files** - mmap the raw text files directly
+3. **Byte-level training preferred** - vocab_size=256, raw bytes as tokens
+4. **Dynamic loading** - Sample random positions from mmap at training time:
+   ```python
+   with open('data/pile.txt', 'rb') as f:
+       mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+   pos = np.random.randint(0, len(mm) - seq_len - 1, size=batch_size)
+   for i, p in enumerate(pos):
+       buf[i] = np.frombuffer(mm[p:p+seq_len+1], dtype=np.uint8)
+   ```
+5. **Data files**: `data/pile.txt` (has 0x1e document delimiters)
+
 ## Benchmarking Rules
 
 1. Always use the same batch size across models for fair comparison
-2. Use byte-level data from `/mnt/nvme2n1/erikg/pile.txt` for benchmarks
+2. Use byte-level data (vocab_size=256) for benchmarks
 3. Report both throughput (tok/s) and loss
 4. Test at multiple batch sizes to understand scaling behavior
+5. Use Last-100-step averaged loss for fair comparison (not instantaneous)
 
 ## Current Model Hierarchy
 
