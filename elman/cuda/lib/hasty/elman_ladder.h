@@ -867,6 +867,89 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E8: Scaled Low-Rank Elman (learn to sparsify via importance scaling)
+// h_t = tanh(U_h @ diag(s_h) @ V_h @ h_{t-1} + U_x @ diag(s_x) @ V_x @ x_t + b)
+// output = h * silu(z)
+// Key: Scale vectors s_h, s_x learn which rank components matter (sparsification)
+// =============================================================================
+
+template<typename T>
+struct ScaledLowRankElmanForward {
+    ScaledLowRankElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,       // [dim, rank]
+        const T* V_h,       // [rank, dim]
+        const T* s_h,       // [rank] scale for hidden
+        const T* U_x,       // [dim, rank]
+        const T* V_x,       // [rank, dim]
+        const T* s_x,       // [rank] scale for input
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*BR + 4*BR + 2*BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct ScaledLowRankElmanBackward {
+    ScaledLowRankElmanBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* U_h,
+        const T* V_h,
+        const T* s_h,
+        const T* U_x,
+        const T* V_x,
+        const T* s_x,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dU_h,
+        T* dV_h,
+        T* ds_h,
+        T* dU_x,
+        T* dV_x,
+        T* ds_x,
+        T* db,
+        T* workspace);      // [T*BD + 2*T*BR + 4*BD + 6*BR + dim + 2*rank]
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
