@@ -51,6 +51,7 @@ optimizer.train()
 
 start = time.time()
 tokens = 0
+all_losses = []
 
 for step in range(1, steps+1):
     # Sample random positions
@@ -68,11 +69,14 @@ for step in range(1, steps+1):
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     tokens += batch_size * seq_len
+    all_losses.append(loss.item())
 
     if step % 100 == 0:
         elapsed = time.time() - start
-        ppl = math.exp(min(loss.item(), 20))
-        print(f'Step {step} | Loss {loss.item():.4f} | PPL {ppl:.1f} | {int(tokens/elapsed)} tok/s')
+        avg_100 = np.mean(all_losses[-100:])
+        ppl = math.exp(min(avg_100, 20))
+        print(f'Step {step} | Loss {loss.item():.4f} | Avg100 {avg_100:.4f} | PPL {ppl:.1f} | {int(tokens/elapsed)} tok/s')
 
-print(f'DONE: e5_50m_d{dim}_r{rank} | Final loss: {loss.item():.4f}')
+avg_last_100 = np.mean(all_losses[-100:])
+print(f'DONE: e5_50m_d{dim}_r{rank} | Last100 avg: {avg_last_100:.4f} | Final: {loss.item():.4f}')
 mm.close()
