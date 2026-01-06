@@ -47,6 +47,30 @@ Results are saved to `benchmark_results/e5_e1_mamba2_compare/`.
 | e1_50m | 1.4742 | 49.7M | ~175K |
 | e5_d768_r539 | 1.4815 | 49.9M | ~59K |
 
+## E5 Dimension Scaling Results (2026-01-05)
+
+Testing larger dimensions with fixed ~50M params reveals optimal dim is 1536-2048:
+
+| Model | Last100 | dim | rank | rank/dim | tok/s |
+|-------|---------|-----|------|----------|-------|
+| e5_d1536_r270 | **1.4455** | 1536 | 270 | 17.6% | ~81K |
+| e5_d2048_r200 | 1.4554 | 2048 | 200 | 9.8% | ~85K |
+| e5_d3072_r133 | 1.6225 | 3072 | 133 | 4.3% | ~39K |
+| e5_d4096_r99 | 1.9002 | 4096 | 99 | 2.4% | ~38K |
+| e5_d6144_r65 | 2.4897 | 6144 | 65 | 1.1% | ~23K |
+
+**Key insight:** The rank/dim ratio matters more than raw dimension.
+Going past d2048 with low rank severely hurts performance.
+
+## E1 Depth vs Width (at ~27M params)
+
+| Model | Last100 | dim | depth | tok/s |
+|-------|---------|-----|-------|-------|
+| e1_d1024 (wide) | 1.4968 | 1024 | 5 | 441K |
+| e1_d512 (mid) | 1.5446 | 512 | 21 | 255K |
+
+Wider+shallower is both faster and achieves lower loss.
+
 ## E5 Parameter Calculation
 
 E5 layer params: `6 * dim * rank + dim` (6 low-rank matrices + bias)
