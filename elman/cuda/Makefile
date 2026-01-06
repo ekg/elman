@@ -21,7 +21,7 @@ endif
 CUTLASS_HOME ?= /home/erikg/cutlass
 
 LOCAL_CFLAGS := -I/usr/include/eigen3 -I$(CUDA_HOME)/include -Ilib -O3
-LOCAL_LDFLAGS := -L$(CUDA_HOME)/lib64 -L. -lcudart -lcublas
+LOCAL_LDFLAGS := -L$(CUDA_HOME)/lib64 -L. -lcudart -lcublas -lcufft
 GPU_ARCH_FLAGS := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_89,code=sm_89
 
 # CUTLASS include paths for B2B GEMM
@@ -37,7 +37,9 @@ CUDA_OBJS := \
 	lib/pure_lowrank_elman_gpu.o \
 	lib/pure_lowrank_elman_fused_gpu.o \
 	lib/diagonal_elman_gpu.o \
-	lib/b2b_lowrank_elman_gpu.o
+	lib/b2b_lowrank_elman_gpu.o \
+	lib/circulant_elman_gpu.o \
+	lib/monarch_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
@@ -50,6 +52,10 @@ lib/%.o: lib/%.cu.cc
 # Special rule for B2B GEMM kernel - needs CUTLASS headers
 lib/b2b_lowrank_elman_gpu.o: lib/b2b_lowrank_elman_gpu.cu.cc
 	$(NVCC) $(GPU_ARCH_FLAGS) -c $< -o $@ $(NVCC_FLAGS) $(LOCAL_CFLAGS) $(CUTLASS_CFLAGS)
+
+# Special rule for Circulant kernel - needs cuFFT
+lib/circulant_elman_gpu.o: lib/circulant_elman_gpu.cu.cc
+	$(NVCC) $(GPU_ARCH_FLAGS) -c $< -o $@ $(NVCC_FLAGS) $(LOCAL_CFLAGS)
 
 # hasty target now depends on object files and just creates archive
 hasty: $(CUDA_OBJS)

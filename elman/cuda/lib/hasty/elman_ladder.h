@@ -13,6 +13,7 @@
 
 #include <cuda.h>
 #include <cublas_v2.h>
+#include <cufft.h>
 
 namespace hasty {
 namespace v0 {
@@ -633,7 +634,91 @@ private:
 };
 
 // =============================================================================
-// E6: Diagonal Elman (per-channel scalar recurrence + low-rank mixing)
+// E6: Circulant FFT Elman (O(n log n) hidden state updates via FFT)
+// h_t = tanh(circ(c_h) @ h_{t-1} + circ(c_x) @ x_t + b)
+// output_t = h_t * silu(W_gate @ x_t + b_gate)
+//
+// Circulant matrix-vector multiply via FFT:
+// circ(c) @ v = IFFT(FFT(c) * FFT(v))
+//
+// This gives an effective n×n matrix using only n parameters per circulant.
+// Complexity: O(n log n) vs O(n²) for dense matmul
+// =============================================================================
+
+template<typename T>
+struct CirculantElmanForward {
+    CirculantElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~CirculantElmanForward();
+
+    void Run(
+        int steps,
+        const T* c_h,         // [dim] circulant vector for hidden
+        const T* c_x,         // [dim] circulant vector for input
+        const T* W_gate,      // [dim, dim] gate projection
+        const T* b,           // [dim]
+        const T* b_gate,      // [dim]
+        const T* x,           // [T, B, dim]
+        T* h,                 // [T+1, B, dim] hidden states
+        T* output,            // [T, B, dim]
+        T* v,                 // [T, B, dim] pre-activation cache
+        T* gate_cache,        // [T, B, dim] gate cache for backward
+        T* workspace);        // Complex workspace for FFT operations
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    cufftHandle fft_plan_c_;      // cufftHandle for single FFT
+    cufftHandle fft_plan_batch_;  // cufftHandle for batched FFT
+};
+
+template<typename T>
+struct CirculantElmanBackward {
+    CirculantElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~CirculantElmanBackward();
+
+    void Run(
+        int steps,
+        const T* c_h,
+        const T* c_x,
+        const T* W_gate,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* gate_cache,
+        const T* d_output,
+        T* dx,
+        T* d_c_h,           // [dim] gradient for c_h
+        T* d_c_x,           // [dim] gradient for c_x
+        T* dW_gate,         // [dim, dim] gradient for W_gate
+        T* db,              // [dim]
+        T* d_b_gate,        // [dim]
+        T* workspace);      // Complex workspace for FFT operations
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    cufftHandle fft_plan_c_;
+    cufftHandle fft_plan_batch_;
+};
+
+// =============================================================================
+// E6 Diagonal: Diagonal Elman (per-channel scalar recurrence + low-rank mixing)
 // h_t = gate * h_{t-1} + (1 - gate) * x_t   (per-channel EMA)
 // y_t = U @ V @ h_t * silu(x_t)             (low-rank cross-channel mix)
 // Key: Diagonal recurrence is O(dim). Allows MASSIVE depth (~755 layers at 50M).
@@ -695,6 +780,87 @@ private:
     int batch_size_;
     int dim_;
     int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E7: Monarch Elman (O(n*sqrt(n)) hidden state updates via Monarch matrices)
+// h_t = tanh(monarch(B1_h, B2_h) @ h_{t-1} + monarch(B1_x, B2_x) @ x_t + b)
+// output = h * silu(W_gate @ x + b_gate)
+// Key: Block-diagonal Monarch matrices give O(n*sqrt(n)) instead of O(n^2)
+// =============================================================================
+
+template<typename T>
+struct MonarchElmanForward {
+    MonarchElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int m,  // sqrt(dim), block size
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B1_h,      // [m, m, m] monarch blocks for hidden
+        const T* B2_h,      // [m, m, m]
+        const T* B1_x,      // [m, m, m] monarch blocks for input
+        const T* B2_x,      // [m, m, m]
+        const T* W_gate,    // [dim, dim] gate projection
+        const T* b,         // [dim]
+        const T* b_gate,    // [dim]
+        const T* x,         // [T, B, dim]
+        T* h,               // [T+1, B, dim]
+        T* output,          // [T, B, dim]
+        T* v,               // [T, B, dim] pre-activation cache
+        T* gate_cache,      // [T, B, dim] gate cache
+        T* workspace);      // [2*T*BD + 3*BD] for Mx, gate_proj, tmp1, tmp2, Mh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int m_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct MonarchElmanBackward {
+    MonarchElmanBackward(
+        int batch_size,
+        int dim,
+        int m,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B1_h,
+        const T* B2_h,
+        const T* B1_x,
+        const T* B2_x,
+        const T* W_gate,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* gate_cache,
+        const T* d_output,
+        T* dx,
+        T* dB1_h,           // [m, m, m]
+        T* dB2_h,           // [m, m, m]
+        T* dB1_x,           // [m, m, m]
+        T* dB2_x,           // [m, m, m]
+        T* dW_gate,         // [dim, dim]
+        T* db,              // [dim]
+        T* d_b_gate,        // [dim]
+        T* workspace);      // [2*T*BD + 5*BD + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    int m_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
