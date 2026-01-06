@@ -34,3 +34,5 @@ Thumbs.db
 
 # PDF output
 *.pdf
+*.npy
+*.tokens
