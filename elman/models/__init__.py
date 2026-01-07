@@ -76,6 +76,13 @@ except ImportError:
     create_mamba2_model = None
     MAMBA2_AVAILABLE = False
 
+# minGRU and minLSTM baselines (from "Were RNNs All We Needed?")
+from .min_rnn_baseline import (
+    minGRU, minLSTM,
+    MinGRULM, MinLSTMLM,
+    create_mingru_model, create_minlstm_model,
+)
+
 
 def get_available_levels():
     """Return dict of available ladder levels."""
