@@ -1,0 +1,6 @@
+e1_d26_maxbatch: dim=1760 depth=26 batch=80 params=403,279,360
+Step 100 | 128s | Loss 2.1094 | Avg100 2.6867 | 32019 tok/s | Mem 37.4GB
+Step 200 | 260s | Loss 1.7891 | Avg100 1.9070 | 31546 tok/s | Mem 37.4GB
+Step 300 | 391s | Loss 1.5781 | Avg100 1.6996 | 31409 tok/s | Mem 37.4GB
+Step 400 | 522s | Loss 1.5938 | Avg100 1.6159 | 31358 tok/s | Mem 37.4GB
+DONE: e1_d26_maxbatch | Steps=459 | Time=600s | Last100=1.5800 | 31334 tok/s | PeakMem=37.4GB

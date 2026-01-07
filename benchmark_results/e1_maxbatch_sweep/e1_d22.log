@@ -1,0 +1,6 @@
+e1_d22_maxbatch: dim=1920 depth=22 batch=80 params=406,126,080
+Step 100 | 118s | Loss 2.1875 | Avg100 2.7539 | 34750 tok/s | Mem 34.7GB
+Step 200 | 239s | Loss 1.7656 | Avg100 1.9205 | 34231 tok/s | Mem 34.7GB
+Step 300 | 361s | Loss 1.6328 | Avg100 1.7014 | 34065 tok/s | Mem 34.7GB
+Step 400 | 482s | Loss 1.5938 | Avg100 1.6152 | 34004 tok/s | Mem 34.7GB
+DONE: e1_d22_maxbatch | Steps=498 | Time=600s | Last100=1.5725 | 33971 tok/s | PeakMem=34.7GB
