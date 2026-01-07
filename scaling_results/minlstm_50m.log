@@ -1,0 +1,12 @@
+minLSTM: 71,388,288 params
+Memory: 11.2 GB
+Step 50 (12s): loss=3.4606, 99.8K tok/s
+Step 100 (25s): loss=2.7012, 99.7K tok/s
+Step 150 (37s): loss=2.4572, 99.5K tok/s
+Step 200 (49s): loss=2.2869, 99.3K tok/s
+Step 250 (62s): loss=2.1331, 99.2K tok/s
+Step 300 (74s): loss=2.0242, 99.0K tok/s
+Step 350 (87s): loss=1.9344, 98.9K tok/s
+Step 400 (100s): loss=1.8625, 98.7K tok/s
+Step 450 (112s): loss=1.8164, 98.6K tok/s
+FINAL: 482 steps, loss=1.8052, 98.5K tok/s

@@ -1,0 +1,14 @@
+minGRU: 47,770,752 params
+Memory: 10.5 GB
+Step 50 (10s): loss=3.2603, 118.5K tok/s
+Step 100 (21s): loss=2.6278, 118.3K tok/s
+Step 150 (31s): loss=2.3981, 118.1K tok/s
+Step 200 (42s): loss=2.2538, 118.0K tok/s
+Step 250 (52s): loss=2.1233, 117.9K tok/s
+Step 300 (63s): loss=2.0259, 117.8K tok/s
+Step 350 (73s): loss=1.9402, 117.7K tok/s
+Step 400 (84s): loss=1.8705, 117.6K tok/s
+Step 450 (94s): loss=1.8239, 117.5K tok/s
+Step 500 (105s): loss=1.8028, 117.4K tok/s
+Step 550 (115s): loss=1.7458, 117.3K tok/s
+FINAL: 573 steps, loss=1.7377, 117.2K tok/s

@@ -1,0 +1,10 @@
+e9_c512_m4608_d3: core=512 mem=4608 total=5120 params=49,044,480
+Step 100 | 66s | Loss 1.9688 | Avg100 2.4123 | 199137 tok/s
+Step 200 | 134s | Loss 1.8047 | Avg100 1.8514 | 196218 tok/s
+Step 300 | 202s | Loss 1.6484 | Avg100 1.7068 | 195071 tok/s
+Step 400 | 270s | Loss 1.5938 | Avg100 1.6411 | 194532 tok/s
+Step 500 | 337s | Loss 1.6016 | Avg100 1.5956 | 194333 tok/s
+Step 600 | 405s | Loss 1.5312 | Avg100 1.5661 | 194357 tok/s
+Step 700 | 472s | Loss 1.5391 | Avg100 1.5468 | 194406 tok/s
+Step 800 | 539s | Loss 1.5234 | Avg100 1.5307 | 194408 tok/s
+DONE: e9_c512_m4608_d3 | Steps=891 | Time=601s | Last100=1.5141 | 194443 tok/s

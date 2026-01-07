@@ -1,0 +1,88 @@
+
+============================================================
+SCALE: 50M
+============================================================
+[GPU 0] e1 batch=48 started
+[GPU 1] mamba2 batch=48 started
+[GPU 2] mingru batch=48 started
+[GPU 3] minlstm batch=48 started
+[DONE] e1
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+Error parsing mamba2: invalid literal for int() with base 10: 'dim=672'
+
+============================================================
+SCALE: 100M
+============================================================
+[GPU 0] e1 batch=48 started
+[GPU 1] mamba2 batch=48 started
+[GPU 2] mingru batch=48 started
+[GPU 3] minlstm batch=48 started
+[DONE] e1
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+Error parsing mamba2: invalid literal for int() with base 10: 'dim=736'
+
+============================================================
+SCALE: 200M
+============================================================
+[GPU 0] e1 batch=48 started
+[GPU 1] mamba2 batch=32 started
+[GPU 2] mingru batch=32 started
+[GPU 3] minlstm batch=24 started
+[DONE] e1
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+Error parsing mamba2: invalid literal for int() with base 10: 'dim=1120'
+
+============================================================
+SCALE: 400M
+============================================================
+[GPU 0] e1 batch=80 started
+[GPU 1] mamba2 batch=64 started
+[GPU 2] mingru batch=24 started
+[GPU 3] minlstm batch=16 started
+[DONE] e1
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+Error parsing mamba2: invalid literal for int() with base 10: 'dim=1728'
+
+======================================================================
+FINAL SUMMARY
+======================================================================
+
+=== 50M ===
+Model          Params      Tok/s     Loss
+------------------------------------------
+e1               0.0M     172.9K   1.6828
+mingru           0.0M     117.2K   1.7377
+minlstm          0.0M      98.5K   1.8052
+mamba2     ERROR: invalid literal for 
+
+=== 100M ===
+Model          Params      Tok/s     Loss
+------------------------------------------
+mingru           0.0M      75.4K   2.0219
+minlstm          0.0M      61.0K   2.2316
+e1               0.0M      54.0K   1.9544
+mamba2     ERROR: invalid literal for 
+
+=== 200M ===
+Model          Params      Tok/s     Loss
+------------------------------------------
+e1               0.0M      45.0K   2.2106
+mingru           0.0M      38.3K   2.4028
+minlstm          0.0M      32.0K   2.4819
+mamba2     ERROR: invalid literal for 
+
+=== 400M ===
+Model          Params      Tok/s     Loss
+------------------------------------------
+e1               0.0M      30.7K   2.8178
+minlstm          0.0M      21.3K   2.6744
+mingru           0.0M      19.5K   2.8566
+mamba2     ERROR: invalid literal for 

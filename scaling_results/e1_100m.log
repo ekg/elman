@@ -1,0 +1,8 @@
+E1: 100,053,216 params
+Memory: 11.2 GB
+Step 50 (23s): loss=2.7959, 53.2K tok/s
+Step 100 (48s): loss=2.4869, 50.9K tok/s
+Step 150 (70s): loss=2.2869, 52.4K tok/s
+Step 200 (92s): loss=2.1323, 53.5K tok/s
+Step 250 (114s): loss=1.9844, 53.8K tok/s
+FINAL: 264 steps, loss=1.9544, 54.0K tok/s

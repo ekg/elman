@@ -1,0 +1,5 @@
+Created Mamba2 model: dim=1120, depth=26, expand=2, params=201,148,970
+mamba2_200m: batch=160 params=201,148,970
+Step 100 | 244s | Loss 1.6328 | Avg100 2.1012 | 33565 tok/s | Mem 44.1GB
+Step 200 | 482s | Loss 1.5547 | Avg100 1.5777 | 33988 tok/s | Mem 44.1GB
+DONE: mamba2_200m | Steps=250 | Time=601s | Last100=1.5320 | 34075 tok/s | PeakMem=44.1GB

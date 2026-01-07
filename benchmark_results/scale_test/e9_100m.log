@@ -1,0 +1,8 @@
+e9_100m: params=99,938,880
+Step 100 | 86s | Loss 1.9688 | Avg100 2.4759 | 114218 tok/s
+Step 200 | 175s | Loss 1.7578 | Avg100 1.8276 | 112230 tok/s
+Step 300 | 265s | Loss 1.6016 | Avg100 1.6645 | 111223 tok/s
+Step 400 | 355s | Loss 1.5391 | Avg100 1.5862 | 110725 tok/s
+Step 500 | 445s | Loss 1.5078 | Avg100 1.5468 | 110429 tok/s
+Step 600 | 535s | Loss 1.5234 | Avg100 1.5077 | 110249 tok/s
+DONE: e9_100m | Steps=673 | Time=601s | Last100=1.4912 | 110148 tok/s

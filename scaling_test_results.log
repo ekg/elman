@@ -1,0 +1,212 @@
+======================================================================
+E1 SCALING TEST (BF16 Optimized)
+======================================================================
+GPU: NVIDIA RTX 6000 Ada Generation
+VRAM: 50.9 GB
+
+============================================================
+Scale: 50M (d1280×6, batch=48)
+============================================================
+Parameters: 49,505,280 (49.5M)
+Warming up...
+Memory: 4.1 GB
+Training for 120s...
+  Step 50 (6s): loss=2.8834, 194.5K tok/s
+  Step 100 (13s): loss=2.5481, 194.3K tok/s
+  Step 150 (19s): loss=2.4059, 194.1K tok/s
+  Step 200 (25s): loss=2.2769, 193.7K tok/s
+  Step 250 (32s): loss=2.1672, 193.6K tok/s
+  Step 300 (38s): loss=2.0895, 193.3K tok/s
+  Step 350 (45s): loss=2.0164, 192.7K tok/s
+  Step 400 (51s): loss=1.9670, 192.5K tok/s
+  Step 450 (58s): loss=1.9014, 192.1K tok/s
+  Step 500 (64s): loss=1.8731, 191.8K tok/s
+  Step 550 (71s): loss=1.8294, 191.6K tok/s
+  Step 600 (77s): loss=1.7919, 191.3K tok/s
+  Step 650 (84s): loss=1.7759, 191.0K tok/s
+  Step 700 (90s): loss=1.7612, 190.8K tok/s
+  Step 750 (97s): loss=1.7377, 190.5K tok/s
+  Step 800 (103s): loss=1.7186, 190.3K tok/s
+  Step 850 (110s): loss=1.7019, 190.0K tok/s
+  Step 900 (117s): loss=1.6912, 189.8K tok/s
+
+Final: 927 steps, loss=1.6808, 189.8K tok/s
+
+============================================================
+Scale: 100M (d1280×12, batch=32)
+============================================================
+Parameters: 98,680,320 (98.7M)
+Warming up...
+Memory: 5.4 GB
+Training for 120s...
+  Step 50 (11s): loss=2.9381, 77.0K tok/s
+  Step 100 (21s): loss=2.6019, 77.5K tok/s
+  Step 150 (32s): loss=2.4156, 77.3K tok/s
+  Step 200 (42s): loss=2.2900, 77.4K tok/s
+  Step 250 (53s): loss=2.1745, 77.4K tok/s
+  Step 300 (63s): loss=2.0827, 77.4K tok/s
+  Step 350 (74s): loss=2.0475, 77.5K tok/s
+  Step 400 (85s): loss=1.9486, 77.5K tok/s
+  Step 450 (95s): loss=1.9355, 77.5K tok/s
+  Step 500 (106s): loss=1.8597, 77.5K tok/s
+  Step 550 (116s): loss=1.8300, 77.5K tok/s
+
+Final: 568 steps, loss=1.8370, 77.5K tok/s
+
+============================================================
+Scale: 200M (d1536×16, batch=24)
+============================================================
+Parameters: 189,213,696 (189.2M)
+Warming up...
+Memory: 6.9 GB
+Training for 120s...
+  Step 50 (14s): loss=3.2097, 42.6K tok/s
+  Step 100 (29s): loss=2.6656, 42.6K tok/s
+  Step 150 (43s): loss=2.5044, 42.7K tok/s
+  Step 200 (58s): loss=2.4031, 42.6K tok/s
+  Step 250 (72s): loss=2.3066, 42.5K tok/s
+  Step 300 (87s): loss=2.2066, 42.5K tok/s
+  Step 350 (101s): loss=2.2006, 42.4K tok/s
+  Step 400 (116s): loss=2.1233, 42.4K tok/s
+
+Final: 414 steps, loss=2.1067, 42.3K tok/s
+
+============================================================
+Scale: 400M (d1408×26, batch=16)
+============================================================
+Parameters: 258,193,408 (258.2M)
+Warming up...
+Memory: 7.2 GB
+Training for 120s...
+  Step 50 (20s): loss=3.1950, 20.1K tok/s
+  Step 100 (41s): loss=2.7525, 20.1K tok/s
+  Step 150 (61s): loss=2.5722, 20.1K tok/s
+  Step 200 (81s): loss=2.4356, 20.1K tok/s
+  Step 250 (102s): loss=2.3512, 20.1K tok/s
+
+Final: 295 steps, loss=2.2928, 20.1K tok/s
+
+======================================================================
+SCALING TEST RESULTS
+======================================================================
+
+Scale        Params       Config  Batch  Steps     Loss      Tok/s   Memory
+---------------------------------------------------------------------------
+50M           49.5M      d1280×6     48    927   1.6808     189.8K     4.1GB
+100M          98.7M     d1280×12     32    568   1.8370      77.5K     5.4GB
+200M         189.2M     d1536×16     24    414   2.1067      42.3K     6.9GB
+400M         258.2M     d1408×26     16    295   2.2928      20.1K     7.2GB
+
+======================================================================
+SCALING ANALYSIS
+======================================================================
+
+Base: 50M at 189.8K tok/s
+
+Relative throughput as model scales:
+  100M: 77.5K tok/s (0.41x base, 2.0x params)
+  200M: 42.3K tok/s (0.22x base, 3.8x params)
+  400M: 20.1K tok/s (0.11x base, 5.2x params)
+
+Done!
+======================================================================
+MAMBA2 SCALING TEST (for E1 comparison)
+======================================================================
+GPU: NVIDIA RTX 6000 Ada Generation
+
+============================================================
+Scale: 50M (batch=48)
+============================================================
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Parameters: 50,928,750 (50.9M)
+Warming up...
+Memory: 6.0 GB
+Training for 120s...
+  Step 50 (11s): loss=2.4658, 116.3K tok/s
+  Step 100 (21s): loss=1.8859, 115.2K tok/s
+  Step 150 (32s): loss=1.7336, 114.2K tok/s
+  Step 200 (43s): loss=1.6725, 113.4K tok/s
+  Step 250 (55s): loss=1.6320, 112.7K tok/s
+  Step 300 (66s): loss=1.5639, 112.1K tok/s
+  Step 350 (77s): loss=1.5544, 111.6K tok/s
+  Step 400 (88s): loss=1.5336, 111.3K tok/s
+  Step 450 (100s): loss=1.5386, 111.0K tok/s
+  Step 500 (111s): loss=1.5041, 110.7K tok/s
+
+Final: 540 steps, loss=1.4902, 110.5K tok/s
+
+============================================================
+Scale: 100M (batch=32)
+============================================================
+Created Mamba2 model: dim=736, depth=30, expand=2, params=101,359,638
+Parameters: 101,359,638 (101.4M)
+Warming up...
+Memory: 7.1 GB
+Training for 120s...
+  Step 50 (14s): loss=2.9597, 59.3K tok/s
+  Step 100 (28s): loss=2.1267, 59.1K tok/s
+  Step 150 (42s): loss=1.9025, 59.0K tok/s
+  Step 200 (56s): loss=1.8127, 59.0K tok/s
+  Step 250 (70s): loss=1.7417, 58.9K tok/s
+  Step 300 (83s): loss=1.6795, 58.9K tok/s
+  Step 350 (97s): loss=1.6659, 58.8K tok/s
+  Step 400 (111s): loss=1.6442, 58.8K tok/s
+
+Final: 431 steps, loss=1.6244, 58.8K tok/s
+
+============================================================
+Scale: 200M (batch=24)
+============================================================
+Created Mamba2 model: dim=1120, depth=26, expand=2, params=201,148,970
+Parameters: 201,148,970 (201.1M)
+Warming up...
+Memory: 7.7 GB
+Training for 120s...
+  Step 50 (16s): loss=3.2425, 37.3K tok/s
+  Step 100 (33s): loss=2.7347, 37.2K tok/s
+  Step 150 (50s): loss=2.3766, 37.2K tok/s
+  Step 200 (66s): loss=2.1833, 37.1K tok/s
+  Step 250 (83s): loss=2.0378, 37.1K tok/s
+  Step 300 (99s): loss=1.9539, 37.1K tok/s
+  Step 350 (116s): loss=1.8989, 37.0K tok/s
+
+Final: 362 steps, loss=1.8987, 37.0K tok/s
+
+============================================================
+Scale: 400M (batch=16)
+============================================================
+Created Mamba2 model: dim=1728, depth=22, expand=2, params=402,064,492
+Parameters: 402,064,492 (402.1M)
+Warming up...
+Memory: 8.1 GB
+Training for 120s...
+  Step 50 (18s): loss=3.7088, 23.1K tok/s
+  Step 100 (36s): loss=2.9816, 23.0K tok/s
+  Step 150 (54s): loss=2.5659, 22.9K tok/s
+  Step 200 (72s): loss=2.4359, 22.9K tok/s
+  Step 250 (90s): loss=2.3066, 22.9K tok/s
+  Step 300 (108s): loss=2.2528, 22.9K tok/s
+
+Final: 335 steps, loss=2.1422, 22.8K tok/s
+
+======================================================================
+MAMBA2 SCALING RESULTS
+======================================================================
+
+Scale        Params  Batch  Steps     Loss      Tok/s   Memory
+------------------------------------------------------------
+50M           50.9M     48    540   1.4902     110.5K     6.0GB
+100M         101.4M     32    431   1.6244      58.8K     7.1GB
+200M         201.1M     24    362   1.8987      37.0K     7.7GB
+400M         402.1M     16    335   2.1422      22.8K     8.1GB
+
+======================================================================
+E1 vs MAMBA2 COMPARISON
+======================================================================
+
+Scale        E1 Tok/s   Mamba2 Tok/s   E1 Speedup    E1 Loss    M2 Loss
+---------------------------------------------------------------------------
+50M            189.8K         110.5K        1.72x     1.6808     1.4902
+100M            77.5K          58.8K        1.32x     1.8370     1.6244
+200M            42.3K          37.0K        1.14x     2.1067     1.8987
+400M            20.1K          22.8K        0.88x     2.2928     2.1422

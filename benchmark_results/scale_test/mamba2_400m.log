@@ -1,0 +1,5 @@
+Created Mamba2 model: dim=1728, depth=22, expand=2, params=402,064,492
+mamba2_400m: params=402,064,492
+Step 100 | 214s | Loss 1.6562 | Avg100 2.4109 | 22964 tok/s
+Step 200 | 416s | Loss 1.5156 | Avg100 1.6114 | 23604 tok/s
+DONE: mamba2_400m | Steps=291 | Time=600s | Last100=1.5143 | 23819 tok/s

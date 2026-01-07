@@ -1,0 +1,5 @@
+Created Mamba2 model: dim=1728, depth=22, expand=2, params=402,064,492
+Mamba2: 402,064,492 params
+Memory: 25.1 GB
+Step 50 (63s): loss=3.2803, 25.9K tok/s
+FINAL: 95 steps, loss=2.3575, 25.9K tok/s

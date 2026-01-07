@@ -1,0 +1,16 @@
+e9: dim=1440 depth=3 k=4 batch=192 params=50,155,200
+Step 100 | 40s | Loss 1.9375 | Avg100 2.3450 | 244268 tok/s | Mem 15.9GB
+Step 200 | 82s | Loss 1.7734 | Avg100 1.8182 | 240688 tok/s | Mem 15.9GB
+Step 300 | 124s | Loss 1.6562 | Avg100 1.6863 | 237869 tok/s | Mem 15.9GB
+Step 400 | 166s | Loss 1.5703 | Avg100 1.6216 | 236190 tok/s | Mem 15.9GB
+Step 500 | 209s | Loss 1.5547 | Avg100 1.5890 | 235272 tok/s | Mem 15.9GB
+Step 600 | 251s | Loss 1.5547 | Avg100 1.5526 | 234876 tok/s | Mem 15.9GB
+Step 700 | 293s | Loss 1.5000 | Avg100 1.5328 | 234706 tok/s | Mem 15.9GB
+Step 800 | 335s | Loss 1.4688 | Avg100 1.5214 | 234633 tok/s | Mem 15.9GB
+Step 900 | 377s | Loss 1.5156 | Avg100 1.5085 | 234578 tok/s | Mem 15.9GB
+Step 1000 | 419s | Loss 1.5547 | Avg100 1.4958 | 234532 tok/s | Mem 15.9GB
+Step 1100 | 461s | Loss 1.5156 | Avg100 1.4848 | 234486 tok/s | Mem 15.9GB
+Step 1200 | 503s | Loss 1.4062 | Avg100 1.4738 | 234447 tok/s | Mem 15.9GB
+Step 1300 | 545s | Loss 1.4688 | Avg100 1.4689 | 234414 tok/s | Mem 15.9GB
+Step 1400 | 587s | Loss 1.4609 | Avg100 1.4600 | 234385 tok/s | Mem 15.9GB
+DONE: e9 | Steps=1431 | Time=600s | Last100=1.4595 | 234379 tok/s | PeakMem=15.9GB

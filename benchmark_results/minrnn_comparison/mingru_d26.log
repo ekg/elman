@@ -1,0 +1,7 @@
+mingru_d26: dim=1600 depth=26 expand=2 batch=32 params=399,856,000
+Step 100 | 100s | Avg100 3.2566 | 16325 tok/s | Mem 43.6GB
+Step 200 | 202s | Avg100 2.3920 | 16215 tok/s | Mem 43.6GB
+Step 300 | 304s | Avg100 2.1862 | 16155 tok/s | Mem 43.6GB
+Step 400 | 407s | Avg100 2.0663 | 16120 tok/s | Mem 43.6GB
+Step 500 | 509s | Avg100 1.9537 | 16098 tok/s | Mem 43.6GB
+DONE: mingru_d26 | Steps=590 | Last100=1.8701 | 16111 tok/s

@@ -1,0 +1,12 @@
+e9_50m: params=50,155,200
+Step 100 | 55s | Loss 1.9141 | Avg100 2.3390 | 238560 tok/s
+Step 200 | 112s | Loss 1.7500 | Avg100 1.8092 | 234889 tok/s
+Step 300 | 170s | Loss 1.6172 | Avg100 1.6720 | 231214 tok/s
+Step 400 | 229s | Loss 1.5625 | Avg100 1.6164 | 229204 tok/s
+Step 500 | 287s | Loss 1.5781 | Avg100 1.5689 | 228407 tok/s
+Step 600 | 345s | Loss 1.5000 | Avg100 1.5486 | 228142 tok/s
+Step 700 | 402s | Loss 1.5156 | Avg100 1.5257 | 228135 tok/s
+Step 800 | 460s | Loss 1.5234 | Avg100 1.5127 | 227962 tok/s
+Step 900 | 518s | Loss 1.4375 | Avg100 1.4965 | 227870 tok/s
+Step 1000 | 575s | Loss 1.4531 | Avg100 1.4852 | 227925 tok/s
+DONE: e9_50m | Steps=1044 | Time=600s | Last100=1.4812 | 227922 tok/s

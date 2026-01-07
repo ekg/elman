@@ -1,0 +1,11 @@
+e9_1536x1536_d3: core=1536 mem=1536 total=3072 params=57,037,824
+Step 100 | 57s | Loss 1.9219 | Avg100 2.3423 | 229234 tok/s
+Step 200 | 117s | Loss 1.7500 | Avg100 1.8031 | 223639 tok/s
+Step 300 | 178s | Loss 1.6406 | Avg100 1.6686 | 220479 tok/s
+Step 400 | 240s | Loss 1.5547 | Avg100 1.6048 | 218566 tok/s
+Step 500 | 302s | Loss 1.6094 | Avg100 1.5645 | 217181 tok/s
+Step 600 | 363s | Loss 1.5000 | Avg100 1.5377 | 216399 tok/s
+Step 700 | 425s | Loss 1.5156 | Avg100 1.5191 | 215853 tok/s
+Step 800 | 487s | Loss 1.5156 | Avg100 1.5063 | 215349 tok/s
+Step 900 | 549s | Loss 1.4219 | Avg100 1.4856 | 214918 tok/s
+DONE: e9_1536x1536_d3 | Steps=983 | Time=600s | Last100=1.4768 | 214648 tok/s

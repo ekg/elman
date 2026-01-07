@@ -1,0 +1,6 @@
+e9_400m_fixed: core=2048 mem=2048 params=403,279,872
+Step 100 | 146s | Loss 2.2969 | Avg100 2.9636 | 33663 tok/s | Mem 40.8GB
+Step 200 | 296s | Loss 2.0781 | Avg100 2.1709 | 33161 tok/s | Mem 40.8GB
+Step 300 | 446s | Loss 1.8984 | Avg100 1.9834 | 33037 tok/s | Mem 40.8GB
+Step 400 | 596s | Loss 1.8281 | Avg100 1.8425 | 32976 tok/s | Mem 40.8GB
+DONE: e9_400m_fixed | Steps=403 | Time=601s | Last100=1.8379 | 32974 tok/s | PeakMem=40.8GB

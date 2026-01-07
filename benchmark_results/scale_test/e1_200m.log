@@ -1,0 +1,8 @@
+e1_200m: params=193,202,688
+Step 100 | 88s | Loss 1.8594 | Avg100 2.3615 | 74534 tok/s
+Step 200 | 182s | Loss 1.6250 | Avg100 1.7135 | 72122 tok/s
+Step 300 | 277s | Loss 1.6094 | Avg100 1.6084 | 71021 tok/s
+Step 400 | 372s | Loss 1.5703 | Avg100 1.5550 | 70453 tok/s
+Step 500 | 467s | Loss 1.4844 | Avg100 1.5148 | 70150 tok/s
+Step 600 | 562s | Loss 1.4531 | Avg100 1.4878 | 69957 tok/s
+DONE: e1_200m | Steps=640 | Time=600s | Last100=1.4805 | 69899 tok/s

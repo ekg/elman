@@ -1,0 +1,4 @@
+e1_400m: dim=3584 depth=6 batch=192 params=386,340,864
+Step 100 | 254s | Loss 2.2344 | Avg100 3.0286 | 38739 tok/s | Mem 44.9GB
+Step 200 | 514s | Loss 1.9844 | Avg100 2.0934 | 38255 tok/s | Mem 44.9GB
+DONE: e1_400m | Steps=234 | Time=602s | Last100=2.0148 | 38180 tok/s | PeakMem=44.9GB

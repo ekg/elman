@@ -1,0 +1,6 @@
+minGRU: 364,370,304 params
+Memory: 27.1 GB
+Step 50 (31s): loss=4.8391, 19.8K tok/s
+Step 100 (62s): loss=3.2481, 19.7K tok/s
+Step 150 (94s): loss=3.0213, 19.6K tok/s
+FINAL: 191 steps, loss=2.8566, 19.5K tok/s

@@ -1,0 +1,19 @@
+E1: 49,505,280 params
+Memory: 4.1 GB
+Step 50 (6s): loss=2.7997, 198.8K tok/s
+Step 100 (12s): loss=2.5303, 201.8K tok/s
+Step 150 (19s): loss=2.3759, 196.5K tok/s
+Step 200 (26s): loss=2.2672, 191.6K tok/s
+Step 250 (32s): loss=2.1481, 190.6K tok/s
+Step 300 (39s): loss=2.0575, 187.1K tok/s
+Step 350 (47s): loss=1.9836, 183.8K tok/s
+Step 400 (54s): loss=1.9161, 181.7K tok/s
+Step 450 (62s): loss=1.8664, 179.6K tok/s
+Step 500 (69s): loss=1.8577, 178.9K tok/s
+Step 550 (76s): loss=1.7964, 177.8K tok/s
+Step 600 (84s): loss=1.7809, 176.5K tok/s
+Step 650 (91s): loss=1.7569, 176.1K tok/s
+Step 700 (98s): loss=1.7473, 175.9K tok/s
+Step 750 (105s): loss=1.7172, 175.5K tok/s
+Step 800 (113s): loss=1.7117, 173.8K tok/s
+FINAL: 845 steps, loss=1.6828, 172.9K tok/s

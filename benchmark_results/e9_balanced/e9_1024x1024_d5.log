@@ -1,0 +1,13 @@
+e9_1024x1024_d5: core=1024 mem=1024 total=2048 params=42,227,712
+Step 100 | 51s | Loss 1.9844 | Avg100 2.3999 | 257735 tok/s
+Step 200 | 103s | Loss 1.8047 | Avg100 1.8725 | 254668 tok/s
+Step 300 | 156s | Loss 1.6953 | Avg100 1.7267 | 252541 tok/s
+Step 400 | 208s | Loss 1.6250 | Avg100 1.6619 | 251543 tok/s
+Step 500 | 261s | Loss 1.6172 | Avg100 1.6118 | 250949 tok/s
+Step 600 | 314s | Loss 1.5391 | Avg100 1.5834 | 250574 tok/s
+Step 700 | 367s | Loss 1.5547 | Avg100 1.5614 | 250334 tok/s
+Step 800 | 419s | Loss 1.5312 | Avg100 1.5461 | 250159 tok/s
+Step 900 | 472s | Loss 1.4766 | Avg100 1.5274 | 250033 tok/s
+Step 1000 | 524s | Loss 1.4844 | Avg100 1.5145 | 249941 tok/s
+Step 1100 | 577s | Loss 1.5000 | Avg100 1.4985 | 249888 tok/s
+DONE: e9_1024x1024_d5 | Steps=1144 | Time=600s | Last100=1.4969 | 249858 tok/s

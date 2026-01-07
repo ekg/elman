@@ -1,0 +1,12 @@
+e9_1280x1280_d4: core=1280 mem=1280 total=2560 params=52,779,520
+Step 100 | 57s | Loss 1.9375 | Avg100 2.3610 | 229697 tok/s
+Step 200 | 116s | Loss 1.7344 | Avg100 1.8179 | 226675 tok/s
+Step 300 | 175s | Loss 1.6250 | Avg100 1.6793 | 224571 tok/s
+Step 400 | 234s | Loss 1.5859 | Avg100 1.6183 | 223704 tok/s
+Step 500 | 294s | Loss 1.5781 | Avg100 1.5762 | 223224 tok/s
+Step 600 | 353s | Loss 1.5078 | Avg100 1.5425 | 222934 tok/s
+Step 700 | 412s | Loss 1.5156 | Avg100 1.5292 | 222791 tok/s
+Step 800 | 471s | Loss 1.5000 | Avg100 1.5109 | 222686 tok/s
+Step 900 | 530s | Loss 1.4297 | Avg100 1.4911 | 222583 tok/s
+Step 1000 | 589s | Loss 1.4609 | Avg100 1.4820 | 222530 tok/s
+DONE: e9_1280x1280_d4 | Steps=1019 | Time=600s | Last100=1.4793 | 222517 tok/s

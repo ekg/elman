@@ -1,0 +1,8 @@
+e9_1280x1280_d6: core=1280 mem=1280 total=2560 params=79,004,160
+Step 100 | 87s | Loss 1.9609 | Avg100 2.4091 | 150388 tok/s
+Step 200 | 178s | Loss 1.7500 | Avg100 1.8196 | 147443 tok/s
+Step 300 | 268s | Loss 1.6094 | Avg100 1.6643 | 146601 tok/s
+Step 400 | 358s | Loss 1.5469 | Avg100 1.6001 | 146286 tok/s
+Step 500 | 448s | Loss 1.5625 | Avg100 1.5520 | 146133 tok/s
+Step 600 | 539s | Loss 1.4766 | Avg100 1.5267 | 146031 tok/s
+DONE: e9_1280x1280_d6 | Steps=669 | Time=601s | Last100=1.5116 | 145949 tok/s
