@@ -61,6 +61,10 @@ LEVEL_9_AVAILABLE = True
 from .multiscale_elman import MultiScaleElman, MultiScaleElmanCell
 LEVEL_10_AVAILABLE = True
 
+# E11: Selective Memory Elman (Mamba-inspired input-dependent memory)
+from .selective_elman import SelectiveElman, SelectiveElmanCell
+LEVEL_11_AVAILABLE = True
+
 # Language model wrapper
 from .ladder_lm import LadderLM, create_ladder_model
 
@@ -85,6 +89,7 @@ def get_available_levels():
         6: ("Diagonal Elman (e6)", LEVEL_6_AVAILABLE, DiagonalElman),
         9: ("Hybrid Elman (e9)", LEVEL_9_AVAILABLE, HybridElman),
         10: ("Multi-Scale EMA Elman (e10)", LEVEL_10_AVAILABLE, MultiScaleElman),
+        11: ("Selective Memory Elman (e11)", LEVEL_11_AVAILABLE, SelectiveElman),
     }
     return levels
 
@@ -119,6 +124,8 @@ __all__ = [
     'HybridElman', 'HybridElmanCell', 'LEVEL_9_AVAILABLE',
     # E10: Multi-Scale EMA Elman
     'MultiScaleElman', 'MultiScaleElmanCell', 'LEVEL_10_AVAILABLE',
+    # E11: Selective Memory Elman
+    'SelectiveElman', 'SelectiveElmanCell', 'LEVEL_11_AVAILABLE',
     # Language model wrapper
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline

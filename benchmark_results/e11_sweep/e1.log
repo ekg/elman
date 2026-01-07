@@ -1,0 +1,13 @@
+e1: dim=1280 depth=6 k=1 batch=256 params=49,505,280
+Step 100 | 49s | Loss 1.7266 | Avg100 2.0880 | 266311 tok/s | Mem 20.5GB
+Step 200 | 101s | Loss 1.6328 | Avg100 1.6664 | 258374 tok/s | Mem 20.5GB
+Step 300 | 156s | Loss 1.5547 | Avg100 1.5888 | 252731 tok/s | Mem 20.5GB
+Step 400 | 210s | Loss 1.5078 | Avg100 1.5513 | 249954 tok/s | Mem 20.5GB
+Step 500 | 264s | Loss 1.5312 | Avg100 1.5187 | 247911 tok/s | Mem 20.5GB
+Step 600 | 319s | Loss 1.4688 | Avg100 1.4995 | 246636 tok/s | Mem 20.5GB
+Step 700 | 374s | Loss 1.5000 | Avg100 1.4850 | 245619 tok/s | Mem 20.5GB
+Step 800 | 428s | Loss 1.4766 | Avg100 1.4737 | 244863 tok/s | Mem 20.5GB
+Step 900 | 483s | Loss 1.4062 | Avg100 1.4569 | 244268 tok/s | Mem 20.5GB
+Step 1000 | 538s | Loss 1.4141 | Avg100 1.4486 | 243829 tok/s | Mem 20.5GB
+Step 1100 | 592s | Loss 1.4531 | Avg100 1.4365 | 243497 tok/s | Mem 20.5GB
+DONE: e1 | Steps=1115 | Time=600s | Last100=1.4377 | 243454 tok/s | PeakMem=20.5GB

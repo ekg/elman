@@ -2077,6 +2077,156 @@ std::vector<Tensor> multiscale_elman_backward(
     return {dx, dz, dW_x, dW_h, db, da};
 }
 
+// =============================================================================
+// E11: Selective Memory Elman (Mamba-inspired input-dependent memory)
+// =============================================================================
+
+std::vector<Tensor> selective_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, 2*dim] gates
+    Tensor h0,          // [B, dim]
+    Tensor m0,          // [n_banks, B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
+    Tensor a,           // [n_banks, dim]
+    Tensor W_a,         // [dim, n_banks]
+    Tensor W_w) {       // [dim, n_banks]
+
+    const int64_t time_steps = x.size(0);
+    const int64_t batch_size = x.size(1);
+    const int64_t dim = x.size(2);
+    const int64_t n_banks = a.size(0);
+
+    auto options = x.options();
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor m = torch::empty({time_steps + 1, n_banks, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor a_scale_cache = training ? torch::empty({time_steps, batch_size, n_banks}, options)
+                                    : torch::empty({0}, options);
+    Tensor read_weights_cache = training ? torch::empty({time_steps, batch_size, n_banks}, options)
+                                          : torch::empty({0}, options);
+
+    const int64_t BD = batch_size * dim;
+    const int64_t BK = batch_size * n_banks;
+    const int64_t workspace_size = time_steps * BD + BD + 2 * BK;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    h[0] = h0;
+    m[0] = m0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_banks,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(a),
+            ptr<scalar_t>(W_a),
+            ptr<scalar_t>(W_w),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(m),
+            ptr<scalar_t>(output),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(a_scale_cache),
+            ptr<scalar_t>(read_weights_cache),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, m, output, v, a_scale_cache, read_weights_cache};
+}
+
+std::vector<Tensor> selective_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor a,
+    Tensor W_a,
+    Tensor W_w,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor m,
+    Tensor v,
+    Tensor a_scale_cache,
+    Tensor read_weights_cache,
+    Tensor d_output) {
+
+    const int64_t time_steps = x.size(0);
+    const int64_t batch_size = x.size(1);
+    const int64_t dim = x.size(2);
+    const int64_t n_banks = a.size(0);
+
+    auto options = x.options();
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor da = torch::zeros({n_banks, dim}, options);
+    Tensor dW_a = torch::zeros({dim, n_banks}, options);
+    Tensor dW_w = torch::zeros({dim, n_banks}, options);
+
+    const int64_t BD = batch_size * dim;
+    const int64_t BK = batch_size * n_banks;
+    // Workspace: dv_all + dh + dh_rec + dm + dm_rec + d_read_logits + float buffers
+    const int64_t float_bytes = BD * sizeof(float) + BK * sizeof(float) +
+                                dim * sizeof(float) + n_banks * dim * sizeof(float) +
+                                BK * sizeof(float);
+    const int64_t float_space_in_T = (float_bytes + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 2) * BD + 2 * n_banks * BD + BK + float_space_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_banks,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(a),
+            ptr<scalar_t>(W_a),
+            ptr<scalar_t>(W_w),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(m),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(a_scale_cache),
+            ptr<scalar_t>(read_weights_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(da),
+            ptr<scalar_t>(dW_a),
+            ptr<scalar_t>(dW_w),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, db, da, dW_a, dW_w};
+}
+
 }  // anonymous namespace
 
 
@@ -2137,4 +2287,8 @@ void elman_ladder_init(py::module& m) {
           "E10: Multi-Scale EMA Elman forward (learned decay memory banks)");
     m.def("multiscale_elman_backward", &multiscale_elman_backward,
           "E10: Multi-Scale EMA Elman backward");
+    m.def("selective_elman_forward", &selective_elman_forward,
+          "E11: Selective Memory Elman forward (input-dependent decay and read)");
+    m.def("selective_elman_backward", &selective_elman_backward,
+          "E11: Selective Memory Elman backward");
 }

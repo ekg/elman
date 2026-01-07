@@ -1112,6 +1112,97 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E11: Selective Memory Elman (Mamba-inspired input-dependent memory)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)  -- same as E1
+// a_scale = x_t @ W_a  -- decay modulation
+// alpha_i = sigmoid(a_i + a_scale[:, i])  -- input-dependent decay
+// m_i_t = alpha_i * m_i_prev + (1 - alpha_i) * h_t
+// w = softmax(x_t @ W_w)  -- read attention
+// memory_out = sum(w_i * m_i)
+// out = h * silu(z_h) + memory_out * silu(z_m)  -- just 2 gates
+// Key: Mamba-style selectivity with cheap projections (W_a, W_w are [dim, k])
+// =============================================================================
+
+template<typename T>
+struct SelectiveElmanForward {
+    SelectiveElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_banks,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,        // [dim, dim]
+        const T* W_h,        // [dim, dim]
+        const T* b,          // [dim]
+        const T* a,          // [n_banks, dim] base decay logits
+        const T* W_a,        // [dim, n_banks] decay modulation projection
+        const T* W_w,        // [dim, n_banks] read weights projection
+        const T* x,          // [T, B, dim] pre-activated input
+        const T* z,          // [T, B, 2*dim] gates (h and memory)
+        T* h,                // [T+1, B, dim] hidden states
+        T* m,                // [T+1, n_banks, B, dim] memory banks
+        T* output,           // [T, B, dim]
+        T* v,                // [T, B, dim] pre-activation cache
+        T* a_scale_cache,    // [T, B, n_banks] decay modulation cache
+        T* read_weights_cache,// [T, B, n_banks] read weights cache
+        T* workspace);       // [T*BD + BD + 2*BK]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_banks_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SelectiveElmanBackward {
+    SelectiveElmanBackward(
+        int batch_size,
+        int dim,
+        int n_banks,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* a,
+        const T* W_a,
+        const T* W_w,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* m,
+        const T* v,
+        const T* a_scale_cache,
+        const T* read_weights_cache,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* da,
+        T* dW_a,
+        T* dW_w,
+        T* workspace);      // [(T+2)*BD + 2*n_banks*BD + BK + floats]
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_banks_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
