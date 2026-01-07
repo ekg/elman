@@ -1,0 +1,4 @@
+e1_d18: dim=2112 depth=18 batch=128 params=402,107,904
+Step 100 | 200s | Loss 1.9844 | Avg100 2.5904 | 32795 tok/s | Mem 49.2GB
+Step 200 | 406s | Loss 1.6797 | Avg100 1.7984 | 32281 tok/s | Mem 49.2GB
+DONE: e1_d18 | Steps=294 | Time=600s | Last100=1.6456 | 32096 tok/s | PeakMem=49.2GB
