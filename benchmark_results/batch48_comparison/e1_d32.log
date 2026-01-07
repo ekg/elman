@@ -1,0 +1,8 @@
+e1_d32_b48: dim=1568 depth=32 batch=48 params=393,934,912
+Step 100 | 89s | Avg100 2.6385 | 27752 tok/s
+Step 200 | 179s | Avg100 1.9123 | 27521 tok/s
+Step 300 | 269s | Avg100 1.7386 | 27452 tok/s
+Step 400 | 358s | Avg100 1.6752 | 27425 tok/s
+Step 500 | 448s | Avg100 1.6105 | 27406 tok/s
+Step 600 | 538s | Avg100 1.5845 | 27389 tok/s
+DONE: e1_d32_b48 | Steps=669 | Last100=1.5528 | 27402 tok/s

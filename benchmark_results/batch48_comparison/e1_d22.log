@@ -1,0 +1,9 @@
+e1_d22_b48: dim=1920 depth=22 batch=48 params=406,126,080
+Step 100 | 75s | Avg100 2.7677 | 32949 tok/s
+Step 200 | 153s | Avg100 1.9891 | 32216 tok/s
+Step 300 | 232s | Avg100 1.7817 | 31840 tok/s
+Step 400 | 311s | Avg100 1.6876 | 31654 tok/s
+Step 500 | 390s | Avg100 1.6384 | 31539 tok/s
+Step 600 | 469s | Avg100 1.5978 | 31447 tok/s
+Step 700 | 548s | Avg100 1.5695 | 31383 tok/s
+DONE: e1_d22_b48 | Steps=766 | Last100=1.5500 | 31375 tok/s

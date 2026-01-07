@@ -1,0 +1,9 @@
+/home/erikg/elman/elman/models/multiscale_elman.py:83: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  logit = torch.log(torch.tensor(decay / (1 - decay)))
+e10_d26_b48: dim=1280 depth=26 batch=48 params=383,948,800
+Step 100 | 100s | Avg100 3.1355 | 24618 tok/s
+Step 200 | 201s | Avg100 2.1220 | 24408 tok/s
+Step 300 | 303s | Avg100 1.8047 | 24349 tok/s
+Step 400 | 405s | Avg100 1.6592 | 24296 tok/s
+Step 500 | 507s | Avg100 1.5841 | 24250 tok/s
+DONE: e10_d26_b48 | Steps=592 | Last100=1.5314 | 24248 tok/s
