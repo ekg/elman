@@ -1,0 +1,20 @@
+minLSTM: 382,910,976 params
+Memory: 17.0 GB
+Initial loss: 8.2875
+Step 100 (37s): loss=3.6292, 22.3K tok/s, nats/s=0.127029
+Step 200 (74s): loss=2.8631, 22.1K tok/s, nats/s=0.073069
+Step 300 (113s): loss=2.4445, 21.8K tok/s, nats/s=0.051878
+Step 400 (152s): loss=2.2054, 21.6K tok/s, nats/s=0.040112
+Step 500 (191s): loss=2.0463, 21.5K tok/s, nats/s=0.032691
+Step 600 (230s): loss=1.9553, 21.3K tok/s, nats/s=0.027489
+Step 700 (270s): loss=1.8727, 21.3K tok/s, nats/s=0.023776
+Step 800 (309s): loss=1.7955, 21.2K tok/s, nats/s=0.020991
+Step 900 (349s): loss=1.7596, 21.1K tok/s, nats/s=0.018720
+Step 1000 (388s): loss=1.7252, 21.1K tok/s, nats/s=0.016909
+Step 1100 (427s): loss=1.7046, 21.1K tok/s, nats/s=0.015400
+Step 1200 (467s): loss=1.6511, 21.1K tok/s, nats/s=0.014217
+Step 1300 (506s): loss=1.6473, 21.0K tok/s, nats/s=0.013119
+Step 1400 (546s): loss=1.6234, 21.0K tok/s, nats/s=0.012215
+Step 1500 (585s): loss=1.6245, 21.0K tok/s, nats/s=0.011390
+FINAL: steps=1539, loss=1.6079, tok/s=21.0K, nats/s=0.011126
+LEARNING: initial=8.2875, final=1.6079, delta=6.6796

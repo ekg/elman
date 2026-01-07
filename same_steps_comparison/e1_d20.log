@@ -1,0 +1,9 @@
+E1_d20: 394,256,512 params
+Initial: 5.9188
+Memory: 8.8 GB
+Step 300: loss=2.3512, 18.9K tok/s
+Step 600: loss=1.9569, 18.8K tok/s
+Step 900: loss=1.7925, 18.8K tok/s
+Step 1200: loss=1.7150, 18.8K tok/s
+Step 1500: loss=1.6866, 18.8K tok/s
+FINAL: loss=1.6866, tok/s=18.8K, time=654s

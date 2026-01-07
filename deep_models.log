@@ -1,0 +1,39 @@
+======================================================================
+DEEP MODELS (batch=16, steps=1500)
+======================================================================
+[GPU 0] e1_d32 started
+[GPU 1] e1_d40 started
+[GPU 2] e1_d48 started
+[GPU 3] mamba2_d32 started
+[GPU 4] mamba2_d40 started
+[GPU 5] mingru_d32 started
+[GPU 6] mingru_d40 started
+[GPU 7] minlstm_d32 started
+[GPU 8] minlstm_d40 started
+
+Waiting...
+[DONE] e1_d32
+[DONE] e1_d40
+[DONE] e1_d48
+[DONE] mamba2_d32
+[DONE] mamba2_d40
+[DONE] mingru_d32
+[DONE] mingru_d40
+[DONE] minlstm_d32
+[DONE] minlstm_d40
+
+======================================================================
+RESULTS
+======================================================================
+
+Model               Params     Loss      Tok/s     Time
+-------------------------------------------------------
+minlstm_d40           0.0M   0.0000       0.0K       0s
+e1_d48              393.7M   1.6073      11.6K    1055s
+minlstm_d32         403.3M   1.6214      19.5K     629s
+e1_d40              397.0M   1.6255      13.3K     921s
+e1_d32              393.9M   1.6330      14.5K     845s
+mingru_d32          379.3M   1.6336      18.0K     681s
+mingru_d40          379.5M   1.6689      17.1K     718s
+mamba2_d40          409.4M   1.9477      23.4K     526s
+mamba2_d32          413.0M   1.9689      20.8K     592s

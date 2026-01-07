@@ -1,0 +1,8 @@
+E1_d48: 393,730,560 params
+Initial: 4.9375, Memory: 11.7 GB
+Step 300: loss=2.0558, 11.7K tok/s
+Step 600: loss=1.7884, 11.6K tok/s
+Step 900: loss=1.6844, 11.6K tok/s
+Step 1200: loss=1.6233, 11.6K tok/s
+Step 1500: loss=1.6073, 11.6K tok/s
+FINAL: loss=1.6073, tok/s=11.6K, time=1055s

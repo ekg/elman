@@ -1,0 +1,8 @@
+E1_d40: 397,025,024 params
+Initial: 4.9437, Memory: 11.0 GB
+Step 300: loss=2.1173, 13.4K tok/s
+Step 600: loss=1.8204, 13.4K tok/s
+Step 900: loss=1.7041, 13.3K tok/s
+Step 1200: loss=1.6430, 13.3K tok/s
+Step 1500: loss=1.6255, 13.3K tok/s
+FINAL: loss=1.6255, tok/s=13.3K, time=921s

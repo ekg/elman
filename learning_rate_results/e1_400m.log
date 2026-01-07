@@ -1,0 +1,9 @@
+E1: 403,279,360 params
+Memory: 37.4 GB
+Initial loss: 4.5812
+Step 100 (127s): loss=2.6898, 32.3K tok/s, nats/s=0.014932
+Step 200 (261s): loss=2.3564, 31.4K tok/s, nats/s=0.008533
+Step 300 (395s): loss=2.0923, 31.1K tok/s, nats/s=0.006294
+Step 400 (530s): loss=1.8780, 30.9K tok/s, nats/s=0.005103
+FINAL: steps=453, loss=1.8068, tok/s=30.9K, nats/s=0.004617
+LEARNING: initial=4.5812, final=1.8068, delta=2.7745

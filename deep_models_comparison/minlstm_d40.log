@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "/home/erikg/elman/deep_models_comparison/minlstm_d40.py", line 20, in <module>
+    model = MinLSTMLM(vocab_size=256, dim=1856, depth=40).cuda().bfloat16()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1084, in cuda
+    return self._apply(lambda t: t.cuda(device))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 930, in _apply
+    module._apply(fn)
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 957, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1084, in <lambda>
+    return self._apply(lambda t: t.cuda(device))
+                                 ^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/cuda/__init__.py", line 410, in _lazy_init
+    torch._C._cuda_init()
+RuntimeError: No CUDA GPUs are available

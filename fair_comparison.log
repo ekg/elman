@@ -1,0 +1,50 @@
+======================================================================
+FAIR 10-MIN COMPARISON (same batch=16, same data stream)
+======================================================================
+[GPU 0] e1_shallow started
+[GPU 1] e1_deep started
+[GPU 2] mamba2 started
+[GPU 3] mingru started
+[GPU 4] minlstm started
+
+Waiting (~10 min)...
+[DONE] e1_shallow
+[DONE] e1_deep
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+
+======================================================================
+RESULTS (same data stream, batch=16)
+======================================================================
+
+=== e1_shallow ===
+E1_shallow: 386,340,864 params
+Initial loss: 9.5125
+Memory: 6.1 GB
+FINAL: steps=1886, tokens=15.5M, loss=1.7686, tok/s=25.7K
+
+=== e1_deep ===
+E1_deep: 403,279,360 params
+Initial loss: 5.4125
+Memory: 9.7 GB
+FINAL: steps=1191, tokens=9.8M, loss=1.6738, tok/s=16.3K
+
+=== mamba2 ===
+Created Mamba2 model: dim=1728, depth=22, expand=2, params=402,064,492
+Mamba2: 402,064,492 params
+Initial loss: 7.2687
+Memory: 8.1 GB
+FINAL: steps=1705, tokens=14.0M, loss=1.4657, tok/s=23.3K
+
+=== mingru ===
+minGRU: 364,370,304 params
+Initial loss: 9.7000
+Memory: 18.7 GB
+FINAL: steps=1481, tokens=12.1M, loss=1.6663, tok/s=20.2K
+
+=== minlstm ===
+minLSTM: 382,910,976 params
+Initial loss: 9.6375
+Memory: 17.0 GB
+FINAL: steps=1508, tokens=12.4M, loss=1.6345, tok/s=20.6K

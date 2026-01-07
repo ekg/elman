@@ -1,0 +1,36 @@
+======================================================================
+SAME STEPS COMPARISON (batch=16, steps=1500)
+======================================================================
+[GPU 0] e1_d6 started
+[GPU 1] e1_d12 started
+[GPU 2] e1_d16 started
+[GPU 3] e1_d20 started
+[GPU 4] e1_d26 started
+[GPU 5] mamba2 started
+[GPU 6] mingru started
+[GPU 7] minlstm started
+
+Waiting for all to complete...
+[DONE] e1_d6
+[DONE] e1_d12
+[DONE] e1_d16
+[DONE] e1_d20
+[DONE] e1_d26
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+
+======================================================================
+RESULTS (batch=16, steps=1500, same data)
+======================================================================
+
+Model            Params     Loss      Tok/s     Time
+----------------------------------------------------
+mamba2           402.1M   1.5117      24.1K     509s
+minlstm          382.9M   1.6346      21.1K     582s
+e1_d26           403.3M   1.6570      16.0K     769s
+mingru           364.4M   1.6598      19.7K     622s
+e1_d20           394.3M   1.6866      18.8K     654s
+e1_d16           390.7M   1.7126      19.5K     631s
+e1_d12           394.0M   1.7452      22.3K     552s
+e1_d6            386.3M   1.8571      25.8K     477s

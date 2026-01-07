@@ -1,0 +1,8 @@
+Mamba2_d32: 412,969,600 params
+Initial: 143.6000, Memory: 8.5 GB
+Step 300: loss=10.0584, 21.3K tok/s
+Step 600: loss=2.4173, 20.9K tok/s
+Step 900: loss=2.2499, 20.8K tok/s
+Step 1200: loss=2.0160, 20.7K tok/s
+Step 1500: loss=1.9689, 20.8K tok/s
+FINAL: loss=1.9689, tok/s=20.8K, time=592s

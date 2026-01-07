@@ -1,0 +1,19 @@
+minLSTM: 382,910,976 params
+Initial loss: 9.6375
+Memory: 17.0 GB
+Step 100 (37s): loss=3.7692, 22.0K tok/s
+Step 200 (75s): loss=2.9473, 21.7K tok/s
+Step 300 (115s): loss=2.5005, 21.4K tok/s
+Step 400 (155s): loss=2.2603, 21.1K tok/s
+Step 500 (195s): loss=2.0948, 21.0K tok/s
+Step 600 (235s): loss=1.9936, 20.9K tok/s
+Step 700 (276s): loss=1.9057, 20.8K tok/s
+Step 800 (316s): loss=1.8177, 20.8K tok/s
+Step 900 (356s): loss=1.7751, 20.7K tok/s
+Step 1000 (396s): loss=1.7343, 20.7K tok/s
+Step 1100 (436s): loss=1.7169, 20.7K tok/s
+Step 1200 (476s): loss=1.6794, 20.6K tok/s
+Step 1300 (517s): loss=1.6595, 20.6K tok/s
+Step 1400 (557s): loss=1.6203, 20.6K tok/s
+Step 1500 (597s): loss=1.6346, 20.6K tok/s
+FINAL: steps=1508, tokens=12.4M, loss=1.6345, tok/s=20.6K

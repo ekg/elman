@@ -1,0 +1,9 @@
+E1_d16: 390,696,768 params
+Initial: 6.0750
+Memory: 8.0 GB
+Step 300: loss=2.3709, 19.6K tok/s
+Step 600: loss=2.0002, 19.5K tok/s
+Step 900: loss=1.8281, 19.5K tok/s
+Step 1200: loss=1.7425, 19.5K tok/s
+Step 1500: loss=1.7126, 19.5K tok/s
+FINAL: loss=1.7126, tok/s=19.5K, time=631s

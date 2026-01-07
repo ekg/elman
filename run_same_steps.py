@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+SAME STEPS comparison: batch=16, 1500 steps for all.
+Includes E1 at depths 6, 12, 16, 20, 26.
+"""
+import subprocess
+import os
+
+OUT = "same_steps_comparison"
+os.makedirs(OUT, exist_ok=True)
+BATCH_SIZE = 16
+NUM_STEPS = 1500
+
+SCRIPT_TEMPLATE = '''
+import sys; sys.path.insert(0, '/home/erikg/elman')
+import torch, numpy as np, mmap, time
+torch.manual_seed(42); np.random.seed(42)
+torch.backends.cudnn.benchmark = True
+
+with open('/home/erikg/elman/data/pile.txt', 'rb') as f:
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+data_len = len(mm)
+
+def get_batch(bs, sl):
+    pos = np.random.randint(0, data_len - sl - 1, size=bs)
+    buf = np.zeros((bs, sl + 1), dtype=np.uint8)
+    for i, p in enumerate(pos): buf[i] = np.frombuffer(mm[p:p+sl+1], dtype=np.uint8)
+    return torch.from_numpy(buf.astype(np.int64)).cuda()
+
+batch_size, seq_len, num_steps = BATCH_SIZE, 512, NUM_STEPS
+MODEL_CODE
+params = model.get_num_params()
+print(f"{name}: {params:,} params", flush=True)
+opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.1)
+
+# Warmup
+for _ in range(3):
+    loss = model(get_batch(batch_size, seq_len), return_loss=True)
+    loss.backward(); opt.step(); opt.zero_grad()
+torch.cuda.synchronize()
+
+# Reset seed so all models see same data
+torch.manual_seed(42); np.random.seed(42)
+
+# Initial loss
+with torch.no_grad():
+    init_loss = sum(model(get_batch(batch_size, seq_len), return_loss=True).item() for _ in range(5)) / 5
+print(f"Initial: {init_loss:.4f}", flush=True)
+print(f"Memory: {torch.cuda.max_memory_allocated()/1e9:.1f} GB", flush=True)
+
+# Reset for training
+torch.manual_seed(42); np.random.seed(42)
+
+losses = []
+torch.cuda.synchronize()
+start = time.time()
+
+for step in range(1, num_steps + 1):
+    loss = model(get_batch(batch_size, seq_len), return_loss=True)
+    loss.backward(); opt.step(); opt.zero_grad()
+    losses.append(loss.item())
+
+    if step % 300 == 0:
+        avg = sum(losses[-100:]) / 100
+        el = time.time() - start
+        print(f"Step {step}: loss={avg:.4f}, {step*batch_size*seq_len/el/1000:.1f}K tok/s", flush=True)
+
+torch.cuda.synchronize()
+elapsed = time.time() - start
+final_loss = sum(losses[-100:]) / 100
+tok_s = (num_steps * batch_size * seq_len) / elapsed
+
+print(f"FINAL: loss={final_loss:.4f}, tok/s={tok_s/1000:.1f}K, time={elapsed:.0f}s", flush=True)
+mm.close()
+'''
+
+# Find E1 configs for ~400M at different depths
+# depth=6: dim=3584 -> 386M
+# depth=12: need to calculate
+# depth=16: need to calculate
+# depth=20: need to calculate
+# depth=26: dim=1760 -> 403M
+
+CONFIGS = {
+    'e1_d6':  'from elman.models import LadderLM\nname = "E1_d6"\nmodel = LadderLM(vocab_size=256, dim=3584, depth=6, level=1).cuda().bfloat16()',
+    'e1_d12': 'from elman.models import LadderLM\nname = "E1_d12"\nmodel = LadderLM(vocab_size=256, dim=2560, depth=12, level=1).cuda().bfloat16()',
+    'e1_d16': 'from elman.models import LadderLM\nname = "E1_d16"\nmodel = LadderLM(vocab_size=256, dim=2208, depth=16, level=1).cuda().bfloat16()',
+    'e1_d20': 'from elman.models import LadderLM\nname = "E1_d20"\nmodel = LadderLM(vocab_size=256, dim=1984, depth=20, level=1).cuda().bfloat16()',
+    'e1_d26': 'from elman.models import LadderLM\nname = "E1_d26"\nmodel = LadderLM(vocab_size=256, dim=1760, depth=26, level=1).cuda().bfloat16()',
+    'mamba2': 'from elman.models import create_mamba2_model\nname = "Mamba2"\nmodel = create_mamba2_model(target_params="400M", vocab_size=256).cuda().bfloat16()',
+    'mingru': 'from elman.models import MinGRULM\nname = "minGRU"\nmodel = MinGRULM(vocab_size=256, dim=2752, depth=24).cuda().bfloat16()',
+    'minlstm': 'from elman.models import MinLSTMLM\nname = "minLSTM"\nmodel = MinLSTMLM(vocab_size=256, dim=2304, depth=24).cuda().bfloat16()',
+}
+
+print("=" * 70)
+print(f"SAME STEPS COMPARISON (batch={BATCH_SIZE}, steps={NUM_STEPS})")
+print("=" * 70)
+
+procs = {}
+for gpu, (name, code) in enumerate(CONFIGS.items()):
+    script = SCRIPT_TEMPLATE.replace('BATCH_SIZE', str(BATCH_SIZE)).replace('NUM_STEPS', str(NUM_STEPS)).replace('MODEL_CODE', code)
+    path = f"{OUT}/{name}.py"
+    with open(path, 'w') as f:
+        f.write(script)
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    log = f"{OUT}/{name}.log"
+    procs[name] = subprocess.Popen(["python3", "-u", path], stdout=open(log, "w"), stderr=subprocess.STDOUT, env=env)
+    print(f"[GPU {gpu}] {name} started")
+
+print("\nWaiting for all to complete...")
+for name, p in procs.items():
+    p.wait()
+    print(f"[DONE] {name}")
+
+print("\n" + "=" * 70)
+print(f"RESULTS (batch={BATCH_SIZE}, steps={NUM_STEPS}, same data)")
+print("=" * 70)
+
+results = []
+for name in CONFIGS:
+    log = f"{OUT}/{name}.log"
+    with open(log) as f:
+        content = f.read()
+    params = loss = toks = time_s = 0
+    for line in content.split('\n'):
+        if 'params' in line and ':' in line:
+            try:
+                params = int(line.split(':')[1].split()[0].replace(',', ''))
+            except:
+                pass
+        if 'FINAL:' in line:
+            parts = line.split(',')
+            for p in parts:
+                if 'loss=' in p:
+                    loss = float(p.split('=')[1])
+                if 'tok/s=' in p:
+                    toks = float(p.split('=')[1].replace('K', ''))
+                if 'time=' in p:
+                    time_s = float(p.split('=')[1].replace('s', ''))
+    results.append((name, params, loss, toks, time_s))
+
+# Sort by loss
+results.sort(key=lambda x: x[2])
+
+print(f"\n{'Model':<12} {'Params':>10} {'Loss':>8} {'Tok/s':>10} {'Time':>8}")
+print("-" * 52)
+for name, params, loss, toks, time_s in results:
+    print(f"{name:<12} {params/1e6:>9.1f}M {loss:>8.4f} {toks:>9.1f}K {time_s:>7.0f}s")

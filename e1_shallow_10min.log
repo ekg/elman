@@ -1,0 +1,7 @@
+E1 SHALLOW: 386,340,864 params
+Initial: 7.5000
+Step 100 (167s): loss=2.9583
+Step 200 (335s): loss=2.4511
+Step 300 (504s): loss=2.2944
+FINAL: steps=358, loss=2.2136, tok/s=39.0K
+LEARNING: 7.5000 -> 2.2136 = 5.2864 nats in 602s

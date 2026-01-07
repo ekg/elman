@@ -1,0 +1,8 @@
+minGRU_d32: 379,319,040 params
+Initial: 8.6625, Memory: 21.5 GB
+Step 300: loss=2.4789, 18.2K tok/s
+Step 600: loss=1.9784, 18.1K tok/s
+Step 900: loss=1.7704, 18.1K tok/s
+Step 1200: loss=1.6724, 18.0K tok/s
+Step 1500: loss=1.6336, 18.0K tok/s
+FINAL: loss=1.6336, tok/s=18.0K, time=681s

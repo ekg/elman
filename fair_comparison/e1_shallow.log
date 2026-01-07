@@ -1,0 +1,22 @@
+E1_shallow: 386,340,864 params
+Initial loss: 9.5125
+Memory: 6.1 GB
+Step 100 (30s): loss=3.2356, 27.2K tok/s
+Step 200 (61s): loss=2.5775, 26.8K tok/s
+Step 300 (93s): loss=2.4745, 26.5K tok/s
+Step 400 (125s): loss=2.3592, 26.3K tok/s
+Step 500 (157s): loss=2.2892, 26.1K tok/s
+Step 600 (189s): loss=2.2364, 26.1K tok/s
+Step 700 (221s): loss=2.1797, 26.0K tok/s
+Step 800 (253s): loss=2.0895, 25.9K tok/s
+Step 900 (285s): loss=2.0475, 25.9K tok/s
+Step 1000 (317s): loss=1.9927, 25.9K tok/s
+Step 1100 (349s): loss=1.9655, 25.9K tok/s
+Step 1200 (381s): loss=1.9130, 25.8K tok/s
+Step 1300 (413s): loss=1.8878, 25.8K tok/s
+Step 1400 (445s): loss=1.8466, 25.8K tok/s
+Step 1500 (477s): loss=1.8589, 25.8K tok/s
+Step 1600 (509s): loss=1.8264, 25.8K tok/s
+Step 1700 (541s): loss=1.7834, 25.8K tok/s
+Step 1800 (573s): loss=1.7824, 25.8K tok/s
+FINAL: steps=1886, tokens=15.5M, loss=1.7686, tok/s=25.7K

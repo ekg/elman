@@ -1,0 +1,45 @@
+======================================================================
+10-MINUTE LEARNING RATE COMPARISON (400M scale)
+======================================================================
+Time limit: 600s per model
+Metric: nats/s = (initial_loss - final_loss) / time
+
+[GPU 0] e1 batch=80 started
+[GPU 1] mamba2 batch=128 started
+[GPU 2] mingru batch=24 started
+[GPU 3] minlstm batch=16 started
+
+Waiting for completion (~10 min)...
+[DONE] e1
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+
+======================================================================
+RESULTS
+======================================================================
+
+=== E1 ===
+E1: 403,279,360 params
+Memory: 37.4 GB
+FINAL: steps=453, loss=1.8068, tok/s=30.9K, nats/s=0.004617
+LEARNING: initial=4.5812, final=1.8068, delta=2.7745
+
+=== MAMBA2 ===
+Created Mamba2 model: dim=1728, depth=22, expand=2, params=402,064,492
+Mamba2: 402,064,492 params
+Memory: 47.7 GB
+FINAL: steps=224, loss=1.7273, tok/s=24.4K, nats/s=0.007245
+LEARNING: initial=6.0906, final=1.7273, delta=4.3634
+
+=== MINGRU ===
+minGRU: 364,370,304 params
+Memory: 27.1 GB
+FINAL: steps=948, loss=1.7337, tok/s=19.4K, nats/s=0.009491
+LEARNING: initial=7.4313, final=1.7337, delta=5.6975
+
+=== MINLSTM ===
+minLSTM: 382,910,976 params
+Memory: 17.0 GB
+FINAL: steps=1539, loss=1.6079, tok/s=21.0K, nats/s=0.011126
+LEARNING: initial=8.2875, final=1.6079, delta=6.6796

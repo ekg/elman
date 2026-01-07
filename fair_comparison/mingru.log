@@ -1,0 +1,18 @@
+minGRU: 364,370,304 params
+Initial loss: 9.7000
+Memory: 18.7 GB
+Step 100 (39s): loss=3.6670, 20.8K tok/s
+Step 200 (79s): loss=2.9192, 20.7K tok/s
+Step 300 (120s): loss=2.5398, 20.6K tok/s
+Step 400 (160s): loss=2.3078, 20.5K tok/s
+Step 500 (201s): loss=2.1448, 20.4K tok/s
+Step 600 (242s): loss=2.0363, 20.3K tok/s
+Step 700 (282s): loss=1.9496, 20.3K tok/s
+Step 800 (323s): loss=1.8491, 20.3K tok/s
+Step 900 (364s): loss=1.8092, 20.3K tok/s
+Step 1000 (404s): loss=1.7542, 20.3K tok/s
+Step 1100 (445s): loss=1.7403, 20.3K tok/s
+Step 1200 (486s): loss=1.7009, 20.2K tok/s
+Step 1300 (526s): loss=1.6791, 20.2K tok/s
+Step 1400 (567s): loss=1.6451, 20.2K tok/s
+FINAL: steps=1481, tokens=12.1M, loss=1.6663, tok/s=20.2K

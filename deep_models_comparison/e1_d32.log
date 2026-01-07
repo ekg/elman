@@ -1,0 +1,8 @@
+E1_d32: 393,934,912 params
+Initial: 4.7812, Memory: 10.2 GB
+Step 300: loss=2.2211, 14.7K tok/s
+Step 600: loss=1.8598, 14.6K tok/s
+Step 900: loss=1.7272, 14.6K tok/s
+Step 1200: loss=1.6609, 14.6K tok/s
+Step 1500: loss=1.6330, 14.5K tok/s
+FINAL: loss=1.6330, tok/s=14.5K, time=845s

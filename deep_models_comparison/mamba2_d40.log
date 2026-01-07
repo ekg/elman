@@ -1,0 +1,8 @@
+Mamba2_d40: 409,370,560 params
+Initial: 170.6000, Memory: 9.1 GB
+Step 300: loss=3.1227, 24.1K tok/s
+Step 600: loss=2.3701, 23.6K tok/s
+Step 900: loss=2.1092, 23.5K tok/s
+Step 1200: loss=1.9777, 23.4K tok/s
+Step 1500: loss=1.9477, 23.4K tok/s
+FINAL: loss=1.9477, tok/s=23.4K, time=526s
