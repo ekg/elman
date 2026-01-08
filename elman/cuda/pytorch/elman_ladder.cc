@@ -509,10 +509,10 @@ std::vector<Tensor> diagonal_state_elman_backward(
     Tensor dC = torch::zeros({d_state, d_model}, options);
     Tensor dA = torch::zeros({d_state}, options);
 
-    // Workspace: [T*B*d_state + 2*B*d_state + B*d_model + d_state*4]
+    // Workspace: [dBx: T*BS] [dh_rec: BS] [dy: BD] [Cy: BD] [dA_float: d_state*2]
     const int64_t BS = batch_size * d_state;
     const int64_t BD = batch_size * d_model;
-    const int64_t workspace_size = time_steps * BS + 2 * BS + BD + d_state * 4;
+    const int64_t workspace_size = time_steps * BS + BS + 2 * BD + d_state * 2;
     Tensor workspace = torch::empty({workspace_size}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
