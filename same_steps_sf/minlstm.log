@@ -1,0 +1,8 @@
+minLSTM: 382,910,976 params
+Initial: 8.2250, Memory: 17.0 GB
+Step 300: loss=2.3639, 21.7K tok/s
+Step 600: loss=2.0429, 21.2K tok/s
+Step 900: loss=1.8480, 21.1K tok/s
+Step 1200: loss=1.7758, 21.0K tok/s
+Step 1500: loss=1.7484, 20.9K tok/s
+FINAL: loss=1.7484, tok/s=20.9K, time=587s

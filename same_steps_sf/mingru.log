@@ -1,0 +1,8 @@
+minGRU: 364,370,304 params
+Initial: 9.5250, Memory: 18.7 GB
+Step 300: loss=2.5105, 20.1K tok/s
+Step 600: loss=2.1801, 19.8K tok/s
+Step 900: loss=1.9491, 19.6K tok/s
+Step 1200: loss=1.8503, 19.6K tok/s
+Step 1500: loss=1.7772, 19.5K tok/s
+FINAL: loss=1.7772, tok/s=19.5K, time=629s

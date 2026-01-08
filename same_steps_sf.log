@@ -1,0 +1,36 @@
+======================================================================
+SAME STEPS + SCHEDULE-FREE (batch=16, steps=1500)
+======================================================================
+[GPU 0] e1_d6 started
+[GPU 1] e1_d12 started
+[GPU 2] e1_d16 started
+[GPU 3] e1_d20 started
+[GPU 4] e1_d26 started
+[GPU 5] mamba2 started
+[GPU 6] mingru started
+[GPU 7] minlstm started
+
+Waiting...
+[DONE] e1_d6
+[DONE] e1_d12
+[DONE] e1_d16
+[DONE] e1_d20
+[DONE] e1_d26
+[DONE] mamba2
+[DONE] mingru
+[DONE] minlstm
+
+======================================================================
+RESULTS (Schedule-Free AdamW)
+======================================================================
+
+Model            Params     Loss      Tok/s     Time
+----------------------------------------------------
+mamba2           402.1M   1.5021      23.8K     517s
+e1_d26           403.3M   1.6068      15.7K     783s
+e1_d20           394.3M   1.6138      18.5K     665s
+e1_d16           390.7M   1.6176      19.2K     641s
+e1_d12           394.0M   1.6227      22.0K     560s
+e1_d6            386.3M   1.6927      25.4K     484s
+minlstm          382.9M   1.7896      20.8K     590s
+mingru           364.4M   1.8462      19.4K     632s
