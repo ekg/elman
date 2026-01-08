@@ -162,6 +162,74 @@ private:
 };
 
 // =============================================================================
+// Softsign Elman - E1 variant using softsign instead of tanh
+// softsign(x) = x / (1 + |x|)
+// - Cheaper than tanh (no exp)
+// - Bounded (-1, 1) like tanh
+// - Smoother gradients: derivative = 1/(1+|x|)^2
+// =============================================================================
+
+template<typename T>
+struct SoftsignElmanForward {
+    SoftsignElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input (pre silu)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SoftsignElmanBackward {
+    SoftsignElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E2: Slot-Based Elman (with cuBLAS GEMMs - same speed as e0, more memory)
 // h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
 // output = sum(C[s] * h_t[s]) * silu(z)

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from .stock_elman import StockElman
 from .mamba_gated_elman import MambaGatedElman
+from .softsign_elman import SoftsignElman
 from .slot_elman import SlotElman
 from .lowrank_slot_elman import LowRankSlotElman
 from .lowrank_elman import LowRankElman
@@ -49,11 +50,12 @@ def get_ladder_level(level):
         11: SelectiveElman,
         12: SelectiveGatedElman,  # E12: Hidden-state-dependent gating
         14: MatrixStateElman,  # E14: Matrix state with outer product update
+        15: SoftsignElman,  # E15: E1 with softsign instead of tanh
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-14, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-15, mamba2")
 
 
 class LadderLM(nn.Module):
@@ -89,6 +91,7 @@ class LadderLM(nn.Module):
         r_h_mode='spectral_norm',
         r_h_init_gain=0.1,
         core_ratio=0.125,  # For E9 hybrid: fraction of d_inner for dense core
+        mamba2_init=False,  # Use Mamba2-style initialization
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -125,6 +128,7 @@ class LadderLM(nn.Module):
                 r_h_mode=r_h_mode,
                 r_h_init_gain=r_h_init_gain,
                 core_ratio=core_ratio,  # For E9 hybrid
+                mamba2_init=mamba2_init,  # Mamba2-style initialization
             )
             for _ in range(depth)
         ])

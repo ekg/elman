@@ -33,6 +33,10 @@ from .stock_elman import StockElman, StockElmanCell, LEVEL_0_AVAILABLE
 from .mamba_gated_elman import MambaGatedElman, MambaGatedElmanCell
 LEVEL_1_AVAILABLE = True
 
+# E15: Softsign Elman (E1 with softsign instead of tanh)
+from .softsign_elman import SoftsignElman, SoftsignElmanCell
+LEVEL_15_AVAILABLE = True
+
 # E2: Slot Elman (Multi-slot memory like Mamba2)
 from .slot_elman import SlotElman, SlotElmanCell
 LEVEL_2_AVAILABLE = True

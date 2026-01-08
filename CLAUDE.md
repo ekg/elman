@@ -72,3 +72,12 @@
 | E5 d1536 r270 | 1.61 | 81K tok/s |
 
 **Key finding**: E1's throughput advantage (3×) dominates. Low-rank (E5) is theoretically interesting but slower in practice.
+
+## Activation Function Comparison (5 min training, d1280×6)
+
+| Activation | Loss | Throughput |
+|------------|------|------------|
+| tanh (E1) | 1.49 | 139.8K tok/s |
+| softsign (E15) | 1.53 | 138.6K tok/s |
+
+**Key finding**: tanh beats softsign by ~0.04 nats. Modern GPUs have optimized tanh implementations that make it competitive despite the exp() cost. Stick with tanh for E1.

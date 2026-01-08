@@ -31,6 +31,7 @@ CUTLASS_CFLAGS := -I$(CUTLASS_HOME)/include -I$(CUTLASS_HOME)/tools/util/include
 CUDA_OBJS := \
 	lib/stock_elman_gpu.o \
 	lib/mamba_gated_elman_gpu.o \
+	lib/softsign_elman_gpu.o \
 	lib/slot_elman_gpu.o \
 	lib/lowrank_slot_elman_gpu.o \
 	lib/lowrank_elman_gpu.o \

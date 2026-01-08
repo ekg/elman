@@ -281,6 +281,136 @@ std::vector<Tensor> mamba_gated_elman_backward(
 }
 
 // =============================================================================
+// Softsign Elman - E1 variant using softsign instead of tanh
+// softsign(x) = x / (1 + |x|)
+// - Cheaper than tanh (no exp)
+// - Bounded (-1, 1) like tanh
+// - Smoother gradients: derivative = 1/(1+|x|)^2
+// =============================================================================
+
+std::vector<Tensor> softsign_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input (pre silu)
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "softsign_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SoftsignElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v};
+}
+
+std::vector<Tensor> softsign_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 2) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "softsign_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SoftsignElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, db};
+}
+
+// =============================================================================
 // E2: Slot-Based Elman (with cuBLAS GEMMs - same as e0, more memory via slots)
 // h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
 // output = sum(C[s] * h_t[s]) * silu(z)
@@ -2590,6 +2720,10 @@ void elman_ladder_init(py::module& m) {
           "E1: Mamba-Gated Elman forward");
     m.def("mamba_gated_elman_backward", &mamba_gated_elman_backward,
           "E1: Mamba-Gated Elman backward");
+    m.def("softsign_elman_forward", &softsign_elman_forward,
+          "Softsign Elman forward (E1 variant with softsign instead of tanh)");
+    m.def("softsign_elman_backward", &softsign_elman_backward,
+          "Softsign Elman backward");
     m.def("slot_elman_forward", &slot_elman_forward,
           "E2: Slot Elman forward");
     m.def("slot_elman_backward", &slot_elman_backward,
