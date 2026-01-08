@@ -2227,6 +2227,357 @@ std::vector<Tensor> selective_elman_backward(
     return {dx, dz, dW_x, dW_h, db, da, dW_a, dW_w};
 }
 
+// =============================================================================
+// E12: Selective Gated Elman (hidden-state-dependent gating)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)
+// g_t = W_g @ h_t
+// output = h_t * sigmoid(z_t + g_t)
+// =============================================================================
+
+std::vector<Tensor> selective_gated_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor W_g,         // [dim, dim] gate projection (NEW)
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_g);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD] [tmp_Gh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + 2 * BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_gated_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveGatedElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_g),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v, gate_cache};
+}
+
+std::vector<Tensor> selective_gated_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_g,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor gate_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_g);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(gate_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_g = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace layout: [dv_all: T*BD] [dh_gate: BD] [dh_recurrent: BD] [d_Gh: BD] [db_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 3) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_gated_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveGatedElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_g),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_g),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, dW_g, db};
+}
+
+// =============================================================================
+// E14: Matrix State Elman (trading weight capacity for state capacity)
+// H ∈ ℝ^(d×k) matrix state instead of vector
+// key = tanh(W_key @ x), value = W_val @ x
+// decay = sigmoid(W_decay @ x), query = W_query @ x
+// H_new = decay * H + key ⊗ value (outer product)
+// output = (H_new @ query) * silu(z)
+// =============================================================================
+
+std::vector<Tensor> matrix_state_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, d] pre-activated input
+    Tensor z,           // [T, B, d] gate input
+    Tensor H0,          // [B, d, k] initial state
+    Tensor W_key,       // [d, d]
+    Tensor b_key,       // [d]
+    Tensor W_val,       // [d, k]
+    Tensor b_val,       // [k]
+    Tensor W_query,     // [d, k]
+    Tensor b_query,     // [k]
+    Tensor W_decay,     // [d, d]
+    Tensor b_decay) {   // [d]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto d = x.size(2);
+    const auto k = W_val.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(H0);
+    CHECK_INPUT(W_key);
+    CHECK_INPUT(b_key);
+    CHECK_INPUT(W_val);
+    CHECK_INPUT(b_val);
+    CHECK_INPUT(W_query);
+    CHECK_INPUT(b_query);
+    CHECK_INPUT(W_decay);
+    CHECK_INPUT(b_decay);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor H = torch::empty({time_steps + 1, batch_size, d, k}, options);
+    Tensor output = torch::empty({time_steps, batch_size, d}, options);
+
+    // Caches for backward
+    Tensor key_cache = training ? torch::empty({time_steps, batch_size, d}, options)
+                                : torch::empty({0}, options);
+    Tensor value_cache = training ? torch::empty({time_steps, batch_size, k}, options)
+                                  : torch::empty({0}, options);
+    Tensor decay_cache = training ? torch::empty({time_steps, batch_size, d}, options)
+                                  : torch::empty({0}, options);
+    Tensor query_cache = training ? torch::empty({time_steps, batch_size, k}, options)
+                                  : torch::empty({0}, options);
+
+    // Workspace: [proj_key_all: T*BD] [proj_val_all: T*BK] [proj_query_all: T*BK] [proj_decay_all: T*BD]
+    //            [key_tmp: BD] [value_tmp: BK] [query_tmp: BK] [decay_tmp: BD]
+    const int64_t BD = batch_size * d;
+    const int64_t BK = batch_size * k;
+    const int64_t workspace_size = 2 * time_steps * BD + 2 * time_steps * BK + 2 * BD + 2 * BK;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    H[0] = H0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "matrix_state_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        MatrixStateElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, d, k,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_key),
+            ptr<scalar_t>(b_key),
+            ptr<scalar_t>(W_val),
+            ptr<scalar_t>(b_val),
+            ptr<scalar_t>(W_query),
+            ptr<scalar_t>(b_query),
+            ptr<scalar_t>(W_decay),
+            ptr<scalar_t>(b_decay),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(H),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(key_cache) : nullptr,
+            training ? ptr<scalar_t>(value_cache) : nullptr,
+            training ? ptr<scalar_t>(decay_cache) : nullptr,
+            training ? ptr<scalar_t>(query_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {H, output, key_cache, value_cache, decay_cache, query_cache};
+}
+
+std::vector<Tensor> matrix_state_elman_backward(
+    Tensor W_key,
+    Tensor b_key,
+    Tensor W_val,
+    Tensor b_val,
+    Tensor W_query,
+    Tensor b_query,
+    Tensor W_decay,
+    Tensor b_decay,
+    Tensor x,
+    Tensor z,
+    Tensor H,
+    Tensor key_cache,
+    Tensor value_cache,
+    Tensor decay_cache,
+    Tensor query_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto d = x.size(2);
+    const auto k = W_val.size(1);
+
+    CHECK_INPUT(W_key);
+    CHECK_INPUT(b_key);
+    CHECK_INPUT(W_val);
+    CHECK_INPUT(b_val);
+    CHECK_INPUT(W_query);
+    CHECK_INPUT(b_query);
+    CHECK_INPUT(W_decay);
+    CHECK_INPUT(b_decay);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(H);
+    CHECK_INPUT(key_cache);
+    CHECK_INPUT(value_cache);
+    CHECK_INPUT(decay_cache);
+    CHECK_INPUT(query_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output gradients
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_key = torch::zeros({d, d}, options);
+    Tensor db_key = torch::zeros({d}, options);
+    Tensor dW_val = torch::zeros({d, k}, options);
+    Tensor db_val = torch::zeros({k}, options);
+    Tensor dW_query = torch::zeros({d, k}, options);
+    Tensor db_query = torch::zeros({k}, options);
+    Tensor dW_decay = torch::zeros({d, d}, options);
+    Tensor db_decay = torch::zeros({d}, options);
+
+    // Workspace size calculation
+    const int64_t BD = batch_size * d;
+    const int64_t BK = batch_size * k;
+    const int64_t BDK = batch_size * d * k;
+    // [d_proj_key_all: T*BD] [d_proj_val_all: T*BK] [d_proj_query_all: T*BK] [d_proj_decay_all: T*BD]
+    // [d_H: BDK] [d_pre_out: BD]
+    // Float workspace: [d_key_f: BD] [d_value_f: BK] [d_decay_f: BD] [d_query_f: BK]
+    //                  [db_key_f: d] [db_val_f: k] [db_query_f: k] [db_decay_f: d]
+    const int64_t float_ws_elems = 2 * BD + 2 * BK + 2 * d + 2 * k;
+    const int64_t float_in_T = (float_ws_elems * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = 2 * time_steps * BD + 2 * time_steps * BK + BDK + BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "matrix_state_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        MatrixStateElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, d, k,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_key),
+            ptr<scalar_t>(b_key),
+            ptr<scalar_t>(W_val),
+            ptr<scalar_t>(b_val),
+            ptr<scalar_t>(W_query),
+            ptr<scalar_t>(b_query),
+            ptr<scalar_t>(W_decay),
+            ptr<scalar_t>(b_decay),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(H),
+            ptr<scalar_t>(key_cache),
+            ptr<scalar_t>(value_cache),
+            ptr<scalar_t>(decay_cache),
+            ptr<scalar_t>(query_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_key),
+            ptr<scalar_t>(db_key),
+            ptr<scalar_t>(dW_val),
+            ptr<scalar_t>(db_val),
+            ptr<scalar_t>(dW_query),
+            ptr<scalar_t>(db_query),
+            ptr<scalar_t>(dW_decay),
+            ptr<scalar_t>(db_decay),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_key, db_key, dW_val, db_val, dW_query, db_query, dW_decay, db_decay};
+}
+
 }  // anonymous namespace
 
 
@@ -2291,4 +2642,12 @@ void elman_ladder_init(py::module& m) {
           "E11: Selective Memory Elman forward (input-dependent decay and read)");
     m.def("selective_elman_backward", &selective_elman_backward,
           "E11: Selective Memory Elman backward");
+    m.def("selective_gated_elman_forward", &selective_gated_elman_forward,
+          "E12: Selective Gated Elman forward (hidden-state-dependent gating)");
+    m.def("selective_gated_elman_backward", &selective_gated_elman_backward,
+          "E12: Selective Gated Elman backward");
+    m.def("matrix_state_elman_forward", &matrix_state_elman_forward,
+          "E14: Matrix State Elman forward (d*k matrix state, outer product update)");
+    m.def("matrix_state_elman_backward", &matrix_state_elman_backward,
+          "E14: Matrix State Elman backward");
 }

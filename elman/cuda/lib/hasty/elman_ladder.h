@@ -1203,6 +1203,177 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E12: Selective Gated Elman (hidden-state-dependent gating)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)  -- same as E1
+// g_t = W_g @ h_t                            -- project h for gating
+// output = h_t * sigmoid(z_t + g_t)          -- selective gate
+// Key: Gate depends on hidden state, not just input (like Mamba2 selectivity)
+// =============================================================================
+
+template<typename T>
+struct SelectiveGatedElmanForward {
+    SelectiveGatedElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,        // [dim, dim]
+        const T* W_h,        // [dim, dim]
+        const T* W_g,        // [dim, dim] gate projection (NEW)
+        const T* b,          // [dim]
+        const T* x,          // [T, B, dim] pre-activated input
+        const T* z,          // [T, B, dim] gate input
+        T* h,                // [T+1, B, dim] hidden states
+        T* output,           // [T, B, dim]
+        T* v,                // [T, B, dim] pre-activation cache
+        T* gate_cache,       // [T, B, dim] gate pre-activation cache (NEW)
+        T* workspace);       // [T*BD + 2*BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SelectiveGatedElmanBackward {
+    SelectiveGatedElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* W_g,        // [dim, dim] gate projection (NEW)
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* gate_cache, // [T, B, dim] gate pre-activation cache (NEW)
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* dW_g,             // [dim, dim] gradient for gate projection (NEW)
+        T* db,
+        T* workspace);       // [(T+3)*BD + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E14: Matrix State Elman (trading weight capacity for state capacity)
+// State: H ∈ ℝ^(d×k) matrix instead of vector
+// key = tanh(W_key @ x)           # key ∈ ℝ^d
+// value = W_val @ x               # value ∈ ℝ^k
+// decay = sigmoid(W_decay @ x)    # decay ∈ ℝ^d
+// H_new = decay[:,None] * H + key[:,None] * value[None,:]  # outer product
+// query = W_query @ x             # query ∈ ℝ^k
+// output = (H_new @ query) * silu(z)  # gated output
+// Key: d*k dynamic state parameters for O(dk) element-wise cost
+// =============================================================================
+
+template<typename T>
+struct MatrixStateElmanForward {
+    MatrixStateElmanForward(
+        bool training,
+        int batch_size,
+        int d,          // model dimension
+        int k,          // state dimension
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_key,       // [d, d]
+        const T* b_key,       // [d]
+        const T* W_val,       // [d, k]
+        const T* b_val,       // [k]
+        const T* W_query,     // [d, k]
+        const T* b_query,     // [k]
+        const T* W_decay,     // [d, d]
+        const T* b_decay,     // [d]
+        const T* x,           // [T, B, d] pre-activated input
+        const T* z,           // [T, B, d] gate input
+        T* H,                 // [T+1, B, d, k] matrix hidden states
+        T* output,            // [T, B, d]
+        T* key_cache,         // [T, B, d] cache for backward
+        T* value_cache,       // [T, B, k] cache for backward
+        T* decay_cache,       // [T, B, d] cache for backward
+        T* query_cache,       // [T, B, k] cache for backward
+        T* workspace);        // [2*T*BD + 2*T*BK + BD + BK + BD + BK]
+
+private:
+    bool training_;
+    int batch_size_;
+    int d_;
+    int k_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct MatrixStateElmanBackward {
+    MatrixStateElmanBackward(
+        int batch_size,
+        int d,
+        int k,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_key,
+        const T* b_key,
+        const T* W_val,
+        const T* b_val,
+        const T* W_query,
+        const T* b_query,
+        const T* W_decay,
+        const T* b_decay,
+        const T* x,
+        const T* z,
+        const T* H,
+        const T* key_cache,
+        const T* value_cache,
+        const T* decay_cache,
+        const T* query_cache,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_key,
+        T* db_key,
+        T* dW_val,
+        T* db_val,
+        T* dW_query,
+        T* db_query,
+        T* dW_decay,
+        T* db_decay,
+        T* workspace);        // [2*T*BD + 2*T*BK + BDK + BD + 4*BD + 4*k + 2*d + 2*k (floats)]
+
+private:
+    int batch_size_;
+    int d_;
+    int k_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

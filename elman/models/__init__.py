@@ -65,6 +65,10 @@ LEVEL_10_AVAILABLE = True
 from .selective_elman import SelectiveElman, SelectiveElmanCell
 LEVEL_11_AVAILABLE = True
 
+# E14: Matrix State Elman (d*k matrix state with outer product update)
+from .matrix_state_elman import MatrixStateElman, MatrixStateElmanCell, MATRIX_STATE_CUDA_AVAILABLE
+LEVEL_14_AVAILABLE = True
+
 # Language model wrapper
 from .ladder_lm import LadderLM, create_ladder_model
 
@@ -97,6 +101,7 @@ def get_available_levels():
         9: ("Hybrid Elman (e9)", LEVEL_9_AVAILABLE, HybridElman),
         10: ("Multi-Scale EMA Elman (e10)", LEVEL_10_AVAILABLE, MultiScaleElman),
         11: ("Selective Memory Elman (e11)", LEVEL_11_AVAILABLE, SelectiveElman),
+        14: ("Matrix State Elman (e14)", LEVEL_14_AVAILABLE, MatrixStateElman),
     }
     return levels
 
@@ -133,6 +138,8 @@ __all__ = [
     'MultiScaleElman', 'MultiScaleElmanCell', 'LEVEL_10_AVAILABLE',
     # E11: Selective Memory Elman
     'SelectiveElman', 'SelectiveElmanCell', 'LEVEL_11_AVAILABLE',
+    # E14: Matrix State Elman
+    'MatrixStateElman', 'MatrixStateElmanCell', 'LEVEL_14_AVAILABLE', 'MATRIX_STATE_CUDA_AVAILABLE',
     # Language model wrapper
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline

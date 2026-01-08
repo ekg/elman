@@ -43,7 +43,9 @@ CUDA_OBJS := \
 	lib/scaled_lowrank_elman_gpu.o \
 	lib/hybrid_elman_gpu.o \
 	lib/multiscale_elman_gpu.o \
-	lib/selective_elman_gpu.o
+	lib/selective_elman_gpu.o \
+	lib/selective_gated_elman_gpu.o \
+	lib/matrix_state_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

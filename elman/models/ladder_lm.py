@@ -22,6 +22,8 @@ from .scaled_lowrank_elman import ScaledLowRankElman
 from .hybrid_elman import HybridElman
 from .multiscale_elman import MultiScaleElman
 from .selective_elman import SelectiveElman
+from .selective_gated_elman import SelectiveGatedElman
+from .matrix_state_elman import MatrixStateElman
 
 
 def get_ladder_level(level):
@@ -45,11 +47,13 @@ def get_ladder_level(level):
         9: HybridElman,
         10: MultiScaleElman,
         11: SelectiveElman,
+        12: SelectiveGatedElman,  # E12: Hidden-state-dependent gating
+        14: MatrixStateElman,  # E14: Matrix state with outer product update
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-11, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-14, mamba2")
 
 
 class LadderLM(nn.Module):
