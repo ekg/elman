@@ -54,6 +54,19 @@
    ```
 5. **Data files**: `data/pile.txt` (has 0x1e document delimiters)
 
+## Experiment Execution Rules
+
+1. **RUN EXPERIMENTS IN PARALLEL** - When comparing multiple models/configs, launch them simultaneously on separate GPUs. Never run sequentially when parallelism is possible.
+2. Use bash job scheduling pattern:
+   ```bash
+   CUDA_VISIBLE_DEVICES=0 python train.py --config a 2>&1 | tee /tmp/exp_a.log &
+   CUDA_VISIBLE_DEVICES=1 python train.py --config b 2>&1 | tee /tmp/exp_b.log &
+   CUDA_VISIBLE_DEVICES=2 python train.py --config c 2>&1 | tee /tmp/exp_c.log &
+   wait  # Wait for all to complete
+   ```
+3. Up to 8 parallel jobs on 8 GPUs - assign each experiment to a different CUDA_VISIBLE_DEVICES
+4. Always log outputs to files for later analysis
+
 ## Benchmarking Rules
 
 1. Always use the same batch size across models for fair comparison
