@@ -54,6 +54,8 @@ def parse_args():
                         help='Number of layers (overrides --params)')
     parser.add_argument('--expansion', type=float, default=1.0,
                         help='Hidden state expansion factor')
+    parser.add_argument('--state_expansion', type=int, default=2,
+                        help='State expansion for E16 (d_state = d_inner * state_expansion)')
     parser.add_argument('--n_groups', type=int, default=32,
                         help='Number of groups for compete softmax')
 
@@ -72,6 +74,8 @@ def parse_args():
                         help='Gradient clipping (0 to disable)')
     parser.add_argument('--steps', type=int, default=100000,
                         help='Total training steps')
+    parser.add_argument('--train_minutes', type=float, default=None,
+                        help='Train for N minutes (overrides --steps)')
     parser.add_argument('--warmup_steps', type=int, default=1000,
                         help='Warmup steps for learning rate')
 
@@ -213,6 +217,7 @@ def train(args):
             level=args.level,
             expansion=args.expansion,
             n_groups=args.n_groups,
+            state_expansion=args.state_expansion,
         )
     else:
         model = create_ladder_model(
@@ -221,6 +226,7 @@ def train(args):
             vocab_size=256,
             expansion=args.expansion,
             n_groups=args.n_groups,
+            state_expansion=args.state_expansion,
         )
 
     model = model.to(device)
@@ -288,7 +294,19 @@ def train(args):
     model.train()
     step = start_step
 
-    while step < args.steps:
+    # Time-based training setup
+    train_start_time = time.time()
+    train_end_time = None
+    if args.train_minutes is not None:
+        train_end_time = train_start_time + args.train_minutes * 60
+        print(f"Time-based training: {args.train_minutes} minutes")
+
+    def should_continue():
+        if train_end_time is not None:
+            return time.time() < train_end_time
+        return step < args.steps
+
+    while should_continue():
         # Get batch - different methods for TBPTT vs non-TBPTT
         if args.tbptt:
             # BatchedStreamDataset: each batch element has its own persistent stream

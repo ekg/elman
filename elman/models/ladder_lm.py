@@ -94,6 +94,7 @@ class LadderLM(nn.Module):
         r_h_init_gain=0.1,
         core_ratio=0.125,  # For E9 hybrid: fraction of d_inner for dense core
         mamba2_init=False,  # Use Mamba2-style initialization
+        state_expansion=2,  # For E16: d_state = d_inner * state_expansion
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -131,6 +132,7 @@ class LadderLM(nn.Module):
                 r_h_init_gain=r_h_init_gain,
                 core_ratio=core_ratio,  # For E9 hybrid
                 mamba2_init=mamba2_init,  # Mamba2-style initialization
+                state_expansion=state_expansion,  # For E16
             )
             for _ in range(depth)
         ])
@@ -260,6 +262,7 @@ def create_ladder_model(
     n_slots: int = 8,
     r_h_mode: str = 'spectral_norm',
     r_h_init_gain: float = 0.1,
+    state_expansion: int = 2,
 ):
     """
     Create a LadderLM with approximately target_params parameters.
@@ -276,6 +279,7 @@ def create_ladder_model(
         n_slots: Number of slots for E2/E3 (default: 8)
         r_h_mode: Constraint mode for R_h matrix (for log-space levels)
         r_h_init_gain: Initial gain for R_h orthogonal initialization
+        state_expansion: For E16: d_state = d_inner * state_expansion
 
     Returns:
         LadderLM or Mamba2LM model
@@ -320,6 +324,7 @@ def create_ladder_model(
         vocab_size=vocab_size, dim=dim, depth=1, level=level,
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
+        state_expansion=state_expansion,
     )
     params_1layer = model_1layer.get_num_params()
 
@@ -328,6 +333,7 @@ def create_ladder_model(
         vocab_size=vocab_size, dim=dim, depth=2, level=level,
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
+        state_expansion=state_expansion,
     )
     params_2layer = model_2layer.get_num_params()
 
@@ -358,6 +364,7 @@ def create_ladder_model(
         n_slots=n_slots,
         r_h_mode=r_h_mode,
         r_h_init_gain=r_h_init_gain,
+        state_expansion=state_expansion,
     )
 
     actual_params = model.get_num_params()
