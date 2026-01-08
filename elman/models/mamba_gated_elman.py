@@ -58,10 +58,11 @@ class MambaGatedElmanCell(nn.Module):
     output = h_t * silu(z_t)
     """
 
-    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0):
+    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0, mamba2_init=False):
         super().__init__()
         self.dim = dim
         self.w_h_mode = w_h_mode
+        self.mamba2_init = mamba2_init
 
         # RNN weights
         self.W_x = nn.Parameter(torch.empty(dim, dim))
@@ -71,8 +72,23 @@ class MambaGatedElmanCell(nn.Module):
         self._init_weights(w_h_init_gain)
 
     def _init_weights(self, w_h_init_gain):
-        nn.init.xavier_uniform_(self.W_x)
-        nn.init.xavier_uniform_(self.W_h, gain=w_h_init_gain)
+        if self.mamba2_init:
+            # Mamba2-style initialization
+            # W_x: small std like Mamba2's input projections
+            nn.init.normal_(self.W_x, std=0.02)
+            # W_h: orthogonal init scaled to have spectral radius ~0.99
+            # Higher radius = slower forgetting = better for long-range deps
+            # Note: Must init in fp32 then copy for bf16 compatibility
+            W_h_fp32 = torch.empty_like(self.W_h, dtype=torch.float32)
+            nn.init.orthogonal_(W_h_fp32)
+            W_h_fp32.mul_(0.99)  # Scale to spectral radius ~0.99
+            with torch.no_grad():
+                self.W_h.copy_(W_h_fp32.to(self.W_h.dtype))
+            # b: zero bias for clean init
+            nn.init.constant_(self.b, 0.0)
+        else:
+            nn.init.xavier_uniform_(self.W_x)
+            nn.init.xavier_uniform_(self.W_h, gain=w_h_init_gain)
 
     def get_W_h(self):
         """Get W_h with spectral normalization applied."""
@@ -168,12 +184,14 @@ class MambaGatedElman(nn.Module):
         r_h_init_gain=1.0,
         use_conv=False,
         d_conv=4,
+        mamba2_init=False,
         **kwargs
     ):
         super().__init__()
         self.dim = dim
         self.d_inner = int(dim * expansion)
         self.use_conv = use_conv
+        self.mamba2_init = mamba2_init
 
         # Mamba2-style: project to 2*d_inner, then split
         self.in_proj = nn.Linear(dim, 2 * self.d_inner, bias=False)
@@ -193,7 +211,8 @@ class MambaGatedElman(nn.Module):
         self.cell = MambaGatedElmanCell(
             self.d_inner,
             w_h_mode=r_h_mode,
-            w_h_init_gain=r_h_init_gain
+            w_h_init_gain=r_h_init_gain,
+            mamba2_init=mamba2_init
         )
 
         # Output projection
@@ -204,8 +223,13 @@ class MambaGatedElman(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.in_proj.weight)
-        nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.mamba2_init:
+            # Mamba2-style: small std for projections
+            nn.init.normal_(self.in_proj.weight, std=0.02)
+            nn.init.normal_(self.out_proj.weight, std=0.02)
+        else:
+            nn.init.xavier_uniform_(self.in_proj.weight)
+            nn.init.xavier_uniform_(self.out_proj.weight)
 
     def forward(self, x, h0=None, **kwargs):
         """
