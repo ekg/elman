@@ -411,6 +411,140 @@ std::vector<Tensor> softsign_elman_backward(
 }
 
 // =============================================================================
+// E16: Diagonal State-Expanded Elman
+// h' = tanh(A ⊙ h + B @ x)  where A is diagonal
+// y = C @ h * silu(z)
+// =============================================================================
+
+std::vector<Tensor> diagonal_state_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, d_model]
+    Tensor z,           // [T, B, d_model] gate input
+    Tensor h0,          // [B, d_state]
+    Tensor B_proj,      // [d_model, d_state]
+    Tensor C_proj,      // [d_state, d_model]
+    Tensor A) {         // [d_state] diagonal
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto d_model = x.size(2);
+    const auto d_state = A.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(C_proj);
+    CHECK_INPUT(A);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, d_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, d_model}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, d_state}, options)
+                        : torch::empty({0}, options);
+
+    // Workspace: [T*B*d_state + B*d_model]
+    const int64_t BS = batch_size * d_state;
+    const int64_t BD = batch_size * d_model;
+    Tensor workspace = torch::empty({time_steps * BS + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_state_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagonalStateElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, d_model, d_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(B_proj),
+            ptr<scalar_t>(C_proj),
+            ptr<scalar_t>(A),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v};
+}
+
+std::vector<Tensor> diagonal_state_elman_backward(
+    Tensor B_proj,
+    Tensor C_proj,
+    Tensor A,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto d_model = x.size(2);
+    const auto d_state = A.size(0);
+
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(C_proj);
+    CHECK_INPUT(A);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dB = torch::zeros({d_model, d_state}, options);
+    Tensor dC = torch::zeros({d_state, d_model}, options);
+    Tensor dA = torch::zeros({d_state}, options);
+
+    // Workspace: [T*B*d_state + 2*B*d_state + B*d_model + d_state*4]
+    const int64_t BS = batch_size * d_state;
+    const int64_t BD = batch_size * d_model;
+    const int64_t workspace_size = time_steps * BS + 2 * BS + BD + d_state * 4;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "diagonal_state_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        DiagonalStateElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, d_model, d_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(B_proj),
+            ptr<scalar_t>(C_proj),
+            ptr<scalar_t>(A),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dB),
+            ptr<scalar_t>(dC),
+            ptr<scalar_t>(dA),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dB, dC, dA};
+}
+
+// =============================================================================
 // E2: Slot-Based Elman (with cuBLAS GEMMs - same as e0, more memory via slots)
 // h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
 // output = sum(C[s] * h_t[s]) * silu(z)
@@ -2724,6 +2858,10 @@ void elman_ladder_init(py::module& m) {
           "Softsign Elman forward (E1 variant with softsign instead of tanh)");
     m.def("softsign_elman_backward", &softsign_elman_backward,
           "Softsign Elman backward");
+    m.def("diagonal_state_elman_forward", &diagonal_state_elman_forward,
+          "E16: Diagonal State Elman forward (Mamba2 efficiency + E1 nonlinearity)");
+    m.def("diagonal_state_elman_backward", &diagonal_state_elman_backward,
+          "E16: Diagonal State Elman backward");
     m.def("slot_elman_forward", &slot_elman_forward,
           "E2: Slot Elman forward");
     m.def("slot_elman_backward", &slot_elman_backward,

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from .stock_elman import StockElman
 from .mamba_gated_elman import MambaGatedElman
 from .softsign_elman import SoftsignElman
+from .diagonal_state_elman import DiagonalStateElman
 from .slot_elman import SlotElman
 from .lowrank_slot_elman import LowRankSlotElman
 from .lowrank_elman import LowRankElman
@@ -51,11 +52,12 @@ def get_ladder_level(level):
         12: SelectiveGatedElman,  # E12: Hidden-state-dependent gating
         14: MatrixStateElman,  # E14: Matrix state with outer product update
         15: SoftsignElman,  # E15: E1 with softsign instead of tanh
+        16: DiagonalStateElman,  # E16: Mamba2 efficiency + E1 nonlinearity
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-15, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-16, mamba2")
 
 
 class LadderLM(nn.Module):

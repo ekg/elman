@@ -37,6 +37,10 @@ LEVEL_1_AVAILABLE = True
 from .softsign_elman import SoftsignElman, SoftsignElmanCell
 LEVEL_15_AVAILABLE = True
 
+# E16: Diagonal State-Expanded Elman (Mamba2 efficiency + E1 expressivity)
+from .diagonal_state_elman import DiagonalStateElman, DiagonalStateElmanCell
+LEVEL_16_AVAILABLE = True
+
 # E2: Slot Elman (Multi-slot memory like Mamba2)
 from .slot_elman import SlotElman, SlotElmanCell
 LEVEL_2_AVAILABLE = True

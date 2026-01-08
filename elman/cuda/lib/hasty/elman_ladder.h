@@ -230,6 +230,80 @@ private:
 };
 
 // =============================================================================
+// E16: Diagonal State-Expanded Elman
+// h' = tanh(A ⊙ h + B @ x)  where A is diagonal
+// y = C @ h * silu(z)
+// - State expansion (d_state > d_model)
+// - Diagonal recurrence O(n) instead of O(n²)
+// - tanh nonlinearity for composition depth
+// =============================================================================
+
+template<typename T>
+struct DiagonalStateElmanForward {
+    DiagonalStateElmanForward(
+        bool training,
+        int batch_size,
+        int d_model,
+        int d_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B,         // [d_model, d_state]
+        const T* C,         // [d_state, d_model]
+        const T* A,         // [d_state] diagonal
+        const T* x,         // [T, B, d_model]
+        const T* z,         // [T, B, d_model] gate input
+        T* h,               // [T+1, B, d_state] hidden states
+        T* output,          // [T, B, d_model]
+        T* v,               // [T, B, d_state] pre-activation cache
+        T* workspace);      // [T*B*d_state + B*d_model]
+
+private:
+    bool training_;
+    int batch_size_;
+    int d_model_;
+    int d_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct DiagonalStateElmanBackward {
+    DiagonalStateElmanBackward(
+        int batch_size,
+        int d_model,
+        int d_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B,
+        const T* C,
+        const T* A,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dB,
+        T* dC,
+        T* dA,
+        T* workspace);      // [T*B*d_state + 2*B*d_state + B*d_model + d_state*4]
+
+private:
+    int batch_size_;
+    int d_model_;
+    int d_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E2: Slot-Based Elman (with cuBLAS GEMMs - same speed as e0, more memory)
 // h_t[s] = tanh(W_x @ x + W_h @ h_prev[s] + b)    for each slot s
 // output = sum(C[s] * h_t[s]) * silu(z)
