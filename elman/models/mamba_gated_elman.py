@@ -76,12 +76,13 @@ class MambaGatedElmanCell(nn.Module):
             # Mamba2-style initialization
             # W_x: small std like Mamba2's input projections
             nn.init.normal_(self.W_x, std=0.02)
-            # W_h: orthogonal init scaled to have spectral radius ~0.99
+            # W_h: orthogonal init scaled to have spectral radius ~0.999
             # Higher radius = slower forgetting = better for long-range deps
+            # 0.999 is optimal; 0.9999 hurts (too close to identity)
             # Note: Must init in fp32 then copy for bf16 compatibility
             W_h_fp32 = torch.empty_like(self.W_h, dtype=torch.float32)
             nn.init.orthogonal_(W_h_fp32)
-            W_h_fp32.mul_(0.99)  # Scale to spectral radius ~0.99
+            W_h_fp32.mul_(0.999)  # Scale to spectral radius ~0.999
             with torch.no_grad():
                 self.W_h.copy_(W_h_fp32.to(self.W_h.dtype))
             # b: zero bias for clean init
