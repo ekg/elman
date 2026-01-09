@@ -1793,6 +1793,92 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E21: Structured Elman (MIMO with Nonlinear State Mixing)
+// Key operations:
+// 1. MIMO update: update[b,h,n,p] = sum_r B[b,h,n,r] * X[b,h,p,r]
+// 2. Nonlinear state: H = silu(alpha * H_prev + update)
+// 3. Output reduction: y = sum_n H[b,h,n,p]
+// 4. E18-A gating: output = y * silu(z + y)
+// =============================================================================
+
+template<typename T>
+struct StructuredElmanForward {
+    StructuredElmanForward(
+        bool training,
+        int batch_size,
+        int nheads,
+        int d_state,
+        int headdim,
+        int mimo_rank,
+        int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B_proj,      // [T, B, nheads, d_state, mimo_rank]
+        const T* X_proj,      // [T, B, nheads, headdim, mimo_rank]
+        const T* alpha_raw,   // [T, B, nheads]
+        const T* alpha_bias,  // [nheads]
+        const T* z,           // [T, B, d_inner]
+        T* H,                 // [(T+1), B, nheads, d_state, headdim]
+        T* output,            // [T, B, d_inner]
+        T* y_cache,           // [T, B, d_inner] for backward
+        T* workspace);        // minimal workspace
+
+private:
+    bool training_;
+    int batch_size_;
+    int nheads_;
+    int d_state_;
+    int headdim_;
+    int mimo_rank_;
+    int nonlinearity_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct StructuredElmanBackward {
+    StructuredElmanBackward(
+        int batch_size,
+        int nheads,
+        int d_state,
+        int headdim,
+        int mimo_rank,
+        int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B_proj,
+        const T* X_proj,
+        const T* alpha_raw,
+        const T* alpha_bias,
+        const T* z,
+        const T* H,
+        const T* y_cache,
+        const T* d_output,
+        T* dz,
+        T* dB_proj,
+        T* dX_proj,
+        T* dalpha_raw,
+        T* dalpha_bias,
+        T* workspace);        // [BD + B_state + float_grads]
+
+private:
+    int batch_size_;
+    int nheads_;
+    int d_state_;
+    int headdim_;
+    int mimo_rank_;
+    int nonlinearity_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 template<typename T>
 struct Mamba2InformedElmanBackward {
     Mamba2InformedElmanBackward(

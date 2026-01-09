@@ -15,6 +15,61 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    HAS_CUDA_KERNEL = True
+except ImportError:
+    HAS_CUDA_KERNEL = False
+
+
+class StructuredElmanFunction(torch.autograd.Function):
+    """Custom autograd function for E21 CUDA kernel."""
+
+    @staticmethod
+    def forward(ctx, B_proj, X_proj, alpha_raw, alpha_bias, z, H0, nheads, d_state, mimo_rank, nonlinearity_mode, training):
+        """
+        Args:
+            B_proj: [T, B, nheads, d_state, mimo_rank]
+            X_proj: [T, B, nheads, headdim, mimo_rank]
+            alpha_raw: [T, B, nheads]
+            alpha_bias: [nheads]
+            z: [T, B, d_inner]
+            H0: [B, nheads, d_state, headdim]
+            nonlinearity_mode: 0=silu, 1=tanh, 2=linear
+        """
+        H, output, y_cache = hasty_pytorch_lib.structured_elman_forward(
+            training, nheads, d_state, mimo_rank, nonlinearity_mode,
+            B_proj.contiguous(), X_proj.contiguous(),
+            alpha_raw.contiguous(), alpha_bias.contiguous(),
+            z.contiguous(), H0.contiguous()
+        )
+
+        if training:
+            ctx.save_for_backward(B_proj, X_proj, alpha_raw, alpha_bias, z, H, y_cache)
+            ctx.nheads = nheads
+            ctx.d_state = d_state
+            ctx.mimo_rank = mimo_rank
+            ctx.nonlinearity_mode = nonlinearity_mode
+
+        return output, H[-1]
+
+    @staticmethod
+    def backward(ctx, d_output, d_H_final):
+        B_proj, X_proj, alpha_raw, alpha_bias, z, H, y_cache = ctx.saved_tensors
+        nheads = ctx.nheads
+        d_state = ctx.d_state
+        mimo_rank = ctx.mimo_rank
+        nonlinearity_mode = ctx.nonlinearity_mode
+
+        dz, dB_proj, dX_proj, dalpha_raw, dalpha_bias = hasty_pytorch_lib.structured_elman_backward(
+            nheads, d_state, mimo_rank, nonlinearity_mode,
+            B_proj, X_proj, alpha_raw, alpha_bias, z, H, y_cache,
+            d_output.contiguous()
+        )
+
+        return dB_proj, dX_proj, dalpha_raw, dalpha_bias, dz, None, None, None, None, None, None
+
 
 class StructuredElmanCell(nn.Module):
     """
@@ -65,6 +120,22 @@ class StructuredElmanCell(nn.Module):
             H0 = torch.zeros(B, self.nheads, self.d_state, self.headdim,
                            device=device, dtype=dtype)
 
+        # Map nonlinearity to mode: 0=silu, 1=tanh, 2=linear
+        nonlinearity_map = {'silu': 0, 'tanh': 1, 'linear': 2, 'gelu': -1}
+        nonlinearity_mode = nonlinearity_map.get(self.nonlinearity, -1)
+
+        # Use CUDA kernel if available (supports silu, tanh, linear)
+        use_cuda = HAS_CUDA_KERNEL and nonlinearity_mode >= 0 and device.type == 'cuda'
+
+        if use_cuda:
+            # CUDA kernel path - returns [T, B, d_inner] same as Python
+            output, H_final = StructuredElmanFunction.apply(
+                B_proj, X_proj, alpha_raw, self.alpha_bias, z, H0,
+                self.nheads, self.d_state, self.mimo_rank, nonlinearity_mode, self.training
+            )
+            return output, H_final
+
+        # Python fallback path
         H = H0
         output_list = []
 

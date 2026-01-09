@@ -3274,6 +3274,151 @@ std::vector<Tensor> simplified_gate_elman_backward(
     return {dx, dz, dW_x, dW_h, db, db_gate};
 }
 
+// =============================================================================
+// E21: Structured Elman (MIMO with Nonlinear State Mixing)
+// =============================================================================
+
+std::vector<Tensor> structured_elman_forward(
+    bool training,
+    int nheads,
+    int d_state,
+    int mimo_rank,
+    int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+    Tensor B_proj,        // [T, B, nheads, d_state, mimo_rank]
+    Tensor X_proj,        // [T, B, nheads, headdim, mimo_rank]
+    Tensor alpha_raw,     // [T, B, nheads]
+    Tensor alpha_bias,    // [nheads]
+    Tensor z,             // [T, B, d_inner]
+    Tensor H0) {          // [B, nheads, d_state, headdim]
+
+    const auto time_steps = B_proj.size(0);
+    const auto batch_size = B_proj.size(1);
+    const auto headdim = X_proj.size(3);
+    const auto d_inner = nheads * headdim;
+
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(X_proj);
+    CHECK_INPUT(alpha_raw);
+    CHECK_INPUT(alpha_bias);
+    CHECK_INPUT(z);
+    CHECK_INPUT(H0);
+
+    const auto options = B_proj.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // H: [(T+1), B, nheads, d_state, headdim]
+    Tensor H = torch::empty({time_steps + 1, batch_size, nheads, d_state, headdim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, d_inner}, options);
+    Tensor y_cache = training ? torch::empty({time_steps, batch_size, d_inner}, options)
+                              : torch::empty({0}, options);
+
+    // Initialize H0
+    H[0] = H0;
+
+    // Minimal workspace
+    const int64_t BD = batch_size * d_inner;
+    Tensor workspace = torch::empty({BD}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        B_proj.scalar_type(), "structured_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        StructuredElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, nheads, d_state, headdim, mimo_rank, nonlinearity_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(B_proj),
+            ptr<scalar_t>(X_proj),
+            ptr<scalar_t>(alpha_raw),
+            ptr<scalar_t>(alpha_bias),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(H),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(y_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {H, output, y_cache};
+}
+
+std::vector<Tensor> structured_elman_backward(
+    int nheads,
+    int d_state,
+    int mimo_rank,
+    int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+    Tensor B_proj,        // [T, B, nheads, d_state, mimo_rank]
+    Tensor X_proj,        // [T, B, nheads, headdim, mimo_rank]
+    Tensor alpha_raw,     // [T, B, nheads]
+    Tensor alpha_bias,    // [nheads]
+    Tensor z,             // [T, B, d_inner]
+    Tensor H,             // [(T+1), B, nheads, d_state, headdim]
+    Tensor y_cache,       // [T, B, d_inner]
+    Tensor d_output) {    // [T, B, d_inner]
+
+    const auto time_steps = B_proj.size(0);
+    const auto batch_size = B_proj.size(1);
+    const auto headdim = X_proj.size(3);
+    const auto d_inner = nheads * headdim;
+
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(X_proj);
+    CHECK_INPUT(alpha_raw);
+    CHECK_INPUT(alpha_bias);
+    CHECK_INPUT(z);
+    CHECK_INPUT(H);
+    CHECK_INPUT(y_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = B_proj.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dz = torch::empty_like(z);
+    Tensor dB_proj = torch::zeros_like(B_proj);
+    Tensor dX_proj = torch::zeros_like(X_proj);
+    Tensor dalpha_raw = torch::zeros_like(alpha_raw);
+    Tensor dalpha_bias = torch::zeros({nheads}, options);
+
+    // Workspace: [BD + B_state + float_grads]
+    const int64_t BD = batch_size * d_inner;
+    const int64_t B_state = batch_size * nheads * d_state * headdim;
+    const int64_t B_proj_size = batch_size * nheads * d_state * mimo_rank;
+    const int64_t X_proj_size = batch_size * nheads * headdim * mimo_rank;
+    const int64_t alpha_size = batch_size * nheads;
+    const int64_t float_size = (B_proj_size + X_proj_size + alpha_size + nheads) * sizeof(float);
+    const int64_t float_in_T = (float_size + sizeof(float) - 1) / sizeof(float);
+    Tensor workspace = torch::empty({BD + B_state + float_in_T * 2}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        B_proj.scalar_type(), "structured_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        StructuredElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, nheads, d_state, headdim, mimo_rank, nonlinearity_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(B_proj),
+            ptr<scalar_t>(X_proj),
+            ptr<scalar_t>(alpha_raw),
+            ptr<scalar_t>(alpha_bias),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(H),
+            ptr<scalar_t>(y_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dB_proj),
+            ptr<scalar_t>(dX_proj),
+            ptr<scalar_t>(dalpha_raw),
+            ptr<scalar_t>(dalpha_bias),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dz, dB_proj, dX_proj, dalpha_raw, dalpha_bias};
+}
+
 }  // anonymous namespace
 
 
@@ -3366,4 +3511,8 @@ void elman_ladder_init(py::module& m) {
           "E14: Matrix State Elman forward (d*k matrix state, outer product update)");
     m.def("matrix_state_elman_backward", &matrix_state_elman_backward,
           "E14: Matrix State Elman backward");
+    m.def("structured_elman_forward", &structured_elman_forward,
+          "E21: Structured Elman forward (MIMO with nonlinear state mixing)");
+    m.def("structured_elman_backward", &structured_elman_backward,
+          "E21: Structured Elman backward");
 }
