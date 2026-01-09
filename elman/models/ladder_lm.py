@@ -29,6 +29,8 @@ from .matrix_state_elman import MatrixStateElman
 from .selective_wh_elman import SelectiveWhElman
 from .haware_gate_elman import HAwareGateElman
 from .simplified_gate_elman import SimplifiedGateElman
+from .mamba2_informed_elman import Mamba2InformedElman
+from .structured_elman import StructuredElman
 
 
 def get_ladder_level(level):
@@ -64,6 +66,11 @@ def get_ladder_level(level):
         '19b': lambda **kw: SimplifiedGateElman(gate_mode=1, **kw),  # E19-B: gate = h-only
         '19d': lambda **kw: SimplifiedGateElman(gate_mode=2, **kw),  # E19-D: residual + z
         '19e': lambda **kw: SimplifiedGateElman(gate_mode=3, **kw),  # E19-E: residual + Wx + h
+        20: Mamba2InformedElman,  # E20: Mamba2-style matrix state
+        21: StructuredElman,  # E21: MIMO with nonlinear state
+        '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
+        '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
+        '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:

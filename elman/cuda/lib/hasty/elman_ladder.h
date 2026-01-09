@@ -1743,6 +1743,91 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E20: Mamba2-Informed Elman (matrix state with Mamba2 lessons)
+// Key differences from E14:
+// - Combined in_proj (1 GEMM) instead of 4 separate projections
+// - Scalar decay per HEAD (nheads params) instead of per-element (d params)
+// - No tanh in state update (only silu pre-activation on x)
+// - State shape: [B, nheads, headdim, d_state]
+// - E18-A style h-aware gating: output = y * silu(z + y)
+//
+// State update:
+//   decay = sigmoid(dt + dt_bias)  # [B, nheads] scalar per head
+//   H = decay * H + outer(x, B)    # [B, nheads, headdim, d_state]
+//   y = einsum("bhpn,bn->bhp", H, C)  # [B, nheads, headdim]
+//   output = y * silu(z + y)
+// =============================================================================
+
+template<typename T>
+struct Mamba2InformedElmanForward {
+    Mamba2InformedElmanForward(
+        bool training,
+        int batch_size,
+        int nheads,
+        int headdim,
+        int d_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* x,              // [T, B, d_model]
+        const T* in_proj_weight, // [d_proj, d_model] combined projection
+        const T* dt_bias,        // [nheads] decay bias
+        T* H,                    // [(T+1), B, nheads, headdim, d_state]
+        T* output,               // [T, B, d_inner]
+        T* x_proj_cache,         // [T, B, d_inner] pre-silu x for backward
+        T* B_cache,              // [T, B, d_state]
+        T* C_cache,              // [T, B, d_state]
+        T* decay_cache,          // [T, B, nheads]
+        T* workspace);           // [T*B*d_proj + T*B*d_inner + B*nheads]
+
+private:
+    bool training_;
+    int batch_size_;
+    int nheads_;
+    int headdim_;
+    int d_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct Mamba2InformedElmanBackward {
+    Mamba2InformedElmanBackward(
+        int batch_size,
+        int nheads,
+        int headdim,
+        int d_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* x,
+        const T* in_proj_weight,
+        const T* dt_bias,
+        const T* H,
+        const T* x_proj_cache,
+        const T* B_cache,
+        const T* C_cache,
+        const T* decay_cache,
+        const T* d_output,
+        T* dx,
+        T* d_in_proj_weight,
+        T* d_dt_bias,
+        T* workspace);           // [T*B*d_proj + state_size + d_inner + floats]
+
+private:
+    int batch_size_;
+    int nheads_;
+    int headdim_;
+    int d_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
