@@ -3604,6 +3604,136 @@ std::vector<Tensor> structured_elman_attention_backward(
 }
 
 
+// =============================================================================
+// E23: Dual-Memory Elman (Tape + Working Memory)
+// =============================================================================
+
+std::vector<Tensor> dual_memory_elman_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_x,            // [D, D]
+    Tensor b_h,            // [D]
+    Tensor W_write) {      // [D, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Allocate outputs
+    auto h_work_out = torch::empty({batch_size, seq_len, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({batch_size, seq_len, n_slots}, options);
+    auto write_attn = torch::empty({batch_size, seq_len, n_slots}, options);
+    auto x_proj = torch::empty({batch_size, seq_len, dim}, options);  // scratch
+
+    // For training, save h_tape_all for backward
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+
+    hasty::v0::elman_ladder::DualMemoryElmanForward<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x_proj.data_ptr()));
+
+    return {h_work_out, h_tape_final, h_tape_all, read_attn, write_attn};
+}
+
+std::vector<Tensor> dual_memory_elman_backward(
+    Tensor x_proj,           // [B, T, D]
+    Tensor h_work_all,       // [B, T, D]
+    Tensor h_tape_all,       // [T+1, B, N, D]
+    Tensor read_attn,        // [B, T, N]
+    Tensor write_attn,       // [B, T, N]
+    Tensor W_h,              // [D, D]
+    Tensor W_write,          // [D, D]
+    Tensor d_h_work_out,     // [B, T, D]
+    Tensor d_h_tape_final) { // [B, N, D]
+
+    const auto batch_size = x_proj.size(0);
+    const auto seq_len = x_proj.size(1);
+    const auto dim = x_proj.size(2);
+    const auto n_slots = h_tape_all.size(2);
+
+    CHECK_INPUT(x_proj);
+    CHECK_INPUT(h_work_all);
+    CHECK_INPUT(h_tape_all);
+    CHECK_INPUT(read_attn);
+    CHECK_INPUT(write_attn);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(d_h_work_out);
+    CHECK_INPUT(d_h_tape_final);
+
+    const auto options = x_proj.options();
+    const auto float_options = options.dtype(torch::kFloat32);
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Allocate gradient outputs
+    auto dx_proj = torch::empty({batch_size, seq_len, dim}, options);
+    auto dW_h = torch::zeros({dim, dim}, float_options);
+    auto db_h = torch::zeros({dim}, float_options);
+    auto dW_write = torch::zeros({dim, dim}, float_options);
+
+    hasty::v0::elman_ladder::DualMemoryElmanBackward<__nv_bfloat16> backward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    backward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_work_out.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
+        dW_h.data_ptr<float>(),
+        db_h.data_ptr<float>(),
+        dW_write.data_ptr<float>());
+
+    // Convert back to original dtype
+    dW_h = dW_h.to(options.dtype());
+    db_h = db_h.to(options.dtype());
+    dW_write = dW_write.to(options.dtype());
+
+    return {dx_proj, dW_h, db_h, dW_write};
+}
+
 }  // anonymous namespace
 
 
@@ -3704,4 +3834,8 @@ void elman_ladder_init(py::module& m) {
           "E22: Structured Elman with State Attention forward (UTM class)");
     m.def("structured_elman_attention_backward", &structured_elman_attention_backward,
           "E22: Structured Elman with State Attention backward");
+    m.def("dual_memory_elman_forward", &dual_memory_elman_forward,
+          "E23: Dual-Memory Elman forward (tape + working memory)");
+    m.def("dual_memory_elman_backward", &dual_memory_elman_backward,
+          "E23: Dual-Memory Elman backward");
 }
