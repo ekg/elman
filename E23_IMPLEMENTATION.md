@@ -6,23 +6,30 @@ E23 is a dual-memory Elman RNN with:
 - **Tape**: Large linear storage (N slots × D dimensions)
 - **Working Memory**: Small nonlinear compute (D dimensions)
 
-Key design: **No decay, replacement write**. The tape persists until explicitly overwritten.
+Key design: **No decay, replacement write, minimal interface**. Only working memory touches tape.
 
 ---
 
 ## Architecture Summary
 
 ```
+Data flow:
+  Input → Working Memory ↔ Tape
+               ↓
+            Output
+
 State:
   h_tape: [B, N, D]  -- tape memory (N=64 slots)
   h_work: [B, D]     -- working memory (D=1024)
 
 Per step:
-  1. Input writes to tape (additive outer product)
-  2. Working memory reads from tape (attention)
-  3. Working memory updates (Elman + read)
-  4. Working memory writes to tape (replacement)
-  5. Output from working memory
+  1. Working memory reads from tape (attention)
+  2. Working memory updates (Elman + read)
+  3. Working memory writes to tape (replacement)
+  4. Output from working memory
+
+Only ONE write to tape per step (from working memory).
+Write uses replacement: (1-attn)*old + attn*new
 ```
 
 ---
@@ -42,10 +49,6 @@ Per step:
 ## Parameters (Learnable)
 
 ```python
-# Tape input projection
-W_k: [N, D_in]      # input → tape key (which slots to write)
-W_v: [D, D_in]      # input → tape value (what to write)
-
 # Working memory
 W_h: [D, D]         # recurrence matrix
 W_x: [D, D_in]      # input projection
@@ -60,14 +63,14 @@ b_out: [D_out]      # output bias
 ```
 
 **Parameter count** (D=1024, N=64, D_in=D_out=D):
-- W_k: 64K
-- W_v: 1M
 - W_h: 1M
 - W_x: 1M
 - W_write: 1M
 - W_out: 1M
 - biases: ~2K
-- **Total: ~5M per layer**
+- **Total: ~4M per layer**
+
+(Simpler than before: removed W_k and W_v, saving ~1M params)
 
 ---
 
@@ -91,21 +94,9 @@ def e23_forward(x, h_tape, h_work, params):
     scale = 1.0 / math.sqrt(D)
 
     # ============================================
-    # STEP 1: INPUT WRITES TO TAPE (additive)
+    # STEP 1: WORKING MEMORY READS FROM TAPE
     # ============================================
-    # Project input to key (which slots) and value (what to write)
-    key = x @ params.W_k.T          # [B, N]
-    value = x @ params.W_v.T        # [B, D]
-
-    # Outer product update: tape += key ⊗ value
-    # key[:, :, None] is [B, N, 1]
-    # value[:, None, :] is [B, 1, D]
-    h_tape = h_tape + key[:, :, None] * value[:, None, :]  # [B, N, D]
-
-    # ============================================
-    # STEP 2: WORKING MEMORY READS FROM TAPE
-    # ============================================
-    # Attention scores: working memory queries tape
+    # Attention scores: working memory queries tape via dot product
     # h_work[:, None, :] is [B, 1, D]
     # h_tape is [B, N, D]
     read_scores = (h_tape * h_work[:, None, :]).sum(dim=-1)  # [B, N]
@@ -117,7 +108,7 @@ def e23_forward(x, h_tape, h_work, params):
     read = (read_attn[:, :, None] * h_tape).sum(dim=1)  # [B, D]
 
     # ============================================
-    # STEP 3: WORKING MEMORY UPDATE (Elman + read)
+    # STEP 2: WORKING MEMORY UPDATE (Elman + read)
     # ============================================
     pre_act = (
         h_work @ params.W_h.T +     # [B, D] @ [D, D].T = [B, D]
@@ -128,18 +119,17 @@ def e23_forward(x, h_tape, h_work, params):
     h_work_new = torch.tanh(pre_act)  # [B, D]
 
     # ============================================
-    # STEP 4: WORKING MEMORY WRITES TO TAPE (replacement)
+    # STEP 3: WORKING MEMORY WRITES TO TAPE (replacement)
     # ============================================
     # Project working memory to write value
     write_value = h_work_new @ params.W_write.T  # [B, D]
 
-    # Attention scores for write (same mechanism as read)
+    # Attention scores for write (which slots to update)
     write_scores = (h_tape * h_work_new[:, None, :]).sum(dim=-1)  # [B, N]
     write_scores = write_scores * scale
     write_attn = F.softmax(write_scores, dim=-1)  # [B, N]
 
-    # REPLACEMENT write (NOT additive!)
-    # h_tape = (1 - attn) * h_tape + attn * new_value
+    # REPLACEMENT write: h_tape = (1 - attn) * h_tape + attn * new_value
     # write_attn[:, :, None] is [B, N, 1]
     # write_value[:, None, :] is [B, 1, D]
     h_tape_new = (
@@ -148,7 +138,7 @@ def e23_forward(x, h_tape, h_work, params):
     )
 
     # ============================================
-    # STEP 5: OUTPUT
+    # STEP 4: OUTPUT
     # ============================================
     y = h_work_new @ params.W_out.T + params.b_out  # [B, D_out]
 
@@ -162,10 +152,6 @@ def e23_forward(x, h_tape, h_work, params):
 ```python
 def init_e23_params(D, N, D_in, D_out):
     params = E23Parameters()
-
-    # Tape projections: Xavier
-    params.W_k = xavier_uniform((N, D_in))
-    params.W_v = xavier_uniform((D, D_in))
 
     # Working memory: orthogonal W_h (scaled down)
     params.W_h = orthogonal((D, D)) * 0.9
@@ -193,20 +179,20 @@ def init_e23_state(B, N, D):
 ## Sequence Processing
 
 ```python
-def e23_sequence(x_seq, params):
+def e23_sequence(x_seq, params, N):
     """
     Process a sequence.
 
     Args:
         x_seq: [B, T, D_in] - input sequence
         params: E23Parameters
+        N: number of tape slots
 
     Returns:
         y_seq: [B, T, D_out] - output sequence
     """
     B, T, D_in = x_seq.shape
     D = params.W_h.shape[0]
-    N = params.W_k.shape[0]
     D_out = params.W_out.shape[0]
 
     # Initialize state
@@ -227,18 +213,18 @@ def e23_sequence(x_seq, params):
 ## CRITICAL Implementation Notes
 
 ### DO:
-1. **Use replacement write for working→tape**: `(1-attn)*old + attn*new`
-2. **Use additive write for input→tape**: `old + outer_product`
+1. **Use replacement write**: `(1-attn)*old + attn*new`
+2. **Apply softmax to get attention weights** before replacement write
 3. **Scale attention by 1/sqrt(D)** before softmax
 4. **Initialize W_h orthogonal and scaled to 0.9**
 5. **Initialize tape and working memory to zeros**
 
 ### DO NOT:
 1. **DO NOT add decay to tape** - no `alpha * h_tape` anywhere
-2. **DO NOT use additive write for working→tape** - this causes explosion
-3. **DO NOT forget the scale factor** - attention will be too sharp/soft
-4. **DO NOT use learned attention projections** - keep it simple (dot product)
-5. **DO NOT skip the W_write projection** - working memory needs transformation before writing
+2. **DO NOT use additive write** - this causes unbounded growth
+3. **DO NOT add direct input→tape path** - keep it simple, input only goes to working memory
+4. **DO NOT forget softmax** - attention weights must sum to 1 for valid convex combination
+5. **DO NOT use learned attention projections** - keep it simple (dot product)
 
 ---
 
@@ -259,7 +245,7 @@ def test_e23():
     x = torch.randn(B, T, D)
 
     # Forward pass
-    y = e23_sequence(x, params)
+    y = e23_sequence(x, params, N)
     assert y.shape == (B, T, D), f"Output shape wrong: {y.shape}"
 
     # Gradient check
@@ -287,7 +273,7 @@ def test_e23():
 |--------|--------|-------|
 | Loss vs E1 | -0.02 to -0.05 nats | Tape should help |
 | Loss vs E18-A | -0.01 to -0.03 nats | Similar or better |
-| Throughput vs E1 | 0.4-0.6× | Tape ops add overhead |
+| Throughput vs E1 | 0.5-0.7× | Simpler than before |
 | Memory vs E1 | ~1.5× | Tape state is large but cheap |
 
 ---
@@ -309,11 +295,21 @@ experiments/
 
 ## Summary
 
-E23 = Elman + Tape Memory
+E23 = Elman + Tape Memory (minimal design)
+
+```
+Input → Working Memory ↔ Tape
+             ↓
+          Output
+```
 
 1. **Tape** stores information persistently (no decay)
 2. **Working memory** does computation (tanh nonlinearity)
-3. **Attention** routes information between them
-4. **Replacement write** keeps values bounded
+3. **Only working memory** interfaces with tape (read + write)
+4. **Replacement write**: `(1-attn)*old + attn*new`
+   - Provably bounded (convex combination)
+   - No explosion over time
+   - TM-like semantics
 
 The key insight: separate storage (tape) from computation (working memory).
+Input affects tape only through working memory decisions.

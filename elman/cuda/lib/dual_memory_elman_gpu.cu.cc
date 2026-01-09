@@ -42,7 +42,7 @@ __global__ void E23ForwardKernel_BF16(
     const int seq_len,
     const int batch_size,
     // Pre-computed input projection: W_x @ x for all timesteps
-    const __nv_bfloat16* __restrict__ x_proj,  // [T, B, D]
+    const __nv_bfloat16* __restrict__ x_proj,  // [B, T, D]
     // Weights
     const __nv_bfloat16* __restrict__ W_h,     // [D, D]
     const __nv_bfloat16* __restrict__ b_h,     // [D]
@@ -51,11 +51,11 @@ __global__ void E23ForwardKernel_BF16(
     const __nv_bfloat16* __restrict__ h_tape_init,  // [B, N, D]
     const __nv_bfloat16* __restrict__ h_work_init,  // [B, D]
     // Outputs
-    __nv_bfloat16* __restrict__ h_work_out,    // [T, B, D]
+    __nv_bfloat16* __restrict__ h_work_out,    // [B, T, D]
     __nv_bfloat16* __restrict__ h_tape_final,  // [B, N, D]
     // Attention weights (for backward)
-    __nv_bfloat16* __restrict__ read_attn_out,  // [T, B, N]
-    __nv_bfloat16* __restrict__ write_attn_out, // [T, B, N]
+    __nv_bfloat16* __restrict__ read_attn_out,  // [B, T, N]
+    __nv_bfloat16* __restrict__ write_attn_out, // [B, T, N]
     // Scale factor
     const float scale
 ) {
@@ -118,9 +118,9 @@ __global__ void E23ForwardKernel_BF16(
         }
         __syncthreads();
 
-        // Store read attention
+        // Store read attention (layout: [B, T, N])
         if (tid < N_SLOTS) {
-            read_attn_out[t * batch_size * N_SLOTS + b * N_SLOTS + tid] =
+            read_attn_out[b * seq_len * N_SLOTS + t * N_SLOTS + tid] =
                 __float2bfloat16(attn_sh[tid]);
         }
 
@@ -146,7 +146,8 @@ __global__ void E23ForwardKernel_BF16(
                 wh_contrib += __bfloat162float(W_h[tid * DIM + k]) * h_work_sh[k];
             }
 
-            float x_proj_val = __bfloat162float(x_proj[t * batch_size * DIM + b * DIM + tid]);
+            // x_proj layout: [B, T, D]
+            float x_proj_val = __bfloat162float(x_proj[b * seq_len * DIM + t * DIM + tid]);
             float b_val = __bfloat162float(b_h[tid]);
 
             float pre_act = wh_contrib + x_proj_val + read_d + b_val;
@@ -154,9 +155,9 @@ __global__ void E23ForwardKernel_BF16(
         }
         __syncthreads();
 
-        // Store h_work output
+        // Store h_work output (layout: [B, T, D])
         if (tid < DIM) {
-            h_work_out[t * batch_size * DIM + b * DIM + tid] =
+            h_work_out[b * seq_len * DIM + t * DIM + tid] =
                 __float2bfloat16(h_work_sh[tid]);
         }
 
@@ -198,9 +199,9 @@ __global__ void E23ForwardKernel_BF16(
         }
         __syncthreads();
 
-        // Store write attention
+        // Store write attention (layout: [B, T, N])
         if (tid < N_SLOTS) {
-            write_attn_out[t * batch_size * N_SLOTS + b * N_SLOTS + tid] =
+            write_attn_out[b * seq_len * N_SLOTS + t * N_SLOTS + tid] =
                 __float2bfloat16(attn_sh[tid]);
         }
 
@@ -242,19 +243,19 @@ __global__ void E23BackwardKernel_BF16(
     const int seq_len,
     const int batch_size,
     // Forward saved tensors
-    const __nv_bfloat16* __restrict__ x_proj,      // [T, B, D]
-    const __nv_bfloat16* __restrict__ h_work_all,  // [T, B, D]
+    const __nv_bfloat16* __restrict__ x_proj,      // [B, T, D]
+    const __nv_bfloat16* __restrict__ h_work_all,  // [B, T, D]
     const __nv_bfloat16* __restrict__ h_tape_all,  // [T+1, B, N, D]
-    const __nv_bfloat16* __restrict__ read_attn,   // [T, B, N]
-    const __nv_bfloat16* __restrict__ write_attn,  // [T, B, N]
+    const __nv_bfloat16* __restrict__ read_attn,   // [B, T, N]
+    const __nv_bfloat16* __restrict__ write_attn,  // [B, T, N]
     // Weights
     const __nv_bfloat16* __restrict__ W_h,
     const __nv_bfloat16* __restrict__ W_write,
     // Gradient inputs
-    const __nv_bfloat16* __restrict__ d_h_work_out,  // [T, B, D]
+    const __nv_bfloat16* __restrict__ d_h_work_out,  // [B, T, D]
     const __nv_bfloat16* __restrict__ d_h_tape_final,// [B, N, D]
     // Gradient outputs
-    __nv_bfloat16* __restrict__ dx_proj,      // [T, B, D]
+    __nv_bfloat16* __restrict__ dx_proj,      // [B, T, D]
     float* __restrict__ dW_h,                 // [D, D] - accumulated
     float* __restrict__ db_h,                 // [D] - accumulated
     float* __restrict__ dW_write,             // [D, D] - accumulated
@@ -291,8 +292,9 @@ __global__ void E23BackwardKernel_BF16(
     for (int t = seq_len - 1; t >= 0; t--) {
 
         // Load h_work[t] and h_tape[t] (before update)
+        // h_work_all layout: [B, T, D]
         for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            h_work_sh[d] = __bfloat162float(h_work_all[t * batch_size * DIM + b * DIM + d]);
+            h_work_sh[d] = __bfloat162float(h_work_all[b * seq_len * DIM + t * DIM + d]);
         }
         for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
             int n = i / DIM;
@@ -302,16 +304,16 @@ __global__ void E23BackwardKernel_BF16(
         }
         __syncthreads();
 
-        // Add incoming gradient from output
+        // Add incoming gradient from output (layout: [B, T, D])
         for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            d_h_work_sh[d] += __bfloat162float(d_h_work_out[t * batch_size * DIM + b * DIM + d]);
+            d_h_work_sh[d] += __bfloat162float(d_h_work_out[b * seq_len * DIM + t * DIM + d]);
         }
         __syncthreads();
 
         // === BACKWARD THROUGH WRITE ===
-        // Load write attention
+        // Load write attention (layout: [B, T, N])
         for (int n = tid; n < N_SLOTS; n += E23_BLOCK_SIZE) {
-            attn_sh[n] = __bfloat162float(write_attn[t * batch_size * N_SLOTS + b * N_SLOTS + n]);
+            attn_sh[n] = __bfloat162float(write_attn[b * seq_len * N_SLOTS + t * N_SLOTS + n]);
         }
         __syncthreads();
 
@@ -362,8 +364,8 @@ __global__ void E23BackwardKernel_BF16(
             float h = h_work_sh[tid];
             float d_pre_act = d_h_work_sh[tid] * (1.0f - h * h);
 
-            // Gradient w.r.t. x_proj
-            dx_proj[t * batch_size * DIM + b * DIM + tid] = __float2bfloat16(d_pre_act);
+            // Gradient w.r.t. x_proj (layout: [B, T, D])
+            dx_proj[b * seq_len * DIM + t * DIM + tid] = __float2bfloat16(d_pre_act);
 
             // Gradient w.r.t. b_h
             atomicAdd(&db_h[tid], d_pre_act);
@@ -381,9 +383,9 @@ __global__ void E23BackwardKernel_BF16(
         __syncthreads();
 
         // === BACKWARD THROUGH READ ===
-        // Load read attention
+        // Load read attention (layout: [B, T, N])
         for (int n = tid; n < N_SLOTS; n += E23_BLOCK_SIZE) {
-            attn_sh[n] = __bfloat162float(read_attn[t * batch_size * N_SLOTS + b * N_SLOTS + n]);
+            attn_sh[n] = __bfloat162float(read_attn[b * seq_len * N_SLOTS + t * N_SLOTS + n]);
         }
         __syncthreads();
 
@@ -391,10 +393,11 @@ __global__ void E23BackwardKernel_BF16(
         // Gradient flows to d_h_tape
         // d_h_tape[n, d] += d_read[d] * attn[n]
         // Note: d_read = d_pre_act (from above, already stored in dx_proj)
+        // Layout: [B, T, D]
         for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
             int n = i / DIM;
             int d = i % DIM;
-            float d_read = __bfloat162float(dx_proj[t * batch_size * DIM + b * DIM + d]);
+            float d_read = __bfloat162float(dx_proj[b * seq_len * DIM + t * DIM + d]);
             d_h_tape_sh[i] += d_read * attn_sh[n];
         }
         __syncthreads();
@@ -439,8 +442,9 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
     // Step 1: Compute x_proj = x @ W_x.T using cuBLAS
     // x is [B*T, D], W_x is [D, D], x_proj is [B*T, D]
     // x_proj = x @ W_x.T = x @ W_x^T
-    const __nv_bfloat16 alpha = __float2bfloat16(1.0f);
-    const __nv_bfloat16 beta = __float2bfloat16(0.0f);
+    // Note: alpha/beta must be float* when using CUBLAS_COMPUTE_32F
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
 
     // cuBLAS GEMM: C = alpha * A * B + beta * C
     // We want: x_proj[i, j] = sum_k x[i, k] * W_x[j, k]  (W_x transposed)
