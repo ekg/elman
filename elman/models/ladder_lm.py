@@ -31,6 +31,8 @@ from .haware_gate_elman import HAwareGateElman
 from .simplified_gate_elman import SimplifiedGateElman
 from .mamba2_informed_elman import Mamba2InformedElman
 from .structured_elman import StructuredElman
+from .structured_elman_attention import StructuredElmanAttention
+from .dual_memory_elman import DualMemoryElman
 
 
 def get_ladder_level(level):
@@ -71,6 +73,14 @@ def get_ladder_level(level):
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
+        22: StructuredElmanAttention,  # E22: E21 + state attention (UTM class)
+        '22n': lambda **kw: StructuredElmanAttention(attn_type='over_N', **kw),  # E22-N: attention over N
+        '22h': lambda **kw: StructuredElmanAttention(attn_type='over_heads', **kw),  # E22-H: attention over heads
+        '22k4': lambda **kw: StructuredElmanAttention(attn_period=4, **kw),  # E22-K4: attend every 4 steps
+        '22k16': lambda **kw: StructuredElmanAttention(attn_period=16, **kw),  # E22-K16: attend every 16 steps
+        23: DualMemoryElman,  # E23: Dual-memory (tape + working memory)
+        '23n32': lambda **kw: DualMemoryElman(n_slots=32, **kw),  # E23-N32: 32 tape slots
+        '23n128': lambda **kw: DualMemoryElman(n_slots=128, **kw),  # E23-N128: 128 tape slots
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:

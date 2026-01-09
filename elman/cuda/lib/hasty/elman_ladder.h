@@ -2018,6 +2018,84 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E23: Dual-Memory Elman (Tape + Working Memory)
+// Architecture:
+//   - Tape: [B, N, D] - Large linear storage
+//   - Working Memory: [B, D] - Small nonlinear compute
+// Per timestep:
+//   1. Read: h_work queries tape via attention
+//   2. Update: h_work_new = tanh(W_h @ h_work + W_x @ x + read + b)
+//   3. Write: h_tape = (1-attn)*h_tape + attn*write_value
+// =============================================================================
+
+template<typename T>
+struct DualMemoryElmanForward {
+    DualMemoryElmanForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x,               // [B, T, D] - raw input
+        const T* W_h,             // [D, D]
+        const T* W_x,             // [D, D]
+        const T* b_h,             // [D]
+        const T* W_write,         // [D, D]
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        T* h_work_out,            // [B, T, D]
+        T* h_tape_final,          // [B, N, D]
+        T* read_attn,             // [B, T, N]
+        T* write_attn,            // [B, T, N]
+        T* x_proj_out);           // [B, T, D] - scratch for W_x @ x
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct DualMemoryElmanBackward {
+    DualMemoryElmanBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_proj,
+        const T* h_work_all,
+        const T* h_tape_all,
+        const T* read_attn,
+        const T* write_attn,
+        const T* W_h,
+        const T* W_write,
+        const T* d_h_work_out,
+        const T* d_h_tape_final,
+        T* dx_proj,
+        float* dW_h,              // [D, D] - fp32 accumulator
+        float* db_h,              // [D] - fp32 accumulator
+        float* dW_write);         // [D, D] - fp32 accumulator
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

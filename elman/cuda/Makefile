@@ -51,7 +51,10 @@ CUDA_OBJS := \
 	lib/matrix_state_elman_gpu.o \
 	lib/haware_gate_elman_gpu.o \
 	lib/simplified_gate_elman_gpu.o \
-	lib/mamba2_informed_elman_gpu.o
+	lib/mamba2_informed_elman_gpu.o \
+	lib/structured_elman_gpu.o \
+	lib/structured_elman_attention_gpu.o \
+	lib/dual_memory_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
