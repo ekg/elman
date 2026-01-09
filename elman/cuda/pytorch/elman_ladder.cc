@@ -3419,6 +3419,191 @@ std::vector<Tensor> structured_elman_backward(
     return {dz, dB_proj, dX_proj, dalpha_raw, dalpha_bias};
 }
 
+
+// =============================================================================
+// E22: Structured Elman with State Attention (UTM class)
+// =============================================================================
+
+std::vector<Tensor> structured_elman_attention_forward(
+    bool training,
+    int nheads,
+    int d_state,
+    int mimo_rank,
+    int attn_period,
+    int attn_dim,
+    int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+    Tensor B_proj,        // [T, B, nheads, d_state, mimo_rank]
+    Tensor X_proj,        // [T, B, nheads, headdim, mimo_rank]
+    Tensor alpha_raw,     // [T, B, nheads]
+    Tensor alpha_bias,    // [nheads]
+    Tensor z,             // [T, B, d_inner]
+    Tensor W_q,           // [nheads, headdim, attn_dim]
+    Tensor W_k,           // [nheads, headdim, attn_dim]
+    Tensor W_v,           // [nheads, headdim, attn_dim]
+    Tensor W_o,           // [nheads, attn_dim, headdim]
+    Tensor H0) {          // [B, nheads, d_state, headdim]
+
+    const auto time_steps = B_proj.size(0);
+    const auto batch_size = B_proj.size(1);
+    const auto headdim = X_proj.size(3);
+    const auto d_inner = nheads * headdim;
+
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(X_proj);
+    CHECK_INPUT(alpha_raw);
+    CHECK_INPUT(alpha_bias);
+    CHECK_INPUT(z);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_o);
+    CHECK_INPUT(H0);
+
+    const auto options = B_proj.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor output = torch::empty({time_steps, batch_size, d_inner}, options);
+    Tensor H_final = torch::empty({batch_size, nheads, d_state, headdim}, options);
+
+    // For backward: H_all[(T+1), B, H, N, P], y_cache[T, B, d_inner]
+    Tensor H_all = training ?
+        torch::empty({time_steps + 1, batch_size, nheads, d_state, headdim}, options) :
+        torch::empty({0}, options);
+    Tensor y_cache = training ?
+        torch::empty({time_steps, batch_size, d_inner}, options) :
+        torch::empty({0}, options);
+
+    // E22 only supports bfloat16 - check type and use directly
+    TORCH_CHECK(B_proj.scalar_type() == at::ScalarType::BFloat16,
+                "E22 CUDA kernel only supports bfloat16, got ", B_proj.scalar_type());
+
+    using namespace hasty::v0::elman_ladder;
+    StructuredElmanAttentionForward<__nv_bfloat16> forward(
+        training, batch_size, nheads, d_state, headdim, mimo_rank,
+        attn_period, attn_dim, nonlinearity_mode,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(B_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(X_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(alpha_raw.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(alpha_bias.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_o.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(H0.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(H_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(H_all.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(y_cache.data_ptr()) : nullptr);
+
+    return {output, H_final, H_all, y_cache};
+}
+
+
+std::vector<Tensor> structured_elman_attention_backward(
+    int nheads,
+    int d_state,
+    int mimo_rank,
+    int attn_period,
+    int attn_dim,
+    int nonlinearity_mode,
+    Tensor B_proj,        // [T, B, nheads, d_state, mimo_rank]
+    Tensor X_proj,        // [T, B, nheads, headdim, mimo_rank]
+    Tensor alpha_raw,     // [T, B, nheads]
+    Tensor alpha_bias,    // [nheads]
+    Tensor z,             // [T, B, d_inner]
+    Tensor W_q,           // [nheads, headdim, attn_dim]
+    Tensor W_k,           // [nheads, headdim, attn_dim]
+    Tensor W_v,           // [nheads, headdim, attn_dim]
+    Tensor W_o,           // [nheads, attn_dim, headdim]
+    Tensor H_all,         // [(T+1), B, nheads, d_state, headdim]
+    Tensor y_cache,       // [T, B, d_inner]
+    Tensor d_output) {    // [T, B, d_inner]
+
+    const auto time_steps = B_proj.size(0);
+    const auto batch_size = B_proj.size(1);
+    const auto headdim = X_proj.size(3);
+    const auto d_inner = nheads * headdim;
+
+    CHECK_INPUT(B_proj);
+    CHECK_INPUT(X_proj);
+    CHECK_INPUT(alpha_raw);
+    CHECK_INPUT(alpha_bias);
+    CHECK_INPUT(z);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_o);
+    CHECK_INPUT(H_all);
+    CHECK_INPUT(y_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = B_proj.options();
+    const auto float_options = options.dtype(torch::kFloat32);
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Gradient outputs
+    Tensor dz = torch::empty_like(z);
+    Tensor dB_proj = torch::zeros_like(B_proj);
+    Tensor dX_proj = torch::zeros_like(X_proj);
+    Tensor dalpha_raw = torch::zeros_like(alpha_raw);
+
+    // Attention weight gradients (fp32 for accumulation)
+    Tensor dW_q = torch::zeros({nheads, headdim, attn_dim}, float_options.device(options.device()));
+    Tensor dW_k = torch::zeros({nheads, headdim, attn_dim}, float_options.device(options.device()));
+    Tensor dW_v = torch::zeros({nheads, headdim, attn_dim}, float_options.device(options.device()));
+    Tensor dW_o = torch::zeros({nheads, attn_dim, headdim}, float_options.device(options.device()));
+
+    // E22 only supports bfloat16
+    TORCH_CHECK(B_proj.scalar_type() == at::ScalarType::BFloat16,
+                "E22 CUDA kernel only supports bfloat16, got ", B_proj.scalar_type());
+
+    using namespace hasty::v0::elman_ladder;
+    StructuredElmanAttentionBackward<__nv_bfloat16> backward(
+        batch_size, nheads, d_state, headdim, mimo_rank,
+        attn_period, attn_dim, nonlinearity_mode,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(B_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(X_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(alpha_raw.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(alpha_bias.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_o.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(H_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(y_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dB_proj.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dX_proj.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dalpha_raw.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dz.data_ptr()),
+        dW_q.data_ptr<float>(),
+        dW_k.data_ptr<float>(),
+        dW_v.data_ptr<float>(),
+        dW_o.data_ptr<float>());
+
+    // Convert fp32 gradients back to input dtype
+    dW_q = dW_q.to(options.dtype());
+    dW_k = dW_k.to(options.dtype());
+    dW_v = dW_v.to(options.dtype());
+    dW_o = dW_o.to(options.dtype());
+
+    return {dz, dB_proj, dX_proj, dalpha_raw, dW_q, dW_k, dW_v, dW_o};
+}
+
+
 }  // anonymous namespace
 
 
@@ -3515,4 +3700,8 @@ void elman_ladder_init(py::module& m) {
           "E21: Structured Elman forward (MIMO with nonlinear state mixing)");
     m.def("structured_elman_backward", &structured_elman_backward,
           "E21: Structured Elman backward");
+    m.def("structured_elman_attention_forward", &structured_elman_attention_forward,
+          "E22: Structured Elman with State Attention forward (UTM class)");
+    m.def("structured_elman_attention_backward", &structured_elman_attention_backward,
+          "E22: Structured Elman with State Attention backward");
 }

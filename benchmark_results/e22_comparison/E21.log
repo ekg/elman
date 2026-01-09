@@ -1,0 +1,15 @@
+E21: 94,746,720 params
+Step 100 (42s): loss=2.7961, 78.6K tok/s
+Step 200 (85s): loss=2.3333, 76.9K tok/s
+Step 300 (130s): loss=2.1091, 75.7K tok/s
+Step 400 (175s): loss=1.9757, 75.0K tok/s
+Step 500 (220s): loss=1.8912, 74.6K tok/s
+Step 600 (265s): loss=1.8465, 74.3K tok/s
+Step 700 (309s): loss=1.7919, 74.2K tok/s
+Step 800 (354s): loss=1.7767, 74.1K tok/s
+Step 900 (399s): loss=1.7379, 74.0K tok/s
+Step 1000 (443s): loss=1.7157, 73.9K tok/s
+Step 1100 (488s): loss=1.6937, 73.9K tok/s
+Step 1200 (532s): loss=1.6809, 73.9K tok/s
+Step 1300 (577s): loss=1.6795, 73.8K tok/s
+FINAL E21: steps=1352, tokens=44.3M, loss=1.6634, tok/s=73.8K

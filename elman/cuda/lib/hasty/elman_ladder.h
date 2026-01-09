@@ -1914,6 +1914,110 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E22: Structured Elman with State Attention (UTM class)
+// Extends E21 with periodic state attention for state-dependent routing.
+// H = silu(α * H_prev + B @ X.T)          # MIMO rank-R update
+// H = H + StateAttention(H)               # Every K steps: routing via attention
+// output = y * silu(z + y)                # E18-A style gating
+// =============================================================================
+
+template<typename T>
+struct StructuredElmanAttentionForward {
+    StructuredElmanAttentionForward(
+        bool training,
+        int batch_size,
+        int nheads,
+        int d_state,
+        int headdim,
+        int mimo_rank,
+        int attn_period,      // K: attend every K steps
+        int attn_dim,         // d_k: attention key dimension
+        int nonlinearity_mode,  // 0=silu, 1=tanh, 2=linear
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B_proj,      // [T, B, nheads, d_state, mimo_rank]
+        const T* X_proj,      // [T, B, nheads, headdim, mimo_rank]
+        const T* alpha_raw,   // [T, B, nheads]
+        const T* alpha_bias,  // [nheads]
+        const T* z,           // [T, B, d_inner]
+        const T* W_q,         // [nheads, headdim, attn_dim]
+        const T* W_k,         // [nheads, headdim, attn_dim]
+        const T* W_v,         // [nheads, headdim, attn_dim]
+        const T* W_o,         // [nheads, attn_dim, headdim]
+        const T* H_init,      // [B, nheads, d_state, headdim]
+        T* output,            // [T, B, d_inner]
+        T* H_final,           // [B, nheads, d_state, headdim]
+        T* H_all,             // [(T+1), B, nheads, d_state, headdim] for backward
+        T* y_cache);          // [T, B, d_inner] for backward
+
+private:
+    bool training_;
+    int batch_size_;
+    int nheads_;
+    int d_state_;
+    int headdim_;
+    int mimo_rank_;
+    int attn_period_;
+    int attn_dim_;
+    int nonlinearity_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct StructuredElmanAttentionBackward {
+    StructuredElmanAttentionBackward(
+        int batch_size,
+        int nheads,
+        int d_state,
+        int headdim,
+        int mimo_rank,
+        int attn_period,
+        int attn_dim,
+        int nonlinearity_mode,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* B_proj,
+        const T* X_proj,
+        const T* alpha_raw,
+        const T* alpha_bias,
+        const T* z,
+        const T* W_q,
+        const T* W_k,
+        const T* W_v,
+        const T* W_o,
+        const T* H_all,
+        const T* y_cache,
+        const T* d_output,
+        T* dz,
+        T* dB_proj,
+        T* dX_proj,
+        T* dalpha_raw,
+        float* dW_q,              // [nheads, headdim, attn_dim] - fp32 accumulator
+        float* dW_k,
+        float* dW_v,
+        float* dW_o);
+
+private:
+    int batch_size_;
+    int nheads_;
+    int d_state_;
+    int headdim_;
+    int mimo_rank_;
+    int attn_period_;
+    int attn_dim_;
+    int nonlinearity_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
