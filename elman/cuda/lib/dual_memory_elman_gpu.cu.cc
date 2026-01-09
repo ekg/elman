@@ -47,12 +47,11 @@ __global__ void E23ForwardKernel_BF16(
     const __nv_bfloat16* __restrict__ W_h,     // [D, D]
     const __nv_bfloat16* __restrict__ b_h,     // [D]
     const __nv_bfloat16* __restrict__ W_write, // [D, D]
-    // Initial states
-    const __nv_bfloat16* __restrict__ h_tape_init,  // [B, N, D]
+    // States (h_tape is read/written from global memory, not shared)
+    __nv_bfloat16* __restrict__ h_tape,        // [B, N, D] - mutable!
     const __nv_bfloat16* __restrict__ h_work_init,  // [B, D]
     // Outputs
     __nv_bfloat16* __restrict__ h_work_out,    // [B, T, D]
-    __nv_bfloat16* __restrict__ h_tape_final,  // [B, N, D]
     // Attention weights (for backward)
     __nv_bfloat16* __restrict__ read_attn_out,  // [B, T, N]
     __nv_bfloat16* __restrict__ write_attn_out, // [B, T, N]
@@ -64,20 +63,15 @@ __global__ void E23ForwardKernel_BF16(
 
     const int tid = threadIdx.x;
 
-    // Shared memory for h_tape [N, D] and h_work [D]
-    // Plus scratch for attention computation
+    // Shared memory: only h_work and attention scores (NOT h_tape!)
+    // This allows scaling to large N×D configurations
     extern __shared__ float smem[];
-    float* h_tape_sh = smem;                          // [N_SLOTS * DIM]
-    float* h_work_sh = h_tape_sh + N_SLOTS * DIM;     // [DIM]
+    float* h_work_sh = smem;                          // [DIM]
     float* attn_sh = h_work_sh + DIM;                 // [N_SLOTS]
-    float* W_h_row = attn_sh + N_SLOTS;               // [DIM] scratch for W_h row
+    float* write_val_sh = attn_sh + N_SLOTS;          // [DIM]
 
-    // Load initial h_tape into shared memory
-    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
-        int n = i / DIM;
-        int d = i % DIM;
-        h_tape_sh[i] = __bfloat162float(h_tape_init[b * N_SLOTS * DIM + n * DIM + d]);
-    }
+    // Base pointer for this batch's tape in global memory
+    __nv_bfloat16* h_tape_b = h_tape + b * N_SLOTS * DIM;
 
     // Load initial h_work into shared memory
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
@@ -92,10 +86,11 @@ __global__ void E23ForwardKernel_BF16(
         // STEP 1: READ FROM TAPE (attention)
         // ============================================
         // read_scores[n] = sum_d h_tape[n, d] * h_work[d]
+        // h_tape loaded from global memory (not shared - allows large N×D)
         if (tid < N_SLOTS) {
             float score = 0.0f;
             for (int d = 0; d < DIM; d++) {
-                score += h_tape_sh[tid * DIM + d] * h_work_sh[d];
+                score += __bfloat162float(h_tape_b[tid * DIM + d]) * h_work_sh[d];
             }
             attn_sh[tid] = score * scale;
         }
@@ -129,7 +124,7 @@ __global__ void E23ForwardKernel_BF16(
         float read_d = 0.0f;
         if (tid < DIM) {
             for (int n = 0; n < N_SLOTS; n++) {
-                read_d += attn_sh[n] * h_tape_sh[n * DIM + tid];
+                read_d += attn_sh[n] * __bfloat162float(h_tape_b[n * DIM + tid]);
             }
         }
 
@@ -170,13 +165,15 @@ __global__ void E23ForwardKernel_BF16(
             for (int k = 0; k < DIM; k++) {
                 write_val += h_work_sh[k] * __bfloat162float(W_write[tid * DIM + k]);
             }
+            write_val_sh[tid] = write_val;
         }
+        __syncthreads();
 
-        // Write attention scores
+        // Write attention scores (h_tape from global memory)
         if (tid < N_SLOTS) {
             float score = 0.0f;
             for (int d = 0; d < DIM; d++) {
-                score += h_tape_sh[tid * DIM + d] * h_work_sh[d];
+                score += __bfloat162float(h_tape_b[tid * DIM + d]) * h_work_sh[d];
             }
             attn_sh[tid] = score * scale;
         }
@@ -205,29 +202,18 @@ __global__ void E23ForwardKernel_BF16(
                 __float2bfloat16(attn_sh[tid]);
         }
 
-        // Update tape: h_tape = (1 - attn) * h_tape + attn * write_value
-        // Need to broadcast write_value to all threads
-        __shared__ float write_val_sh[256];  // DIM elements
-        if (tid < DIM) {
-            write_val_sh[tid] = write_val;
-        }
-        __syncthreads();
-
+        // Update tape in global memory: h_tape = (1 - attn) * h_tape + attn * write_value
         for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
             int n = i / DIM;
             int d = i % DIM;
             float attn_n = attn_sh[n];
-            h_tape_sh[i] = (1.0f - attn_n) * h_tape_sh[i] + attn_n * write_val_sh[d];
+            float old_val = __bfloat162float(h_tape_b[i]);
+            float new_val = (1.0f - attn_n) * old_val + attn_n * write_val_sh[d];
+            h_tape_b[i] = __float2bfloat16(new_val);
         }
         __syncthreads();
     }
-
-    // Write final tape state
-    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
-        int n = i / DIM;
-        int d = i % DIM;
-        h_tape_final[b * N_SLOTS * DIM + n * DIM + d] = __float2bfloat16(h_tape_sh[i]);
-    }
+    // h_tape is already updated in-place in global memory, no final write needed
 }
 
 
@@ -476,15 +462,23 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
     const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
     int num_blocks = batch_size_;
 
-    // Shared memory: h_tape[N*D] + h_work[D] + attn[N] + W_h_row[D] + write_val[D]
-    size_t smem_size = (n_slots_ * dim_ + dim_ + n_slots_ + dim_ + dim_) * sizeof(float);
+    // Shared memory: h_work[D] + attn[N] + write_val[D]
+    // h_tape is in global memory (allows large N×D)
+    size_t smem_size = (dim_ + n_slots_ + dim_) * sizeof(float);
 
+    // Copy h_tape_init to h_tape_final (kernel modifies in place)
+    cudaMemcpyAsync(h_tape_final, h_tape_init,
+                    batch_size_ * n_slots_ * dim_ * sizeof(__nv_bfloat16),
+                    cudaMemcpyDeviceToDevice, stream_);
+
+    // Generic kernel launch - no template specialization needed anymore
+    // since h_tape is in global memory
     if (n_slots_ == 64 && dim_ == 1024) {
         E23ForwardKernel_BF16<64, 1024><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>(
             seq_len, batch_size_,
             x_proj_out, W_h, b_h, W_write,
-            h_tape_init, h_work_init,
-            h_work_out, h_tape_final,
+            h_tape_final, h_work_init,  // h_tape_final is both input and output
+            h_work_out,
             read_attn, write_attn,
             scale
         );
@@ -492,8 +486,8 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
         E23ForwardKernel_BF16<32, 512><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>(
             seq_len, batch_size_,
             x_proj_out, W_h, b_h, W_write,
-            h_tape_init, h_work_init,
-            h_work_out, h_tape_final,
+            h_tape_final, h_work_init,
+            h_work_out,
             read_attn, write_attn,
             scale
         );
@@ -501,8 +495,26 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
         E23ForwardKernel_BF16<16, 256><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>(
             seq_len, batch_size_,
             x_proj_out, W_h, b_h, W_write,
-            h_tape_init, h_work_init,
-            h_work_out, h_tape_final,
+            h_tape_final, h_work_init,
+            h_work_out,
+            read_attn, write_attn,
+            scale
+        );
+    } else if (n_slots_ == 64 && dim_ == 512) {
+        E23ForwardKernel_BF16<64, 512><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>(
+            seq_len, batch_size_,
+            x_proj_out, W_h, b_h, W_write,
+            h_tape_final, h_work_init,
+            h_work_out,
+            read_attn, write_attn,
+            scale
+        );
+    } else if (n_slots_ == 64 && dim_ == 256) {
+        E23ForwardKernel_BF16<64, 256><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>(
+            seq_len, batch_size_,
+            x_proj_out, W_h, b_h, W_write,
+            h_tape_final, h_work_init,
+            h_work_out,
             read_attn, write_attn,
             scale
         );
