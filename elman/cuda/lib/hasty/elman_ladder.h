@@ -162,6 +162,233 @@ private:
 };
 
 // =============================================================================
+// E17: Selective W_h Elman (input-dependent gating on recurrence)
+// h_t = tanh(W_x @ x_t + (W_h @ h_{t-1}) * sigmoid(W_gate @ x_t) + b)
+// output = h * silu(z)
+// Key: Diagonal selectivity on W_h @ h (like Mamba2's selective A)
+// =============================================================================
+
+template<typename T>
+struct SelectiveWhElmanForward {
+    SelectiveWhElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* W_gate,    // [dim, dim] gate projection (NEW)
+        const T* b,         // [dim]
+        const T* b_gate,    // [dim] gate bias (optional, can be nullptr)
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input (pre silu)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* gate_cache,      // [T, B, dim] gate cache (sigmoid(G))
+        T* Rh_cache,        // [T, B, dim] cache W_h @ h for backward
+        T* workspace);      // [2*T*B*dim + B*dim] for Wx, G, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SelectiveWhElmanBackward {
+    SelectiveWhElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* W_gate,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* gate_cache,
+        const T* Rh_cache,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* dW_gate,         // [dim, dim] gradient for gate projection
+        T* db,
+        T* workspace);      // [(3*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E18: h-Aware Gate Elman (h-aware output gating)
+// Variants controlled by gate_mode parameter:
+// 0 = E18-A: output = h * silu(z + h)     -- add h to gate (FREE)
+// 1 = E18-B: output = h * silu(z + Rh)    -- add Rh to gate (FREE, cache Rh)
+// 2 = E18-E: output = h                   -- no gate (faster, fewer params)
+// =============================================================================
+
+template<typename T>
+struct HAwareGateElmanForward {
+    HAwareGateElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int gate_mode,  // 0=A, 1=B, 2=E
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input (ignored for mode=2)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* Rh_cache,        // [T, B, dim] Rh cache for mode=1 backward (can be nullptr)
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int gate_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct HAwareGateElmanBackward {
+    HAwareGateElmanBackward(
+        int batch_size,
+        int dim,
+        int gate_mode,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* Rh_cache,  // [T, B, dim] for mode=1
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* workspace);      // [(T+3)*B*dim + dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int gate_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E19: Simplified Gate Elman (remove W_gate, reuse Wx in gate)
+// Variants controlled by gate_mode parameter:
+// 0 = E19-A: gate = silu(Wx + h + b_gate)    -- reuse Wx in gate, no W_gate
+// 1 = E19-B: gate = silu(h + b_gate)         -- h-only gate, no Wx
+// 2 = E19-D: h = tanh(Wx + Rh + h_prev + b)  -- residual h + E18-A gate
+// 3 = E19-E: A + D combined (residual + Wx in gate)
+// =============================================================================
+
+template<typename T>
+struct SimplifiedGateElmanForward {
+    SimplifiedGateElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int gate_mode,  // 0=A, 1=B, 2=D, 3=E
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* b_gate,    // [dim] gate bias (for modes 0,1,3)
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input (for mode 2 only - E18-A style)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* Wx_cache,        // [T, B, dim] cache Wx for backward (modes 0,3)
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int gate_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct SimplifiedGateElmanBackward {
+    SimplifiedGateElmanBackward(
+        int batch_size,
+        int dim,
+        int gate_mode,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* b_gate,    // [dim] for gradient computation
+        const T* x,
+        const T* z,         // [T, B, dim] for mode 2 only
+        const T* h,
+        const T* v,
+        const T* Wx_cache,  // [T, B, dim] from forward (modes 0,3)
+        const T* d_output,
+        T* dx,
+        T* dz,              // Output for mode 2 only
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* db_gate,         // [dim] for modes 0,1,3
+        T* workspace);      // [(2*T+2)*B*dim + 2*dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    int gate_mode_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // Softsign Elman - E1 variant using softsign instead of tanh
 // softsign(x) = x / (1 + |x|)
 // - Cheaper than tanh (no exp)

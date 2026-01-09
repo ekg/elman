@@ -26,6 +26,9 @@ from .multiscale_elman import MultiScaleElman
 from .selective_elman import SelectiveElman
 from .selective_gated_elman import SelectiveGatedElman
 from .matrix_state_elman import MatrixStateElman
+from .selective_wh_elman import SelectiveWhElman
+from .haware_gate_elman import HAwareGateElman
+from .simplified_gate_elman import SimplifiedGateElman
 
 
 def get_ladder_level(level):
@@ -53,11 +56,19 @@ def get_ladder_level(level):
         14: MatrixStateElman,  # E14: Matrix state with outer product update
         15: SoftsignElman,  # E15: E1 with softsign instead of tanh
         16: DiagonalStateElman,  # E16: Mamba2 efficiency + E1 nonlinearity
+        17: SelectiveWhElman,  # E17: Input-dependent gating on W_h @ h
+        '18a': lambda **kw: HAwareGateElman(gate_mode=0, **kw),  # E18-A: gate = z + h
+        '18b': lambda **kw: HAwareGateElman(gate_mode=1, **kw),  # E18-B: gate = z + Rh
+        '18e': lambda **kw: HAwareGateElman(gate_mode=2, **kw),  # E18-E: no gate
+        '19a': lambda **kw: SimplifiedGateElman(gate_mode=0, **kw),  # E19-A: gate = Wx + h
+        '19b': lambda **kw: SimplifiedGateElman(gate_mode=1, **kw),  # E19-B: gate = h-only
+        '19d': lambda **kw: SimplifiedGateElman(gate_mode=2, **kw),  # E19-D: residual + z
+        '19e': lambda **kw: SimplifiedGateElman(gate_mode=3, **kw),  # E19-E: residual + Wx + h
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-16, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/18b/18e, mamba2")
 
 
 class LadderLM(nn.Module):
@@ -263,6 +274,7 @@ def create_ladder_model(
     r_h_mode: str = 'spectral_norm',
     r_h_init_gain: float = 0.1,
     state_expansion: int = 2,
+    mamba2_init: bool = False,
 ):
     """
     Create a LadderLM with approximately target_params parameters.
@@ -324,7 +336,7 @@ def create_ladder_model(
         vocab_size=vocab_size, dim=dim, depth=1, level=level,
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
-        state_expansion=state_expansion,
+        state_expansion=state_expansion, mamba2_init=mamba2_init,
     )
     params_1layer = model_1layer.get_num_params()
 
@@ -333,7 +345,7 @@ def create_ladder_model(
         vocab_size=vocab_size, dim=dim, depth=2, level=level,
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
-        state_expansion=state_expansion,
+        state_expansion=state_expansion, mamba2_init=mamba2_init,
     )
     params_2layer = model_2layer.get_num_params()
 
@@ -365,6 +377,7 @@ def create_ladder_model(
         r_h_mode=r_h_mode,
         r_h_init_gain=r_h_init_gain,
         state_expansion=state_expansion,
+        mamba2_init=mamba2_init,
     )
 
     actual_params = model.get_num_params()

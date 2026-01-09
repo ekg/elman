@@ -281,6 +281,156 @@ std::vector<Tensor> mamba_gated_elman_backward(
 }
 
 // =============================================================================
+// E17: Selective W_h Elman (input-dependent gating on recurrence)
+// h_t = tanh(W_x @ x_t + (W_h @ h_{t-1}) * sigmoid(W_gate @ x_t) + b)
+// output = h * silu(z)
+// Key: Diagonal selectivity on W_h @ h (like Mamba2's selective A)
+// =============================================================================
+
+std::vector<Tensor> selective_wh_elman_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input (pre silu)
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor W_gate,      // [dim, dim] gate projection
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
+    Tensor Rh_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                               : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_G: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({2 * time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_wh_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveWhElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_gate),
+            ptr<scalar_t>(b),
+            nullptr,  // b_gate (optional)
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(gate_cache) : nullptr,
+            training ? ptr<scalar_t>(Rh_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v, gate_cache, Rh_cache};
+}
+
+std::vector<Tensor> selective_wh_elman_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor W_gate,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor gate_cache,
+    Tensor Rh_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(gate_cache);
+    CHECK_INPUT(Rh_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor dW_gate = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace layout: [dv_all: T*BD] [dG_all: T*BD] [dRh_all: T*BD] [dh: BD] [dh_rec: BD] [db_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (3 * time_steps + 2) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "selective_wh_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SelectiveWhElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(W_gate),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(gate_cache),
+            ptr<scalar_t>(Rh_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(dW_gate),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, dW_gate, db};
+}
+
+// =============================================================================
 // Softsign Elman - E1 variant using softsign instead of tanh
 // softsign(x) = x / (1 + |x|)
 // - Cheaper than tanh (no exp)
@@ -2842,6 +2992,288 @@ std::vector<Tensor> matrix_state_elman_backward(
     return {dx, dz, dW_key, db_key, dW_val, db_val, dW_query, db_query, dW_decay, db_decay};
 }
 
+// =============================================================================
+// E18: h-Aware Gate Elman (h-aware output gating)
+// =============================================================================
+
+std::vector<Tensor> haware_gate_elman_forward(
+    bool training,
+    int gate_mode,      // 0=A (z+h), 1=B (z+Rh), 2=E (no gate)
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input (ignored for mode=2)
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    // Rh_cache only needed for mode=1 (E18-B)
+    Tensor Rh_cache = (training && gate_mode == 1)
+                        ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "haware_gate_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        HAwareGateElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, gate_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            (training && gate_mode == 1) ? ptr<scalar_t>(Rh_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v, Rh_cache};
+}
+
+std::vector<Tensor> haware_gate_elman_backward(
+    int gate_mode,
+    Tensor W_x,
+    Tensor W_h,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor Rh_cache,    // Only used for mode=1
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [dRh_gate: BD] [db_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 3) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "haware_gate_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        HAwareGateElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, gate_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            (gate_mode == 1 && Rh_cache.numel() > 0) ? ptr<scalar_t>(Rh_cache) : nullptr,
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, db};
+}
+
+// =============================================================================
+// E19: Simplified Gate Elman (remove W_gate, reuse Wx in gate)
+// =============================================================================
+
+std::vector<Tensor> simplified_gate_elman_forward(
+    bool training,
+    int gate_mode,      // 0=A (Wx+h), 1=B (h-only), 2=D (residual+z), 3=E (residual+Wx+h)
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input (only for mode=2)
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
+    Tensor b_gate) {    // [dim] gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    // Wx_cache needed for modes 0 and 3 (where Wx appears in gate)
+    Tensor Wx_cache = (training && (gate_mode == 0 || gate_mode == 3))
+                        ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "simplified_gate_elman_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SimplifiedGateElmanForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, gate_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(x),
+            (gate_mode == 2) ? ptr<scalar_t>(z) : nullptr,
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            (training && (gate_mode == 0 || gate_mode == 3)) ? ptr<scalar_t>(Wx_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v, Wx_cache};
+}
+
+std::vector<Tensor> simplified_gate_elman_backward(
+    int gate_mode,
+    Tensor W_x,
+    Tensor W_h,
+    Tensor b_gate,      // [dim] for gradient computation
+    Tensor x,
+    Tensor z,           // Only used for mode=2
+    Tensor h,
+    Tensor v,
+    Tensor Wx_cache,    // From forward, modes 0,3
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b_gate);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = (gate_mode == 2) ? torch::empty_like(z) : torch::empty({0}, options);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor db_gate = (gate_mode != 2) ? torch::zeros({dim}, options) : torch::empty({0}, options);
+
+    // Workspace: [dv_all: T*BD] [dWx_gate: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim] [dbg_float: dim]
+    const int64_t BD = batch_size * dim;
+    // Need 2 * dim floats = 2 * dim * 4 bytes, convert to T-elements (e.g., bfloat16 = 2 bytes)
+    // For bfloat16: 2 * dim * 4 / 2 = 4 * dim elements
+    // For float32: 2 * dim * 4 / 4 = 2 * dim elements
+    // General: ceil(2 * dim * sizeof(float) / sizeof(T))
+    const int64_t float_bytes = 2 * dim * sizeof(float);
+    const int64_t workspace_size = (2 * time_steps + 2) * BD + float_bytes;  // float_bytes works as element count ceiling for T<=4 bytes
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "simplified_gate_elman_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        SimplifiedGateElmanBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, gate_mode,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b_gate),
+            ptr<scalar_t>(x),
+            (gate_mode == 2) ? ptr<scalar_t>(z) : nullptr,
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            (gate_mode == 0 || gate_mode == 3) ? ptr<scalar_t>(Wx_cache) : nullptr,
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            (gate_mode == 2) ? ptr<scalar_t>(dz) : nullptr,
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            (gate_mode != 2) ? ptr<scalar_t>(db_gate) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, db, db_gate};
+}
+
 }  // anonymous namespace
 
 
@@ -2854,6 +3286,18 @@ void elman_ladder_init(py::module& m) {
           "E1: Mamba-Gated Elman forward");
     m.def("mamba_gated_elman_backward", &mamba_gated_elman_backward,
           "E1: Mamba-Gated Elman backward");
+    m.def("selective_wh_elman_forward", &selective_wh_elman_forward,
+          "E17: Selective W_h Elman forward (input-dependent gating on recurrence)");
+    m.def("selective_wh_elman_backward", &selective_wh_elman_backward,
+          "E17: Selective W_h Elman backward");
+    m.def("haware_gate_elman_forward", &haware_gate_elman_forward,
+          "E18: h-Aware Gate Elman forward (gate_mode: 0=A z+h, 1=B z+Rh, 2=E no gate)");
+    m.def("haware_gate_elman_backward", &haware_gate_elman_backward,
+          "E18: h-Aware Gate Elman backward");
+    m.def("simplified_gate_elman_forward", &simplified_gate_elman_forward,
+          "E19: Simplified Gate Elman forward (gate_mode: 0=A Wx+h, 1=B h-only, 2=D residual+z, 3=E residual+Wx+h)");
+    m.def("simplified_gate_elman_backward", &simplified_gate_elman_backward,
+          "E19: Simplified Gate Elman backward");
     m.def("softsign_elman_forward", &softsign_elman_forward,
           "Softsign Elman forward (E1 variant with softsign instead of tanh)");
     m.def("softsign_elman_backward", &softsign_elman_backward,
