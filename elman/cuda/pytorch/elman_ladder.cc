@@ -3636,14 +3636,36 @@ std::vector<Tensor> dual_memory_elman_forward(
     cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+    // Transpose x from [B, T, D] to [T, B, D] for efficient batch GEMM
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // Pre-compute x_proj = x @ W_x^T for ALL timesteps in ONE GEMM
+    // x_t is [T, B, D] = [T*B, D] in memory
+    // Result x_proj is [T, B, D] = [T*B, D]
+    auto x_proj = torch::empty({seq_len, batch_size, dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        dim, seq_len * batch_size, dim,
+        &alpha,
+        W_x.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        x_proj.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
     // Allocate outputs - kernel outputs [T, B, ...], we transpose to [B, T, ...] before returning
     auto h_work_out = torch::empty({seq_len, batch_size, dim}, options);
     auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
     auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
     auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
 
-    // Workspace: tmp_x [B, D] + tmp_Wx [B, D] + tmp_Rh [B, D] + tmp_write_val [B, D]
-    auto workspace = torch::empty({batch_size * dim * 4}, options);
+    // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D]
+    auto workspace = torch::empty({batch_size * dim * 2}, options);
 
     // For training, save h_tape_all for backward
     auto h_tape_all = training ?
@@ -3655,9 +3677,8 @@ std::vector<Tensor> dual_memory_elman_forward(
 
     forward_op.Run(
         seq_len,
-        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),  // Pre-computed x @ W_x^T
         reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
@@ -3677,7 +3698,7 @@ std::vector<Tensor> dual_memory_elman_forward(
 }
 
 std::vector<Tensor> dual_memory_elman_backward(
-    Tensor x_proj,           // [B, T, D]
+    Tensor x_proj,           // [B, T, D] - not used, kept for API compat
     Tensor h_work_all,       // [B, T, D]
     Tensor h_tape_all,       // [T+1, B, N, D]
     Tensor read_attn,        // [B, T, N]
@@ -3687,12 +3708,11 @@ std::vector<Tensor> dual_memory_elman_backward(
     Tensor d_h_work_out,     // [B, T, D]
     Tensor d_h_tape_final) { // [B, N, D]
 
-    const auto batch_size = x_proj.size(0);
-    const auto seq_len = x_proj.size(1);
-    const auto dim = x_proj.size(2);
+    const auto batch_size = h_work_all.size(0);
+    const auto seq_len = h_work_all.size(1);
+    const auto dim = h_work_all.size(2);
     const auto n_slots = h_tape_all.size(2);
 
-    CHECK_INPUT(x_proj);
     CHECK_INPUT(h_work_all);
     CHECK_INPUT(h_tape_all);
     CHECK_INPUT(read_attn);
@@ -3702,19 +3722,27 @@ std::vector<Tensor> dual_memory_elman_backward(
     CHECK_INPUT(d_h_work_out);
     CHECK_INPUT(d_h_tape_final);
 
-    const auto options = x_proj.options();
+    const auto options = h_work_all.options();
     const auto float_options = options.dtype(torch::kFloat32);
     const at::cuda::CUDAGuard guard(options.device_index());
     cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    // Allocate gradient outputs
-    auto dx_proj = torch::empty({batch_size, seq_len, dim}, options);
+    // Transpose inputs from [B, T, ...] to [T, B, ...] for kernel
+    auto h_work_t = h_work_all.permute({1, 0, 2}).contiguous();  // [T, B, D]
+    auto read_attn_t = read_attn.permute({1, 0, 2}).contiguous();  // [T, B, N]
+    auto write_attn_t = write_attn.permute({1, 0, 2}).contiguous();  // [T, B, N]
+    auto d_h_work_out_t = d_h_work_out.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // Allocate gradient outputs in [T, B, D] format
+    auto dx_proj_t = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_pre_act_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_write_val_all = torch::empty({seq_len, batch_size, dim}, options);
     auto dW_h = torch::zeros({dim, dim}, float_options);
     auto db_h = torch::zeros({dim}, float_options);
     auto dW_write = torch::zeros({dim, dim}, float_options);
 
-    // Scratch buffer for tape gradients (in global memory, not shared)
+    // Scratch buffer for tape gradients
     auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
 
     hasty::v0::elman_ladder::DualMemoryElmanBackward<__nv_bfloat16> backward_op(
@@ -3722,22 +3750,26 @@ std::vector<Tensor> dual_memory_elman_backward(
 
     backward_op.Run(
         seq_len,
-        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(h_work_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(h_tape_all.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(read_attn.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(d_h_work_out.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_work_out_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
-        dW_h.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_act_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_write_val_all.data_ptr()),
         db_h.data_ptr<float>(),
-        dW_write.data_ptr<float>(),
-        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()));
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()),
+        dW_h.data_ptr<float>(),
+        dW_write.data_ptr<float>());
 
-    // Convert back to original dtype
+    // Transpose dx_proj back to [B, T, D]
+    auto dx_proj = dx_proj_t.permute({1, 0, 2}).contiguous();
+
+    // Convert weight gradients back to original dtype
     dW_h = dW_h.to(options.dtype());
     db_h = db_h.to(options.dtype());
     dW_write = dW_write.to(options.dtype());

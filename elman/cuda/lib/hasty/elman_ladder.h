@@ -52,6 +52,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -87,6 +88,7 @@ struct StockElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t sync_stream_;
     cudaStream_t stream_[2];
@@ -126,6 +128,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -157,6 +160,7 @@ struct MambaGatedElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -197,6 +201,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -232,6 +237,7 @@ struct SelectiveWhElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -271,6 +277,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int gate_mode_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -305,6 +312,7 @@ struct HAwareGateElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int gate_mode_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -347,6 +355,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int gate_mode_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -383,6 +392,7 @@ struct SimplifiedGateElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int gate_mode_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -421,6 +431,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -452,6 +463,7 @@ struct SoftsignElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -564,6 +576,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_slots_;
     cudaStream_t stream_;
 };
@@ -598,6 +611,7 @@ struct SlotElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_slots_;
     cudaStream_t stream_;
 };
@@ -638,6 +652,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_slots_;
     int rank_;
     cudaStream_t stream_;
@@ -676,6 +691,7 @@ struct LowRankSlotElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_slots_;
     int rank_;
     cudaStream_t stream_;
@@ -715,6 +731,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -750,6 +767,7 @@ struct LowRankElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -791,6 +809,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -830,6 +849,7 @@ struct PureLowRankElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -869,6 +889,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -910,6 +931,7 @@ struct PureLowRankElmanBackwardFused {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -956,6 +978,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -997,6 +1020,7 @@ struct B2bLowRankElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1044,6 +1068,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
     cufftHandle fft_plan_c_;      // cufftHandle for single FFT
@@ -1082,6 +1107,7 @@ struct CirculantElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
     cufftHandle fft_plan_c_;
@@ -1119,6 +1145,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1150,6 +1177,7 @@ struct DiagonalElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1192,6 +1220,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int m_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1231,6 +1260,7 @@ struct MonarchElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int m_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1273,6 +1303,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1314,6 +1345,7 @@ struct ScaledLowRankElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int rank_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1440,6 +1472,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_banks_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1476,6 +1509,7 @@ struct MultiScaleElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_banks_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1525,6 +1559,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_banks_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1567,6 +1602,7 @@ struct SelectiveElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     int n_banks_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
@@ -1607,6 +1643,7 @@ private:
     bool training_;
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -1641,6 +1678,7 @@ struct SelectiveGatedElmanBackward {
 private:
     int batch_size_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -2041,24 +2079,25 @@ struct DualMemoryElmanForward {
 
     void Run(
         int seq_len,
-        const T* x,               // [B, T, D] - raw input
+        const T* x_proj,          // [T, B, D] - pre-computed x @ W_x^T
         const T* W_h,             // [D, D]
-        const T* W_x,             // [D, D]
         const T* b_h,             // [D]
         const T* W_write,         // [D, D]
         const T* h_tape_init,     // [B, N, D]
         const T* h_work_init,     // [B, D]
-        T* h_work_out,            // [B, T, D]
+        T* h_work_out,            // [T, B, D]
         T* h_tape_final,          // [B, N, D]
-        T* read_attn,             // [B, T, N]
-        T* write_attn,            // [B, T, N]
-        T* x_proj_out);           // [B, T, D] - scratch for W_x @ x
+        T* h_tape_all,            // [T+1, B, N, D] - tape history for backward (null if inference)
+        T* read_attn,             // [T, B, N]
+        T* write_attn,            // [T, B, N]
+        T* workspace);           // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D]
 
 private:
     bool training_;
     int batch_size_;
     int n_slots_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
@@ -2074,24 +2113,27 @@ struct DualMemoryElmanBackward {
 
     void Run(
         int seq_len,
-        const T* x_proj,
-        const T* h_work_all,
-        const T* h_tape_all,
-        const T* read_attn,
-        const T* write_attn,
+        const T* h_work_all,      // [T, B, D]
+        const T* h_tape_all,      // [T+1, B, N, D]
+        const T* read_attn,       // [T, B, N]
+        const T* write_attn,      // [T, B, N]
         const T* W_h,
         const T* W_write,
-        const T* d_h_work_out,
-        const T* d_h_tape_final,
-        T* dx_proj,
-        float* dW_h,              // [D, D] - fp32 accumulator
+        const T* d_h_work_out,    // [T, B, D]
+        const T* d_h_tape_final,  // [B, N, D]
+        T* dx_proj,               // [T, B, D]
+        T* d_pre_act_all,         // [T, B, D] - workspace
+        T* d_write_val_all,       // [T, B, D] - workspace
         float* db_h,              // [D] - fp32 accumulator
-        float* dW_write);         // [D, D] - fp32 accumulator
+        T* d_h_tape,              // [B, N, D] - scratch
+        float* dW_h,              // [D, D] - computed via GEMM
+        float* dW_write);         // [D, D] - computed via GEMM
 
 private:
     int batch_size_;
     int n_slots_;
     int dim_;
+    int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
