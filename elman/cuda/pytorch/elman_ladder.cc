@@ -3780,6 +3780,94 @@ std::vector<Tensor> dual_memory_elman_backward(
     return {dx_proj, dW_h, db_h, dW_write};
 }
 
+// E23 Optimized forward using cuBLAS strided batched GEMM for attention
+std::vector<Tensor> dual_memory_elman_forward_opt(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_x,            // [D, D]
+    Tensor b_h,            // [D]
+    Tensor W_write) {      // [D, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D] for efficient batch GEMM
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // Pre-compute x_proj = x @ W_x^T for ALL timesteps in ONE GEMM
+    auto x_proj = torch::empty({seq_len, batch_size, dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        dim, seq_len * batch_size, dim,
+        &alpha,
+        W_x.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        x_proj.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Allocate outputs
+    auto h_work_out = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D] + tmp_scores [B, N] + tmp_read [B, D]
+    auto workspace = torch::empty({batch_size * (dim * 3 + n_slots)}, options);
+
+    // For training, save h_tape_all for backward
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+
+    hasty::v0::elman_ladder::DualMemoryElmanForwardOpt<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    // Transpose from [T, B, ...] to [B, T, ...] for Python/backward
+    return {h_work_out.permute({1, 0, 2}).contiguous(),
+            h_tape_final, h_tape_all,
+            read_attn.permute({1, 0, 2}).contiguous(),
+            write_attn.permute({1, 0, 2}).contiguous()};
+}
+
 // =============================================================================
 // E24: Single-GEMM Dual Memory (1 GEMM per timestep)
 // =============================================================================
@@ -4049,6 +4137,8 @@ void elman_ladder_init(py::module& m) {
           "E23: Dual-Memory Elman forward (tape + working memory)");
     m.def("dual_memory_elman_backward", &dual_memory_elman_backward,
           "E23: Dual-Memory Elman backward");
+    m.def("dual_memory_elman_forward_opt", &dual_memory_elman_forward_opt,
+          "E23: Dual-Memory Elman optimized forward (cuBLAS batched GEMM attention)");
     m.def("e24_single_gemm_forward", &e24_single_gemm_forward,
           "E24: Single-GEMM Dual Memory forward (1 GEMM per timestep)");
     m.def("e24_single_gemm_backward", &e24_single_gemm_backward,

@@ -2140,6 +2140,47 @@ private:
 };
 
 // =============================================================================
+// E23 Optimized Forward: cuBLAS strided batched GEMM for attention
+// Uses tensor cores for attention score computation and weighted read/write.
+// ~2-5x faster than naive sequential dot product approach.
+// =============================================================================
+
+template<typename T>
+struct DualMemoryElmanForwardOpt {
+    DualMemoryElmanForwardOpt(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_proj,           // [T, B, D] - pre-projected input
+        const T* W_h,              // [D, D]
+        const T* b_h,              // [D]
+        const T* W_write,          // [D, D]
+        const T* h_tape_init,      // [B, N, D]
+        const T* h_work_init,      // [B, D]
+        T* h_work_out,             // [T, B, D]
+        T* h_tape_final,           // [B, N, D]
+        T* h_tape_all,             // [T+1, B, N, D] - tape history (null if inference)
+        T* read_attn,              // [T, B, N]
+        T* write_attn,             // [T, B, N]
+        T* workspace);             // tmp_Rh[BD], tmp_write_val[BD], tmp_scores[BN], tmp_read[BD]
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E24: Single-GEMM Dual Memory (1 GEMM per timestep)
 // Architecture:
 //   - Tape: [B, N, D] - Large linear storage

@@ -140,12 +140,13 @@ class DualMemoryElmanFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, training, x_seq, h_tape_init, h_work_init,
-                W_h, W_x, b_h, W_write, use_cuda=True, use_triton=True):
+                W_h, W_x, b_h, W_write, use_cuda=True, use_triton=True, use_cuda_opt=True):
         """
         Args:
             x_seq: [B, T, D] input sequence
             h_tape_init: [B, N, D] initial tape state
             h_work_init: [B, D] initial working memory
+            use_cuda_opt: Use optimized CUDA kernel with cuBLAS batched GEMM attention
         """
         B, T, D = x_seq.shape
         N = h_tape_init.shape[1]
@@ -155,11 +156,18 @@ class DualMemoryElmanFunction(torch.autograd.Function):
         if use_cuda and E23_CUDA_AVAILABLE and x_seq.is_cuda:
             # CUDA path returns 5 tensors: h_work_out, h_tape_final, h_tape_all, read_attn, write_attn
             # h_tape_all is [T+1, B, N, D], h_tape_final is already [B, N, D]
-            h_work_all, h_tape_final_cuda, h_tape_all, read_attn_all, write_attn_all = \
-                hasty_pytorch_lib.dual_memory_elman_forward(
-                    training, x_seq, h_tape_init, h_work_init,
-                    W_h, W_x, b_h, W_write
-                )
+            if use_cuda_opt and hasattr(hasty_pytorch_lib, 'dual_memory_elman_forward_opt'):
+                h_work_all, h_tape_final_cuda, h_tape_all, read_attn_all, write_attn_all = \
+                    hasty_pytorch_lib.dual_memory_elman_forward_opt(
+                        training, x_seq, h_tape_init, h_work_init,
+                        W_h, W_x, b_h, W_write
+                    )
+            else:
+                h_work_all, h_tape_final_cuda, h_tape_all, read_attn_all, write_attn_all = \
+                    hasty_pytorch_lib.dual_memory_elman_forward(
+                        training, x_seq, h_tape_init, h_work_init,
+                        W_h, W_x, b_h, W_write
+                    )
             ctx.use_cuda = True
             ctx.use_triton = False
         elif use_triton and E23_TRITON_AVAILABLE and x_seq.is_cuda:
@@ -223,14 +231,14 @@ class DualMemoryElmanFunction(torch.autograd.Function):
         N = h_tape_all.shape[2]
 
         if ctx.use_cuda and E23_CUDA_AVAILABLE:
-            # CUDA backward - C++ expects: x_proj, h_work_all, h_tape_all, read_attn, write_attn, W_h, W_write, d_h_work, d_h_tape_final
+            # CUDA backward - C++ expects: x_proj, h_work_all, h_work_init, h_tape_all, read_attn, write_attn, W_h, W_write, d_h_work, d_h_tape_final
             # x_proj = x_seq @ W_x.T was computed in forward but not saved, so recompute it
             x_proj = (x_seq @ W_x.T).contiguous()
 
             # Returns: dx_proj, dW_h, db_h, dW_write
             dx_proj, dW_h, db_h, dW_write = \
                 hasty_pytorch_lib.dual_memory_elman_backward(
-                    x_proj, h_work_all, h_tape_all, read_attn_all, write_attn_all,
+                    x_proj, h_work_all, h_work_init.contiguous(), h_tape_all, read_attn_all, write_attn_all,
                     W_h, W_write, d_h_work_all.contiguous(), d_h_tape_final.contiguous()
                 )
             # dx_proj is gradient w.r.t. x_proj = x @ W_x.T
@@ -252,7 +260,7 @@ class DualMemoryElmanFunction(torch.autograd.Function):
                 W_h, W_x, b_h, W_write, h_work_init, d_h_work_all, d_h_tape_final, scale
             )
 
-        return None, dx, None, None, dW_h, dW_x, db_h, dW_write, None, None
+        return None, dx, None, None, dW_h, dW_x, db_h, dW_write, None, None, None
 
 
 def e23_backward_python(
@@ -419,12 +427,13 @@ class DualMemoryElmanCell(nn.Module):
         # W_write: Xavier uniform
         nn.init.xavier_uniform_(self.W_write)
 
-    def forward(self, x_seq, h_tape=None, h_work=None, use_cuda=True, use_triton=True):
+    def forward(self, x_seq, h_tape=None, h_work=None, use_cuda=True, use_triton=True, use_cuda_opt=True):
         """
         Args:
             x_seq: [B, T, D] or [T, B, D] input sequence
             h_tape: [B, N, D] initial tape state (optional)
             h_work: [B, D] initial working memory (optional)
+            use_cuda_opt: Use optimized CUDA kernel with cuBLAS batched GEMM attention
 
         Returns:
             output: [B, T, D] working memory outputs
@@ -456,7 +465,8 @@ class DualMemoryElmanCell(nn.Module):
             self.b_h.contiguous(),
             self.W_write.contiguous(),
             use_cuda,
-            use_triton
+            use_triton,
+            use_cuda_opt
         )
 
         h_work_final = h_work_all[:, -1]

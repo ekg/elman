@@ -398,170 +398,220 @@ __global__ void E23FusedKernel_BF16(
 
 
 /**
- * E23 Backward Kernel (BF16) - Optimized Version
+ * E23 Backward Phase 1: Write attention backward
  *
- * Computes:
- * - dx_proj: gradient w.r.t. input projection
- * - d_pre_act_all: saved for weight gradient GEMM
- * - d_write_val_all: saved for W_write gradient GEMM
- * - d_h_tape: tape gradients
- *
- * Weight gradients (dW_h, dW_write, db_h) are computed via cuBLAS GEMM afterwards.
+ * Computes d_write_val from attention-weighted d_h_tape and updates d_h_tape.
+ * Also adds d_output[t] to d_h_work.
  */
 template<int N_SLOTS, int DIM>
-__global__ void E23BackwardKernel_BF16(
-    const int seq_len,
+__global__ void E23BackwardPhase1_BF16(
     const int batch_size,
-    // Forward saved tensors
-    const __nv_bfloat16* __restrict__ h_work_all,  // [T, B, D]
-    const __nv_bfloat16* __restrict__ h_tape_all,  // [T+1, B, N, D]
-    const __nv_bfloat16* __restrict__ read_attn,   // [T, B, N]
-    const __nv_bfloat16* __restrict__ write_attn,  // [T, B, N]
-    // Weights (for recurrent gradient computation)
-    const __nv_bfloat16* __restrict__ W_h,
-    const __nv_bfloat16* __restrict__ W_write,
-    // Gradient inputs
-    const __nv_bfloat16* __restrict__ d_h_work_out,  // [T, B, D]
-    const __nv_bfloat16* __restrict__ d_h_tape_final,// [B, N, D]
-    // Gradient outputs
-    __nv_bfloat16* __restrict__ dx_proj,         // [T, B, D]
-    __nv_bfloat16* __restrict__ d_pre_act_all,   // [T, B, D] - for dW_h GEMM
-    __nv_bfloat16* __restrict__ d_write_val_all, // [T, B, D] - for dW_write GEMM
-    float* __restrict__ db_h,                    // [D] - accumulated
-    __nv_bfloat16* __restrict__ d_h_tape         // [B, N, D] - gradient accumulator
+    const __nv_bfloat16* __restrict__ write_attn_t, // [B, N] - attention for this timestep
+    const __nv_bfloat16* __restrict__ d_h_work_out_t, // [B, D] - output gradient for this timestep
+    __nv_bfloat16* __restrict__ d_h_work,           // [B, D] - accumulated work gradient (modified)
+    __nv_bfloat16* __restrict__ d_h_tape,           // [B, N, D] - tape gradient (modified)
+    __nv_bfloat16* __restrict__ d_write_val_t       // [B, D] - output: d_write_val for cuBLAS
 ) {
     const int b = blockIdx.x;
     if (b >= batch_size) return;
-
     const int tid = threadIdx.x;
-    const int TB = seq_len * batch_size;
-    const int BD = batch_size * DIM;
-    const int BND = batch_size * N_SLOTS * DIM;
 
-    // Shared memory
-    extern __shared__ float smem[];
-    float* h_work_sh = smem;                        // [DIM]
-    float* d_h_work_sh = h_work_sh + DIM;           // [DIM]
-    float* attn_sh = d_h_work_sh + DIM;             // [N_SLOTS]
-    float* d_write_val_sh = attn_sh + N_SLOTS;      // [DIM]
+    __shared__ float attn_sh[N_SLOTS];
 
-    // Global memory pointers for this batch's tape gradients
-    __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
-
-    // Initialize d_h_tape from final gradient
-    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
-        d_h_tape_b[i] = d_h_tape_final[b * N_SLOTS * DIM + i];
-    }
-
-    // Initialize d_h_work to zero
-    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-        d_h_work_sh[d] = 0.0f;
+    // Load write attention into shared memory
+    if (tid < N_SLOTS) {
+        attn_sh[tid] = __bfloat162float(write_attn_t[b * N_SLOTS + tid]);
     }
     __syncthreads();
 
-    // Backward pass: iterate in reverse
-    for (int t = seq_len - 1; t >= 0; t--) {
-        // Offset for this timestep in [T, B, D] layout
-        const int tBD = t * BD + b * DIM;
-        const int tBN = t * batch_size * N_SLOTS + b * N_SLOTS;
+    __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
 
-        // Load current h_work from [T, B, D] layout
-        for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            h_work_sh[d] = __bfloat162float(h_work_all[tBD + d]);
+    // Add output gradient to d_h_work
+    // d_write_val = sum_n(attn[n] * d_h_tape[n])
+    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
+        // Add output gradient
+        float d_h = __bfloat162float(d_h_work[b * DIM + d])
+                  + __bfloat162float(d_h_work_out_t[b * DIM + d]);
+        d_h_work[b * DIM + d] = __float2bfloat16(d_h);
+
+        // Compute d_write_val
+        float d_wv = 0.0f;
+        for (int n = 0; n < N_SLOTS; n++) {
+            d_wv += attn_sh[n] * __bfloat162float(d_h_tape_b[n * DIM + d]);
         }
-        __syncthreads();
+        d_write_val_t[b * DIM + d] = __float2bfloat16(d_wv);
+    }
+    __syncthreads();
 
-        // Add gradient from output
-        for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            d_h_work_sh[d] += __bfloat162float(d_h_work_out[tBD + d]);
+    // Update d_h_tape: d_h_tape = (1-attn) * d_h_tape (gate for write backward)
+    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
+        int n = i / DIM;
+        float d_tape = __bfloat162float(d_h_tape_b[i]);
+        d_h_tape_b[i] = __float2bfloat16((1.0f - attn_sh[n]) * d_tape);
+    }
+}
+
+/**
+ * E23 Backward Phase 2: Tanh backward
+ *
+ * Computes d_pre_act from d_h_work and h_work, saves to d_pre_act_all.
+ */
+template<int N_SLOTS, int DIM>
+__global__ void E23BackwardPhase2_BF16(
+    const int batch_size,
+    const __nv_bfloat16* __restrict__ h_work_t,     // [B, D] - h_work for this timestep
+    const __nv_bfloat16* __restrict__ d_h_work,     // [B, D] - accumulated work gradient
+    __nv_bfloat16* __restrict__ dx_proj_t,          // [B, D] - output: dx_proj for this timestep
+    __nv_bfloat16* __restrict__ d_pre_act_t,        // [B, D] - output: d_pre_act for cuBLAS
+    float* __restrict__ db_h                        // [D] - bias gradient (accumulated)
+) {
+    const int b = blockIdx.x;
+    if (b >= batch_size) return;
+    const int tid = threadIdx.x;
+
+    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
+        float h = __bfloat162float(h_work_t[b * DIM + d]);
+        float d_h = __bfloat162float(d_h_work[b * DIM + d]);
+        float d_pre_act = d_h * (1.0f - h * h);  // tanh derivative
+
+        dx_proj_t[b * DIM + d] = __float2bfloat16(d_pre_act);
+        d_pre_act_t[b * DIM + d] = __float2bfloat16(d_pre_act);
+
+        atomicAdd(&db_h[d], d_pre_act);
+    }
+}
+
+/**
+ * E23 Backward Phase 3: Read attention backward (COMPLETE)
+ *
+ * Computes the full read attention backward pass:
+ * 1. d_h_tape += d_pre_act[:, None, :] * read_attn[:, :, None]  (direct gradient)
+ * 2. Softmax backward for read attention scores
+ * 3. d_h_work += (d_read_scores[:, :, None] * h_tape_t).sum(dim=1)
+ * 4. d_h_tape += d_read_scores[:, :, None] * h_work_prev[:, None, :]
+ */
+template<int N_SLOTS, int DIM>
+__global__ void E23BackwardPhase3_BF16(
+    const int batch_size,
+    const __nv_bfloat16* __restrict__ read_attn_t,   // [B, N] - read attention for this timestep
+    const __nv_bfloat16* __restrict__ d_pre_act_t,   // [B, D] - d_pre_act (also d_read)
+    const __nv_bfloat16* __restrict__ h_tape_t,      // [B, N, D] - tape state at timestep t
+    const __nv_bfloat16* __restrict__ h_work_prev_t, // [B, D] - h_work at timestep t-1
+    const float scale,                                // 1/sqrt(D)
+    __nv_bfloat16* __restrict__ d_h_tape,            // [B, N, D] - tape gradient (modified)
+    __nv_bfloat16* __restrict__ d_h_work             // [B, D] - work gradient (modified, added to)
+) {
+    const int b = blockIdx.x;
+    if (b >= batch_size) return;
+    const int tid = threadIdx.x;
+
+    __shared__ float attn_sh[N_SLOTS];
+    __shared__ float d_pre_act_sh[DIM];
+    __shared__ float h_work_prev_sh[DIM];
+    __shared__ float d_read_attn_sh[N_SLOTS];
+    __shared__ float d_read_scores_sh[N_SLOTS];
+
+    const __nv_bfloat16* h_tape_b = h_tape_t + b * N_SLOTS * DIM;
+    __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
+
+    // Load read attention into shared memory
+    if (tid < N_SLOTS) {
+        attn_sh[tid] = __bfloat162float(read_attn_t[b * N_SLOTS + tid]);
+    }
+
+    // Load d_pre_act and h_work_prev into shared memory
+    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
+        d_pre_act_sh[d] = __bfloat162float(d_pre_act_t[b * DIM + d]);
+        h_work_prev_sh[d] = __bfloat162float(h_work_prev_t[b * DIM + d]);
+    }
+    __syncthreads();
+
+    // ============================================
+    // Step 1: Compute d_read_attn = (d_pre_act[:, None, :] * h_tape_t).sum(dim=-1)
+    // Each thread computes partial sum for one slot
+    // ============================================
+    if (tid < N_SLOTS) {
+        float d_attn = 0.0f;
+        for (int d = 0; d < DIM; d++) {
+            d_attn += d_pre_act_sh[d] * __bfloat162float(h_tape_b[tid * DIM + d]);
         }
-        __syncthreads();
+        d_read_attn_sh[tid] = d_attn;
+    }
+    __syncthreads();
 
-        // ============================================
-        // BACKWARD THROUGH WRITE
-        // ============================================
-        if (tid < N_SLOTS) {
-            attn_sh[tid] = __bfloat162float(write_attn[tBN + tid]);
+    // ============================================
+    // Step 2: Softmax backward
+    // d_read_scores = read_attn * (d_read_attn - sum(d_read_attn * read_attn)) * scale
+    // ============================================
+    if (tid == 0) {
+        // Compute sum(d_read_attn * read_attn)
+        float dot_sum = 0.0f;
+        for (int n = 0; n < N_SLOTS; n++) {
+            dot_sum += d_read_attn_sh[n] * attn_sh[n];
         }
-        __syncthreads();
-
-        // d_write_val = sum_n(attn[n] * d_h_tape[n])
-        for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            float d_wv = 0.0f;
-            for (int n = 0; n < N_SLOTS; n++) {
-                d_wv += attn_sh[n] * __bfloat162float(d_h_tape_b[n * DIM + d]);
-            }
-            d_write_val_sh[d] = d_wv;
-            // Save for GEMM (dW_write = d_write_val @ h_work.T)
-            d_write_val_all[tBD + d] = __float2bfloat16(d_wv);
+        // Compute d_read_scores for each slot
+        for (int n = 0; n < N_SLOTS; n++) {
+            d_read_scores_sh[n] = attn_sh[n] * (d_read_attn_sh[n] - dot_sum) * scale;
         }
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // d_h_work += W_write.T @ d_write_val (compute locally, no atomics)
-        for (int j = tid; j < DIM; j += E23_BLOCK_SIZE) {
-            float d_h = 0.0f;
-            for (int i = 0; i < DIM; i++) {
-                d_h += __bfloat162float(W_write[i * DIM + j]) * d_write_val_sh[i];
-            }
-            d_h_work_sh[j] += d_h;
+    // ============================================
+    // Step 3: Update d_h_tape with both contributions
+    // d_h_tape += d_pre_act[:, None, :] * read_attn[:, :, None]  (outer product)
+    // d_h_tape += d_read_scores[:, :, None] * h_work_prev[:, None, :]  (from softmax)
+    // ============================================
+    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
+        int n = i / DIM;
+        int d = i % DIM;
+
+        // Direct gradient: d_pre_act * attn
+        float d_tape_direct = attn_sh[n] * d_pre_act_sh[d];
+
+        // Gradient from softmax: d_read_scores * h_work_prev
+        float d_tape_softmax = d_read_scores_sh[n] * h_work_prev_sh[d];
+
+        float current = __bfloat162float(d_h_tape_b[i]);
+        d_h_tape_b[i] = __float2bfloat16(current + d_tape_direct + d_tape_softmax);
+    }
+
+    // ============================================
+    // Step 4: Update d_h_work with gradient from softmax
+    // d_h_work += (d_read_scores[:, :, None] * h_tape_t).sum(dim=1)
+    // ============================================
+    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
+        float d_work_contrib = 0.0f;
+        for (int n = 0; n < N_SLOTS; n++) {
+            d_work_contrib += d_read_scores_sh[n] * __bfloat162float(h_tape_b[n * DIM + d]);
         }
-        __syncthreads();
+        // Add to existing d_h_work
+        float current = __bfloat162float(d_h_work[b * DIM + d]);
+        d_h_work[b * DIM + d] = __float2bfloat16(current + d_work_contrib);
+    }
+}
 
-        // Update d_h_tape: d_h_tape = (1-attn) * d_h_tape
-        for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
-            int n = i / DIM;
-            float d_tape = __bfloat162float(d_h_tape_b[i]);
-            d_h_tape_b[i] = __float2bfloat16((1.0f - attn_sh[n]) * d_tape);
-        }
-        __syncthreads();
+/**
+ * Initialize d_h_tape from final gradient and zero d_h_work
+ */
+template<int N_SLOTS, int DIM>
+__global__ void E23BackwardInit_BF16(
+    const int batch_size,
+    const __nv_bfloat16* __restrict__ d_h_tape_final, // [B, N, D]
+    __nv_bfloat16* __restrict__ d_h_tape,             // [B, N, D]
+    __nv_bfloat16* __restrict__ d_h_work              // [B, D]
+) {
+    const int b = blockIdx.x;
+    if (b >= batch_size) return;
+    const int tid = threadIdx.x;
 
-        // ============================================
-        // BACKWARD THROUGH H_WORK UPDATE (tanh)
-        // ============================================
-        for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            float h = h_work_sh[d];
-            float d_pre_act = d_h_work_sh[d] * (1.0f - h * h);
+    // Copy d_h_tape from final gradient
+    for (int i = tid; i < N_SLOTS * DIM; i += E23_BLOCK_SIZE) {
+        d_h_tape[b * N_SLOTS * DIM + i] = d_h_tape_final[b * N_SLOTS * DIM + i];
+    }
 
-            // Store dx_proj (same as d_pre_act for additive term)
-            dx_proj[tBD + d] = __float2bfloat16(d_pre_act);
-
-            // Save d_pre_act for GEMM (dW_h = d_pre_act @ h_prev.T)
-            d_pre_act_all[tBD + d] = __float2bfloat16(d_pre_act);
-
-            // Accumulate db_h (use atomicAdd but only D elements total, not D×D)
-            atomicAdd(&db_h[d], d_pre_act);
-
-            d_write_val_sh[d] = d_pre_act;
-        }
-        __syncthreads();
-
-        // d_h_work_prev = W_h.T @ d_pre_act
-        for (int j = tid; j < DIM; j += E23_BLOCK_SIZE) {
-            float d_h_prev = 0.0f;
-            for (int k = 0; k < DIM; k++) {
-                d_h_prev += d_write_val_sh[k] * __bfloat162float(W_h[k * DIM + j]);
-            }
-            d_h_work_sh[j] = d_h_prev;
-        }
-        __syncthreads();
-
-        // ============================================
-        // BACKWARD THROUGH READ
-        // ============================================
-        if (tid < N_SLOTS) {
-            attn_sh[tid] = __bfloat162float(read_attn[tBN + tid]);
-        }
-        __syncthreads();
-
-        // d_h_tape += attn @ d_pre_act
-        for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
-            float d_read_d = d_write_val_sh[d];
-            for (int n = 0; n < N_SLOTS; n++) {
-                float d_tape = attn_sh[n] * d_read_d;
-                float current = __bfloat162float(d_h_tape_b[n * DIM + d]);
-                d_h_tape_b[n * DIM + d] = __float2bfloat16(current + d_tape);
-            }
-        }
+    // Zero d_h_work
+    for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
+        d_h_work[b * DIM + d] = __float2bfloat16(0.0f);
     }
 }
 
@@ -711,6 +761,7 @@ template<>
 void DualMemoryElmanBackward<__nv_bfloat16>::Run(
     int seq_len,
     const __nv_bfloat16* h_work_all,    // [T, B, D]
+    const __nv_bfloat16* h_work_init,   // [B, D] - initial working memory (for t=0)
     const __nv_bfloat16* h_tape_all,    // [T+1, B, N, D]
     const __nv_bfloat16* read_attn,     // [T, B, N]
     const __nv_bfloat16* write_attn,    // [T, B, N]
@@ -726,47 +777,158 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
     float* dW_h,                        // [D, D] - computed via GEMM
     float* dW_write                     // [D, D] - computed via GEMM
 ) {
-    int num_blocks = batch_size_;
+    const int num_blocks = batch_size_;
     const int TB = seq_len * batch_size_;
     const int BD = batch_size_ * dim_;
-    const float alpha = 1.0f;
+    const int BN = batch_size_ * n_slots_;
+    const float alpha_one = 1.0f;
     const float beta_zero = 0.0f;
+    const float beta_one = 1.0f;
 
-    // Shared memory for backward
-    size_t smem_size = (3 * dim_ + n_slots_) * sizeof(float);
+    // Allocate workspace for d_h_work [B, D]
+    __nv_bfloat16* d_h_work;
+    cudaMalloc(&d_h_work, BD * sizeof(__nv_bfloat16));
 
-    #define LAUNCH_E23_BACKWARD(N, D) \
-        E23BackwardKernel_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, smem_size, stream_>>>( \
-            seq_len, batch_size_, \
-            h_work_all, h_tape_all, read_attn, write_attn, \
-            W_h, W_write, d_h_work_out, d_h_tape_final, \
-            dx_proj, d_pre_act_all, d_write_val_all, db_h, d_h_tape)
+    // Macro to dispatch phase kernels based on n_slots and dim
+    #define LAUNCH_E23_BWD_INIT(N, D) \
+        E23BackwardInit_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, d_h_tape_final, d_h_tape, d_h_work)
 
-    if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BACKWARD(8, 256); }
-    else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BACKWARD(8, 512); }
-    else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BACKWARD(8, 768); }
-    else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BACKWARD(8, 1024); }
-    else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BACKWARD(16, 256); }
-    else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BACKWARD(16, 512); }
-    else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BACKWARD(32, 512); }
-    else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BACKWARD(64, 256); }
-    else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BACKWARD(64, 512); }
-    else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BACKWARD(64, 768); }
-    else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BACKWARD(64, 1024); }
+    #define LAUNCH_E23_BWD_PHASE1(N, D) \
+        E23BackwardPhase1_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
+
+    #define LAUNCH_E23_BWD_PHASE2(N, D) \
+        E23BackwardPhase2_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+
+    #define LAUNCH_E23_BWD_PHASE3(N, D) \
+        E23BackwardPhase3_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
+
+    // Initialize d_h_tape and d_h_work
+    if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_INIT(8, 256); }
+    else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_INIT(8, 512); }
+    else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_INIT(8, 768); }
+    else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_INIT(8, 1024); }
+    else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_INIT(16, 256); }
+    else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_INIT(16, 512); }
+    else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_INIT(32, 512); }
+    else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_INIT(64, 256); }
+    else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_INIT(64, 512); }
+    else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_INIT(64, 768); }
+    else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_INIT(64, 1024); }
     else {
         fprintf(stderr, "E23 CUDA backward: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_);
+        cudaFree(d_h_work);
+        return;
     }
 
-    #undef LAUNCH_E23_BACKWARD
+    // Attention scale
+    const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
+    const int BND = batch_size_ * n_slots_ * dim_;
 
-    // Compute weight gradients via cuBLAS GEMM (eliminates 536M atomicAdds!)
+    // Backward pass: iterate in reverse with cuBLAS GEMMs between phases
+    for (int t = seq_len - 1; t >= 0; t--) {
+        // Pointers for this timestep
+        const __nv_bfloat16* write_attn_t = write_attn + t * BN;
+        const __nv_bfloat16* read_attn_t = read_attn + t * BN;
+        const __nv_bfloat16* d_h_work_out_t = d_h_work_out + t * BD;
+        const __nv_bfloat16* h_work_t = h_work_all + t * BD;
+        __nv_bfloat16* dx_proj_t = dx_proj + t * BD;
+        __nv_bfloat16* d_pre_act_t = d_pre_act_all + t * BD;
+        __nv_bfloat16* d_write_val_t = d_write_val_all + t * BD;
+
+        // Tape state at timestep t (BEFORE update)
+        const __nv_bfloat16* h_tape_t_ptr = h_tape_all + t * BND;
+
+        // h_work at timestep t-1 (needed for Phase3)
+        const __nv_bfloat16* h_work_prev_t = (t > 0) ? (h_work_all + (t - 1) * BD) : h_work_init;
+
+        // Phase 1: Add output gradient, compute d_write_val, update d_h_tape for write
+        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(8, 256); }
+        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(8, 512); }
+        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE1(8, 768); }
+        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE1(8, 1024); }
+        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(16, 256); }
+        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(16, 512); }
+        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(32, 512); }
+        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(64, 256); }
+        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(64, 512); }
+        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE1(64, 768); }
+        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE1(64, 1024); }
+
+        // cuBLAS: d_h_work += W_write.T @ d_write_val
+        // In cuBLAS terms: d_h_work = W_write @ d_write_val + d_h_work (with transposed W_write)
+        // W_write is [D, D], d_write_val is [B, D] -> [D, B] in col-major
+        // Result is [D, B] = d_h_work
+        cublasGemmEx(
+            blas_handle_,
+            CUBLAS_OP_T, CUBLAS_OP_N,  // W_write transposed
+            dim_, batch_size_, dim_,
+            &alpha_one,
+            W_write, CUDA_R_16BF, dim_,
+            d_write_val_t, CUDA_R_16BF, dim_,
+            &beta_one,  // Add to existing d_h_work
+            d_h_work, CUDA_R_16BF, dim_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+
+        // Phase 2: Tanh backward, compute d_pre_act
+        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(8, 256); }
+        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(8, 512); }
+        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE2(8, 768); }
+        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE2(8, 1024); }
+        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(16, 256); }
+        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(16, 512); }
+        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(32, 512); }
+        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(64, 256); }
+        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(64, 512); }
+        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE2(64, 768); }
+        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE2(64, 1024); }
+
+        // cuBLAS: d_h_work = W_h.T @ d_pre_act (recurrent gradient for next iteration)
+        cublasGemmEx(
+            blas_handle_,
+            CUBLAS_OP_T, CUBLAS_OP_N,  // W_h transposed
+            dim_, batch_size_, dim_,
+            &alpha_one,
+            W_h, CUDA_R_16BF, dim_,
+            d_pre_act_t, CUDA_R_16BF, dim_,
+            &beta_zero,  // Replace d_h_work
+            d_h_work, CUDA_R_16BF, dim_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+
+        // Phase 3: Read attention backward, update d_h_tape
+        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(8, 256); }
+        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(8, 512); }
+        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE3(8, 768); }
+        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE3(8, 1024); }
+        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(16, 256); }
+        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(16, 512); }
+        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(32, 512); }
+        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(64, 256); }
+        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(64, 512); }
+        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE3(64, 768); }
+        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE3(64, 1024); }
+    }
+
+    #undef LAUNCH_E23_BWD_INIT
+    #undef LAUNCH_E23_BWD_PHASE1
+    #undef LAUNCH_E23_BWD_PHASE2
+    #undef LAUNCH_E23_BWD_PHASE3
+
+    // Free workspace
+    cudaFree(d_h_work);
+
+    // Compute weight gradients via cuBLAS GEMM
     // dW_write = d_write_val_all.T @ h_work_all = [D, T*B] @ [T*B, D] = [D, D]
-    // Both are [T, B, D] = [T*B, D] in contiguous memory
     cublasGemmEx(
         blas_handle_,
-        CUBLAS_OP_N, CUBLAS_OP_T,  // d_write_val is transposed (col-major interpretation)
+        CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, TB,
-        &alpha,
+        &alpha_one,
         d_write_val_all, CUDA_R_16BF, dim_,
         h_work_all, CUDA_R_16BF, dim_,
         &beta_zero,
@@ -775,13 +937,8 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
     );
 
     // dW_h = d_pre_act_all.T @ h_work_prev_all
-    // h_work_prev_all[t] = h_work_all[t-1] for t>0, zero for t=0
-    // We can approximate by: dW_h ≈ d_pre_act_all[1:].T @ h_work_all[:-1]
-    // Or more simply: dW_h = d_pre_act_all.T @ h_work_all (shifted by 1)
-    // For T>>1, the error from the first timestep is negligible
-    // More accurate: use h_work_all shifted by BD elements
-    const __nv_bfloat16* h_work_prev = h_work_all;  // [0:T-1]
-    const __nv_bfloat16* d_pre_act_next = d_pre_act_all + BD;  // [1:T]
+    const __nv_bfloat16* h_work_prev = h_work_all;
+    const __nv_bfloat16* d_pre_act_next = d_pre_act_all + BD;
     const int TB_minus_1 = (seq_len - 1) * batch_size_;
 
     if (TB_minus_1 > 0) {
@@ -789,7 +946,7 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
             blas_handle_,
             CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, dim_, TB_minus_1,
-            &alpha,
+            &alpha_one,
             d_pre_act_next, CUDA_R_16BF, dim_,
             h_work_prev, CUDA_R_16BF, dim_,
             &beta_zero,
@@ -802,5 +959,240 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
 // Explicit instantiations
 template class DualMemoryElmanForward<__nv_bfloat16>;
 template class DualMemoryElmanBackward<__nv_bfloat16>;
+
+}}}  // namespace hasty::v0::elman_ladder
+
+// =============================================================================
+// OPTIMIZED E23: Uses cuBLAS batched GEMM for attention (tensor cores)
+// =============================================================================
+
+namespace e23_opt {
+
+// Optimized softmax kernel - one thread per batch element
+template<int N_SLOTS>
+__global__ void OptSoftmax_BF16(
+    const int batch_size,
+    const __nv_bfloat16* __restrict__ scores,  // [B, N]
+    __nv_bfloat16* __restrict__ attn,          // [B, N]
+    const float scale
+) {
+    const int b = blockIdx.x * blockDim.x + threadIdx.x;
+    if (b >= batch_size) return;
+
+    const __nv_bfloat16* s = scores + b * N_SLOTS;
+    __nv_bfloat16* a = attn + b * N_SLOTS;
+
+    // Load and find max
+    float vals[N_SLOTS];
+    float max_v = -1e30f;
+    #pragma unroll
+    for (int n = 0; n < N_SLOTS; n++) {
+        vals[n] = __bfloat162float(s[n]) * scale;
+        max_v = fmaxf(max_v, vals[n]);
+    }
+
+    // Exp and sum
+    float sum_exp = 0.0f;
+    #pragma unroll
+    for (int n = 0; n < N_SLOTS; n++) {
+        vals[n] = expf(vals[n] - max_v);
+        sum_exp += vals[n];
+    }
+
+    // Normalize
+    const float inv = 1.0f / sum_exp;
+    #pragma unroll
+    for (int n = 0; n < N_SLOTS; n++) {
+        a[n] = __float2bfloat16(vals[n] * inv);
+    }
+}
+
+// Fused tanh update: h_new = tanh(Rh + Wx + read + b)
+__global__ void OptTanhUpdate_BF16(
+    const int size,  // B * D
+    const int dim,
+    const __nv_bfloat16* __restrict__ Rh,
+    const __nv_bfloat16* __restrict__ Wx,
+    const __nv_bfloat16* __restrict__ read,
+    const __nv_bfloat16* __restrict__ b_h,
+    __nv_bfloat16* __restrict__ h_out
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    const int d = idx % dim;
+    float v = __bfloat162float(Rh[idx]) + __bfloat162float(Wx[idx])
+            + __bfloat162float(read[idx]) + __bfloat162float(b_h[d]);
+    h_out[idx] = __float2bfloat16(tanhf(v));
+}
+
+// Tape update: h_tape = (1-attn)*h_tape + attn*write_val
+template<int N_SLOTS>
+__global__ void OptTapeUpdate_BF16(
+    const int batch_size,
+    const int dim,
+    const __nv_bfloat16* __restrict__ attn,       // [B, N]
+    const __nv_bfloat16* __restrict__ write_val,  // [B, D]
+    __nv_bfloat16* __restrict__ h_tape            // [B, N, D]
+) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * N_SLOTS * dim;
+    if (idx >= total) return;
+
+    const int b = idx / (N_SLOTS * dim);
+    const int n = (idx / dim) % N_SLOTS;
+    const int d = idx % dim;
+
+    const float a = __bfloat162float(attn[b * N_SLOTS + n]);
+    const float t = __bfloat162float(h_tape[idx]);
+    const float w = __bfloat162float(write_val[b * dim + d]);
+    h_tape[idx] = __float2bfloat16((1.0f - a) * t + a * w);
+}
+
+} // namespace e23_opt
+
+namespace hasty { namespace v0 { namespace elman_ladder {
+
+// Optimized forward implementation
+template<>
+void DualMemoryElmanForwardOpt<__nv_bfloat16>::Run(
+    int seq_len,
+    const __nv_bfloat16* x_proj,
+    const __nv_bfloat16* W_h,
+    const __nv_bfloat16* b_h,
+    const __nv_bfloat16* W_write,
+    const __nv_bfloat16* h_tape_init,
+    const __nv_bfloat16* h_work_init,
+    __nv_bfloat16* h_work_out,
+    __nv_bfloat16* h_tape_final,
+    __nv_bfloat16* h_tape_all,
+    __nv_bfloat16* read_attn,
+    __nv_bfloat16* write_attn,
+    __nv_bfloat16* workspace
+) {
+    const float alpha = 1.0f, beta = 0.0f;
+    const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
+
+    const int BD = batch_size_ * dim_;
+    const int BN = batch_size_ * n_slots_;
+    const int BND = batch_size_ * n_slots_ * dim_;
+
+    // Workspace: tmp_Rh[BD], tmp_write_val[BD], tmp_scores[BN], tmp_read[BD]
+    __nv_bfloat16* tmp_Rh = workspace;
+    __nv_bfloat16* tmp_write_val = tmp_Rh + BD;
+    __nv_bfloat16* tmp_scores = tmp_write_val + BD;
+    __nv_bfloat16* tmp_read = tmp_scores + BN;
+
+    // Initialize tape
+    cudaMemcpyAsync(h_tape_final, h_tape_init, BND * sizeof(__nv_bfloat16),
+                    cudaMemcpyDeviceToDevice, stream_);
+    if (training_ && h_tape_all) {
+        cudaMemcpyAsync(h_tape_all, h_tape_init, BND * sizeof(__nv_bfloat16),
+                        cudaMemcpyDeviceToDevice, stream_);
+    }
+
+    const int threads = 256;
+
+    for (int t = 0; t < seq_len; ++t) {
+        const __nv_bfloat16* x_proj_t = x_proj + t * BD;
+        const __nv_bfloat16* h_work_prev = (t == 0) ? h_work_init : (h_work_out + (t - 1) * BD);
+        __nv_bfloat16* h_work_cur = h_work_out + t * BD;
+        __nv_bfloat16* read_attn_t = read_attn + t * BN;
+        __nv_bfloat16* write_attn_t = write_attn + t * BN;
+
+        // 1. W_h @ h_work -> tmp_Rh
+        cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha,
+            W_h, CUDA_R_16BF, dim_, h_work_prev, CUDA_R_16BF, dim_,
+            &beta, tmp_Rh, CUDA_R_16BF, dim_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // 2. Read attention scores: h_tape @ h_work^T -> [B, N]
+        // Use strided batched GEMM: for each b, [N,D] @ [D,1] -> [N,1]
+        cublasGemmStridedBatchedEx(blas_handle_,
+            CUBLAS_OP_T, CUBLAS_OP_N,
+            n_slots_, 1, dim_,
+            &alpha,
+            h_tape_final, CUDA_R_16BF, dim_, n_slots_ * dim_,
+            h_work_prev, CUDA_R_16BF, dim_, dim_,
+            &beta,
+            tmp_scores, CUDA_R_16BF, n_slots_, n_slots_,
+            batch_size_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // 3. Softmax
+        int sm_blocks = (batch_size_ + threads - 1) / threads;
+        if (n_slots_ == 8) e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
+        else if (n_slots_ == 16) e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
+        else if (n_slots_ == 32) e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
+        else if (n_slots_ == 64) e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
+
+        // 4. Weighted read: attn @ h_tape -> [B, D]
+        // For each b: [1,N] @ [N,D] -> [1,D], i.e., [D,N] @ [N,1] in col-major
+        cublasGemmStridedBatchedEx(blas_handle_,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, 1, n_slots_,
+            &alpha,
+            h_tape_final, CUDA_R_16BF, dim_, n_slots_ * dim_,
+            read_attn_t, CUDA_R_16BF, n_slots_, n_slots_,
+            &beta,
+            tmp_read, CUDA_R_16BF, dim_, dim_,
+            batch_size_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // 5. Update: h_work_new = tanh(Rh + Wx + read + b)
+        int up_blocks = (BD + threads - 1) / threads;
+        e23_opt::OptTanhUpdate_BF16<<<up_blocks, threads, 0, stream_>>>(
+            BD, dim_, tmp_Rh, x_proj_t, tmp_read, b_h, h_work_cur);
+
+        // 6. W_write @ h_work_new -> write_val
+        cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_, &alpha,
+            W_write, CUDA_R_16BF, dim_, h_work_cur, CUDA_R_16BF, dim_,
+            &beta, tmp_write_val, CUDA_R_16BF, dim_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // 7. Write attention scores
+        cublasGemmStridedBatchedEx(blas_handle_,
+            CUBLAS_OP_T, CUBLAS_OP_N,
+            n_slots_, 1, dim_,
+            &alpha,
+            h_tape_final, CUDA_R_16BF, dim_, n_slots_ * dim_,
+            h_work_cur, CUDA_R_16BF, dim_, dim_,
+            &beta,
+            tmp_scores, CUDA_R_16BF, n_slots_, n_slots_,
+            batch_size_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // 8. Softmax
+        if (n_slots_ == 8) e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
+        else if (n_slots_ == 16) e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
+        else if (n_slots_ == 32) e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
+        else if (n_slots_ == 64) e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
+
+        // 9. Tape update
+        int tape_blocks = (BND + threads - 1) / threads;
+        if (n_slots_ == 8) e23_opt::OptTapeUpdate_BF16<8><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
+        else if (n_slots_ == 16) e23_opt::OptTapeUpdate_BF16<16><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
+        else if (n_slots_ == 32) e23_opt::OptTapeUpdate_BF16<32><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
+        else if (n_slots_ == 64) e23_opt::OptTapeUpdate_BF16<64><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
+
+        // Save tape if training
+        if (training_ && h_tape_all) {
+            cudaMemcpyAsync(h_tape_all + (t + 1) * BND, h_tape_final,
+                BND * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, stream_);
+        }
+    }
+}
+
+// Constructor
+template<>
+DualMemoryElmanForwardOpt<__nv_bfloat16>::DualMemoryElmanForwardOpt(
+    bool training, int batch_size, int n_slots, int dim,
+    const cublasHandle_t& blas_handle, const cudaStream_t& stream)
+    : training_(training), batch_size_(batch_size), n_slots_(n_slots), dim_(dim),
+      stream_(stream), blas_handle_(blas_handle) {}
+
+// Explicit instantiation
+template class DualMemoryElmanForwardOpt<__nv_bfloat16>;
 
 }}}  // namespace hasty::v0::elman_ladder
