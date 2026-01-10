@@ -153,8 +153,9 @@ class DualMemoryElmanFunction(torch.autograd.Function):
 
         # Dispatch to appropriate implementation
         if use_cuda and E23_CUDA_AVAILABLE and x_seq.is_cuda:
-            # CUDA path
-            h_work_all, h_tape_all, read_attn_all, write_attn_all = \
+            # CUDA path returns 5 tensors: h_work_out, h_tape_final, h_tape_all, read_attn, write_attn
+            # h_tape_all is [T+1, B, N, D], h_tape_final is already [B, N, D]
+            h_work_all, h_tape_final_cuda, h_tape_all, read_attn_all, write_attn_all = \
                 hasty_pytorch_lib.dual_memory_elman_forward(
                     training, x_seq, h_tape_init, h_work_init,
                     W_h, W_x, b_h, W_write
@@ -163,15 +164,18 @@ class DualMemoryElmanFunction(torch.autograd.Function):
             ctx.use_triton = False
         elif use_triton and E23_TRITON_AVAILABLE and x_seq.is_cuda:
             # Hybrid path (PyTorch + einsum, uses cuBLAS)
+            # h_tape_all is [B, T+1, N, D]
             h_work_all, h_tape_all, read_attn_all, write_attn_all = \
                 dual_memory_elman_forward_hybrid(
                     x_seq, h_tape_init, h_work_init,
                     W_h, W_x, b_h, W_write
                 )
+            h_tape_final_cuda = None  # Will use h_tape_all[:, -1]
             ctx.use_cuda = False
             ctx.use_triton = True
         else:
             # Python fallback
+            # h_tape_all is [B, T+1, N, D]
             h_tape = h_tape_init.clone()
             h_work = h_work_init.clone()
 
@@ -195,6 +199,7 @@ class DualMemoryElmanFunction(torch.autograd.Function):
             read_attn_all = torch.stack(read_attn_list, dim=1)  # [B, T, N]
             write_attn_all = torch.stack(write_attn_list, dim=1)  # [B, T, N]
 
+            h_tape_final_cuda = None  # Will use h_tape_all[:, -1]
             ctx.use_cuda = False
             ctx.use_triton = False
 
@@ -202,7 +207,11 @@ class DualMemoryElmanFunction(torch.autograd.Function):
                               W_h, W_x, b_h, W_write, h_work_init)
         ctx.scale = scale
 
-        return h_work_all, h_tape_all[:, -1]
+        # Return h_tape_final: for CUDA it's already [B, N, D], for others slice h_tape_all
+        if h_tape_final_cuda is not None:
+            return h_work_all, h_tape_final_cuda
+        else:
+            return h_work_all, h_tape_all[:, -1]
 
     @staticmethod
     def backward(ctx, d_h_work_all, d_h_tape_final):
@@ -214,12 +223,21 @@ class DualMemoryElmanFunction(torch.autograd.Function):
         N = h_tape_all.shape[2]
 
         if ctx.use_cuda and E23_CUDA_AVAILABLE:
-            # CUDA backward
-            dx, dW_h, dW_x, db_h, dW_write = \
+            # CUDA backward - C++ expects: x_proj, h_work_all, h_tape_all, read_attn, write_attn, W_h, W_write, d_h_work, d_h_tape_final
+            # x_proj = x_seq @ W_x.T was computed in forward but not saved, so recompute it
+            x_proj = (x_seq @ W_x.T).contiguous()
+
+            # Returns: dx_proj, dW_h, db_h, dW_write
+            dx_proj, dW_h, db_h, dW_write = \
                 hasty_pytorch_lib.dual_memory_elman_backward(
-                    x_seq, h_work_all, h_tape_all, read_attn_all, write_attn_all,
-                    W_h, W_x, b_h, W_write, d_h_work_all, d_h_tape_final
+                    x_proj, h_work_all, h_tape_all, read_attn_all, write_attn_all,
+                    W_h, W_write, d_h_work_all.contiguous(), d_h_tape_final.contiguous()
                 )
+            # dx_proj is gradient w.r.t. x_proj = x @ W_x.T
+            # dx = dx_proj @ W_x
+            dx = dx_proj @ W_x
+            # dW_x = dx_proj.T @ x_seq (accumulated over B and T)
+            dW_x = torch.einsum('btd,bti->di', dx_proj, x_seq)
         elif ctx.use_triton and E23_TRITON_AVAILABLE:
             # Triton backward
             dx, dW_h, dW_x, db_h, dW_write = \

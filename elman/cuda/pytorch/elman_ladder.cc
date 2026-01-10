@@ -3636,12 +3636,14 @@ std::vector<Tensor> dual_memory_elman_forward(
     cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    // Allocate outputs
-    auto h_work_out = torch::empty({batch_size, seq_len, dim}, options);
+    // Allocate outputs - kernel outputs [T, B, ...], we transpose to [B, T, ...] before returning
+    auto h_work_out = torch::empty({seq_len, batch_size, dim}, options);
     auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
-    auto read_attn = torch::empty({batch_size, seq_len, n_slots}, options);
-    auto write_attn = torch::empty({batch_size, seq_len, n_slots}, options);
-    auto x_proj = torch::empty({batch_size, seq_len, dim}, options);  // scratch
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    // Workspace: tmp_x [B, D] + tmp_Wx [B, D] + tmp_Rh [B, D] + tmp_write_val [B, D]
+    auto workspace = torch::empty({batch_size * dim * 4}, options);
 
     // For training, save h_tape_all for backward
     auto h_tape_all = training ?
@@ -3662,11 +3664,16 @@ std::vector<Tensor> dual_memory_elman_forward(
         reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(h_work_out.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
         reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(x_proj.data_ptr()));
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
 
-    return {h_work_out, h_tape_final, h_tape_all, read_attn, write_attn};
+    // Transpose from [T, B, ...] to [B, T, ...] for Python/backward
+    return {h_work_out.permute({1, 0, 2}).contiguous(),
+            h_tape_final, h_tape_all,
+            read_attn.permute({1, 0, 2}).contiguous(),
+            write_attn.permute({1, 0, 2}).contiguous()};
 }
 
 std::vector<Tensor> dual_memory_elman_backward(
@@ -3707,6 +3714,9 @@ std::vector<Tensor> dual_memory_elman_backward(
     auto db_h = torch::zeros({dim}, float_options);
     auto dW_write = torch::zeros({dim, dim}, float_options);
 
+    // Scratch buffer for tape gradients (in global memory, not shared)
+    auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
+
     hasty::v0::elman_ladder::DualMemoryElmanBackward<__nv_bfloat16> backward_op(
         batch_size, n_slots, dim, handle, stream);
 
@@ -3724,7 +3734,8 @@ std::vector<Tensor> dual_memory_elman_backward(
         reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
         dW_h.data_ptr<float>(),
         db_h.data_ptr<float>(),
-        dW_write.data_ptr<float>());
+        dW_write.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()));
 
     // Convert back to original dtype
     dW_h = dW_h.to(options.dtype());
