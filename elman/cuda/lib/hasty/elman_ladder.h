@@ -2114,6 +2114,7 @@ struct DualMemoryElmanBackward {
     void Run(
         int seq_len,
         const T* h_work_all,      // [T, B, D]
+        const T* h_work_init,     // [B, D] - initial working memory (for t=0)
         const T* h_tape_all,      // [T+1, B, N, D]
         const T* read_attn,       // [T, B, N]
         const T* write_attn,      // [T, B, N]
@@ -2128,6 +2129,90 @@ struct DualMemoryElmanBackward {
         T* d_h_tape,              // [B, N, D] - scratch
         float* dW_h,              // [D, D] - computed via GEMM
         float* dW_write);         // [D, D] - computed via GEMM
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E24: Single-GEMM Dual Memory (1 GEMM per timestep)
+// Architecture:
+//   - Tape: [B, N, D] - Large linear storage
+//   - Working Memory: [B, D] - Small nonlinear compute
+// Key optimization: Concatenate [h_work; x] and use single [2D, 2D] GEMM
+// to produce both h_update and write_val in one operation.
+// Per timestep (1 GEMM!):
+//   0. SINGLE GEMM: [h_work; x] @ W_all.T -> [h_update; write_val]
+//   1. Read: h_work queries tape via attention
+//   2. Update: h_work_new = tanh(h_update + read + b)
+//   3. Write: h_tape = (1-attn)*h_tape + attn*write_val
+// =============================================================================
+
+template<typename T>
+struct E24SingleGemmForward {
+    E24SingleGemmForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_seq,           // [T, B, D] - input sequence
+        const T* W_all,           // [2D, 2D] - fused weight matrix
+        const T* b_h,             // [D]
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        T* h_work_out,            // [T, B, D]
+        T* h_tape_final,          // [B, N, D]
+        T* h_tape_all,            // [T+1, B, N, D] - tape history (null if inference)
+        T* read_attn,             // [T, B, N]
+        T* write_attn,            // [T, B, N]
+        T* write_val_all,         // [T, B, D] - write values for backward
+        T* workspace);            // input_concat [B, 2D] + gemm_output [B, 2D]
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E24SingleGemmBackward {
+    E24SingleGemmBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_seq,           // [T, B, D]
+        const T* h_work_all,      // [T, B, D]
+        const T* h_work_init,     // [B, D]
+        const T* h_tape_all,      // [T+1, B, N, D]
+        const T* read_attn,       // [T, B, N]
+        const T* write_attn,      // [T, B, N]
+        const T* write_val_all,   // [T, B, D]
+        const T* W_all,           // [2D, 2D]
+        const T* d_h_work_out,    // [T, B, D]
+        const T* d_h_tape_final,  // [B, N, D]
+        T* dx,                    // [T, B, D]
+        float* db_h,              // [D] - accumulated
+        float* dW_all,            // [2D, 2D] - accumulated
+        T* workspace);            // See implementation for layout
 
 private:
     int batch_size_;
