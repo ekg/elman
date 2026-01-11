@@ -2604,6 +2604,91 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E29a: Selective Gating Dual-Memory Elman (additive gate)
+// Extends E26 with selective output: gate = silu(z + read + h_work_new)
+// =============================================================================
+
+template<typename T>
+struct E29aSelectiveForward {
+    E29aSelectiveForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_proj,          // [T, B, D] pre-computed x projections
+        const T* z_all,           // [T, B, D] pre-computed z values
+        const T* W_h,             // [D, D]
+        const T* b_h,             // [D]
+        const T* W_write,         // [D, D]
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        T* output_all,            // [T, B, D] - selective gated output
+        T* h_work_all,            // [T, B, D]
+        T* h_tape_final,          // [B, N, D]
+        T* h_tape_all,            // [T+1, B, N, D]
+        T* read_attn_all,         // [T, B, N]
+        T* write_attn_all,        // [T, B, N]
+        T* workspace);            // tmp_Rh [B, D] + tmp_write_val [B, D] + tmp_read_val [B, D]
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E29b: Selective Gating Dual-Memory Elman (learned gate)
+// Extends E26 with learned selective: gate = silu(W_gate @ [z; read; h_work_new])
+// =============================================================================
+
+template<typename T>
+struct E29bSelectiveForward {
+    E29bSelectiveForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_proj,          // [T, B, D]
+        const T* z_all,           // [T, B, D]
+        const T* W_h,             // [D, D]
+        const T* b_h,             // [D]
+        const T* W_write,         // [D, D]
+        const T* W_gate,          // [D, 3*D] - learned gate projection
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        T* output_all,            // [T, B, D]
+        T* h_work_all,            // [T, B, D]
+        T* h_tape_final,          // [B, N, D]
+        T* h_tape_all,            // [T+1, B, N, D]
+        T* read_attn_all,         // [T, B, N]
+        T* write_attn_all,        // [T, B, N]
+        T* workspace);
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

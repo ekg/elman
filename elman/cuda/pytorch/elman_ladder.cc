@@ -4423,12 +4423,15 @@ std::vector<Tensor> e25_entmax_backward(
         );
     }
 
-    // Compute dx = d_pre_act @ W_x
+    // Compute dx = d_pre_act @ W_x (row-major interpretation)
+    // In cuBLAS (column-major): we need W_x @ d_pre_act (NO transpose)
+    // d_pre_act viewed as [D, T*B] col-major, W_x is [D, D]
+    // Result dx is [D, T*B] col-major = [T*B, D] row-major
     auto dx_t = torch::empty({seq_len, batch_size, dim}, options);
     const float beta_zero = 0.0f;
     cublasGemmEx(
         handle,
-        CUBLAS_OP_N, CUBLAS_OP_N,
+        CUBLAS_OP_N, CUBLAS_OP_N,  // No transpose needed
         dim, seq_len * batch_size, dim,
         &alpha,
         W_x.data_ptr(), CUDA_R_16BF, dim,
@@ -4836,6 +4839,209 @@ std::vector<Tensor> e28_conv_backward(
     return {d_x, d_z, d_W_x, d_W_h, d_b, d_conv_weight, d_conv_bias};
 }
 
+// =============================================================================
+// E29a: Selective Dual-Memory Elman (additive gate: silu(z + read + h_work))
+// =============================================================================
+
+std::vector<Tensor> e29a_selective_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_xz,           // [2*D, D] - projects to x_proj and z
+    Tensor b_h,            // [D]
+    Tensor W_write) {      // [D, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D] for efficient batch GEMM
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // PARALLEL PHASE: Pre-compute xz_proj = x @ W_xz^T for ALL timesteps
+    // W_xz is [2*D, D] row-major = [D, 2*D] col-major, output is [T, B, 2*D]
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,  // lda = dim (row stride of row-major [2D, D])
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Split xz_proj into x_proj and z
+    auto x_proj = xz_proj.narrow(2, 0, dim).contiguous();  // [T, B, D]
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous(); // [T, B, D]
+
+    // Allocate outputs
+    auto output_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_work_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    // For training, save h_tape_all for backward
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+
+    // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D] + tmp_read_val [B, D]
+    auto workspace = torch::empty({batch_size * dim * 3}, options);
+
+    hasty::v0::elman_ladder::E29aSelectiveForward<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    // Transpose outputs to [B, T, ...] format
+    return {output_all.permute({1, 0, 2}).contiguous(),   // [B, T, D] selective gated output
+            h_work_all.permute({1, 0, 2}).contiguous(),   // [B, T, D] h_work states
+            h_tape_final,                                  // [B, N, D]
+            h_tape_all,                                    // [T+1, B, N, D] or empty
+            read_attn.permute({1, 0, 2}).contiguous(),    // [B, T, N]
+            write_attn.permute({1, 0, 2}).contiguous()};  // [B, T, N]
+}
+
+// =============================================================================
+// E29b: Selective Dual-Memory Elman (learned gate: W_gate @ [z; read; h_work])
+// =============================================================================
+
+std::vector<Tensor> e29b_selective_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_xz,           // [2*D, D] - projects to x_proj and z
+    Tensor b_h,            // [D]
+    Tensor W_write,        // [D, D]
+    Tensor W_gate) {       // [D, 3*D] - learned gate projection
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(W_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D]
+    auto x_t = x.permute({1, 0, 2}).contiguous();
+
+    // PARALLEL PHASE: Pre-compute xz_proj = x @ W_xz^T
+    // W_xz is [2*D, D] row-major = [D, 2*D] col-major
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,  // lda = dim (row stride of row-major [2D, D])
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    auto x_proj = xz_proj.narrow(2, 0, dim).contiguous();
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous();
+
+    // Allocate outputs
+    auto output_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_work_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+
+    // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D] + tmp_read_val [B, D]
+    auto workspace = torch::empty({batch_size * dim * 3}, options);
+
+    hasty::v0::elman_ladder::E29bSelectiveForward<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_gate.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    // Transpose outputs to [B, T, ...] format
+    return {output_all.permute({1, 0, 2}).contiguous(),
+            h_work_all.permute({1, 0, 2}).contiguous(),
+            h_tape_final,
+            h_tape_all,
+            read_attn.permute({1, 0, 2}).contiguous(),
+            write_attn.permute({1, 0, 2}).contiguous()};
+}
+
 }  // anonymous namespace
 
 
@@ -4962,4 +5168,8 @@ void elman_ladder_init(py::module& m) {
           "E28: E1 + Mamba2 Conv forward (depthwise causal conv1d + Elman)");
     m.def("e28_conv_backward", &e28_conv_backward,
           "E28: E1 + Mamba2 Conv backward");
+    m.def("e29a_selective_forward", &e29a_selective_forward,
+          "E29a: Selective Dual-Memory Elman forward (additive gate: silu(z + read + h_work))");
+    m.def("e29b_selective_forward", &e29b_selective_forward,
+          "E29b: Selective Dual-Memory Elman forward (learned gate: W_gate @ [z; read; h_work])");
 }
