@@ -59,7 +59,8 @@ CUDA_OBJS := \
 	lib/e23c_v2_gpu.o \
 	lib/e24_single_gemm_gpu.o \
 	lib/e25_entmax_gpu.o \
-	lib/e26_parallel_gpu.o
+	lib/e26_parallel_gpu.o \
+	lib/e28_conv_elman_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

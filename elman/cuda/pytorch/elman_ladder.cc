@@ -4666,6 +4666,152 @@ std::vector<Tensor> e26_parallel_backward(
     return {dx, dW_h, dW_x, db_h, dW_write};
 }
 
+// =============================================================================
+// E28: E1 + Mamba2 Conv System
+// =============================================================================
+
+std::vector<Tensor> e28_conv_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - input (after in_proj split)
+    Tensor z,              // [B, T, D] - gate branch
+    Tensor h_init,         // [B, D] - initial hidden state
+    Tensor W_x,            // [D, D]
+    Tensor W_h,            // [D, D]
+    Tensor b,              // [D]
+    Tensor conv_weight,    // [D, 1, K] or [D, K]
+    Tensor conv_bias) {    // [D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto d_conv = conv_weight.size(-1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h_init);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+    CHECK_INPUT(conv_weight);
+    CHECK_INPUT(conv_bias);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Flatten conv_weight if needed: [D, 1, K] -> [D, K]
+    auto conv_w = conv_weight.dim() == 3 ? conv_weight.squeeze(1) : conv_weight;
+    conv_w = conv_w.contiguous();
+
+    // Allocate outputs
+    auto h_all = torch::empty({batch_size, seq_len, dim}, options);
+    auto output = torch::empty({batch_size, seq_len, dim}, options);
+    auto v_cache = training ?
+        torch::empty({batch_size, seq_len, dim}, options) :
+        torch::empty({0}, options);
+
+    // Create kernel instance
+    using namespace hasty::v0::elman_ladder;
+    E28ConvForward<__nv_bfloat16> kernel(
+        batch_size, seq_len, dim, d_conv, handle, stream);
+
+    // Run forward
+    kernel.Run(
+        training,
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(conv_w.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(conv_bias.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr
+    );
+
+    return {h_all, output};
+}
+
+std::vector<Tensor> e28_conv_backward(
+    Tensor x,              // [B, T, D]
+    Tensor z,              // [B, T, D]
+    Tensor h_init,         // [B, D]
+    Tensor h_all,          // [B, T, D]
+    Tensor W_x,            // [D, D]
+    Tensor W_h,            // [D, D]
+    Tensor conv_weight,    // [D, K]
+    Tensor conv_bias,      // [D]
+    Tensor d_output) {     // [B, T, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto d_conv = conv_weight.size(-1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h_init);
+    CHECK_INPUT(h_all);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(conv_weight);
+    CHECK_INPUT(conv_bias);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Flatten conv_weight if needed
+    auto conv_w = conv_weight.dim() == 3 ? conv_weight.squeeze(1) : conv_weight;
+    conv_w = conv_w.contiguous();
+
+    // Allocate gradients
+    auto d_x = torch::zeros_like(x);
+    auto d_z = torch::zeros_like(z);
+    auto d_W_x = torch::zeros_like(W_x);
+    auto d_W_h = torch::zeros_like(W_h);
+    auto d_b = torch::zeros_like(conv_bias);  // Same shape as b
+    auto d_conv_weight = torch::zeros_like(conv_w);
+    auto d_conv_bias = torch::zeros_like(conv_bias);
+
+    // Create kernel instance
+    using namespace hasty::v0::elman_ladder;
+    E28ConvBackward<__nv_bfloat16> kernel(
+        batch_size, seq_len, dim, d_conv, handle, stream);
+
+    // Run backward
+    kernel.Run(
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(conv_w.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(conv_bias.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_z.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_W_x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_W_h.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_b.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_conv_weight.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_conv_bias.data_ptr())
+    );
+
+    // Reshape d_conv_weight back to [D, 1, K] if needed
+    if (conv_weight.dim() == 3) {
+        d_conv_weight = d_conv_weight.unsqueeze(1);
+    }
+
+    return {d_x, d_z, d_W_x, d_W_h, d_b, d_conv_weight, d_conv_bias};
+}
+
 }  // anonymous namespace
 
 
@@ -4788,4 +4934,8 @@ void elman_ladder_init(py::module& m) {
           "E26: Parallel Dual-Memory Elman forward (softmax attention)");
     m.def("e26_parallel_backward", &e26_parallel_backward,
           "E26: Parallel Dual-Memory Elman backward");
+    m.def("e28_conv_forward", &e28_conv_forward,
+          "E28: E1 + Mamba2 Conv forward (depthwise causal conv1d + Elman)");
+    m.def("e28_conv_backward", &e28_conv_backward,
+          "E28: E1 + Mamba2 Conv backward");
 }

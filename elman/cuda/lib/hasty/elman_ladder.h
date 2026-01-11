@@ -2510,6 +2510,94 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E28: E1 + Mamba2 Conv System
+// x_conv = causal_conv1d(x, conv_weight)  # Depthwise K=4
+// x_act = silu(x_conv)
+// h_t = tanh(W_x @ x_act_t + W_h @ h_{t-1} + b)
+// output = h * silu(z)
+// =============================================================================
+
+template<typename T>
+class E28ConvForward {
+public:
+    E28ConvForward(
+        int batch_size,
+        int seq_len,
+        int dim,
+        int d_conv,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+    ~E28ConvForward();
+
+    void Run(
+        bool training,
+        const T* x,               // [B, T, D]
+        const T* z,               // [B, T, D]
+        const T* h_init,          // [B, D]
+        const T* W_x,             // [D, D]
+        const T* W_h,             // [D, D]
+        const T* b,               // [D]
+        const T* conv_weight,     // [D, K]
+        const T* conv_bias,       // [D]
+        T* h_all,                 // [B, T, D] output
+        T* output,                // [B, T, D] output
+        T* v_cache);              // [B, T, D] optional
+
+private:
+    int batch_size_;
+    int seq_len_;
+    int dim_;
+    int d_conv_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    T* tmp_x_conv_;
+    T* tmp_Wx_;
+    T* tmp_Rh_;
+};
+
+template<typename T>
+class E28ConvBackward {
+public:
+    E28ConvBackward(
+        int batch_size,
+        int seq_len,
+        int dim,
+        int d_conv,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+    ~E28ConvBackward();
+
+    void Run(
+        const T* x,               // [B, T, D]
+        const T* z,               // [B, T, D]
+        const T* h_init,          // [B, D]
+        const T* h_all,           // [B, T, D]
+        const T* W_x,             // [D, D]
+        const T* W_h,             // [D, D]
+        const T* conv_weight,     // [D, K]
+        const T* conv_bias,       // [D]
+        const T* d_output,        // [B, T, D]
+        T* d_x,                   // [B, T, D]
+        T* d_z,                   // [B, T, D]
+        T* d_W_x,                 // [D, D]
+        T* d_W_h,                 // [D, D]
+        T* d_b,                   // [D]
+        T* d_conv_weight,         // [D, K]
+        T* d_conv_bias);          // [D]
+
+private:
+    int batch_size_;
+    int seq_len_;
+    int dim_;
+    int d_conv_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    T* tmp_d_h_;
+    T* tmp_d_pre_act_;
+    T* tmp_Rh_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
