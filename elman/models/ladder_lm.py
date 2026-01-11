@@ -5,11 +5,24 @@ E-Series:
     e0: Stock Elman - tanh + h*silu(W_gate@x) gating
     e1: Mamba-Gated Elman - Mamba2-style split projection gating
     e2: Slot Elman - Multi-slot memory (64x like Mamba2)
+
+Architecture matches Mamba exactly:
+    - Fused add+norm using mamba_ssm.ops.triton.layer_norm
+    - Block pattern: residual = x + residual; x = norm(residual); x = mixer(x)
+    - RMSNorm (not LayerNorm) for efficiency
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Import fused ops from mamba_ssm for exact architecture match
+try:
+    from mamba_ssm.ops.triton.layer_norm import RMSNorm, rms_norm_fn
+    FUSED_NORM_AVAILABLE = True
+except ImportError:
+    FUSED_NORM_AVAILABLE = False
+    RMSNorm = nn.RMSNorm  # Fallback to PyTorch
 
 from .stock_elman import StockElman
 from .mamba_gated_elman import MambaGatedElman
@@ -33,6 +46,10 @@ from .mamba2_informed_elman import Mamba2InformedElman
 from .structured_elman import StructuredElman
 from .structured_elman_attention import StructuredElmanAttention
 from .dual_memory_elman import DualMemoryElman
+from .e24_single_gemm import E24Layer
+from .e25_entmax import E25DualMemoryElman
+from .e26_parallel import E26DualMemoryElman
+from .e28_conv_elman import E28ConvElman
 
 
 def get_ladder_level(level):
@@ -79,13 +96,23 @@ def get_ladder_level(level):
         '22k4': lambda **kw: StructuredElmanAttention(attn_period=4, **kw),  # E22-K4: attend every 4 steps
         '22k16': lambda **kw: StructuredElmanAttention(attn_period=16, **kw),  # E22-K16: attend every 16 steps
         23: DualMemoryElman,  # E23: Dual-memory (tape + working memory)
-        '23n32': lambda **kw: DualMemoryElman(n_slots=32, **kw),  # E23-N32: 32 tape slots
-        '23n128': lambda **kw: DualMemoryElman(n_slots=128, **kw),  # E23-N128: 128 tape slots
+        '23n32': lambda **kw: DualMemoryElman(n_slots=32, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        '23n128': lambda **kw: DualMemoryElman(n_slots=128, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        24: E24Layer,  # E24: True single-GEMM dual memory
+        '24n32': lambda **kw: E24Layer(n_slots=32, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        '24n128': lambda **kw: E24Layer(n_slots=128, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        25: E25DualMemoryElman,  # E25: Dual memory with 1.5-entmax attention
+        '25n32': lambda **kw: E25DualMemoryElman(n_slots=32, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        '25n128': lambda **kw: E25DualMemoryElman(n_slots=128, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        26: E26DualMemoryElman,  # E26: Parallel dual memory
+        '26n32': lambda **kw: E26DualMemoryElman(n_slots=32, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        '26n128': lambda **kw: E26DualMemoryElman(n_slots=128, **{k: v for k, v in kw.items() if k != 'n_slots'}),
+        28: E28ConvElman,  # E28: E1 + Mamba2 causal conv
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/18b/18e, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, mamba2")
 
 
 class LadderLM(nn.Module):
@@ -123,6 +150,8 @@ class LadderLM(nn.Module):
         core_ratio=0.125,  # For E9 hybrid: fraction of d_inner for dense core
         mamba2_init=False,  # Use Mamba2-style initialization
         state_expansion=2,  # For E16: d_state = d_inner * state_expansion
+        use_conv=False,  # Conv1d hurts E-series (nonlinear RNN doesn't need it)
+        d_conv=4,  # Conv kernel size (if enabled)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -133,6 +162,8 @@ class LadderLM(nn.Module):
         self.n_banks = n_banks
         self.rank = rank
         self.r_h_mode = r_h_mode
+        self.use_conv = use_conv
+        self.d_conv = d_conv
 
         # Get the layer class for this level
         LayerClass = get_ladder_level(level)
@@ -140,9 +171,13 @@ class LadderLM(nn.Module):
         # Token embedding
         self.embedding = nn.Embedding(vocab_size, dim)
 
-        # Pre-normalization layers (one per recurrent layer)
+        # Use fused RMSNorm from mamba_ssm (matches Mamba architecture exactly)
+        self.fused_add_norm = FUSED_NORM_AVAILABLE
+        self.residual_in_fp32 = True  # Keep residual in fp32 for stability
+
+        # Pre-normalization layers (one per recurrent layer) - RMSNorm like Mamba
         self.layer_norms = nn.ModuleList([
-            nn.LayerNorm(dim) for _ in range(depth)
+            RMSNorm(dim) for _ in range(depth)
         ])
 
         # Stack of recurrent layers
@@ -161,12 +196,14 @@ class LadderLM(nn.Module):
                 core_ratio=core_ratio,  # For E9 hybrid
                 mamba2_init=mamba2_init,  # Mamba2-style initialization
                 state_expansion=state_expansion,  # For E16
+                use_conv=use_conv,  # Conv1d before recurrence (like Mamba2)
+                d_conv=d_conv,  # Conv kernel size
             )
             for _ in range(depth)
         ])
 
-        # Final layer norm before output
-        self.norm = nn.LayerNorm(dim)
+        # Final layer norm before output - RMSNorm like Mamba
+        self.norm = RMSNorm(dim)
 
         # Output projection to vocabulary (tied with embedding)
         self.lm_head = nn.Linear(dim, vocab_size, bias=False)
@@ -222,24 +259,47 @@ class LadderLM(nn.Module):
 
         new_hidden_states = []
 
-        # Run through layers with pre-norm + residual (Mamba-style)
+        # Run through layers with fused add+norm (exactly like Mamba's Block)
+        # Pattern: residual = x + residual; x = norm(residual); x = mixer(x)
+        residual = None
         for i, (ln, layer) in enumerate(zip(self.layer_norms, self.layers)):
-            # Save input for residual
-            residual = x
-
-            # Pre-normalization
-            x_norm = ln(x)
+            if self.fused_add_norm:
+                # Fused add + RMSNorm (like Mamba)
+                x, residual = rms_norm_fn(
+                    x,
+                    ln.weight,
+                    None,  # bias
+                    residual=residual,
+                    prenorm=True,
+                    residual_in_fp32=self.residual_in_fp32,
+                    eps=ln.eps,
+                )
+            else:
+                # Non-fused fallback
+                residual = (x + residual) if residual is not None else x
+                x = ln(residual.to(dtype=ln.weight.dtype))
+                if self.residual_in_fp32:
+                    residual = residual.to(torch.float32)
 
             # Elman layer forward
-            x_out, h_final = layer(x_norm, prev_hiddens[i])
-
-            # Residual connection (KEY for deep networks!)
-            x = residual + x_out
+            x, h_final = layer(x, prev_hiddens[i])
 
             new_hidden_states.append(h_final)
 
-        # Final normalize and project to vocabulary
-        x = self.norm(x)
+        # Final fused add + norm
+        if self.fused_add_norm:
+            # prenorm=False returns just the normalized output (not a tuple)
+            x = rms_norm_fn(
+                x,
+                self.norm.weight,
+                None,
+                residual=residual,
+                prenorm=False,
+                residual_in_fp32=self.residual_in_fp32,
+                eps=self.norm.eps,
+            )
+        else:
+            x = self.norm((x + residual).to(dtype=self.norm.weight.dtype))
         logits = self.lm_head(x)
 
         if return_loss:
@@ -292,6 +352,8 @@ def create_ladder_model(
     r_h_init_gain: float = 0.1,
     state_expansion: int = 2,
     mamba2_init: bool = False,
+    use_conv: bool = False,  # Conv1d hurts E-series (nonlinear RNN doesn't need it)
+    d_conv: int = 4,  # Conv kernel size (if enabled)
 ):
     """
     Create a LadderLM with approximately target_params parameters.
@@ -354,6 +416,7 @@ def create_ladder_model(
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
         state_expansion=state_expansion, mamba2_init=mamba2_init,
+        use_conv=use_conv, d_conv=d_conv,
     )
     params_1layer = model_1layer.get_num_params()
 
@@ -363,6 +426,7 @@ def create_ladder_model(
         expansion=expansion, n_groups=n_groups, n_slots=n_slots,
         r_h_mode=r_h_mode, r_h_init_gain=r_h_init_gain,
         state_expansion=state_expansion, mamba2_init=mamba2_init,
+        use_conv=use_conv, d_conv=d_conv,
     )
     params_2layer = model_2layer.get_num_params()
 
@@ -395,6 +459,8 @@ def create_ladder_model(
         r_h_init_gain=r_h_init_gain,
         state_expansion=state_expansion,
         mamba2_init=mamba2_init,
+        use_conv=use_conv,
+        d_conv=d_conv,
     )
 
     actual_params = model.get_num_params()

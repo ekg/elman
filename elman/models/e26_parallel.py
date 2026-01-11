@@ -149,8 +149,8 @@ class E26DualMemoryElmanCell(nn.Module):
         return h_work_all, h_tape_final, h_work_all[:, -1, :]
 
 
-class E26DualMemoryElman(nn.Module):
-    """Full E26 model with embedding and output projection."""
+class E26DualMemoryElmanLM(nn.Module):
+    """Full E26 model with embedding and output projection (standalone)."""
 
     def __init__(
         self,
@@ -172,6 +172,94 @@ class E26DualMemoryElman(nn.Module):
         for layer in self.layers:
             h, _, _ = layer(h)
         return self.out_proj(h)
+
+
+class E26DualMemoryElman(nn.Module):
+    """E26 layer compatible with LadderLM (Mamba2-style projections)."""
+
+    def __init__(
+        self,
+        dim: int,
+        expansion: float = 1.0,
+        n_slots: int = 64,
+        dropout: float = 0.0,
+        w_h_init_scale: float = 0.9,
+        mamba2_init: bool = False,
+        **kwargs
+    ):
+        super().__init__()
+        self.dim = dim
+        self.d_inner = int(dim * expansion)
+        self.n_slots = n_slots
+
+        # Mamba2-style: project to 2*d_inner, then split (x and gate z)
+        self.in_proj = nn.Linear(dim, 2 * self.d_inner, bias=False)
+
+        # E26 cell
+        self.cell = E26DualMemoryElmanCell(self.d_inner, n_slots)
+
+        # Override W_h init scale
+        with torch.no_grad():
+            W_h_f32 = torch.empty_like(self.cell.W_h, dtype=torch.float32)
+            nn.init.orthogonal_(W_h_f32)
+            W_h_f32.mul_(w_h_init_scale)
+            self.cell.W_h.copy_(W_h_f32.to(self.cell.W_h.dtype))
+
+        # Output projection
+        self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        self._init_weights(mamba2_init)
+
+    def _init_weights(self, mamba2_init: bool):
+        if mamba2_init:
+            nn.init.normal_(self.in_proj.weight, std=0.02)
+            nn.init.normal_(self.out_proj.weight, std=0.02)
+        else:
+            nn.init.xavier_uniform_(self.in_proj.weight)
+            nn.init.xavier_uniform_(self.out_proj.weight)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        h0: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Args:
+            x: [B, T, dim] input
+            h0: tuple of (h_tape [B, N, d_inner], h_work [B, d_inner]) or None
+
+        Returns:
+            output: [B, T, dim]
+            h_final: tuple of (h_tape_final, h_work_final)
+        """
+        B, T, D = x.shape
+
+        # Project and split
+        xz = self.in_proj(x)  # [B, T, 2*d_inner]
+        x_proj, z = xz.chunk(2, dim=-1)  # Each [B, T, d_inner]
+
+        # E26 cell
+        if h0 is not None:
+            h_tape, h_work = h0
+        else:
+            h_tape, h_work = None, None
+
+        h_work_all, h_tape_final, h_work_final = self.cell(x_proj, h_tape, h_work)
+
+        # Gating with z (like E1/Mamba)
+        output = h_work_all * F.silu(z)  # [B, T, d_inner]
+
+        # Output projection
+        output = self.dropout(output)
+        output = self.out_proj(output)  # [B, T, dim]
+
+        return output, (h_tape_final, h_work_final)
+
+    def extra_repr(self):
+        return f'dim={self.dim}, d_inner={self.d_inner}, n_slots={self.n_slots}, LEVEL=26_PARALLEL_DUAL_MEMORY'
 
 
 if __name__ == '__main__':
