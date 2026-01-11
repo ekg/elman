@@ -2103,6 +2103,50 @@ private:
 };
 
 // =============================================================================
+// E23c_v2: Chunked Dual-Memory Elman with Read Feedback
+// Key difference from E23c: read_{t-1} feeds back into h_work_t
+//   h_work_t = tanh(W_h @ h_work_{t-1} + W_x @ x_t + W_r @ read_{t-1} + b)
+//   read_t = attention(h_work_t, tape)
+//   output_t = h_work_t
+// Sequential per-timestep but still batches tape updates at chunk boundaries.
+// =============================================================================
+
+template<typename T>
+struct E23cv2ChunkedForward {
+    E23cv2ChunkedForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        int chunk_size,
+        const T* x_proj,       // [T, B, D] - pre-projected input
+        const T* W_h,          // [D, D]
+        const T* W_r,          // [D, D] - NEW: read projection
+        const T* b_h,          // [D]
+        const T* W_write,      // [D, D]
+        const T* h_tape_init,  // [B, N, D]
+        const T* h_work_init,  // [B, D]
+        T* output,             // [T, B, D]
+        T* h_tape_final,       // [B, N, D]
+        T* h_work_all,         // [T, B, D]
+        T* workspace);
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E23: Dual-Memory Elman (Tape + Working Memory)
 // Architecture:
 //   - Tape: [B, N, D] - Large linear storage

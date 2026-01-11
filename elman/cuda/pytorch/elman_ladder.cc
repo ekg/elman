@@ -3969,6 +3969,107 @@ std::vector<Tensor> e23c_chunked_forward(
 }
 
 // =============================================================================
+// E23c_v2: Chunked Dual-Memory Elman with Read Feedback
+// =============================================================================
+
+std::vector<Tensor> e23cv2_chunked_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_x,            // [D, D]
+    Tensor W_r,            // [D, D] - NEW: read projection
+    Tensor b_h,            // [D]
+    Tensor W_write,        // [D, D]
+    int chunk_size) {      // K - chunk size for batching
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_r);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D]
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // Pre-compute x_proj = x @ W_x^T for ALL timesteps in ONE GEMM
+    auto x_proj = torch::empty({seq_len, batch_size, dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        dim, seq_len * batch_size, dim,
+        &alpha,
+        W_x.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        x_proj.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Allocate outputs
+    auto output = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto h_work_all = torch::empty({seq_len, batch_size, dim}, options);
+
+    // Workspace layout (per chunk K):
+    // tmp_Rh: [B, D]
+    // tmp_Rr: [B, D]
+    // tmp_scores: [B, N]
+    // tmp_attn: [B, N]
+    // tmp_read: [B, D]
+    // tmp_h_chunk: [B, K, D]
+    // tmp_attn_chunk: [B, K, N]
+    // tmp_write_vals: [B, K, D]
+    // tmp_cumprod: [B, K, N]
+    int64_t K = chunk_size;
+    int64_t BD = batch_size * dim;
+    int64_t BN = batch_size * n_slots;
+    int64_t workspace_size = BD + BD + BN + BN + BD +
+                             K * BD + K * BN + K * BD + K * BN;
+    auto workspace = torch::empty({workspace_size}, options);
+
+    hasty::v0::elman_ladder::E23cv2ChunkedForward<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        chunk_size,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_r.data_ptr()),  // NEW
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    // Transpose outputs to [B, T, ...] format
+    return {output.permute({1, 0, 2}).contiguous(),      // [B, T, D] output
+            h_tape_final,                                 // [B, N, D]
+            h_work_all.permute({1, 0, 2}).contiguous()};  // [B, T, D] h_work states
+}
+
+// =============================================================================
 // E24: Single-GEMM Dual Memory (1 GEMM per timestep)
 // =============================================================================
 
@@ -4241,6 +4342,8 @@ void elman_ladder_init(py::module& m) {
           "E23: Dual-Memory Elman optimized forward (cuBLAS batched GEMM attention)");
     m.def("e23c_chunked_forward", &e23c_chunked_forward,
           "E23c: Chunked Dual-Memory Elman forward (batched attention, no read in h_work)");
+    m.def("e23cv2_chunked_forward", &e23cv2_chunked_forward,
+          "E23c_v2: Chunked Dual-Memory Elman forward with read feedback");
     m.def("e24_single_gemm_forward", &e24_single_gemm_forward,
           "E24: Single-GEMM Dual Memory forward (1 GEMM per timestep)");
     m.def("e24_single_gemm_backward", &e24_single_gemm_backward,
