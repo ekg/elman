@@ -2566,25 +2566,34 @@ public:
         int d_conv,
         const cublasHandle_t& blas_handle,
         const cudaStream_t& stream);
-    ~E28ConvBackward();
 
     void Run(
-        const T* x,               // [B, T, D]
-        const T* z,               // [B, T, D]
+        const T* x,               // [T, B, D] time-major
+        const T* z,               // [T, B, D]
         const T* h_init,          // [B, D]
-        const T* h_all,           // [B, T, D]
+        const T* h_all,           // [T, B, D]
         const T* W_x,             // [D, D]
         const T* W_h,             // [D, D]
         const T* conv_weight,     // [D, K]
         const T* conv_bias,       // [D]
-        const T* d_output,        // [B, T, D]
-        T* d_x,                   // [B, T, D]
-        T* d_z,                   // [B, T, D]
+        const T* d_output,        // [T, B, D]
+        T* d_x,                   // [T, B, D]
+        T* d_z,                   // [T, B, D]
         T* d_W_x,                 // [D, D]
         T* d_W_h,                 // [D, D]
         T* d_b,                   // [D]
         T* d_conv_weight,         // [D, K]
-        T* d_conv_bias);          // [D]
+        T* d_conv_bias,           // [D]
+        T* workspace);            // workspace buffer
+
+    // Workspace size in number of T elements
+    static int64_t WorkspaceSize(int batch_size, int seq_len, int dim, int d_conv) {
+        const int64_t BD = batch_size * dim;
+        const int64_t BTD = batch_size * seq_len * dim;
+        // bf16: tmp_d_h(BD) + tmp_d_pre_act(BD) + d_h_accum(BD) + x_conv(BTD) + d_x_conv(BTD)
+        // float (2x bf16): d_x_accum(2*BTD) + d_conv_weight_accum(2*D*K) + d_conv_bias_accum(2*D)
+        return 3 * BD + 2 * BTD + 2 * BTD + 2 * dim * d_conv + 2 * dim;
+    }
 
 private:
     int batch_size_;
@@ -2593,9 +2602,6 @@ private:
     int d_conv_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
-    T* tmp_d_h_;
-    T* tmp_d_pre_act_;
-    T* tmp_Rh_;
 };
 
 }  // namespace elman_ladder

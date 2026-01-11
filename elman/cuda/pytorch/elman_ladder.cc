@@ -4704,11 +4704,15 @@ std::vector<Tensor> e28_conv_forward(
     auto conv_w = conv_weight.dim() == 3 ? conv_weight.squeeze(1) : conv_weight;
     conv_w = conv_w.contiguous();
 
-    // Allocate outputs
-    auto h_all = torch::empty({batch_size, seq_len, dim}, options);
-    auto output = torch::empty({batch_size, seq_len, dim}, options);
+    // Transpose inputs from [B, T, D] to [T, B, D] for kernel
+    auto x_t = x.transpose(0, 1).contiguous();  // [T, B, D]
+    auto z_t = z.transpose(0, 1).contiguous();  // [T, B, D]
+
+    // Allocate outputs in [T, B, D] layout for kernel
+    auto h_all_t = torch::empty({seq_len, batch_size, dim}, options);
+    auto output_t = torch::empty({seq_len, batch_size, dim}, options);
     auto v_cache = training ?
-        torch::empty({batch_size, seq_len, dim}, options) :
+        torch::empty({seq_len, batch_size, dim}, options) :
         torch::empty({0}, options);
 
     // Create kernel instance
@@ -4719,18 +4723,22 @@ std::vector<Tensor> e28_conv_forward(
     // Run forward
     kernel.Run(
         training,
-        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(h_init.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(b.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(conv_w.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(conv_bias.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(h_all.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_all_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output_t.data_ptr()),
         training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr
     );
+
+    // Transpose outputs back to [B, T, D]
+    auto h_all = h_all_t.transpose(0, 1).contiguous();
+    auto output = output_t.transpose(0, 1).contiguous();
 
     return {h_all, output};
 }
@@ -4770,39 +4778,55 @@ std::vector<Tensor> e28_conv_backward(
     auto conv_w = conv_weight.dim() == 3 ? conv_weight.squeeze(1) : conv_weight;
     conv_w = conv_w.contiguous();
 
-    // Allocate gradients
-    auto d_x = torch::zeros_like(x);
-    auto d_z = torch::zeros_like(z);
+    // Transpose inputs from [B, T, D] to [T, B, D] for kernel
+    auto x_t = x.transpose(0, 1).contiguous();  // [T, B, D]
+    auto z_t = z.transpose(0, 1).contiguous();  // [T, B, D]
+    auto h_all_t = h_all.transpose(0, 1).contiguous();  // [T, B, D]
+    auto d_output_t = d_output.transpose(0, 1).contiguous();  // [T, B, D]
+
+    // Allocate gradients in [T, B, D] layout
+    auto d_x_t = torch::zeros({seq_len, batch_size, dim}, x.options());
+    auto d_z_t = torch::zeros({seq_len, batch_size, dim}, z.options());
     auto d_W_x = torch::zeros_like(W_x);
     auto d_W_h = torch::zeros_like(W_h);
-    auto d_b = torch::zeros_like(conv_bias);  // Same shape as b
+    auto d_b = torch::zeros_like(conv_bias);
     auto d_conv_weight = torch::zeros_like(conv_w);
     auto d_conv_bias = torch::zeros_like(conv_bias);
 
-    // Create kernel instance
+    // Allocate workspace
     using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E28ConvBackward<__nv_bfloat16>::WorkspaceSize(
+        batch_size, seq_len, dim, d_conv);
+    auto workspace = torch::empty({workspace_size}, options);
+
+    // Create kernel instance
     E28ConvBackward<__nv_bfloat16> kernel(
         batch_size, seq_len, dim, d_conv, handle, stream);
 
     // Run backward
     kernel.Run(
-        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(h_init.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(h_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_all_t.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_x.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(conv_w.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(conv_bias.data_ptr()),
-        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(d_x.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(d_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_x_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_z_t.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_W_x.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_W_h.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_b.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_conv_weight.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(d_conv_bias.data_ptr())
+        reinterpret_cast<__nv_bfloat16*>(d_conv_bias.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr())
     );
+
+    // Transpose gradients back to [B, T, D]
+    auto d_x = d_x_t.transpose(0, 1).contiguous();
+    auto d_z = d_z_t.transpose(0, 1).contiguous();
 
     // Reshape d_conv_weight back to [D, 1, K] if needed
     if (conv_weight.dim() == 3) {

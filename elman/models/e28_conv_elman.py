@@ -21,6 +21,49 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    E28_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e28_conv_forward')
+except ImportError:
+    E28_CUDA_AVAILABLE = False
+
+
+class E28ConvFunction(torch.autograd.Function):
+    """CUDA-accelerated E28 autograd function."""
+
+    @staticmethod
+    def forward(ctx, training, x, z, h_init, W_x, W_h, b, conv_weight, conv_bias):
+        h_all, output = hasty_pytorch_lib.e28_conv_forward(
+            training,
+            x.contiguous(),
+            z.contiguous(),
+            h_init.contiguous(),
+            W_x.contiguous(),
+            W_h.contiguous(),
+            b.contiguous(),
+            conv_weight.contiguous(),
+            conv_bias.contiguous()
+        )
+        ctx.save_for_backward(x, z, h_init, h_all, W_x, W_h, conv_weight, conv_bias)
+        return h_all, output
+
+    @staticmethod
+    def backward(ctx, d_h_all, d_output):
+        x, z, h_init, h_all, W_x, W_h, conv_weight, conv_bias = ctx.saved_tensors
+        dx, dz, dW_x, dW_h, db, d_conv_weight, d_conv_bias = hasty_pytorch_lib.e28_conv_backward(
+            x.contiguous(),
+            z.contiguous(),
+            h_init.contiguous(),
+            h_all.contiguous(),
+            W_x.contiguous(),
+            W_h.contiguous(),
+            conv_weight.contiguous(),
+            conv_bias.contiguous(),
+            d_output.contiguous()
+        )
+        return None, dx, dz, None, dW_x, dW_h, db, d_conv_weight, d_conv_bias
+
 
 def causal_conv1d_python(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
     """
@@ -160,27 +203,16 @@ class E28ConvElmanCell(nn.Module):
         if h_init is None:
             h_init = torch.zeros(B, D, device=x.device, dtype=x.dtype)
 
-        # Try CUDA kernel
-        if use_cuda and x.is_cuda:
-            try:
-                import hasty_pytorch_lib
-                if hasattr(hasty_pytorch_lib, 'e28_conv_forward'):
-                    h_all, output = hasty_pytorch_lib.e28_conv_forward(
-                        self.training,
-                        x.contiguous(),
-                        z.contiguous(),
-                        h_init.contiguous(),
-                        self.W_x.contiguous(),
-                        self.W_h.contiguous(),
-                        self.b.contiguous(),
-                        self.conv_weight.contiguous(),
-                        self.conv_bias.contiguous()
-                    )
-                    return h_all, output, h_all[:, -1]
-            except (ImportError, AttributeError):
-                pass
+        # Use CUDA kernel if available
+        if use_cuda and E28_CUDA_AVAILABLE and x.is_cuda:
+            h_all, output = E28ConvFunction.apply(
+                self.training, x, z, h_init,
+                self.W_x, self.W_h, self.b,
+                self.conv_weight, self.conv_bias
+            )
+            return h_all, output, h_all[:, -1]
 
-        # Python fallback
+        # Python fallback (used for training)
         h_all, output, h_final = e28_forward_python(
             x, z, h_init, self.W_x, self.W_h, self.b,
             self.conv_weight, self.conv_bias
