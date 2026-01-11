@@ -4450,6 +4450,222 @@ std::vector<Tensor> e25_entmax_backward(
     return {dx, dW_h, dW_x, db_h, dW_write};
 }
 
+// =============================================================================
+// E26: Parallel Dual-Memory Elman (softmax attention)
+// Same interface as E25 but uses softmax instead of entmax
+// =============================================================================
+
+std::vector<Tensor> e26_parallel_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_x,            // [D, D]
+    Tensor b_h,            // [D]
+    Tensor W_write) {      // [D, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D] for efficient batch GEMM
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // PARALLEL PHASE: Pre-compute x_proj = x @ W_x^T for ALL timesteps in ONE GEMM
+    auto x_proj = torch::empty({seq_len, batch_size, dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        dim, seq_len * batch_size, dim,
+        &alpha,
+        W_x.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        x_proj.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Allocate outputs
+    auto h_work_out = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    // For training, save h_tape_all for backward
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+
+    // Workspace: tmp_Rh [B, D] + tmp_write_val [B, D]
+    auto workspace = torch::empty({batch_size * dim * 2}, options);
+
+    hasty::v0::elman_ladder::E26ParallelForward<__nv_bfloat16> forward_op(
+        training, batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_tape_final.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    // Transpose outputs to [B, T, ...] format
+    return {h_work_out.permute({1, 0, 2}).contiguous(),  // [B, T, D] h_work states (=output)
+            h_tape_final,                                  // [B, N, D]
+            h_tape_all,                                    // [T+1, B, N, D] or empty
+            read_attn.permute({1, 0, 2}).contiguous(),   // [B, T, N]
+            write_attn.permute({1, 0, 2}).contiguous()}; // [B, T, N]
+}
+
+std::vector<Tensor> e26_parallel_backward(
+    Tensor x,              // [B, T, D]
+    Tensor h_work_all,     // [B, T, D]
+    Tensor h_work_init,    // [B, D]
+    Tensor h_tape_all,     // [T+1, B, N, D]
+    Tensor read_attn,      // [B, T, N]
+    Tensor write_attn,     // [B, T, N]
+    Tensor W_h,            // [D, D]
+    Tensor W_x,            // [D, D]
+    Tensor W_write,        // [D, D]
+    Tensor d_h_work_out,   // [B, T, D]
+    Tensor d_h_tape_final) { // [B, N, D]
+
+    const auto batch_size = h_work_all.size(0);
+    const auto seq_len = h_work_all.size(1);
+    const auto dim = h_work_all.size(2);
+    const auto n_slots = h_tape_all.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_work_all);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(h_tape_all);
+    CHECK_INPUT(read_attn);
+    CHECK_INPUT(write_attn);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(d_h_work_out);
+    CHECK_INPUT(d_h_tape_final);
+
+    const auto options = h_work_all.options();
+    const auto float_options = options.dtype(torch::kFloat32);
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose inputs from [B, T, ...] to [T, B, ...] for kernel
+    auto h_work_t = h_work_all.permute({1, 0, 2}).contiguous();  // [T, B, D]
+    auto read_attn_t = read_attn.permute({1, 0, 2}).contiguous();  // [T, B, N]
+    auto write_attn_t = write_attn.permute({1, 0, 2}).contiguous();  // [T, B, N]
+    auto d_h_work_out_t = d_h_work_out.permute({1, 0, 2}).contiguous();  // [T, B, D]
+
+    // Allocate gradient outputs
+    auto dx_proj = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_pre_act_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_write_val_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto db_h = torch::zeros({dim}, float_options);
+    auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
+    auto dW_h = torch::zeros({dim, dim}, float_options);
+    auto dW_write = torch::zeros({dim, dim}, float_options);
+
+    hasty::v0::elman_ladder::E26ParallelBackward<__nv_bfloat16> backward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    backward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(h_work_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_work_out_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_act_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_write_val_all.data_ptr()),
+        db_h.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()),
+        dW_h.data_ptr<float>(),
+        dW_write.data_ptr<float>());
+
+    // Compute dW_x = x^T @ d_pre_act (accumulated over all timesteps)
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+    auto dW_x = torch::zeros({dim, dim}, float_options);
+
+    // Batch GEMM for dW_x
+    const float alpha = 1.0f;
+    const float beta_one = 1.0f;
+    const __nv_bfloat16* d_pre_act_ptr = reinterpret_cast<const __nv_bfloat16*>(d_pre_act_all.data_ptr());
+    const __nv_bfloat16* x_t_ptr = reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr());
+    for (int t = 0; t < seq_len; ++t) {
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            dim, dim, batch_size,
+            &alpha,
+            d_pre_act_ptr + t * batch_size * dim, CUDA_R_16BF, dim,
+            x_t_ptr + t * batch_size * dim, CUDA_R_16BF, dim,
+            &beta_one,
+            dW_x.data_ptr<float>(), CUDA_R_32F, dim,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+    }
+
+    // Compute dx = d_pre_act @ W_x
+    auto dx_t = torch::empty({seq_len, batch_size, dim}, options);
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        dim, seq_len * batch_size, dim,
+        &alpha,
+        W_x.data_ptr(), CUDA_R_16BF, dim,
+        d_pre_act_all.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        dx_t.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Transpose dx back to [B, T, D]
+    auto dx = dx_t.permute({1, 0, 2}).contiguous();
+
+    // Convert weight gradients back to original dtype
+    dW_h = dW_h.to(options.dtype());
+    dW_x = dW_x.to(options.dtype());
+    dW_write = dW_write.to(options.dtype());
+    db_h = db_h.to(options.dtype());
+
+    return {dx, dW_h, dW_x, db_h, dW_write};
+}
+
 }  // anonymous namespace
 
 
@@ -4568,4 +4784,8 @@ void elman_ladder_init(py::module& m) {
           "E25: Dual-Memory Elman with 1.5-Entmax forward (sparse attention)");
     m.def("e25_entmax_backward", &e25_entmax_backward,
           "E25: Dual-Memory Elman with 1.5-Entmax backward");
+    m.def("e26_parallel_forward", &e26_parallel_forward,
+          "E26: Parallel Dual-Memory Elman forward (softmax attention)");
+    m.def("e26_parallel_backward", &e26_parallel_backward,
+          "E26: Parallel Dual-Memory Elman backward");
 }

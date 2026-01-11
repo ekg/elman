@@ -2432,6 +2432,84 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E26: Parallel Dual-Memory Elman (softmax attention)
+// Separates "what" (parallel GEMMs) from "where" (sequential routing).
+// Same interface as E25 but with softmax instead of entmax.
+// =============================================================================
+
+template<typename T>
+struct E26ParallelForward {
+    E26ParallelForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* x_proj,          // [T, B, D]
+        const T* W_h,             // [D, D]
+        const T* b_h,             // [D]
+        const T* W_write,         // [D, D]
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        T* h_work_out,            // [T, B, D]
+        T* h_tape_final,          // [B, N, D]
+        T* h_tape_all,            // [T+1, B, N, D]
+        T* read_attn,             // [T, B, N]
+        T* write_attn,            // [T, B, N]
+        T* workspace);            // tmp_Rh [B, D] + tmp_write_val [B, D]
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E26ParallelBackward {
+    E26ParallelBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* h_work_all,      // [T, B, D]
+        const T* h_work_init,     // [B, D]
+        const T* h_tape_all,      // [T+1, B, N, D]
+        const T* read_attn,       // [T, B, N]
+        const T* write_attn,      // [T, B, N]
+        const T* W_h,
+        const T* W_write,
+        const T* d_h_work_out,    // [T, B, D]
+        const T* d_h_tape_final,  // [B, N, D]
+        T* dx_proj,               // [T, B, D]
+        T* d_pre_act_all,         // [T, B, D]
+        T* d_write_val_all,       // [T, B, D]
+        float* db_h,              // [D]
+        T* d_h_tape,              // [B, N, D]
+        float* dW_h,              // [D, D]
+        float* dW_write);         // [D, D]
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
