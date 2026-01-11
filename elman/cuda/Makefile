@@ -55,6 +55,7 @@ CUDA_OBJS := \
 	lib/structured_elman_gpu.o \
 	lib/structured_elman_attention_gpu.o \
 	lib/dual_memory_elman_gpu.o \
+	lib/e23c_chunked_gpu.o \
 	lib/e24_single_gemm_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean

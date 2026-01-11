@@ -2057,6 +2057,52 @@ private:
 };
 
 // =============================================================================
+// E23c: Chunked Dual-Memory Elman (Batched Attention Ops)
+// Key architectural change from E23:
+//   h_work_t = tanh(W_h @ h_work_{t-1} + W_x @ x_t + b)  -- NO read dependency!
+//   output_t = h_work_t + read_t                         -- Additive read
+// This allows batching reads and writes within chunks:
+//   1. Pre-compute h_work for K steps (sequential RNN)
+//   2. Batch ALL read attentions: [B, K, D] @ [B, D, N] - ONE BIG GEMM
+//   3. Batch ALL write attentions from frozen tape
+//   4. Parallel tape update via cumulative products
+// =============================================================================
+
+template<typename T>
+struct E23cChunkedForward {
+    E23cChunkedForward(
+        bool training,
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        int chunk_size,
+        const T* x_proj,       // [T, B, D] - pre-projected input
+        const T* W_h,          // [D, D]
+        const T* b_h,          // [D]
+        const T* W_write,      // [D, D]
+        const T* h_tape_init,  // [B, N, D]
+        const T* h_work_init,  // [B, D]
+        T* output,             // [T, B, D]
+        T* h_tape_final,       // [B, N, D]
+        T* h_work_all,         // [T, B, D] - all h_work states
+        T* workspace);         // workspace for intermediate results
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    int seq_len_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E23: Dual-Memory Elman (Tape + Working Memory)
 // Architecture:
 //   - Tape: [B, N, D] - Large linear storage
