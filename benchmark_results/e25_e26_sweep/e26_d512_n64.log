@@ -1,0 +1,17 @@
+Config: E26 D=512, N=64, depth=32, batch=48
+============================================================
+
+E26 D=512 N=64 depth=32 batch=48: params=50,479,616
+Step 50 | 46s | Loss 7.4062 | Avg100 66.0794 | 26.5K tok/s
+Step 100 | 92s | Loss 5.3438 | Avg100 36.7478 | 26.6K tok/s
+Step 150 | 138s | Loss 5.0312 | Avg100 6.5222 | 26.7K tok/s
+Step 200 | 184s | Loss 4.0312 | Avg100 5.2441 | 26.6K tok/s
+Step 250 | 231s | Loss 4.5312 | Avg100 4.6619 | 26.6K tok/s
+Step 300 | 277s | Loss 4.2188 | Avg100 4.2716 | 26.6K tok/s
+Step 350 | 323s | Loss 4.4688 | Avg100 4.0800 | 26.6K tok/s
+Step 400 | 370s | Loss 3.5938 | Avg100 3.9145 | 26.6K tok/s
+Step 450 | 416s | Loss 3.5781 | Avg100 3.7150 | 26.6K tok/s
+Step 500 | 462s | Loss 3.6562 | Avg100 3.6386 | 26.6K tok/s
+Step 550 | 509s | Loss 3.4219 | Avg100 3.5877 | 26.6K tok/s
+Step 600 | 555s | Loss 3.4844 | Avg100 3.5337 | 26.6K tok/s
+FINAL: steps=649, params=50.5M, loss=3.4925, tok/s=26.6K
