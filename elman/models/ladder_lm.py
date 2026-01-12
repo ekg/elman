@@ -90,9 +90,9 @@ def get_ladder_level(level):
         20: Mamba2InformedElman,  # E20: Mamba2-style matrix state
         21: StructuredElman,  # E21: MIMO with nonlinear state
         30: E30DiagonalGated,  # E30: E1 + diagonal gating (SSM-style selectivity)
-        31: E31SparseGated,  # E31: E1 + sparse output gating via entmax
-        '31a': lambda **kw: E31SparseGated(alpha=2.0, **kw),  # E31a: sparsemax (α=2)
-        '31b': lambda **kw: E31SparseGated(alpha=1.5, **kw),  # E31b: entmax (α=1.5, default)
+        31: E31SparseGated,  # E31: E1 + sparse gating via softplus (default α=1.5)
+        '31a': lambda **kw: E31SparseGated(alpha=2.0, **kw),  # E31a: relu gating (strictly sparse)
+        '31b': lambda **kw: E31SparseGated(alpha=1.5, **kw),  # E31b: softplus gating (smooth sparse)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

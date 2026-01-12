@@ -1,11 +1,12 @@
 """
 E31: Sparse-Gated Elman
 
-E1 with sparse output gating via entmax instead of silu.
+E1 with sparse output gating via ReLU/softplus instead of silu.
 
 Key difference from E1:
-    - E1: output = h * silu(z)        # dense gating
-    - E31: output = h * entmax_1.5(z) # sparse gating
+    - E1: output = h * silu(z)     # dense gating (negative values allowed)
+    - E31: output = h * relu(z)    # sparse gating (zeros for z < 0)
+    - E31a: output = h * softplus(z)  # smooth sparse gating
 
 Zero additional parameters. Creates "register-like" behavior where only
 specific dimensions are active, potentially helping program-like computations.
@@ -188,15 +189,16 @@ class E31SparseGatedCell(nn.Module):
             h_list.append(h_new)
 
             # SPARSE gating (KEY DIFFERENCE from E1)
-            # Compute in float32 for numerical stability, then cast back
-            z_t_f32 = z_t.float()
-            if self.alpha == 1.5:
-                gate = entmax_1_5(z_t_f32, dim=-1).to(z_t.dtype)
-            elif self.alpha == 2.0:
-                gate = sparsemax(z_t_f32, dim=-1).to(z_t.dtype)
+            # Use element-wise sparse activation instead of cross-dim normalization
+            # alpha=1.5: softplus (smooth ReLU) - sparse but smooth gradients
+            # alpha=2.0: relu - strictly sparse
+            # alpha=1.0: silu (E1 baseline)
+            if self.alpha == 2.0:
+                gate = F.relu(z_t)  # Strictly sparse
+            elif self.alpha == 1.5:
+                gate = F.softplus(z_t, beta=2.0)  # Smooth approximation to ReLU
             else:
-                # Fallback to softmax for α=1
-                gate = F.softmax(z_t, dim=-1)
+                gate = F.silu(z_t)  # E1 baseline
 
             output = h_new * gate
             output_list.append(output)
@@ -208,18 +210,19 @@ class E31SparseGatedCell(nn.Module):
 
 class E31SparseGated(nn.Module):
     """
-    E31: Sparse-Gated Elman with entmax output gating.
+    E31: Sparse-Gated Elman with element-wise sparse output gating.
 
     Architecture (same as E1, different gating):
         x, z = split(in_proj(x))    # Split into RNN input and gate
         x = silu(x)                 # Pre-activation
         h = elman_cell(x)           # RNN
-        gate = entmax_1.5(z)        # SPARSE gate (not silu!)
+        gate = relu/softplus(z)     # SPARSE gate (not silu!)
         output = out_proj(h * gate)
 
     Variants:
-        alpha=1.5: 1.5-entmax (moderate sparsity, recommended)
-        alpha=2.0: sparsemax (high sparsity)
+        alpha=2.0: relu (strictly sparse, hard threshold at 0)
+        alpha=1.5: softplus (smooth sparse, recommended)
+        alpha=1.0: silu (E1 baseline for comparison)
     """
 
     def __init__(
