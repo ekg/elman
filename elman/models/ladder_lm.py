@@ -52,6 +52,8 @@ from .e26_parallel import E26DualMemoryElman
 from .e28_conv_elman import E28ConvElman
 from .e30_diagonal_gated import E30DiagonalGated
 from .e31_sparse_gated import E31SparseGated
+from .e32_no_presilu import E32NoPresilu
+from .e33_self_gate import E33SelfGate
 
 
 def get_ladder_level(level):
@@ -93,6 +95,8 @@ def get_ladder_level(level):
         31: E31SparseGated,  # E31: E1 + sparse gating via softplus (default α=1.5)
         '31a': lambda **kw: E31SparseGated(alpha=2.0, **kw),  # E31a: relu gating (strictly sparse)
         '31b': lambda **kw: E31SparseGated(alpha=1.5, **kw),  # E31b: softplus gating (smooth sparse)
+        32: E32NoPresilu,  # E32: E1 without pre-silu activation (simplification test)
+        33: E33SelfGate,  # E33: E1 with self-gating: output = h * silu(h) instead of h * silu(z)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

@@ -1,0 +1,45 @@
+{
+  "experiment": "E1 vs E32 vs E33 simplification comparison",
+  "config": {
+    "dim": 1280,
+    "depth": 6,
+    "batch_size": 32,
+    "chunk_size": 512,
+    "training_time_minutes": 10,
+    "seed": 42
+  },
+  "results": [
+    {
+      "model": "E1 (baseline)",
+      "level": 1,
+      "loss_last_100_avg": 1.6143,
+      "throughput_tok_s": 142000,
+      "steps": 536,
+      "params": "49M"
+    },
+    {
+      "model": "E32 (no pre-silu)",
+      "level": 32,
+      "loss_last_100_avg": 1.6536,
+      "throughput_tok_s": 143900,
+      "steps": 543,
+      "params": "49M",
+      "notes": "Removing pre-silu hurts performance"
+    },
+    {
+      "model": "E33 (self-gate)",
+      "level": 33,
+      "loss_last_100_avg": 1.5995,
+      "throughput_tok_s": 152200,
+      "steps": 575,
+      "params": "39M",
+      "notes": "Self-gating h*silu(h) beats separate z branch. 7% faster, 20% fewer params, better loss."
+    }
+  ],
+  "conclusions": [
+    "E33 self-gating is a promising simplification of E1",
+    "Removing pre-silu (E32) hurts performance by ~0.04 nats",
+    "Self-gating (output = h * silu(h)) outperforms separate z gating (output = h * silu(z))",
+    "E33 achieves: better loss, 7% faster throughput, 20% fewer parameters"
+  ]
+}
