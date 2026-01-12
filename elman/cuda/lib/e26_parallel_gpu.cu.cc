@@ -14,6 +14,9 @@
  *
  * Key insight: Attention is cheap (O(N×D)), GEMM is expensive (O(D²)).
  * Pre-computing x_proj batches the expensive part.
+ *
+ * HYBRID TEMPLATE PATTERN: Template on N_SLOTS only, DIM passed as runtime parameter.
+ * Uses dynamic shared memory for DIM-dependent arrays.
  */
 
 #include "hasty/elman_ladder.h"
@@ -36,6 +39,7 @@ __device__ void softmax_device(float* attn_sh, const int tid, const float scale)
     __shared__ float max_val;
     if (tid == 0) {
         max_val = attn_sh[0] * scale;
+        #pragma unroll
         for (int i = 1; i < N_SLOTS; i++) {
             float v = attn_sh[i] * scale;
             if (v > max_val) max_val = v;
@@ -47,6 +51,7 @@ __device__ void softmax_device(float* attn_sh, const int tid, const float scale)
     __shared__ float sum_exp;
     if (tid == 0) {
         sum_exp = 0.0f;
+        #pragma unroll
         for (int i = 0; i < N_SLOTS; i++) {
             float e = expf(attn_sh[i] * scale - max_val);
             attn_sh[i] = e;
@@ -64,10 +69,15 @@ __device__ void softmax_device(float* attn_sh, const int tid, const float scale)
 
 /**
  * E26 Phase 1: Read attention (softmax) + Update h_work
+ *
+ * Shared memory layout:
+ *   [0, N_SLOTS): attn_sh (float)
+ *   [N_SLOTS*4, N_SLOTS*4 + DIM*4): h_work_sh (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26Phase1Kernel_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ Rh,          // [B, D] W_h @ h_work_prev
     const __nv_bfloat16* __restrict__ x_proj_t,    // [B, D] pre-computed
     const __nv_bfloat16* __restrict__ b_h,         // [D]
@@ -81,8 +91,9 @@ __global__ void E26Phase1Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* h_work_sh = (float*)(shared_mem + N_SLOTS * sizeof(float));
 
     // Load h_work into shared memory
     for (int d = tid; d < DIM; d += E26_BLOCK_SIZE) {
@@ -113,6 +124,7 @@ __global__ void E26Phase1Kernel_BF16(
     // Compute h_work_new: tanh(Rh + x_proj_t + read_val + b_h)
     for (int d = tid; d < DIM; d += E26_BLOCK_SIZE) {
         float read_d = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             read_d += attn_sh[n] * __bfloat162float(h_tape[b * N_SLOTS * DIM + n * DIM + d]);
         }
@@ -128,10 +140,16 @@ __global__ void E26Phase1Kernel_BF16(
 
 /**
  * E26 Phase 2: Write attention (softmax) + Update tape
+ *
+ * Shared memory layout:
+ *   [0, N_SLOTS): attn_sh (float)
+ *   [N_SLOTS*4, N_SLOTS*4 + DIM*4): h_work_sh (float)
+ *   [N_SLOTS*4 + DIM*4, N_SLOTS*4 + 2*DIM*4): write_val_sh (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26Phase2Kernel_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ write_val,   // [B, D] W_write @ h_work_new
     const __nv_bfloat16* __restrict__ h_work_new,  // [B, D]
     __nv_bfloat16* __restrict__ h_tape,            // [B, N, D]
@@ -142,9 +160,10 @@ __global__ void E26Phase2Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
-    __shared__ float write_val_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* h_work_sh = (float*)(shared_mem + N_SLOTS * sizeof(float));
+    float* write_val_sh = (float*)(shared_mem + N_SLOTS * sizeof(float) + DIM * sizeof(float));
 
     // Load into shared memory
     for (int d = tid; d < DIM; d += E26_BLOCK_SIZE) {
@@ -187,9 +206,10 @@ __global__ void E26Phase2Kernel_BF16(
 /**
  * E26 Backward Phase 1: Gradient w.r.t. write attention and tape
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26BackwardInit_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ d_h_tape_final,
     __nv_bfloat16* __restrict__ d_h_tape,
     __nv_bfloat16* __restrict__ d_h_work
@@ -209,10 +229,15 @@ __global__ void E26BackwardInit_BF16(
 
 /**
  * E26 Backward Phase 2: Gradient through write
+ *
+ * Shared memory layout:
+ *   [0, N_SLOTS): attn_sh (float)
+ *   [N_SLOTS*4, N_SLOTS*4 + DIM*4): d_h_work_sh (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26BackwardPhase1_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ write_attn,
     const __nv_bfloat16* __restrict__ d_h_work_out,
     __nv_bfloat16* __restrict__ d_h_work,
@@ -223,8 +248,9 @@ __global__ void E26BackwardPhase1_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float d_h_work_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* d_h_work_sh = (float*)(shared_mem + N_SLOTS * sizeof(float));
 
     // Load write attention
     if (tid < N_SLOTS) {
@@ -244,6 +270,7 @@ __global__ void E26BackwardPhase1_BF16(
     __nv_bfloat16* d_tape_b = d_h_tape + b * N_SLOTS * DIM;
     for (int d = tid; d < DIM; d += E26_BLOCK_SIZE) {
         float d_wv = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             float d_t = __bfloat162float(d_tape_b[n * DIM + d]);
             float a = attn_sh[n];
@@ -258,9 +285,10 @@ __global__ void E26BackwardPhase1_BF16(
 /**
  * E26 Backward Phase 3: Gradient through tanh and read attention
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26BackwardPhase2_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ h_work,
     __nv_bfloat16* __restrict__ d_h_work,
     __nv_bfloat16* __restrict__ dx_proj,
@@ -287,10 +315,15 @@ __global__ void E26BackwardPhase2_BF16(
 
 /**
  * E26 Backward Phase 4: Gradient through read attention
+ *
+ * Shared memory layout:
+ *   [0, N_SLOTS): attn_sh (float)
+ *   [N_SLOTS*4, N_SLOTS*4 + DIM*4): d_pre_act_sh (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E26BackwardPhase3_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ read_attn,
     const __nv_bfloat16* __restrict__ d_pre_act,
     const __nv_bfloat16* __restrict__ h_tape,
@@ -303,8 +336,9 @@ __global__ void E26BackwardPhase3_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float d_pre_act_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* d_pre_act_sh = (float*)(shared_mem + N_SLOTS * sizeof(float));
 
     // Load
     if (tid < N_SLOTS) {
@@ -387,14 +421,20 @@ void E26ParallelForward<__nv_bfloat16>::Run(
     const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
     const int num_blocks = batch_size_;
 
-    #define LAUNCH_E26_PHASE1(N, D) \
-        E26Phase1Kernel_BF16<N, D><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
+    // Shared memory sizes
+    // Phase1: attn_sh[N_SLOTS] + h_work_sh[DIM]
+    const size_t phase1_smem = n_slots_ * sizeof(float) + dim_ * sizeof(float);
+    // Phase2: attn_sh[N_SLOTS] + h_work_sh[DIM] + write_val_sh[DIM]
+    const size_t phase2_smem = n_slots_ * sizeof(float) + 2 * dim_ * sizeof(float);
+
+    #define LAUNCH_E26_PHASE1(N) \
+        E26Phase1Kernel_BF16<N><<<num_blocks, E26_BLOCK_SIZE, phase1_smem, stream_>>>( \
+            batch_size_, dim_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
             h_work_cur, read_attn_t, scale)
 
-    #define LAUNCH_E26_PHASE2(N, D) \
-        E26Phase2Kernel_BF16<N, D><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_write_val, h_work_cur, h_tape_final, \
+    #define LAUNCH_E26_PHASE2(N) \
+        E26Phase2Kernel_BF16<N><<<num_blocks, E26_BLOCK_SIZE, phase2_smem, stream_>>>( \
+            batch_size_, dim_, tmp_write_val, h_work_cur, h_tape_final, \
             write_attn_t, scale)
 
     for (int t = 0; t < seq_len; ++t) {
@@ -412,15 +452,11 @@ void E26ParallelForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 1: read attention + h_work update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_PHASE1(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_PHASE1(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_PHASE1(64, 512); }
-        else { fprintf(stderr, "E26 CUDA: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_); }
+        if (n_slots_ == 8) { LAUNCH_E26_PHASE1(8); }
+        else if (n_slots_ == 16) { LAUNCH_E26_PHASE1(16); }
+        else if (n_slots_ == 32) { LAUNCH_E26_PHASE1(32); }
+        else if (n_slots_ == 64) { LAUNCH_E26_PHASE1(64); }
+        else { fprintf(stderr, "E26 CUDA: unsupported n_slots=%d\n", n_slots_); }
 
         // W_write @ h_work_new
         cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -430,14 +466,10 @@ void E26ParallelForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 2: write attention + tape update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_PHASE2(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_PHASE2(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_PHASE2(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E26_PHASE2(8); }
+        else if (n_slots_ == 16) { LAUNCH_E26_PHASE2(16); }
+        else if (n_slots_ == 32) { LAUNCH_E26_PHASE2(32); }
+        else if (n_slots_ == 64) { LAUNCH_E26_PHASE2(64); }
 
         if (training_ && h_tape_all) {
             cudaMemcpyAsync(h_tape_all + (t + 1) * batch_size_ * n_slots_ * dim_,
@@ -492,31 +524,33 @@ void E26ParallelBackward<__nv_bfloat16>::Run(
     __nv_bfloat16* d_h_work;
     cudaMalloc(&d_h_work, BD * sizeof(__nv_bfloat16));
 
-    #define LAUNCH_E26_BWD_INIT(N, D) \
-        E26BackwardInit_BF16<N, D><<<(batch_size_ * N * D + 255) / 256, 256, 0, stream_>>>( \
-            batch_size_, d_h_tape_final, d_h_tape, d_h_work)
+    // Shared memory sizes for backward phases
+    // BWD Phase1: attn_sh[N_SLOTS] + d_h_work_sh[DIM]
+    const size_t bwd_phase1_smem = n_slots_ * sizeof(float) + dim_ * sizeof(float);
+    // BWD Phase3: attn_sh[N_SLOTS] + d_pre_act_sh[DIM]
+    const size_t bwd_phase3_smem = n_slots_ * sizeof(float) + dim_ * sizeof(float);
 
-    #define LAUNCH_E26_BWD_PHASE1(N, D) \
-        E26BackwardPhase1_BF16<N, D><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
+    #define LAUNCH_E26_BWD_INIT(N) \
+        E26BackwardInit_BF16<N><<<(batch_size_ * N * dim_ + 255) / 256, 256, 0, stream_>>>( \
+            batch_size_, dim_, d_h_tape_final, d_h_tape, d_h_work)
 
-    #define LAUNCH_E26_BWD_PHASE2(N, D) \
-        E26BackwardPhase2_BF16<N, D><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+    #define LAUNCH_E26_BWD_PHASE1(N) \
+        E26BackwardPhase1_BF16<N><<<num_blocks, E26_BLOCK_SIZE, bwd_phase1_smem, stream_>>>( \
+            batch_size_, dim_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
 
-    #define LAUNCH_E26_BWD_PHASE3(N, D) \
-        E26BackwardPhase3_BF16<N, D><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
+    #define LAUNCH_E26_BWD_PHASE2(N) \
+        E26BackwardPhase2_BF16<N><<<num_blocks, E26_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, dim_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+
+    #define LAUNCH_E26_BWD_PHASE3(N) \
+        E26BackwardPhase3_BF16<N><<<num_blocks, E26_BLOCK_SIZE, bwd_phase3_smem, stream_>>>( \
+            batch_size_, dim_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
 
     // Initialize
-    if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_BWD_INIT(8, 256); }
-    else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_BWD_INIT(8, 512); }
-    else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_BWD_INIT(16, 256); }
-    else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_BWD_INIT(16, 512); }
-    else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_BWD_INIT(32, 256); }
-    else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_BWD_INIT(32, 512); }
-    else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_BWD_INIT(64, 256); }
-    else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_BWD_INIT(64, 512); }
+    if (n_slots_ == 8) { LAUNCH_E26_BWD_INIT(8); }
+    else if (n_slots_ == 16) { LAUNCH_E26_BWD_INIT(16); }
+    else if (n_slots_ == 32) { LAUNCH_E26_BWD_INIT(32); }
+    else if (n_slots_ == 64) { LAUNCH_E26_BWD_INIT(64); }
 
     const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
 
@@ -533,14 +567,10 @@ void E26ParallelBackward<__nv_bfloat16>::Run(
         __nv_bfloat16* d_write_val_t = d_write_val_all + t * BD;
 
         // Phase 1: backward through write
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_BWD_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_BWD_PHASE1(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_BWD_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_BWD_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_BWD_PHASE1(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_BWD_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_BWD_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_BWD_PHASE1(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E26_BWD_PHASE1(8); }
+        else if (n_slots_ == 16) { LAUNCH_E26_BWD_PHASE1(16); }
+        else if (n_slots_ == 32) { LAUNCH_E26_BWD_PHASE1(32); }
+        else if (n_slots_ == 64) { LAUNCH_E26_BWD_PHASE1(64); }
 
         // dW_write += d_write_val^T @ h_work
         cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
@@ -559,24 +589,16 @@ void E26ParallelBackward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 2: backward through tanh
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_BWD_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_BWD_PHASE2(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_BWD_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_BWD_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_BWD_PHASE2(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_BWD_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_BWD_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_BWD_PHASE2(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E26_BWD_PHASE2(8); }
+        else if (n_slots_ == 16) { LAUNCH_E26_BWD_PHASE2(16); }
+        else if (n_slots_ == 32) { LAUNCH_E26_BWD_PHASE2(32); }
+        else if (n_slots_ == 64) { LAUNCH_E26_BWD_PHASE2(64); }
 
         // Phase 3: backward through read attention
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E26_BWD_PHASE3(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E26_BWD_PHASE3(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E26_BWD_PHASE3(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E26_BWD_PHASE3(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E26_BWD_PHASE3(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E26_BWD_PHASE3(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E26_BWD_PHASE3(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E26_BWD_PHASE3(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E26_BWD_PHASE3(8); }
+        else if (n_slots_ == 16) { LAUNCH_E26_BWD_PHASE3(16); }
+        else if (n_slots_ == 32) { LAUNCH_E26_BWD_PHASE3(32); }
+        else if (n_slots_ == 64) { LAUNCH_E26_BWD_PHASE3(64); }
 
         // dW_h += d_pre_act^T @ h_work_prev
         cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,

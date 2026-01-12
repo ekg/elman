@@ -14,6 +14,11 @@
  *   - Pre-compute W_x @ x for all T (batch GEMM via cuBLAS)
  *   - Per-timestep W_h @ h and W_write @ h via cuBLAS GEMM
  *   - Fused kernel only handles attention + element-wise ops
+ *
+ * HYBRID TEMPLATE PATTERN:
+ *   - Template on N_SLOTS (small, benefits from unrolling)
+ *   - Dynamic shared memory for DIM (large, memory-bound anyway)
+ *   - Only 4 specializations per kernel (N_SLOTS: 8, 16, 32, 64)
  */
 
 #include "hasty/elman_ladder.h"
@@ -28,10 +33,6 @@ namespace {
 // Block size for the fused kernel
 constexpr int E23_BLOCK_SIZE = 256;
 
-// Max dimensions for shared memory sizing
-constexpr int N_SLOTS_MAX = 64;
-constexpr int DIM_MAX = 1024;
-
 /**
  * E23 Fused Kernel Phase 1: Read attention + Update h_work
  *
@@ -43,10 +44,14 @@ constexpr int DIM_MAX = 1024;
  *   1. Read attention: attn = softmax(h_tape @ h_work * scale)
  *   2. Read value: read = attn @ h_tape
  *   3. Update: h_work_new = tanh(Rh + x_proj_t + read + b)
+ *
+ * Shared memory layout: [h_work_sh(DIM), attn_sh(N_SLOTS)]
+ * Total: (DIM + N_SLOTS) * sizeof(float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23Phase1Kernel_BF16(
     const int batch_size,
+    const int DIM,
     // Pre-computed via cuBLAS
     const __nv_bfloat16* __restrict__ Rh,        // [B, D] - W_h @ h_work
     const __nv_bfloat16* __restrict__ x_proj_t,  // [B, D] - W_x @ x[t]
@@ -63,9 +68,10 @@ __global__ void E23Phase1Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    // Shared memory for attention scores
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
+    // Dynamic shared memory layout
+    extern __shared__ char shared_mem[];
+    float* h_work_sh = (float*)shared_mem;
+    float* attn_sh = h_work_sh + DIM;
 
     // Load h_work into shared memory
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
@@ -87,14 +93,17 @@ __global__ void E23Phase1Kernel_BF16(
     // Softmax over N_SLOTS (single thread for simplicity, N is small)
     if (tid == 0) {
         float max_score = attn_sh[0];
+        #pragma unroll
         for (int n = 1; n < N_SLOTS; n++) {
             max_score = fmaxf(max_score, attn_sh[n]);
         }
         float sum_exp = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] = expf(attn_sh[n] - max_score);
             sum_exp += attn_sh[n];
         }
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] /= sum_exp;
         }
@@ -110,6 +119,7 @@ __global__ void E23Phase1Kernel_BF16(
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
         // Weighted read: read[d] = sum_n attn[n] * h_tape[n, d]
         float read_d = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             read_d += attn_sh[n] * __bfloat162float(h_tape[b * N_SLOTS * DIM + n * DIM + d]);
         }
@@ -134,10 +144,14 @@ __global__ void E23Phase1Kernel_BF16(
  * Operations:
  *   1. Write attention: attn = softmax(h_tape @ h_work_new * scale)
  *   2. Update tape: h_tape = (1-attn) * h_tape + attn * write_val
+ *
+ * Shared memory layout: [h_work_sh(DIM), write_val_sh(DIM), attn_sh(N_SLOTS)]
+ * Total: (2*DIM + N_SLOTS) * sizeof(float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23Phase2Kernel_BF16(
     const int batch_size,
+    const int DIM,
     // Pre-computed via cuBLAS
     const __nv_bfloat16* __restrict__ write_val, // [B, D] - W_write @ h_work_new
     // State
@@ -151,10 +165,11 @@ __global__ void E23Phase2Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    // Shared memory
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
-    __shared__ float write_val_sh[DIM];
+    // Dynamic shared memory layout
+    extern __shared__ char shared_mem[];
+    float* h_work_sh = (float*)shared_mem;
+    float* write_val_sh = h_work_sh + DIM;
+    float* attn_sh = write_val_sh + DIM;
 
     // Load h_work_new and write_val into shared memory
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
@@ -177,14 +192,17 @@ __global__ void E23Phase2Kernel_BF16(
     // Softmax
     if (tid == 0) {
         float max_score = attn_sh[0];
+        #pragma unroll
         for (int n = 1; n < N_SLOTS; n++) {
             max_score = fmaxf(max_score, attn_sh[n]);
         }
         float sum_exp = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] = expf(attn_sh[n] - max_score);
             sum_exp += attn_sh[n];
         }
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] /= sum_exp;
         }
@@ -221,10 +239,14 @@ __global__ void E23Phase2Kernel_BF16(
  *   4. INLINE: write_val = W_write @ h_work_new
  *   5. Write attention: attn = softmax(h_tape @ h_work_new * scale)
  *   6. Update tape: h_tape = (1-attn) * h_tape + attn * write_val
+ *
+ * Shared memory layout: [h_work_sh(DIM), attn_sh(N_SLOTS), h_work_new_sh(DIM), write_val_sh(DIM)]
+ * Total: (3*DIM + N_SLOTS) * sizeof(float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23FusedKernel_BF16(
     const int batch_size,
+    const int DIM,
     // Pre-computed via cuBLAS
     const __nv_bfloat16* __restrict__ Rh,        // [B, D] - W_h @ h_work
     const __nv_bfloat16* __restrict__ x_proj_t,  // [B, D] - W_x @ x[t]
@@ -243,11 +265,12 @@ __global__ void E23FusedKernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    // Shared memory: [DIM] for h_work + [N_SLOTS] for attn + [DIM] for h_work_new + [DIM] for write_val
-    __shared__ float h_work_sh[DIM];
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_new_sh[DIM];
-    __shared__ float write_val_sh[DIM];
+    // Dynamic shared memory layout
+    extern __shared__ char shared_mem[];
+    float* h_work_sh = (float*)shared_mem;
+    float* attn_sh = h_work_sh + DIM;
+    float* h_work_new_sh = attn_sh + N_SLOTS;
+    float* write_val_sh = h_work_new_sh + DIM;
 
     // ============================================
     // PHASE 1: Read attention + h_work update
@@ -273,14 +296,17 @@ __global__ void E23FusedKernel_BF16(
     // Softmax over N_SLOTS (single thread, N is small)
     if (tid == 0) {
         float max_score = attn_sh[0];
+        #pragma unroll
         for (int n = 1; n < N_SLOTS; n++) {
             max_score = fmaxf(max_score, attn_sh[n]);
         }
         float sum_exp = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] = expf(attn_sh[n] - max_score);
             sum_exp += attn_sh[n];
         }
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] /= sum_exp;
         }
@@ -296,6 +322,7 @@ __global__ void E23FusedKernel_BF16(
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
         // Weighted read: read[d] = sum_n attn[n] * h_tape[n, d]
         float read_d = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             read_d += attn_sh[n] * __bfloat162float(tape_b[n * DIM + d]);
         }
@@ -366,14 +393,17 @@ __global__ void E23FusedKernel_BF16(
     // Softmax
     if (tid == 0) {
         float max_score = attn_sh[0];
+        #pragma unroll
         for (int n = 1; n < N_SLOTS; n++) {
             max_score = fmaxf(max_score, attn_sh[n]);
         }
         float sum_exp = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] = expf(attn_sh[n] - max_score);
             sum_exp += attn_sh[n];
         }
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             attn_sh[n] /= sum_exp;
         }
@@ -402,10 +432,14 @@ __global__ void E23FusedKernel_BF16(
  *
  * Computes d_write_val from attention-weighted d_h_tape and updates d_h_tape.
  * Also adds d_output[t] to d_h_work.
+ *
+ * Shared memory layout: [attn_sh(N_SLOTS)]
+ * Total: N_SLOTS * sizeof(float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23BackwardPhase1_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ write_attn_t, // [B, N] - attention for this timestep
     const __nv_bfloat16* __restrict__ d_h_work_out_t, // [B, D] - output gradient for this timestep
     __nv_bfloat16* __restrict__ d_h_work,           // [B, D] - accumulated work gradient (modified)
@@ -416,7 +450,9 @@ __global__ void E23BackwardPhase1_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
+    // Dynamic shared memory layout
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
 
     // Load write attention into shared memory
     if (tid < N_SLOTS) {
@@ -436,6 +472,7 @@ __global__ void E23BackwardPhase1_BF16(
 
         // Compute d_write_val
         float d_wv = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_wv += attn_sh[n] * __bfloat162float(d_h_tape_b[n * DIM + d]);
         }
@@ -455,10 +492,13 @@ __global__ void E23BackwardPhase1_BF16(
  * E23 Backward Phase 2: Tanh backward
  *
  * Computes d_pre_act from d_h_work and h_work, saves to d_pre_act_all.
+ *
+ * No shared memory needed for this kernel.
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23BackwardPhase2_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ h_work_t,     // [B, D] - h_work for this timestep
     const __nv_bfloat16* __restrict__ d_h_work,     // [B, D] - accumulated work gradient
     __nv_bfloat16* __restrict__ dx_proj_t,          // [B, D] - output: dx_proj for this timestep
@@ -489,10 +529,15 @@ __global__ void E23BackwardPhase2_BF16(
  * 2. Softmax backward for read attention scores
  * 3. d_h_work += (d_read_scores[:, :, None] * h_tape_t).sum(dim=1)
  * 4. d_h_tape += d_read_scores[:, :, None] * h_work_prev[:, None, :]
+ *
+ * Shared memory layout: [attn_sh(N_SLOTS), d_pre_act_sh(DIM), h_work_prev_sh(DIM),
+ *                        d_read_attn_sh(N_SLOTS), d_read_scores_sh(N_SLOTS)]
+ * Total: (2*DIM + 3*N_SLOTS) * sizeof(float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23BackwardPhase3_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ read_attn_t,   // [B, N] - read attention for this timestep
     const __nv_bfloat16* __restrict__ d_pre_act_t,   // [B, D] - d_pre_act (also d_read)
     const __nv_bfloat16* __restrict__ h_tape_t,      // [B, N, D] - tape state at timestep t
@@ -505,11 +550,13 @@ __global__ void E23BackwardPhase3_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float d_pre_act_sh[DIM];
-    __shared__ float h_work_prev_sh[DIM];
-    __shared__ float d_read_attn_sh[N_SLOTS];
-    __shared__ float d_read_scores_sh[N_SLOTS];
+    // Dynamic shared memory layout
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* d_pre_act_sh = attn_sh + N_SLOTS;
+    float* h_work_prev_sh = d_pre_act_sh + DIM;
+    float* d_read_attn_sh = h_work_prev_sh + DIM;
+    float* d_read_scores_sh = d_read_attn_sh + N_SLOTS;
 
     const __nv_bfloat16* h_tape_b = h_tape_t + b * N_SLOTS * DIM;
     __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
@@ -546,10 +593,12 @@ __global__ void E23BackwardPhase3_BF16(
     if (tid == 0) {
         // Compute sum(d_read_attn * read_attn)
         float dot_sum = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             dot_sum += d_read_attn_sh[n] * attn_sh[n];
         }
         // Compute d_read_scores for each slot
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_read_scores_sh[n] = attn_sh[n] * (d_read_attn_sh[n] - dot_sum) * scale;
         }
@@ -581,6 +630,7 @@ __global__ void E23BackwardPhase3_BF16(
     // ============================================
     for (int d = tid; d < DIM; d += E23_BLOCK_SIZE) {
         float d_work_contrib = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_work_contrib += d_read_scores_sh[n] * __bfloat162float(h_tape_b[n * DIM + d]);
         }
@@ -592,10 +642,13 @@ __global__ void E23BackwardPhase3_BF16(
 
 /**
  * Initialize d_h_tape from final gradient and zero d_h_work
+ *
+ * No shared memory needed for this kernel.
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E23BackwardInit_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ d_h_tape_final, // [B, N, D]
     __nv_bfloat16* __restrict__ d_h_tape,             // [B, N, D]
     __nv_bfloat16* __restrict__ d_h_work              // [B, D]
@@ -673,15 +726,21 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
     const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
     const int num_blocks = batch_size_;
 
+    // Shared memory sizes for Phase1 and Phase2
+    // Phase1: h_work_sh(DIM) + attn_sh(N_SLOTS)
+    // Phase2: h_work_sh(DIM) + write_val_sh(DIM) + attn_sh(N_SLOTS)
+    const size_t shmem_phase1 = (dim_ + n_slots_) * sizeof(float);
+    const size_t shmem_phase2 = (2 * dim_ + n_slots_) * sizeof(float);
+
     // Phase1 + Phase2 kernels (cuBLAS for W_write is faster)
-    #define LAUNCH_E23_PHASE1(N, D) \
-        E23Phase1Kernel_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
+    #define LAUNCH_E23_PHASE1(N) \
+        E23Phase1Kernel_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_phase1, stream_>>>( \
+            batch_size_, dim_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
             h_work_cur, read_attn_t, scale)
 
-    #define LAUNCH_E23_PHASE2(N, D) \
-        E23Phase2Kernel_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_write_val, h_work_cur, h_tape_final, \
+    #define LAUNCH_E23_PHASE2(N) \
+        E23Phase2Kernel_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_phase2, stream_>>>( \
+            batch_size_, dim_, tmp_write_val, h_work_cur, h_tape_final, \
             write_attn_t, scale)
 
     // Process each timestep
@@ -700,18 +759,14 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 1: read attention + h_work update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_PHASE1(8, 512); }
-        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_PHASE1(8, 768); }
-        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_PHASE1(8, 1024); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_PHASE1(64, 512); }
-        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_PHASE1(64, 768); }
-        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_PHASE1(64, 1024); }
-        else { fprintf(stderr, "E23 CUDA: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_); }
+        switch (n_slots_) {
+            case 8:  LAUNCH_E23_PHASE1(8);  break;
+            case 16: LAUNCH_E23_PHASE1(16); break;
+            case 32: LAUNCH_E23_PHASE1(32); break;
+            case 64: LAUNCH_E23_PHASE1(64); break;
+            default:
+                fprintf(stderr, "E23 CUDA: unsupported n_slots=%d\n", n_slots_);
+        }
 
         // cuBLAS GEMM for W_write @ h_work_new
         cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -721,17 +776,12 @@ void DualMemoryElmanForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 2: write attention + tape update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_PHASE2(8, 512); }
-        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_PHASE2(8, 768); }
-        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_PHASE2(8, 1024); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_PHASE2(64, 512); }
-        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_PHASE2(64, 768); }
-        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_PHASE2(64, 1024); }
+        switch (n_slots_) {
+            case 8:  LAUNCH_E23_PHASE2(8);  break;
+            case 16: LAUNCH_E23_PHASE2(16); break;
+            case 32: LAUNCH_E23_PHASE2(32); break;
+            case 64: LAUNCH_E23_PHASE2(64); break;
+        }
 
         // Save tape state if training
         if (training_ && h_tape_all) {
@@ -789,39 +839,43 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
     __nv_bfloat16* d_h_work;
     cudaMalloc(&d_h_work, BD * sizeof(__nv_bfloat16));
 
-    // Macro to dispatch phase kernels based on n_slots and dim
-    #define LAUNCH_E23_BWD_INIT(N, D) \
-        E23BackwardInit_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, d_h_tape_final, d_h_tape, d_h_work)
+    // Shared memory sizes for backward phases
+    // Phase1: attn_sh(N_SLOTS)
+    const size_t shmem_bwd_phase1 = n_slots_ * sizeof(float);
+    // Phase2: no shared memory needed
+    const size_t shmem_bwd_phase2 = 0;
+    // Phase3: attn_sh(N_SLOTS) + d_pre_act_sh(DIM) + h_work_prev_sh(DIM) + d_read_attn_sh(N_SLOTS) + d_read_scores_sh(N_SLOTS)
+    const size_t shmem_bwd_phase3 = (2 * dim_ + 3 * n_slots_) * sizeof(float);
+    // Init: no shared memory needed
+    const size_t shmem_bwd_init = 0;
 
-    #define LAUNCH_E23_BWD_PHASE1(N, D) \
-        E23BackwardPhase1_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
+    // Macro to dispatch phase kernels based on n_slots
+    #define LAUNCH_E23_BWD_INIT(N) \
+        E23BackwardInit_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_bwd_init, stream_>>>( \
+            batch_size_, dim_, d_h_tape_final, d_h_tape, d_h_work)
 
-    #define LAUNCH_E23_BWD_PHASE2(N, D) \
-        E23BackwardPhase2_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+    #define LAUNCH_E23_BWD_PHASE1(N) \
+        E23BackwardPhase1_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_bwd_phase1, stream_>>>( \
+            batch_size_, dim_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
 
-    #define LAUNCH_E23_BWD_PHASE3(N, D) \
-        E23BackwardPhase3_BF16<N, D><<<num_blocks, E23_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
+    #define LAUNCH_E23_BWD_PHASE2(N) \
+        E23BackwardPhase2_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_bwd_phase2, stream_>>>( \
+            batch_size_, dim_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+
+    #define LAUNCH_E23_BWD_PHASE3(N) \
+        E23BackwardPhase3_BF16<N><<<num_blocks, E23_BLOCK_SIZE, shmem_bwd_phase3, stream_>>>( \
+            batch_size_, dim_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
 
     // Initialize d_h_tape and d_h_work
-    if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_INIT(8, 256); }
-    else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_INIT(8, 512); }
-    else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_INIT(8, 768); }
-    else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_INIT(8, 1024); }
-    else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_INIT(16, 256); }
-    else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_INIT(16, 512); }
-    else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_INIT(32, 512); }
-    else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_INIT(64, 256); }
-    else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_INIT(64, 512); }
-    else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_INIT(64, 768); }
-    else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_INIT(64, 1024); }
-    else {
-        fprintf(stderr, "E23 CUDA backward: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_);
-        cudaFree(d_h_work);
-        return;
+    switch (n_slots_) {
+        case 8:  LAUNCH_E23_BWD_INIT(8);  break;
+        case 16: LAUNCH_E23_BWD_INIT(16); break;
+        case 32: LAUNCH_E23_BWD_INIT(32); break;
+        case 64: LAUNCH_E23_BWD_INIT(64); break;
+        default:
+            fprintf(stderr, "E23 CUDA backward: unsupported n_slots=%d\n", n_slots_);
+            cudaFree(d_h_work);
+            return;
     }
 
     // Attention scale
@@ -846,17 +900,12 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
         const __nv_bfloat16* h_work_prev_t = (t > 0) ? (h_work_all + (t - 1) * BD) : h_work_init;
 
         // Phase 1: Add output gradient, compute d_write_val, update d_h_tape for write
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(8, 512); }
-        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE1(8, 768); }
-        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE1(8, 1024); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE1(64, 512); }
-        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE1(64, 768); }
-        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE1(64, 1024); }
+        switch (n_slots_) {
+            case 8:  LAUNCH_E23_BWD_PHASE1(8);  break;
+            case 16: LAUNCH_E23_BWD_PHASE1(16); break;
+            case 32: LAUNCH_E23_BWD_PHASE1(32); break;
+            case 64: LAUNCH_E23_BWD_PHASE1(64); break;
+        }
 
         // cuBLAS: d_h_work += W_write.T @ d_write_val
         // In cuBLAS terms: d_h_work = W_write @ d_write_val + d_h_work (with transposed W_write)
@@ -875,17 +924,12 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
         );
 
         // Phase 2: Tanh backward, compute d_pre_act
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(8, 512); }
-        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE2(8, 768); }
-        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE2(8, 1024); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE2(64, 512); }
-        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE2(64, 768); }
-        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE2(64, 1024); }
+        switch (n_slots_) {
+            case 8:  LAUNCH_E23_BWD_PHASE2(8);  break;
+            case 16: LAUNCH_E23_BWD_PHASE2(16); break;
+            case 32: LAUNCH_E23_BWD_PHASE2(32); break;
+            case 64: LAUNCH_E23_BWD_PHASE2(64); break;
+        }
 
         // cuBLAS: d_h_work = W_h.T @ d_pre_act (recurrent gradient for next iteration)
         cublasGemmEx(
@@ -901,17 +945,12 @@ void DualMemoryElmanBackward<__nv_bfloat16>::Run(
         );
 
         // Phase 3: Read attention backward, update d_h_tape
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(8, 512); }
-        else if (n_slots_ == 8 && dim_ == 768) { LAUNCH_E23_BWD_PHASE3(8, 768); }
-        else if (n_slots_ == 8 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE3(8, 1024); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E23_BWD_PHASE3(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E23_BWD_PHASE3(64, 512); }
-        else if (n_slots_ == 64 && dim_ == 768) { LAUNCH_E23_BWD_PHASE3(64, 768); }
-        else if (n_slots_ == 64 && dim_ == 1024) { LAUNCH_E23_BWD_PHASE3(64, 1024); }
+        switch (n_slots_) {
+            case 8:  LAUNCH_E23_BWD_PHASE3(8);  break;
+            case 16: LAUNCH_E23_BWD_PHASE3(16); break;
+            case 32: LAUNCH_E23_BWD_PHASE3(32); break;
+            case 64: LAUNCH_E23_BWD_PHASE3(64); break;
+        }
     }
 
     #undef LAUNCH_E23_BWD_INIT
@@ -1121,10 +1160,12 @@ void DualMemoryElmanForwardOpt<__nv_bfloat16>::Run(
 
         // 3. Softmax
         int sm_blocks = (batch_size_ + threads - 1) / threads;
-        if (n_slots_ == 8) e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
-        else if (n_slots_ == 16) e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
-        else if (n_slots_ == 32) e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
-        else if (n_slots_ == 64) e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);
+        switch (n_slots_) {
+            case 8:  e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale);  break;
+            case 16: e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale); break;
+            case 32: e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale); break;
+            case 64: e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, read_attn_t, scale); break;
+        }
 
         // 4. Weighted read: attn @ h_tape -> [B, D]
         // For each b: [1,N] @ [N,D] -> [1,D], i.e., [D,N] @ [N,1] in col-major
@@ -1164,17 +1205,21 @@ void DualMemoryElmanForwardOpt<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // 8. Softmax
-        if (n_slots_ == 8) e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
-        else if (n_slots_ == 16) e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
-        else if (n_slots_ == 32) e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
-        else if (n_slots_ == 64) e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);
+        switch (n_slots_) {
+            case 8:  e23_opt::OptSoftmax_BF16<8><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale);  break;
+            case 16: e23_opt::OptSoftmax_BF16<16><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale); break;
+            case 32: e23_opt::OptSoftmax_BF16<32><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale); break;
+            case 64: e23_opt::OptSoftmax_BF16<64><<<sm_blocks, threads, 0, stream_>>>(batch_size_, tmp_scores, write_attn_t, scale); break;
+        }
 
         // 9. Tape update
         int tape_blocks = (BND + threads - 1) / threads;
-        if (n_slots_ == 8) e23_opt::OptTapeUpdate_BF16<8><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
-        else if (n_slots_ == 16) e23_opt::OptTapeUpdate_BF16<16><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
-        else if (n_slots_ == 32) e23_opt::OptTapeUpdate_BF16<32><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
-        else if (n_slots_ == 64) e23_opt::OptTapeUpdate_BF16<64><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);
+        switch (n_slots_) {
+            case 8:  e23_opt::OptTapeUpdate_BF16<8><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final);  break;
+            case 16: e23_opt::OptTapeUpdate_BF16<16><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final); break;
+            case 32: e23_opt::OptTapeUpdate_BF16<32><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final); break;
+            case 64: e23_opt::OptTapeUpdate_BF16<64><<<tape_blocks, threads, 0, stream_>>>(batch_size_, dim_, write_attn_t, tmp_write_val, h_tape_final); break;
+        }
 
         // Save tape if training
         if (training_ && h_tape_all) {

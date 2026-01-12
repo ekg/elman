@@ -8,6 +8,8 @@
  *   - Closed-form: p_i = max(0, z_i - tau)^2 / sum(...)
  *   - Threshold tau found via sorting and statistical computation
  *   - Backward: dz = g * (dp - (g @ dp) / sum(g)) where g = sqrt(p)
+ *
+ * Uses hybrid template pattern: N_SLOTS is compile-time, DIM is runtime with dynamic shared memory.
  */
 
 #include "hasty/elman_ladder.h"
@@ -28,17 +30,14 @@ constexpr int N_SLOTS_MAX = 64;
  * Computes sparse attention weights from scores.
  * Input: attn_sh[N_SLOTS] - attention scores
  * Output: attn_sh[N_SLOTS] - sparse attention weights (sum to 1)
+ *
+ * Uses dynamic shared memory for sorting arrays (passed via sorted_vals, etc.)
  */
 template<int N_SLOTS>
-__device__ void entmax_1_5_device(float* attn_sh, const int tid) {
-    // Shared memory for sorting
-    __shared__ float sorted_vals[N_SLOTS];
-    __shared__ int sorted_idx[N_SLOTS];
-    __shared__ float cumsum[N_SLOTS];
-    __shared__ float tau_candidates[N_SLOTS];
-    __shared__ int support_size;
-    __shared__ float tau_star;
-
+__device__ void entmax_1_5_device(float* attn_sh, const int tid,
+                                   float* sorted_vals, int* sorted_idx,
+                                   float* cumsum, float* tau_candidates,
+                                   int* support_size_ptr, float* tau_star_ptr) {
     // Phase 1: Initialize for sorting
     if (tid < N_SLOTS) {
         sorted_vals[tid] = attn_sh[tid];
@@ -50,6 +49,7 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
     // Single thread does the sort for correctness
     if (tid == 0) {
         // Selection sort descending
+        #pragma unroll
         for (int i = 0; i < N_SLOTS - 1; i++) {
             int max_idx = i;
             for (int j = i + 1; j < N_SLOTS; j++) {
@@ -72,6 +72,7 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
     // Phase 3: Compute cumulative sum
     if (tid == 0) {
         cumsum[0] = sorted_vals[0];
+        #pragma unroll
         for (int i = 1; i < N_SLOTS; i++) {
             cumsum[i] = cumsum[i-1] + sorted_vals[i];
         }
@@ -82,6 +83,7 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
     // For 1.5-entmax: tau_k = mean_k - sqrt(max(0, delta_k))
     // where delta_k = (1 - ss_k) / k, ss_k = scaled variance
     if (tid == 0) {
+        #pragma unroll
         for (int k = 1; k <= N_SLOTS; k++) {
             float sum_k = cumsum[k-1];
             float mean_k = sum_k / k;
@@ -100,17 +102,20 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
         }
 
         // Find support size: k* = max{k : tau_k <= sorted_vals[k-1]}
-        support_size = N_SLOTS;
+        *support_size_ptr = N_SLOTS;
+        #pragma unroll
         for (int k = 1; k <= N_SLOTS; k++) {
             if (tau_candidates[k-1] > sorted_vals[k-1]) {
-                support_size = k - 1;
+                *support_size_ptr = k - 1;
                 break;
             }
         }
-        if (support_size == 0) support_size = 1;  // At least one element
-        tau_star = tau_candidates[support_size - 1];
+        if (*support_size_ptr == 0) *support_size_ptr = 1;  // At least one element
+        *tau_star_ptr = tau_candidates[*support_size_ptr - 1];
     }
     __syncthreads();
+
+    float tau_star = *tau_star_ptr;
 
     // Phase 5: Apply transformation p = max(0, z - tau)^2
     // Use original unsorted scores
@@ -126,6 +131,7 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
     __shared__ float sum_p;
     if (tid == 0) {
         sum_p = 0.0f;
+        #pragma unroll
         for (int i = 0; i < N_SLOTS; i++) {
             sum_p += attn_sh[i];
         }
@@ -141,10 +147,21 @@ __device__ void entmax_1_5_device(float* attn_sh, const int tid) {
 
 /**
  * E25 Fused Kernel Phase 1: Read attention (entmax) + Update h_work
+ *
+ * Dynamic shared memory layout:
+ *   - attn_sh[N_SLOTS]
+ *   - h_work_sh[DIM]
+ *   - sorted_vals[N_SLOTS]
+ *   - sorted_idx[N_SLOTS] (as int)
+ *   - cumsum[N_SLOTS]
+ *   - tau_candidates[N_SLOTS]
+ *   - support_size (int)
+ *   - tau_star (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25Phase1Kernel_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ Rh,
     const __nv_bfloat16* __restrict__ x_proj_t,
     const __nv_bfloat16* __restrict__ b_h,
@@ -158,8 +175,15 @@ __global__ void E25Phase1Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* h_work_sh = attn_sh + N_SLOTS;
+    float* sorted_vals = h_work_sh + DIM;
+    int* sorted_idx = (int*)(sorted_vals + N_SLOTS);
+    float* cumsum = (float*)(sorted_idx + N_SLOTS);
+    float* tau_candidates = cumsum + N_SLOTS;
+    int* support_size_ptr = (int*)(tau_candidates + N_SLOTS);
+    float* tau_star_ptr = (float*)(support_size_ptr + 1);
 
     // Load h_work into shared memory
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
@@ -179,7 +203,7 @@ __global__ void E25Phase1Kernel_BF16(
     __syncthreads();
 
     // 1.5-Entmax instead of softmax
-    entmax_1_5_device<N_SLOTS>(attn_sh, tid);
+    entmax_1_5_device<N_SLOTS>(attn_sh, tid, sorted_vals, sorted_idx, cumsum, tau_candidates, support_size_ptr, tau_star_ptr);
     __syncthreads();
 
     // Store read attention
@@ -190,6 +214,7 @@ __global__ void E25Phase1Kernel_BF16(
     // Compute h_work_new: tanh(Rh + x_proj_t + read_val + b_h)
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
         float read_d = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             read_d += attn_sh[n] * __bfloat162float(h_tape[b * N_SLOTS * DIM + n * DIM + d]);
         }
@@ -206,10 +231,22 @@ __global__ void E25Phase1Kernel_BF16(
 
 /**
  * E25 Fused Kernel Phase 2: Write attention (entmax) + Update tape
+ *
+ * Dynamic shared memory layout:
+ *   - attn_sh[N_SLOTS]
+ *   - h_work_sh[DIM]
+ *   - write_val_sh[DIM]
+ *   - sorted_vals[N_SLOTS]
+ *   - sorted_idx[N_SLOTS] (as int)
+ *   - cumsum[N_SLOTS]
+ *   - tau_candidates[N_SLOTS]
+ *   - support_size (int)
+ *   - tau_star (float)
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25Phase2Kernel_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ write_val,
     const __nv_bfloat16* __restrict__ h_work_new,
     __nv_bfloat16* __restrict__ h_tape,
@@ -220,9 +257,16 @@ __global__ void E25Phase2Kernel_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float h_work_sh[DIM];
-    __shared__ float write_val_sh[DIM];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* h_work_sh = attn_sh + N_SLOTS;
+    float* write_val_sh = h_work_sh + DIM;
+    float* sorted_vals = write_val_sh + DIM;
+    int* sorted_idx = (int*)(sorted_vals + N_SLOTS);
+    float* cumsum = (float*)(sorted_idx + N_SLOTS);
+    float* tau_candidates = cumsum + N_SLOTS;
+    int* support_size_ptr = (int*)(tau_candidates + N_SLOTS);
+    float* tau_star_ptr = (float*)(support_size_ptr + 1);
 
     // Load h_work_new and write_val into shared memory
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
@@ -243,7 +287,7 @@ __global__ void E25Phase2Kernel_BF16(
     __syncthreads();
 
     // 1.5-Entmax
-    entmax_1_5_device<N_SLOTS>(attn_sh, tid);
+    entmax_1_5_device<N_SLOTS>(attn_sh, tid, sorted_vals, sorted_idx, cumsum, tau_candidates, support_size_ptr, tau_star_ptr);
     __syncthreads();
 
     // Store write attention
@@ -264,13 +308,35 @@ __global__ void E25Phase2Kernel_BF16(
 
 
 /**
- * E25 Backward Phase 1: Write attention backward
+ * E25 Backward Phase 1: Write attention backward (with entmax gradient)
+ *
+ * Python reference:
+ *   d_write_value = (d_h_tape * write_attn[:, :, None]).sum(dim=1)
+ *   write_value = h_work_t @ W_write.T
+ *   d_write_attn = (d_h_tape * (write_value - h_tape_t)).sum(dim=-1)
+ *   d_h_tape_pre_write = d_h_tape * (1 - write_attn[:, :, None])
+ *   d_write_scores = entmax_backward(write_attn, d_write_attn) * scale
+ *   d_h_work_from_write_attn = (d_write_scores[:, :, None] * h_tape_t).sum(dim=1)
+ *   d_h_tape_from_write_attn = d_write_scores[:, :, None] * h_work_t[:, None, :]
+ *
+ * Dynamic shared memory layout:
+ *   - attn_sh[N_SLOTS]
+ *   - g_sh[N_SLOTS]
+ *   - d_write_attn_sh[N_SLOTS]
+ *   - d_write_scores_sh[N_SLOTS]
+ *   - h_work_sh[DIM]
+ *   - write_val_sh[DIM]
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25BackwardPhase1_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ write_attn_t,
     const __nv_bfloat16* __restrict__ d_h_work_out_t,
+    const __nv_bfloat16* __restrict__ h_tape_t,      // Added: tape state before write
+    const __nv_bfloat16* __restrict__ h_work_t,      // Added: h_work at current timestep
+    const __nv_bfloat16* __restrict__ write_val_t,   // Added: write_value = h_work @ W_write^T
+    const float scale,                                // Added: 1/sqrt(D)
     __nv_bfloat16* __restrict__ d_h_work,
     __nv_bfloat16* __restrict__ d_h_tape,
     __nv_bfloat16* __restrict__ d_write_val_t
@@ -279,21 +345,40 @@ __global__ void E25BackwardPhase1_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* g_sh = attn_sh + N_SLOTS;
+    float* d_write_attn_sh = g_sh + N_SLOTS;
+    float* d_write_scores_sh = d_write_attn_sh + N_SLOTS;
+    float* h_work_sh = d_write_scores_sh + N_SLOTS;
+    float* write_val_sh = h_work_sh + DIM;
 
+    const __nv_bfloat16* h_tape_b = h_tape_t + b * N_SLOTS * DIM;
+    __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
+
+    // Load attention weights and compute g = sqrt(attn)
     if (tid < N_SLOTS) {
-        attn_sh[tid] = __bfloat162float(write_attn_t[b * N_SLOTS + tid]);
+        float a = __bfloat162float(write_attn_t[b * N_SLOTS + tid]);
+        attn_sh[tid] = a;
+        g_sh[tid] = sqrtf(fmaxf(a, 0.0f));
+    }
+
+    // Load h_work and write_val
+    for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
+        h_work_sh[d] = __bfloat162float(h_work_t[b * DIM + d]);
+        write_val_sh[d] = __bfloat162float(write_val_t[b * DIM + d]);
     }
     __syncthreads();
 
-    __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
-
+    // Step 1: Accumulate d_h_work from upstream gradient
+    // Step 2: Compute d_write_val = sum_n(attn[n] * d_h_tape[n])
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
         float d_h = __bfloat162float(d_h_work[b * DIM + d])
                   + __bfloat162float(d_h_work_out_t[b * DIM + d]);
         d_h_work[b * DIM + d] = __float2bfloat16(d_h);
 
         float d_wv = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_wv += attn_sh[n] * __bfloat162float(d_h_tape_b[n * DIM + d]);
         }
@@ -301,20 +386,71 @@ __global__ void E25BackwardPhase1_BF16(
     }
     __syncthreads();
 
+    // Step 3: Compute d_write_attn = sum_d(d_h_tape[n,d] * (write_val[d] - h_tape[n,d]))
+    if (tid < N_SLOTS) {
+        float d_attn = 0.0f;
+        for (int d = 0; d < DIM; d++) {
+            float d_tape = __bfloat162float(d_h_tape_b[tid * DIM + d]);
+            float wv = write_val_sh[d];
+            float ht = __bfloat162float(h_tape_b[tid * DIM + d]);
+            d_attn += d_tape * (wv - ht);
+        }
+        d_write_attn_sh[tid] = d_attn;
+    }
+    __syncthreads();
+
+    // Step 4: Entmax backward for write attention
+    // dz = g * (dp - (g @ dp) / sum(g)) * scale
+    if (tid == 0) {
+        float g_dp_sum = 0.0f;
+        float g_sum = 0.0f;
+        #pragma unroll
+        for (int n = 0; n < N_SLOTS; n++) {
+            g_dp_sum += g_sh[n] * d_write_attn_sh[n];
+            g_sum += g_sh[n];
+        }
+        g_sum = fmaxf(g_sum, 1e-9f);
+
+        #pragma unroll
+        for (int n = 0; n < N_SLOTS; n++) {
+            d_write_scores_sh[n] = g_sh[n] * (d_write_attn_sh[n] - g_dp_sum / g_sum) * scale;
+        }
+    }
+    __syncthreads();
+
+    // Step 5: Compute d_h_work_from_write_attn = sum_n(d_write_scores[n] * h_tape[n])
+    for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
+        float d_work_contrib = 0.0f;
+        #pragma unroll
+        for (int n = 0; n < N_SLOTS; n++) {
+            d_work_contrib += d_write_scores_sh[n] * __bfloat162float(h_tape_b[n * DIM + d]);
+        }
+        float current = __bfloat162float(d_h_work[b * DIM + d]);
+        d_h_work[b * DIM + d] = __float2bfloat16(current + d_work_contrib);
+    }
+    __syncthreads();
+
+    // Step 6: Update d_h_tape
+    // d_h_tape = (1 - attn) * d_h_tape + d_write_scores * h_work
     for (int i = tid; i < N_SLOTS * DIM; i += E25_BLOCK_SIZE) {
         int n = i / DIM;
+        int d = i % DIM;
         float d_tape = __bfloat162float(d_h_tape_b[i]);
-        d_h_tape_b[i] = __float2bfloat16((1.0f - attn_sh[n]) * d_tape);
+        float d_tape_new = (1.0f - attn_sh[n]) * d_tape + d_write_scores_sh[n] * h_work_sh[d];
+        d_h_tape_b[i] = __float2bfloat16(d_tape_new);
     }
 }
 
 
 /**
  * E25 Backward Phase 2: Tanh backward
+ *
+ * No shared memory needed for DIM arrays - uses simple per-element computation.
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25BackwardPhase2_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ h_work_t,
     const __nv_bfloat16* __restrict__ d_h_work,
     __nv_bfloat16* __restrict__ dx_proj_t,
@@ -342,10 +478,19 @@ __global__ void E25BackwardPhase2_BF16(
  * E25 Backward Phase 3: Read attention backward (entmax gradient)
  *
  * Entmax backward: dz = g * (dp - (g @ dp) / sum(g)) where g = sqrt(p)
+ *
+ * Dynamic shared memory layout:
+ *   - attn_sh[N_SLOTS]
+ *   - g_sh[N_SLOTS]
+ *   - d_pre_act_sh[DIM]
+ *   - h_work_prev_sh[DIM]
+ *   - d_read_attn_sh[N_SLOTS]
+ *   - d_read_scores_sh[N_SLOTS]
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25BackwardPhase3_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ read_attn_t,
     const __nv_bfloat16* __restrict__ d_pre_act_t,
     const __nv_bfloat16* __restrict__ h_tape_t,
@@ -358,12 +503,13 @@ __global__ void E25BackwardPhase3_BF16(
     if (b >= batch_size) return;
     const int tid = threadIdx.x;
 
-    __shared__ float attn_sh[N_SLOTS];
-    __shared__ float g_sh[N_SLOTS];  // sqrt(attn)
-    __shared__ float d_pre_act_sh[DIM];
-    __shared__ float h_work_prev_sh[DIM];
-    __shared__ float d_read_attn_sh[N_SLOTS];
-    __shared__ float d_read_scores_sh[N_SLOTS];
+    extern __shared__ char shared_mem[];
+    float* attn_sh = (float*)shared_mem;
+    float* g_sh = attn_sh + N_SLOTS;
+    float* d_pre_act_sh = g_sh + N_SLOTS;
+    float* h_work_prev_sh = d_pre_act_sh + DIM;
+    float* d_read_attn_sh = h_work_prev_sh + DIM;
+    float* d_read_scores_sh = d_read_attn_sh + N_SLOTS;
 
     const __nv_bfloat16* h_tape_b = h_tape_t + b * N_SLOTS * DIM;
     __nv_bfloat16* d_h_tape_b = d_h_tape + b * N_SLOTS * DIM;
@@ -396,12 +542,14 @@ __global__ void E25BackwardPhase3_BF16(
     if (tid == 0) {
         float g_dp_sum = 0.0f;
         float g_sum = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             g_dp_sum += g_sh[n] * d_read_attn_sh[n];
             g_sum += g_sh[n];
         }
         g_sum = fmaxf(g_sum, 1e-9f);
 
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_read_scores_sh[n] = g_sh[n] * (d_read_attn_sh[n] - g_dp_sum / g_sum) * scale;
         }
@@ -423,6 +571,7 @@ __global__ void E25BackwardPhase3_BF16(
     // Step 4: Update d_h_work
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
         float d_work_contrib = 0.0f;
+        #pragma unroll
         for (int n = 0; n < N_SLOTS; n++) {
             d_work_contrib += d_read_scores_sh[n] * __bfloat162float(h_tape_b[n * DIM + d]);
         }
@@ -435,9 +584,10 @@ __global__ void E25BackwardPhase3_BF16(
 /**
  * Initialize backward pass
  */
-template<int N_SLOTS, int DIM>
+template<int N_SLOTS>
 __global__ void E25BackwardInit_BF16(
     const int batch_size,
+    const int DIM,
     const __nv_bfloat16* __restrict__ d_h_tape_final,
     __nv_bfloat16* __restrict__ d_h_tape,
     __nv_bfloat16* __restrict__ d_h_work
@@ -453,6 +603,36 @@ __global__ void E25BackwardInit_BF16(
     for (int d = tid; d < DIM; d += E25_BLOCK_SIZE) {
         d_h_work[b * DIM + d] = __float2bfloat16(0.0f);
     }
+}
+
+
+// Helper functions to compute shared memory sizes
+inline size_t phase1_shared_size(int n_slots, int dim) {
+    // attn_sh[N_SLOTS] + h_work_sh[DIM] + sorted_vals[N_SLOTS] + sorted_idx[N_SLOTS] +
+    // cumsum[N_SLOTS] + tau_candidates[N_SLOTS] + support_size (int) + tau_star (float)
+    return (n_slots + dim + n_slots + n_slots + n_slots) * sizeof(float) +
+           n_slots * sizeof(int) +
+           sizeof(int) + sizeof(float);
+}
+
+inline size_t phase2_shared_size(int n_slots, int dim) {
+    // attn_sh[N_SLOTS] + h_work_sh[DIM] + write_val_sh[DIM] + sorted_vals[N_SLOTS] +
+    // sorted_idx[N_SLOTS] + cumsum[N_SLOTS] + tau_candidates[N_SLOTS] + support_size (int) + tau_star (float)
+    return (n_slots + dim + dim + n_slots + n_slots + n_slots) * sizeof(float) +
+           n_slots * sizeof(int) +
+           sizeof(int) + sizeof(float);
+}
+
+inline size_t bwd_phase1_shared_size(int n_slots, int dim) {
+    // attn_sh[N_SLOTS] + g_sh[N_SLOTS] + d_write_attn_sh[N_SLOTS] + d_write_scores_sh[N_SLOTS] +
+    // h_work_sh[DIM] + write_val_sh[DIM]
+    return (n_slots * 4 + dim * 2) * sizeof(float);
+}
+
+inline size_t bwd_phase3_shared_size(int n_slots, int dim) {
+    // attn_sh[N_SLOTS] + g_sh[N_SLOTS] + d_pre_act_sh[DIM] + h_work_prev_sh[DIM] +
+    // d_read_attn_sh[N_SLOTS] + d_read_scores_sh[N_SLOTS]
+    return (n_slots * 4 + dim * 2) * sizeof(float);
 }
 
 
@@ -510,14 +690,18 @@ void E25EntmaxForward<__nv_bfloat16>::Run(
     const float scale = 1.0f / sqrtf(static_cast<float>(dim_));
     const int num_blocks = batch_size_;
 
-    #define LAUNCH_E25_PHASE1(N, D) \
-        E25Phase1Kernel_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
+    // Calculate shared memory sizes
+    const size_t p1_smem = phase1_shared_size(n_slots_, dim_);
+    const size_t p2_smem = phase2_shared_size(n_slots_, dim_);
+
+    #define LAUNCH_E25_PHASE1(N) \
+        E25Phase1Kernel_BF16<N><<<num_blocks, E25_BLOCK_SIZE, p1_smem, stream_>>>( \
+            batch_size_, dim_, tmp_Rh, x_proj_t, b_h, h_tape_final, h_work_prev, \
             h_work_cur, read_attn_t, scale)
 
-    #define LAUNCH_E25_PHASE2(N, D) \
-        E25Phase2Kernel_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, tmp_write_val, h_work_cur, h_tape_final, \
+    #define LAUNCH_E25_PHASE2(N) \
+        E25Phase2Kernel_BF16<N><<<num_blocks, E25_BLOCK_SIZE, p2_smem, stream_>>>( \
+            batch_size_, dim_, tmp_write_val, h_work_cur, h_tape_final, \
             write_attn_t, scale)
 
     for (int t = 0; t < seq_len; ++t) {
@@ -535,15 +719,11 @@ void E25EntmaxForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 1: read entmax + h_work update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_PHASE1(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_PHASE1(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_PHASE1(64, 512); }
-        else { fprintf(stderr, "E25 CUDA: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_); }
+        if (n_slots_ == 8) { LAUNCH_E25_PHASE1(8); }
+        else if (n_slots_ == 16) { LAUNCH_E25_PHASE1(16); }
+        else if (n_slots_ == 32) { LAUNCH_E25_PHASE1(32); }
+        else if (n_slots_ == 64) { LAUNCH_E25_PHASE1(64); }
+        else { fprintf(stderr, "E25 CUDA: unsupported n_slots=%d\n", n_slots_); }
 
         // W_write @ h_work_new
         cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -553,14 +733,10 @@ void E25EntmaxForward<__nv_bfloat16>::Run(
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         // Phase 2: write entmax + tape update
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_PHASE2(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_PHASE2(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_PHASE2(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E25_PHASE2(8); }
+        else if (n_slots_ == 16) { LAUNCH_E25_PHASE2(16); }
+        else if (n_slots_ == 32) { LAUNCH_E25_PHASE2(32); }
+        else if (n_slots_ == 64) { LAUNCH_E25_PHASE2(64); }
 
         if (training_ && h_tape_all) {
             cudaMemcpyAsync(h_tape_all + (t + 1) * batch_size_ * n_slots_ * dim_,
@@ -614,36 +790,40 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
     const float beta_one = 1.0f;
 
     __nv_bfloat16* d_h_work;
+    __nv_bfloat16* write_val_t_buf;  // Buffer for write_value = h_work @ W_write^T
     cudaMalloc(&d_h_work, BD * sizeof(__nv_bfloat16));
+    cudaMalloc(&write_val_t_buf, BD * sizeof(__nv_bfloat16));
 
-    #define LAUNCH_E25_BWD_INIT(N, D) \
-        E25BackwardInit_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, d_h_tape_final, d_h_tape, d_h_work)
+    // Calculate shared memory sizes
+    const size_t bp1_smem = bwd_phase1_shared_size(n_slots_, dim_);
+    const size_t bp3_smem = bwd_phase3_shared_size(n_slots_, dim_);
 
-    #define LAUNCH_E25_BWD_PHASE1(N, D) \
-        E25BackwardPhase1_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, write_attn_t, d_h_work_out_t, d_h_work, d_h_tape, d_write_val_t)
+    #define LAUNCH_E25_BWD_INIT(N) \
+        E25BackwardInit_BF16<N><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, dim_, d_h_tape_final, d_h_tape, d_h_work)
 
-    #define LAUNCH_E25_BWD_PHASE2(N, D) \
-        E25BackwardPhase2_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+    #define LAUNCH_E25_BWD_PHASE1(N) \
+        E25BackwardPhase1_BF16<N><<<num_blocks, E25_BLOCK_SIZE, bp1_smem, stream_>>>( \
+            batch_size_, dim_, write_attn_t, d_h_work_out_t, h_tape_t_ptr, h_work_t, write_val_t_buf, scale, \
+            d_h_work, d_h_tape, d_write_val_t)
 
-    #define LAUNCH_E25_BWD_PHASE3(N, D) \
-        E25BackwardPhase3_BF16<N, D><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
-            batch_size_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
+    #define LAUNCH_E25_BWD_PHASE2(N) \
+        E25BackwardPhase2_BF16<N><<<num_blocks, E25_BLOCK_SIZE, 0, stream_>>>( \
+            batch_size_, dim_, h_work_t, d_h_work, dx_proj_t, d_pre_act_t, db_h)
+
+    #define LAUNCH_E25_BWD_PHASE3(N) \
+        E25BackwardPhase3_BF16<N><<<num_blocks, E25_BLOCK_SIZE, bp3_smem, stream_>>>( \
+            batch_size_, dim_, read_attn_t, d_pre_act_t, h_tape_t_ptr, h_work_prev_t, scale, d_h_tape, d_h_work)
 
     // Initialize
-    if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_BWD_INIT(8, 256); }
-    else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_BWD_INIT(8, 512); }
-    else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_BWD_INIT(16, 256); }
-    else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_BWD_INIT(16, 512); }
-    else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_BWD_INIT(32, 256); }
-    else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_BWD_INIT(32, 512); }
-    else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_BWD_INIT(64, 256); }
-    else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_BWD_INIT(64, 512); }
+    if (n_slots_ == 8) { LAUNCH_E25_BWD_INIT(8); }
+    else if (n_slots_ == 16) { LAUNCH_E25_BWD_INIT(16); }
+    else if (n_slots_ == 32) { LAUNCH_E25_BWD_INIT(32); }
+    else if (n_slots_ == 64) { LAUNCH_E25_BWD_INIT(64); }
     else {
-        fprintf(stderr, "E25 CUDA backward: unsupported n_slots=%d, dim=%d\n", n_slots_, dim_);
+        fprintf(stderr, "E25 CUDA backward: unsupported n_slots=%d\n", n_slots_);
         cudaFree(d_h_work);
+        cudaFree(write_val_t_buf);
         return;
     }
 
@@ -662,15 +842,24 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
         const __nv_bfloat16* h_tape_t_ptr = h_tape_all + t * BND;
         const __nv_bfloat16* h_work_prev_t = (t > 0) ? (h_work_all + (t - 1) * BD) : h_work_init;
 
+        // Compute write_val_t = h_work_t @ W_write^T (needed for write attention backward)
+        cublasGemmEx(
+            blas_handle_,
+            CUBLAS_OP_T, CUBLAS_OP_N,
+            dim_, batch_size_, dim_,
+            &alpha_one,
+            W_write, CUDA_R_16BF, dim_,
+            h_work_t, CUDA_R_16BF, dim_,
+            &beta_zero,
+            write_val_t_buf, CUDA_R_16BF, dim_,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+
         // Phase 1
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_BWD_PHASE1(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_BWD_PHASE1(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_BWD_PHASE1(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_BWD_PHASE1(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_BWD_PHASE1(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_BWD_PHASE1(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_BWD_PHASE1(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_BWD_PHASE1(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E25_BWD_PHASE1(8); }
+        else if (n_slots_ == 16) { LAUNCH_E25_BWD_PHASE1(16); }
+        else if (n_slots_ == 32) { LAUNCH_E25_BWD_PHASE1(32); }
+        else if (n_slots_ == 64) { LAUNCH_E25_BWD_PHASE1(64); }
 
         // cuBLAS: d_h_work += W_write.T @ d_write_val
         cublasGemmEx(
@@ -686,14 +875,10 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
         );
 
         // Phase 2
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_BWD_PHASE2(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_BWD_PHASE2(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_BWD_PHASE2(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_BWD_PHASE2(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_BWD_PHASE2(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_BWD_PHASE2(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_BWD_PHASE2(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_BWD_PHASE2(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E25_BWD_PHASE2(8); }
+        else if (n_slots_ == 16) { LAUNCH_E25_BWD_PHASE2(16); }
+        else if (n_slots_ == 32) { LAUNCH_E25_BWD_PHASE2(32); }
+        else if (n_slots_ == 64) { LAUNCH_E25_BWD_PHASE2(64); }
 
         // cuBLAS: d_h_work = W_h.T @ d_pre_act
         cublasGemmEx(
@@ -709,14 +894,10 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
         );
 
         // Phase 3
-        if (n_slots_ == 8 && dim_ == 256) { LAUNCH_E25_BWD_PHASE3(8, 256); }
-        else if (n_slots_ == 8 && dim_ == 512) { LAUNCH_E25_BWD_PHASE3(8, 512); }
-        else if (n_slots_ == 16 && dim_ == 256) { LAUNCH_E25_BWD_PHASE3(16, 256); }
-        else if (n_slots_ == 16 && dim_ == 512) { LAUNCH_E25_BWD_PHASE3(16, 512); }
-        else if (n_slots_ == 32 && dim_ == 256) { LAUNCH_E25_BWD_PHASE3(32, 256); }
-        else if (n_slots_ == 32 && dim_ == 512) { LAUNCH_E25_BWD_PHASE3(32, 512); }
-        else if (n_slots_ == 64 && dim_ == 256) { LAUNCH_E25_BWD_PHASE3(64, 256); }
-        else if (n_slots_ == 64 && dim_ == 512) { LAUNCH_E25_BWD_PHASE3(64, 512); }
+        if (n_slots_ == 8) { LAUNCH_E25_BWD_PHASE3(8); }
+        else if (n_slots_ == 16) { LAUNCH_E25_BWD_PHASE3(16); }
+        else if (n_slots_ == 32) { LAUNCH_E25_BWD_PHASE3(32); }
+        else if (n_slots_ == 64) { LAUNCH_E25_BWD_PHASE3(64); }
     }
 
     #undef LAUNCH_E25_BWD_INIT
@@ -725,6 +906,7 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
     #undef LAUNCH_E25_BWD_PHASE3
 
     cudaFree(d_h_work);
+    cudaFree(write_val_t_buf);
 
     // Weight gradients
     cublasGemmEx(
@@ -739,6 +921,24 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
     );
 
+    // dW_h computation:
+    // For t=0: dW_h += d_pre_act[0]^T @ h_work_init
+    // For t=1..T-1: dW_h += d_pre_act[t]^T @ h_work[t-1]
+
+    // First, compute contribution from t=0 (uses h_work_init)
+    cublasGemmEx(
+        blas_handle_,
+        CUBLAS_OP_N, CUBLAS_OP_T,
+        dim_, dim_, batch_size_,
+        &alpha_one,
+        d_pre_act_all, CUDA_R_16BF, dim_,       // d_pre_act[0]
+        h_work_init, CUDA_R_16BF, dim_,         // h_work_init
+        &beta_zero,                              // Start fresh
+        dW_h, CUDA_R_32F, dim_,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Then accumulate contributions from t=1..T-1
     const __nv_bfloat16* h_work_prev = h_work_all;
     const __nv_bfloat16* d_pre_act_next = d_pre_act_all + BD;
     const int TB_minus_1 = (seq_len - 1) * batch_size_;
@@ -751,7 +951,7 @@ void E25EntmaxBackward<__nv_bfloat16>::Run(
             &alpha_one,
             d_pre_act_next, CUDA_R_16BF, dim_,
             h_work_prev, CUDA_R_16BF, dim_,
-            &beta_zero,
+            &beta_one,                           // Accumulate (not reset)
             dW_h, CUDA_R_32F, dim_,
             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
         );
