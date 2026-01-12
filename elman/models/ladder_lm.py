@@ -54,6 +54,14 @@ from .e30_diagonal_gated import E30DiagonalGated
 from .e31_sparse_gated import E31SparseGated
 from .e32_no_presilu import E32NoPresilu
 from .e33_self_gate import E33SelfGate
+from .e34_diagonal_wh import E34DiagonalWh
+from .e35_cubic_gate import E35CubicGate
+from .e36_linear_recurrence import E36LinearRecurrence
+from .e37_tied_weights import E37TiedWeights
+from .e38_no_wx import E38NoWx
+from .e39_no_bias import E39NoBias
+from .e40_no_presilu import E40NoPresilu
+from .e41_diagonal_wx import E41DiagonalWx
 
 
 def get_ladder_level(level):
@@ -97,6 +105,14 @@ def get_ladder_level(level):
         '31b': lambda **kw: E31SparseGated(alpha=1.5, **kw),  # E31b: softplus gating (smooth sparse)
         32: E32NoPresilu,  # E32: E1 without pre-silu activation (simplification test)
         33: E33SelfGate,  # E33: E1 with self-gating: output = h * silu(h) instead of h * silu(z)
+        34: E34DiagonalWh,  # E34: E33 with diagonal W_h (d vector instead of matrix)
+        35: E35CubicGate,  # E35: E1 with cubic gating: output = h^3 instead of h * silu(z)
+        36: E36LinearRecurrence,  # E36: Linear recurrence (no tanh!) + self-gate
+        37: E37TiedWeights,  # E37: Tied weights: W_x = W_h = W, single GEMM per step
+        38: E38NoWx,  # E38: No W_x: h = tanh(x + W_h @ h_prev + b), removes input transform
+        39: E39NoBias,  # E39: No bias: h = tanh(x + W_h @ h_prev), simplest recurrence
+        40: E40NoPresilu,  # E40: No pre-silu: x_proj = in_proj(x), NOT silu(in_proj(x))
+        41: E41DiagonalWx,  # E41: Diagonal W_x (d_x vector instead of matrix)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -122,7 +138,7 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-39, 41, mamba2")
 
 
 class LadderLM(nn.Module):

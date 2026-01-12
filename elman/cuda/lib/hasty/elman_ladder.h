@@ -229,6 +229,321 @@ private:
 };
 
 // =============================================================================
+// E34: Diagonal W_h Elman - W_h is diagonal (vector instead of matrix)
+// h_t = tanh(W_x @ x_t + d * h_{t-1} + b)  # d is [dim] vector, element-wise
+// output = h * silu(h)                      # Self-gating from E33
+// =============================================================================
+
+template<typename T>
+struct E34DiagonalWhForward {
+    E34DiagonalWhForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* d,         // [dim] diagonal vector (replaces W_h matrix)
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache (training only)
+        T* workspace);      // [T*B*dim] for Wx precompute
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E34DiagonalWhBackward {
+    E34DiagonalWhBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* d,         // [dim] diagonal vector
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dd,              // [dim] gradient for diagonal
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E41: Diagonal W_x Elman - W_x is diagonal (vector instead of matrix)
+// h_t = tanh(d_x * x_t + W_h @ h_{t-1} + b)  # d_x is [dim] vector, element-wise
+// output = h * silu(h)                        # Self-gating from E33
+// Key: Removes batch W_x @ x GEMM, keeps per-step W_h @ h GEMM
+// =============================================================================
+
+template<typename T>
+struct E41DiagonalWxForward {
+    E41DiagonalWxForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* d_x,       // [dim] diagonal vector (replaces W_x matrix)
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache (training only)
+        T* workspace);      // [B*dim] for Rh computation
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E41DiagonalWxBackward {
+    E41DiagonalWxBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* d_x,       // [dim] diagonal vector
+        const T* W_h,       // [dim, dim]
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dd_x,            // [dim] gradient for diagonal
+        T* dW_h,
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E37: Tied Weights Elman (single W for both input and hidden)
+// h_t = tanh(W @ x_t + W @ h_{t-1} + b) = tanh(W @ (x_t + h_{t-1}) + b)
+// output = h * silu(h)                       # Self-gating from E33
+// Key: Single GEMM per timestep instead of two
+// =============================================================================
+
+template<typename T>
+struct E37TiedWeightsForward {
+    E37TiedWeightsForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [2*B*dim] for tmp_sum, tmp_Wsum
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E37TiedWeightsBackward {
+    E37TiedWeightsBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient
+        T* db,
+        T* workspace);      // [(T+3)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E35: Cubic-Gated Elman (simplification test: output = h^3)
+// h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)  # Same recurrence as E1
+// output = h^3                               # KEY: cubic gating, no z needed
+// =============================================================================
+
+template<typename T>
+struct E35CubicGateForward {
+    E35CubicGateForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E35CubicGateBackward {
+    E35CubicGateBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E36: Linear Recurrence + Self-Gate (no tanh in recurrence)
+// h_t = W_x @ x_t + W_h @ h_{t-1} + b       # LINEAR recurrence (no tanh!)
+// output = h * silu(h)                       # Self-gating provides nonlinearity
+// IMPORTANT: Spectral normalization of W_h (radius < 1) critical for stability
+// =============================================================================
+
+template<typename T>
+struct E36LinearRecurrenceForward {
+    E36LinearRecurrenceForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E36LinearRecurrenceBackward {
+    E36LinearRecurrenceBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* workspace);      // [(T+3)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E17: Selective W_h Elman (input-dependent gating on recurrence)
 // h_t = tanh(W_x @ x_t + (W_h @ h_{t-1}) * sigmoid(W_gate @ x_t) + b)
 // output = h * silu(z)
@@ -3031,6 +3346,188 @@ private:
     float* dg_h_accum_;
     float* db_gate_accum_;
     float* db_accum_;
+};
+
+// =============================================================================
+// E38: No W_x Elman - removes W_x matrix entirely from E33
+// h_t = tanh(x_t + W_h @ h_{t-1} + b)         # NO W_x! Direct add
+// output = h * silu(h)                         # Self-gating from E33
+// Key: Input projection already done by in_proj, no need for W_x @ x
+// =============================================================================
+
+template<typename T>
+struct E38NoWxForward {
+    E38NoWxForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,       // [dim, dim] - only hidden-to-hidden weight
+        const T* b,         // [dim] bias
+        const T* x,         // [T, B, dim] pre-activated input (goes directly into recurrence)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [B*dim] for Rh only (no Wx precompute needed)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E38NoWxBackward {
+    E38NoWxBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,              // [T, B, dim] - gradient flows directly (no W_x)
+        T* dW_h,            // [dim, dim] - only hidden gradient
+        T* db,              // [dim] bias gradient
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E39: No-Bias Elman (E38 without bias term)
+// h_t = tanh(x_t + W_h @ h_{t-1})            # No W_x, no bias!
+// output = h * silu(h)                        # Self-gating from E33
+// Key: Simplest possible recurrence - just input + hidden transition
+// =============================================================================
+
+template<typename T>
+struct E39NoBiasForward {
+    E39NoBiasForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,       // [dim, dim] - only hidden-to-hidden weight
+        const T* x,         // [T, B, dim] pre-activated input (goes directly into recurrence)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [B*dim] for Rh only (no Wx precompute needed)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E39NoBiasBackward {
+    E39NoBiasBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,              // [T, B, dim] - gradient flows directly (no W_x)
+        T* dW_h,            // [dim, dim] - only hidden gradient
+        T* workspace);      // [(T+2)*B*dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E40: No Pre-SiLU Elman (E38 without pre-activation silu)
+// x_proj = in_proj(x)                        # No silu! Direct projection
+// h_t = tanh(x_t + W_h @ h_{t-1} + b)        # No W_x, raw x goes in
+// output = h * silu(h)                        # Self-gating from E33
+// Key: Testing if pre-silu is needed when W_x is already removed
+// =============================================================================
+
+template<typename T>
+struct E40NoPresiluForward {
+    E40NoPresiluForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,       // [dim, dim] - only hidden-to-hidden weight
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] input (NOT pre-activated, no silu)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [B*dim] for Rh only (no Wx precompute needed)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E40NoPresiluBackward {
+    E40NoPresiluBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_h,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,              // [T, B, dim] - gradient flows directly (no W_x)
+        T* dW_h,            // [dim, dim] - only hidden gradient
+        T* db,              // [dim]
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
 };
 
 }  // namespace elman_ladder

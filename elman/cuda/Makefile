@@ -64,7 +64,15 @@ CUDA_OBJS := \
 	lib/e29_selective_gpu.o \
 	lib/e29c_diagonal_gpu.o \
 	lib/e30_diagonal_gated_gpu.o \
-	lib/e33_self_gate_gpu.o
+	lib/e33_self_gate_gpu.o \
+	lib/e34_diagonal_wh_gpu.o \
+	lib/e35_cubic_gate_gpu.o \
+	lib/e36_linear_recurrence_gpu.o \
+	lib/e37_tied_weights_gpu.o \
+	lib/e38_no_wx_gpu.o \
+	lib/e39_no_bias_gpu.o \
+	lib/e40_no_presilu_gpu.o \
+	lib/e41_diagonal_wx_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
