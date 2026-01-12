@@ -75,6 +75,38 @@
 4. Test at multiple batch sizes to understand scaling behavior
 5. Use Last-100-step averaged loss for fair comparison (not instantaneous)
 
+## CRITICAL: Testing Models with LadderLM
+
+**ALWAYS use `LadderLM` from `elman.models` for benchmarking E-series models.** Do NOT write custom LM wrappers.
+
+LadderLM includes:
+- Mamba2's fused add+norm (from mamba_ssm.ops.triton.layer_norm)
+- Proper prenorm + residual stream pattern
+- Tied embeddings
+
+Wrong (loses ~1 nat!):
+```python
+# DON'T DO THIS - missing fused norm, wrong residual pattern
+class BadE1LM(nn.Module):
+    def forward(self, x):
+        h = self.embed(x)
+        for layer in self.layers:
+            out, _ = layer(h)
+            h = h + out  # WRONG residual pattern
+        return self.head(self.norm(h))
+```
+
+Correct:
+```python
+from elman.models import LadderLM
+model = LadderLM(vocab_size=256, dim=1024, depth=6, level=1)
+loss = model(x, return_loss=True)
+```
+
+For custom cells (E29a, E29c, etc.) that aren't in LadderLM:
+- Copy the exact forward pattern from LadderLM (fused_add_norm + residual stream)
+- Or add the cell to `ladder_lm.py:get_ladder_level()`
+
 ## Latest Benchmark Results (50M params, 10 min training, Last-100 avg)
 
 | Model | Loss | Throughput |
