@@ -281,6 +281,161 @@ std::vector<Tensor> mamba_gated_elman_backward(
 }
 
 // =============================================================================
+// E30: E1 + SSM-style diagonal gating
+// gate = silu(z * g_z + h * g_h + b_gate)
+// output = h * gate
+// =============================================================================
+
+std::vector<Tensor> e30_diagonal_gated_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
+    Tensor g_z,         // [dim] gate scale for z
+    Tensor g_h,         // [dim] gate scale for h
+    Tensor b_gate) {    // [dim] gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+    CHECK_INPUT(g_z);
+    CHECK_INPUT(g_h);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor gate_input_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                       : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E30 forward only supports BFloat16 tensors, got ", x.scalar_type());
+
+    using namespace hasty::v0::elman_ladder;
+    using scalar_t = at::BFloat16;
+    E30DiagonalGatedForward<__nv_bfloat16> forward(
+        training, batch_size, dim,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        ptr<scalar_t>(W_x),
+        ptr<scalar_t>(W_h),
+        ptr<scalar_t>(b),
+        ptr<scalar_t>(g_z),
+        ptr<scalar_t>(g_h),
+        ptr<scalar_t>(b_gate),
+        ptr<scalar_t>(x),
+        ptr<scalar_t>(z),
+        ptr<scalar_t>(h),
+        ptr<scalar_t>(output),
+        training ? ptr<scalar_t>(v) : nullptr,
+        training ? ptr<scalar_t>(gate_input_cache) : nullptr,
+        ptr<scalar_t>(workspace));
+
+    return {h, output, v, gate_input_cache};
+}
+
+std::vector<Tensor> e30_diagonal_gated_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor g_z,
+    Tensor g_h,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor gate_input_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(g_z);
+    CHECK_INPUT(g_h);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(gate_input_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor dg_z = torch::zeros({dim}, options);
+    Tensor dg_h = torch::zeros({dim}, options);
+    Tensor db_gate = torch::zeros({dim}, options);
+
+    // Workspace: [dh_t: BD] [dv_t: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({2 * BD}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E30 backward only supports BFloat16 tensors, got ", x.scalar_type());
+
+    using namespace hasty::v0::elman_ladder;
+    using scalar_t = at::BFloat16;
+    E30DiagonalGatedBackward<__nv_bfloat16> backward(
+        batch_size, dim,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        ptr<scalar_t>(W_x),
+        ptr<scalar_t>(W_h),
+        ptr<scalar_t>(g_z),
+        ptr<scalar_t>(g_h),
+        ptr<scalar_t>(x),
+        ptr<scalar_t>(z),
+        ptr<scalar_t>(h),
+        ptr<scalar_t>(v),
+        ptr<scalar_t>(gate_input_cache),
+        ptr<scalar_t>(d_output),
+        ptr<scalar_t>(dx),
+        ptr<scalar_t>(dz),
+        ptr<scalar_t>(dW_x),
+        ptr<scalar_t>(dW_h),
+        ptr<scalar_t>(db),
+        ptr<scalar_t>(dg_z),
+        ptr<scalar_t>(dg_h),
+        ptr<scalar_t>(db_gate),
+        ptr<scalar_t>(workspace));
+
+    return {dx, dz, dW_x, dW_h, db, dg_z, dg_h, db_gate};
+}
+
+// =============================================================================
 // E17: Selective W_h Elman (input-dependent gating on recurrence)
 // h_t = tanh(W_x @ x_t + (W_h @ h_{t-1}) * sigmoid(W_gate @ x_t) + b)
 // output = h * silu(z)
@@ -4932,10 +5087,14 @@ std::vector<Tensor> e29a_selective_forward(
         reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
 
     // Transpose outputs to [B, T, ...] format
+    // h_tape_all needs to be [B, T+1, N, D] for Python backward
+    auto h_tape_all_transposed = training ?
+        h_tape_all.permute({1, 0, 2, 3}).contiguous() :  // [T+1, B, N, D] -> [B, T+1, N, D]
+        h_tape_all;
     return {output_all.permute({1, 0, 2}).contiguous(),   // [B, T, D] selective gated output
             h_work_all.permute({1, 0, 2}).contiguous(),   // [B, T, D] h_work states
             h_tape_final,                                  // [B, N, D]
-            h_tape_all,                                    // [T+1, B, N, D] or empty
+            h_tape_all_transposed,                         // [B, T+1, N, D] or empty
             read_attn.permute({1, 0, 2}).contiguous(),    // [B, T, N]
             write_attn.permute({1, 0, 2}).contiguous()};  // [B, T, N]
 }
@@ -5034,12 +5193,611 @@ std::vector<Tensor> e29b_selective_forward(
         reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
 
     // Transpose outputs to [B, T, ...] format
+    // h_tape_all needs to be [B, T+1, N, D] for Python backward
+    auto h_tape_all_transposed = training ?
+        h_tape_all.permute({1, 0, 2, 3}).contiguous() :  // [T+1, B, N, D] -> [B, T+1, N, D]
+        h_tape_all;
     return {output_all.permute({1, 0, 2}).contiguous(),
             h_work_all.permute({1, 0, 2}).contiguous(),
             h_tape_final,
-            h_tape_all,
+            h_tape_all_transposed,
             read_attn.permute({1, 0, 2}).contiguous(),
             write_attn.permute({1, 0, 2}).contiguous()};
+}
+
+// =============================================================================
+// E29a Backward
+// =============================================================================
+
+std::vector<Tensor> e29a_selective_backward(
+    Tensor x,                // [B, T, D]
+    Tensor h_work_all,       // [B, T, D]
+    Tensor h_work_init,      // [B, D]
+    Tensor h_tape_all,       // [B, T+1, N, D]
+    Tensor read_attn,        // [B, T, N]
+    Tensor write_attn,       // [B, T, N]
+    Tensor W_h,              // [D, D]
+    Tensor W_xz,             // [2*D, D]
+    Tensor W_write,          // [D, D]
+    Tensor d_output_all,     // [B, T, D]
+    Tensor d_h_tape_final) { // [B, N, D]
+
+    const auto batch_size = h_work_all.size(0);
+    const auto seq_len = h_work_all.size(1);
+    const auto dim = h_work_all.size(2);
+    const auto n_slots = h_tape_all.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_work_all);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(h_tape_all);
+    CHECK_INPUT(read_attn);
+    CHECK_INPUT(write_attn);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(d_output_all);
+    CHECK_INPUT(d_h_tape_final);
+
+    const auto options = h_work_all.options();
+    const auto float_options = options.dtype(torch::kFloat32);
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose inputs to [T, B, ...] layout
+    auto h_work_t = h_work_all.permute({1, 0, 2}).contiguous();  // [T, B, D]
+    auto h_tape_t = h_tape_all.permute({1, 0, 2, 3}).contiguous();  // [T+1, B, N, D]
+    auto read_attn_t = read_attn.permute({1, 0, 2}).contiguous();   // [T, B, N]
+    auto write_attn_t = write_attn.permute({1, 0, 2}).contiguous(); // [T, B, N]
+    auto d_output_t = d_output_all.permute({1, 0, 2}).contiguous(); // [T, B, D]
+
+    // Recompute z from x @ W_xz
+    auto x_t = x.permute({1, 0, 2}).contiguous();  // [T, B, D]
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous();  // [T, B, D]
+
+    // Allocate gradient outputs
+    auto dx_proj = torch::empty({seq_len, batch_size, dim}, options);
+    auto dz = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_pre_act_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_write_val_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto db_h = torch::zeros({dim}, float_options);
+    auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
+    auto dW_h = torch::zeros({dim, dim}, float_options);
+    auto dW_write = torch::zeros({dim, dim}, float_options);
+
+    hasty::v0::elman_ladder::E29aSelectiveBackward<__nv_bfloat16> backward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    backward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(h_work_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dz.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_act_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_write_val_all.data_ptr()),
+        db_h.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()),
+        dW_h.data_ptr<float>(),
+        dW_write.data_ptr<float>());
+
+    // Compute dx from dx_proj and dz: dxz = [dx_proj; dz], dx = dxz @ W_xz
+    auto dxz = torch::cat({dx_proj, dz}, 2);  // [T, B, 2*D]
+    auto dx_t = torch::empty({seq_len, batch_size, dim}, options);
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        dim, seq_len * batch_size, 2 * dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        dxz.data_ptr(), CUDA_R_16BF, 2 * dim,
+        &beta_zero,
+        dx_t.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Compute dW_xz = dxz^T @ x
+    auto dW_xz = torch::zeros({2 * dim, dim}, float_options);
+    const float beta_one = 1.0f;
+    for (int t = 0; t < seq_len; ++t) {
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            2 * dim, dim, batch_size,
+            &alpha,
+            reinterpret_cast<const __nv_bfloat16*>(dxz.data_ptr()) + t * batch_size * 2 * dim, CUDA_R_16BF, 2 * dim,
+            reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr()) + t * batch_size * dim, CUDA_R_16BF, dim,
+            &beta_one,
+            dW_xz.data_ptr<float>(), CUDA_R_32F, 2 * dim,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+    }
+
+    // Transpose dx back
+    auto dx = dx_t.permute({1, 0, 2}).contiguous();
+
+    // Convert weight gradients to original dtype
+    dW_h = dW_h.to(options.dtype());
+    dW_xz = dW_xz.to(options.dtype());
+    db_h = db_h.to(options.dtype());
+    dW_write = dW_write.to(options.dtype());
+
+    return {dx, dW_h, dW_xz, db_h, dW_write};
+}
+
+// =============================================================================
+// E29b Backward
+// =============================================================================
+
+std::vector<Tensor> e29b_selective_backward(
+    Tensor x,                // [B, T, D]
+    Tensor h_work_all,       // [B, T, D]
+    Tensor h_work_init,      // [B, D]
+    Tensor h_tape_all,       // [B, T+1, N, D]
+    Tensor read_attn,        // [B, T, N]
+    Tensor write_attn,       // [B, T, N]
+    Tensor W_h,              // [D, D]
+    Tensor W_xz,             // [2*D, D]
+    Tensor W_write,          // [D, D]
+    Tensor W_gate,           // [D, 3*D]
+    Tensor d_output_all,     // [B, T, D]
+    Tensor d_h_tape_final) { // [B, N, D]
+
+    const auto batch_size = h_work_all.size(0);
+    const auto seq_len = h_work_all.size(1);
+    const auto dim = h_work_all.size(2);
+    const auto n_slots = h_tape_all.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_work_all);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(h_tape_all);
+    CHECK_INPUT(read_attn);
+    CHECK_INPUT(write_attn);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(d_output_all);
+    CHECK_INPUT(d_h_tape_final);
+
+    const auto options = h_work_all.options();
+    const auto float_options = options.dtype(torch::kFloat32);
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose inputs
+    auto h_work_t = h_work_all.permute({1, 0, 2}).contiguous();
+    auto h_tape_t = h_tape_all.permute({1, 0, 2, 3}).contiguous();
+    auto read_attn_t = read_attn.permute({1, 0, 2}).contiguous();
+    auto write_attn_t = write_attn.permute({1, 0, 2}).contiguous();
+    auto d_output_t = d_output_all.permute({1, 0, 2}).contiguous();
+
+    // Recompute z
+    auto x_t = x.permute({1, 0, 2}).contiguous();
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous();
+
+    // Allocate outputs
+    auto dx_proj = torch::empty({seq_len, batch_size, dim}, options);
+    auto dz = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_pre_act_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_write_val_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto db_h = torch::zeros({dim}, float_options);
+    auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
+    auto dW_h = torch::zeros({dim, dim}, float_options);
+    auto dW_write = torch::zeros({dim, dim}, float_options);
+    auto dW_gate = torch::zeros({dim, 3 * dim}, float_options);
+
+    hasty::v0::elman_ladder::E29bSelectiveBackward<__nv_bfloat16> backward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    backward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(h_work_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_gate.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dz.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_act_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_write_val_all.data_ptr()),
+        db_h.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()),
+        dW_h.data_ptr<float>(),
+        dW_write.data_ptr<float>(),
+        dW_gate.data_ptr<float>());
+
+    // Compute dx
+    auto dxz = torch::cat({dx_proj, dz}, 2);
+    auto dx_t = torch::empty({seq_len, batch_size, dim}, options);
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        dim, seq_len * batch_size, 2 * dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        dxz.data_ptr(), CUDA_R_16BF, 2 * dim,
+        &beta_zero,
+        dx_t.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Compute dW_xz
+    auto dW_xz = torch::zeros({2 * dim, dim}, float_options);
+    const float beta_one = 1.0f;
+    for (int t = 0; t < seq_len; ++t) {
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            2 * dim, dim, batch_size,
+            &alpha,
+            reinterpret_cast<const __nv_bfloat16*>(dxz.data_ptr()) + t * batch_size * 2 * dim, CUDA_R_16BF, 2 * dim,
+            reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr()) + t * batch_size * dim, CUDA_R_16BF, dim,
+            &beta_one,
+            dW_xz.data_ptr<float>(), CUDA_R_32F, 2 * dim,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+    }
+
+    auto dx = dx_t.permute({1, 0, 2}).contiguous();
+
+    dW_h = dW_h.to(options.dtype());
+    dW_xz = dW_xz.to(options.dtype());
+    db_h = db_h.to(options.dtype());
+    dW_write = dW_write.to(options.dtype());
+    dW_gate = dW_gate.to(options.dtype());
+
+    return {dx, dW_h, dW_xz, db_h, dW_write, dW_gate};
+}
+
+// =============================================================================
+// E29c: SSM-Style Diagonal Gating Dual-Memory Elman
+// gate = silu(z * g_z + read * g_r + h_work * g_h + b_gate)
+// =============================================================================
+
+std::vector<Tensor> e29c_diagonal_forward(
+    bool training,
+    Tensor x,              // [B, T, D] - raw input
+    Tensor h_tape_init,    // [B, N, D] - initial tape state
+    Tensor h_work_init,    // [B, D] - initial working memory
+    Tensor W_h,            // [D, D]
+    Tensor W_xz,           // [2*D, D] - projects to x_proj and z
+    Tensor b_h,            // [D]
+    Tensor W_write,        // [D, D]
+    Tensor g_z,            // [D] - z gate scale
+    Tensor g_r,            // [D] - read gate scale
+    Tensor g_h,            // [D] - h_work gate scale
+    Tensor b_gate) {       // [D] - gate bias
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_init.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_tape_init);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(g_z);
+    CHECK_INPUT(g_r);
+    CHECK_INPUT(g_h);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose x from [B, T, D] to [T, B, D]
+    auto x_t = x.permute({1, 0, 2}).contiguous();
+
+    // PARALLEL PHASE: Pre-compute xz_proj = x @ W_xz^T for ALL timesteps
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    // Split xz_proj into x_proj and z
+    auto x_proj = xz_proj.narrow(2, 0, dim).contiguous();
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous();
+
+    // Allocate outputs
+    auto output_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_work_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto h_tape_final = torch::empty({batch_size, n_slots, dim}, options);
+    auto read_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+    auto write_attn = torch::empty({seq_len, batch_size, n_slots}, options);
+
+    // For training, save h_tape_all and read_val_all for backward
+    auto h_tape_all = training ?
+        torch::empty({seq_len + 1, batch_size, n_slots, dim}, options) :
+        torch::empty({0}, options);
+    auto read_val_all = training ?
+        torch::empty({seq_len, batch_size, dim}, options) :
+        torch::empty({0}, options);
+
+    hasty::v0::elman_ladder::E29cDiagonalForward<__nv_bfloat16> forward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    forward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(x_proj.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_r.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_gate.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h_work_all.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(read_attn.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(write_attn.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(read_val_all.data_ptr()) : nullptr,
+        handle);
+
+    // Copy final tape state
+    if (training) {
+        cudaMemcpyAsync(
+            h_tape_final.data_ptr(),
+            reinterpret_cast<__nv_bfloat16*>(h_tape_all.data_ptr()) + seq_len * batch_size * n_slots * dim,
+            batch_size * n_slots * dim * sizeof(__nv_bfloat16),
+            cudaMemcpyDeviceToDevice, stream);
+    }
+
+    // Transpose outputs to [B, T, ...] format
+    auto h_tape_all_transposed = training ?
+        h_tape_all.permute({1, 0, 2, 3}).contiguous() :
+        h_tape_all;
+    auto read_val_all_transposed = training ?
+        read_val_all.permute({1, 0, 2}).contiguous() :
+        read_val_all;
+    return {output_all.permute({1, 0, 2}).contiguous(),
+            h_work_all.permute({1, 0, 2}).contiguous(),
+            h_tape_final,
+            h_tape_all_transposed,
+            read_attn.permute({1, 0, 2}).contiguous(),
+            write_attn.permute({1, 0, 2}).contiguous(),
+            read_val_all_transposed};
+}
+
+std::vector<Tensor> e29c_diagonal_backward(
+    Tensor x,              // [B, T, D]
+    Tensor h_work_all,     // [B, T, D]
+    Tensor h_work_init,    // [B, D]
+    Tensor h_tape_all,     // [B, T+1, N, D]
+    Tensor read_attn_all,  // [B, T, N]
+    Tensor write_attn_all, // [B, T, N]
+    Tensor read_val_all,   // [B, T, D] - from forward (avoids recompute bug)
+    Tensor W_h,            // [D, D]
+    Tensor W_xz,           // [2*D, D]
+    Tensor W_write,        // [D, D]
+    Tensor g_z,            // [D]
+    Tensor g_r,            // [D]
+    Tensor g_h,            // [D]
+    Tensor b_gate,         // [D]
+    Tensor d_output_all,   // [B, T, D]
+    Tensor d_h_tape_final) { // [B, N, D]
+
+    const auto batch_size = x.size(0);
+    const auto seq_len = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_slots = h_tape_all.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h_work_all);
+    CHECK_INPUT(h_work_init);
+    CHECK_INPUT(h_tape_all);
+    CHECK_INPUT(read_attn_all);
+    CHECK_INPUT(write_attn_all);
+    CHECK_INPUT(read_val_all);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(W_xz);
+    CHECK_INPUT(W_write);
+    CHECK_INPUT(g_z);
+    CHECK_INPUT(g_r);
+    CHECK_INPUT(g_h);
+    CHECK_INPUT(b_gate);
+    CHECK_INPUT(d_output_all);
+    CHECK_INPUT(d_h_tape_final);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Transpose inputs to [T, B, ...] format
+    auto x_t = x.permute({1, 0, 2}).contiguous();
+    auto h_work_all_t = h_work_all.permute({1, 0, 2}).contiguous();
+    auto h_tape_all_t = h_tape_all.permute({1, 0, 2, 3}).contiguous();
+    auto read_attn_t = read_attn_all.permute({1, 0, 2}).contiguous();
+    auto write_attn_t = write_attn_all.permute({1, 0, 2}).contiguous();
+    auto read_val_t = read_val_all.permute({1, 0, 2}).contiguous();
+    auto d_output_t = d_output_all.permute({1, 0, 2}).contiguous();
+
+    // Recompute z_all
+    auto xz_proj = torch::empty({seq_len, batch_size, 2 * dim}, options);
+    const float alpha = 1.0f;
+    const float beta_zero = 0.0f;
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,
+        2 * dim, seq_len * batch_size, dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        x_t.data_ptr(), CUDA_R_16BF, dim,
+        &beta_zero,
+        xz_proj.data_ptr(), CUDA_R_16BF, 2 * dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+    auto z_all = xz_proj.narrow(2, dim, dim).contiguous();
+
+    // Allocate outputs
+    auto dx_proj_t = torch::empty({seq_len, batch_size, dim}, options);
+    auto dz_t = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_pre_act_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_write_val_all = torch::empty({seq_len, batch_size, dim}, options);
+    auto d_h_tape = torch::empty({batch_size, n_slots, dim}, options);
+
+    // Float accumulators for weight gradients
+    auto dW_h = torch::zeros({dim, dim}, options.dtype(torch::kFloat32));
+    auto dW_write = torch::zeros({dim, dim}, options.dtype(torch::kFloat32));
+    auto db_h = torch::zeros({dim}, options.dtype(torch::kFloat32));
+    auto dg_z = torch::zeros({dim}, options.dtype(torch::kFloat32));
+    auto dg_r = torch::zeros({dim}, options.dtype(torch::kFloat32));
+    auto dg_h_out = torch::zeros({dim}, options.dtype(torch::kFloat32));
+    auto db_gate_out = torch::zeros({dim}, options.dtype(torch::kFloat32));
+
+    hasty::v0::elman_ladder::E29cDiagonalBackward<__nv_bfloat16> backward_op(
+        batch_size, n_slots, dim, handle, stream);
+
+    backward_op.Run(
+        seq_len,
+        reinterpret_cast<const __nv_bfloat16*>(h_work_all_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_work_init.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_tape_all_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(write_attn_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(read_val_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_write.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_r.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_gate.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output_t.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_h_tape_final.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx_proj_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dz_t.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_act_all.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_write_val_all.data_ptr()),
+        db_h.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(d_h_tape.data_ptr()),
+        dW_h.data_ptr<float>(),
+        dW_write.data_ptr<float>(),
+        dg_z.data_ptr<float>(),
+        dg_r.data_ptr<float>(),
+        dg_h_out.data_ptr<float>(),
+        db_gate_out.data_ptr<float>());
+
+    // Compute dW_xz from dx_proj and dz
+    auto dxz = torch::cat({dx_proj_t, dz_t}, 2);
+    auto dW_xz = torch::zeros({2 * dim, dim}, options.dtype(torch::kFloat32));
+    const float beta_one = 1.0f;
+
+    for (int t = 0; t < seq_len; ++t) {
+        cublasGemmEx(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            2 * dim, dim, batch_size,
+            &alpha,
+            reinterpret_cast<const __nv_bfloat16*>(dxz.data_ptr()) + t * batch_size * 2 * dim, CUDA_R_16BF, 2 * dim,
+            reinterpret_cast<const __nv_bfloat16*>(x_t.data_ptr()) + t * batch_size * dim, CUDA_R_16BF, dim,
+            &beta_one,
+            dW_xz.data_ptr<float>(), CUDA_R_32F, 2 * dim,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+        );
+    }
+
+    // Compute dx from dxz @ W_xz
+    auto dx_t = torch::empty({seq_len, batch_size, dim}, options);
+    cublasGemmEx(
+        handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        dim, seq_len * batch_size, 2 * dim,
+        &alpha,
+        W_xz.data_ptr(), CUDA_R_16BF, dim,
+        dxz.data_ptr(), CUDA_R_16BF, 2 * dim,
+        &beta_zero,
+        dx_t.data_ptr(), CUDA_R_16BF, dim,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT
+    );
+
+    auto dx = dx_t.permute({1, 0, 2}).contiguous();
+
+    // CUBLAS writes column-major [2*D, D]. When PyTorch reads it as row-major,
+    // the bytes correspond to row-major [D, 2*D]. Reshape and transpose to get [2*D, D].
+    dW_xz = dW_xz.view({dim, 2 * dim}).t().contiguous();
+
+    // Same column-major issue for dW_h and dW_write [D, D]
+    dW_h = dW_h.t().contiguous();
+    dW_write = dW_write.t().contiguous();
+
+    // Convert to output dtype
+    dW_h = dW_h.to(options.dtype());
+    dW_xz = dW_xz.to(options.dtype());
+    db_h = db_h.to(options.dtype());
+    dW_write = dW_write.to(options.dtype());
+    dg_z = dg_z.to(options.dtype());
+    dg_r = dg_r.to(options.dtype());
+    dg_h_out = dg_h_out.to(options.dtype());
+    db_gate_out = db_gate_out.to(options.dtype());
+
+    return {dx, dW_h, dW_xz, db_h, dW_write, dg_z, dg_r, dg_h_out, db_gate_out};
 }
 
 }  // anonymous namespace
@@ -5172,4 +5930,16 @@ void elman_ladder_init(py::module& m) {
           "E29a: Selective Dual-Memory Elman forward (additive gate: silu(z + read + h_work))");
     m.def("e29b_selective_forward", &e29b_selective_forward,
           "E29b: Selective Dual-Memory Elman forward (learned gate: W_gate @ [z; read; h_work])");
+    m.def("e29a_selective_backward", &e29a_selective_backward,
+          "E29a: Selective Dual-Memory Elman backward");
+    m.def("e29b_selective_backward", &e29b_selective_backward,
+          "E29b: Selective Dual-Memory Elman backward");
+    m.def("e29c_diagonal_forward", &e29c_diagonal_forward,
+          "E29c: SSM-Style Diagonal Gating Dual-Memory Elman forward (gate = silu(z*g_z + read*g_r + h*g_h + b))");
+    m.def("e29c_diagonal_backward", &e29c_diagonal_backward,
+          "E29c: SSM-Style Diagonal Gating Dual-Memory Elman backward");
+    m.def("e30_diagonal_gated_forward", &e30_diagonal_gated_forward,
+          "E30: E1 + Diagonal Gating forward (gate = silu(z*g_z + h*g_h + b))");
+    m.def("e30_diagonal_gated_backward", &e30_diagonal_gated_backward,
+          "E30: E1 + Diagonal Gating backward");
 }

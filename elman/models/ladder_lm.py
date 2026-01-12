@@ -50,6 +50,7 @@ from .e24_single_gemm import E24Layer
 from .e25_entmax import E25DualMemoryElman
 from .e26_parallel import E26DualMemoryElman
 from .e28_conv_elman import E28ConvElman
+from .e30_diagonal_gated import E30DiagonalGated
 
 
 def get_ladder_level(level):
@@ -87,6 +88,7 @@ def get_ladder_level(level):
         '19e': lambda **kw: SimplifiedGateElman(gate_mode=3, **kw),  # E19-E: residual + Wx + h
         20: Mamba2InformedElman,  # E20: Mamba2-style matrix state
         21: StructuredElman,  # E21: MIMO with nonlinear state
+        30: E30DiagonalGated,  # E30: E1 + diagonal gating (SSM-style selectivity)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -112,7 +114,7 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30, mamba2")
 
 
 class LadderLM(nn.Module):

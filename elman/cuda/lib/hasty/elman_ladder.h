@@ -2646,6 +2646,44 @@ private:
     cudaStream_t stream_;
 };
 
+template<typename T>
+struct E29aSelectiveBackward {
+    E29aSelectiveBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* h_work_all,       // [T, B, D]
+        const T* h_work_init,      // [B, D]
+        const T* h_tape_all,       // [T+1, B, N, D]
+        const T* read_attn,        // [T, B, N]
+        const T* write_attn,       // [T, B, N]
+        const T* z_all,            // [T, B, D] - gate input
+        const T* W_h,              // [D, D]
+        const T* W_write,          // [D, D]
+        const T* d_output_all,     // [T, B, D]
+        const T* d_h_tape_final,   // [B, N, D]
+        T* dx_proj,                // [T, B, D]
+        T* dz,                     // [T, B, D] - gradient for z
+        T* d_pre_act_all,          // [T, B, D]
+        T* d_write_val_all,        // [T, B, D]
+        float* db_h,               // [D]
+        T* d_h_tape,               // [B, N, D]
+        float* dW_h,               // [D, D]
+        float* dW_write);          // [D, D]
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 // =============================================================================
 // E29b: Selective Gating Dual-Memory Elman (learned gate)
 // Extends E26 with learned selective: gate = silu(W_gate @ [z; read; h_work_new])
@@ -2687,6 +2725,249 @@ private:
     int seq_len_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
+};
+
+template<typename T>
+struct E29bSelectiveBackward {
+    E29bSelectiveBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int seq_len,
+        const T* h_work_all,       // [T, B, D]
+        const T* h_work_init,      // [B, D]
+        const T* h_tape_all,       // [T+1, B, N, D]
+        const T* read_attn,        // [T, B, N]
+        const T* write_attn,       // [T, B, N]
+        const T* z_all,            // [T, B, D]
+        const T* W_h,              // [D, D]
+        const T* W_write,          // [D, D]
+        const T* W_gate,           // [D, 3*D]
+        const T* d_output_all,     // [T, B, D]
+        const T* d_h_tape_final,   // [B, N, D]
+        T* dx_proj,                // [T, B, D]
+        T* dz,                     // [T, B, D]
+        T* d_pre_act_all,          // [T, B, D]
+        T* d_write_val_all,        // [T, B, D]
+        float* db_h,               // [D]
+        T* d_h_tape,               // [B, N, D]
+        float* dW_h,               // [D, D]
+        float* dW_write,           // [D, D]
+        float* dW_gate);           // [D, 3*D]
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E29c: SSM-Style Diagonal Gating Dual-Memory Elman
+//
+// HYBRID TEMPLATE PATTERN:
+//   - N_SLOTS: Templated (8, 16, 32, 64)
+//   - DIM: Runtime parameter (dynamic shared memory)
+//
+// Gate mechanism: gate = silu(z * g_z + read * g_r + h_work * g_h + b_gate)
+// Extra params: 4*D (vs 3*D² for E29b)
+// =============================================================================
+
+template<typename T>
+struct E29cDiagonalForward {
+    E29cDiagonalForward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~E29cDiagonalForward();
+
+    void Run(
+        int seq_len,
+        const T* x_proj,          // [T, B, D]
+        const T* z_all,           // [T, B, D]
+        const T* h_tape_init,     // [B, N, D]
+        const T* h_work_init,     // [B, D]
+        const T* W_h,             // [D, D]
+        const T* b_h,             // [D]
+        const T* W_write,         // [D, D]
+        const T* g_z,             // [D] - z gate scale
+        const T* g_r,             // [D] - read gate scale
+        const T* g_h,             // [D] - h_work gate scale
+        const T* b_gate,          // [D] - gate bias
+        T* output_all,            // [T, B, D]
+        T* h_work_all,            // [T, B, D]
+        T* h_tape_all,            // [T+1, B, N, D]
+        T* read_attn_all,         // [T, B, N]
+        T* write_attn_all,        // [T, B, N]
+        T* read_val_all,          // [T, B, D] - saved for backward (avoids recompute bug)
+        cublasHandle_t blas_handle);
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    // Workspace pointers
+    T* Rh_workspace_;
+    T* h_work_workspace_;
+    T* read_val_workspace_;
+    T* write_val_workspace_;
+};
+
+template<typename T>
+struct E29cDiagonalBackward {
+    E29cDiagonalBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~E29cDiagonalBackward();
+
+    void Run(
+        int seq_len,
+        const T* h_work_all,       // [T, B, D]
+        const T* h_work_init,      // [B, D]
+        const T* h_tape_all,       // [T+1, B, N, D]
+        const T* read_attn_all,    // [T, B, N]
+        const T* write_attn_all,   // [T, B, N]
+        const T* read_val_all,     // [T, B, D] - from forward (avoids recompute bug)
+        const T* z_all,            // [T, B, D]
+        const T* W_h,              // [D, D]
+        const T* W_write,          // [D, D]
+        const T* g_z,              // [D]
+        const T* g_r,              // [D]
+        const T* g_h,              // [D]
+        const T* b_gate,           // [D]
+        const T* d_output_all,     // [T, B, D]
+        const T* d_h_tape_final,   // [B, N, D]
+        T* dx_proj,                // [T, B, D]
+        T* dz,                     // [T, B, D]
+        T* d_pre_act_all,          // [T, B, D]
+        T* d_write_val_all,        // [T, B, D]
+        float* db_h,               // [D]
+        T* d_h_tape,               // [B, N, D]
+        float* dW_h,               // [D, D]
+        float* dW_write,           // [D, D]
+        float* dg_z,               // [D] - diagonal weight gradient
+        float* dg_r,               // [D]
+        float* dg_h,               // [D]
+        float* db_gate);           // [D]
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    // Workspace pointers
+    T* d_h_tape_workspace_;
+    T* d_h_work_workspace_;
+    T* d_h_work_t_workspace_;
+    T* d_z_t_workspace_;
+    T* d_read_val_workspace_;
+    T* d_pre_act_workspace_;
+    T* d_write_val_workspace_;
+    T* d_h_tape_pre_write_workspace_;
+    T* d_h_tape_from_write_workspace_;
+    // Note: read_val_workspace_ no longer needed - we use read_val_all from forward
+    float* dg_z_accum_;
+    float* dg_r_accum_;
+    float* dg_h_accum_;
+    float* db_gate_accum_;
+    float* db_h_accum_;
+};
+
+// =============================================================================
+// E30: E1 + SSM-style diagonal gating
+// gate = silu(z * g_z + h * g_h + b_gate)
+// output = h * gate
+// =============================================================================
+
+template<typename T>
+struct E30DiagonalGatedForward {
+    E30DiagonalGatedForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,             // [dim, dim]
+        const T* W_h,             // [dim, dim]
+        const T* b,               // [dim]
+        const T* g_z,             // [dim] gate scale for z
+        const T* g_h,             // [dim] gate scale for h
+        const T* b_gate,          // [dim] gate bias
+        const T* x,               // [T, B, dim] pre-activated input
+        const T* z,               // [T, B, dim] gate input
+        T* h,                     // [T+1, B, dim] hidden states
+        T* output,                // [T, B, dim] output
+        T* v,                     // [T, B, dim] pre-activation cache
+        T* gate_input_cache,      // [T, B, dim] gate input cache for backward
+        T* workspace);            // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E30DiagonalGatedBackward {
+    E30DiagonalGatedBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    ~E30DiagonalGatedBackward();
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* g_z,
+        const T* g_h,
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* gate_input_cache,
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        T* dg_z,
+        T* dg_h,
+        T* db_gate,
+        T* workspace);
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+    float* dg_z_accum_;
+    float* dg_h_accum_;
+    float* db_gate_accum_;
+    float* db_accum_;
 };
 
 }  // namespace elman_ladder
