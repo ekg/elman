@@ -69,6 +69,7 @@ CUDA_OBJS := \
 	lib/e35_cubic_gate_gpu.o \
 	lib/e36_linear_recurrence_gpu.o \
 	lib/e37_tied_weights_gpu.o \
+	lib/e37_tied_weights_v2_gpu.o \
 	lib/e38_no_wx_gpu.o \
 	lib/e39_no_bias_gpu.o \
 	lib/e40_no_presilu_gpu.o \

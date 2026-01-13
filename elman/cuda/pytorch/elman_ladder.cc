@@ -900,6 +900,66 @@ std::vector<Tensor> e37_tied_weights_backward(
 }
 
 // =============================================================================
+// E37v2: Optimized Tied Weights - Uses W @ x + W @ h (batched GEMM for W @ x)
+// Same math as E37 but faster due to batched GEMM pattern
+// =============================================================================
+
+std::vector<Tensor> e37_tied_weights_v2_forward(
+    bool training,
+    Tensor x, Tensor h0, Tensor W, Tensor b) {
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    CHECK_INPUT(x); CHECK_INPUT(h0); CHECK_INPUT(W); CHECK_INPUT(b);
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options) : torch::empty({0}, options);
+    const int64_t BD = batch_size * dim;
+    // Workspace: tmp_Wx (T*BD) + tmp_Rh (BD)
+    Tensor workspace = torch::empty({(time_steps + 1) * BD}, options);
+    h[0] = h0;
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e37_tied_weights_v2_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E37TiedWeightsV2Forward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, at::cuda::getCurrentCUDABlasHandle(), at::cuda::getCurrentCUDAStream());
+        forward.Run(time_steps, ptr<scalar_t>(W), ptr<scalar_t>(b),
+            ptr<scalar_t>(x), ptr<scalar_t>(h), ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr, ptr<scalar_t>(workspace));
+    }));
+    return {h, output, v};
+}
+
+std::vector<Tensor> e37_tied_weights_v2_backward(
+    Tensor W, Tensor x, Tensor h, Tensor v, Tensor d_output) {
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    CHECK_INPUT(W); CHECK_INPUT(x); CHECK_INPUT(h); CHECK_INPUT(v); CHECK_INPUT(d_output);
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    Tensor dx = torch::empty_like(x);
+    Tensor dW = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    // Workspace: dv_all (T*BD) + dh (BD) + dh_recurrent (BD) + db_float (dim floats)
+    Tensor workspace = torch::empty({(time_steps + 2) * BD + float_in_T}, options);
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e37_tied_weights_v2_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E37TiedWeightsV2Backward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, at::cuda::getCurrentCUDABlasHandle(), at::cuda::getCurrentCUDAStream());
+        backward.Run(time_steps, ptr<scalar_t>(W), ptr<scalar_t>(x),
+            ptr<scalar_t>(h), ptr<scalar_t>(v), ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx), ptr<scalar_t>(dW), ptr<scalar_t>(db), ptr<scalar_t>(workspace));
+    }));
+    return {dx, dW, db};
+}
+
+// =============================================================================
 // E38: No W_x - h_t = tanh(x + W_h @ h + b), removes W_x entirely
 // =============================================================================
 
@@ -6600,6 +6660,10 @@ void elman_ladder_init(py::module& m) {
           "E37: Tied Weights Elman forward (W_x = W_h)");
     m.def("e37_tied_weights_backward", &e37_tied_weights_backward,
           "E37: Tied Weights Elman backward");
+    m.def("e37_tied_weights_v2_forward", &e37_tied_weights_v2_forward,
+          "E37v2: Optimized Tied Weights forward (batched W @ x)");
+    m.def("e37_tied_weights_v2_backward", &e37_tied_weights_v2_backward,
+          "E37v2: Optimized Tied Weights backward");
     m.def("e38_no_wx_forward", &e38_no_wx_forward,
           "E38: No W_x Elman forward (x goes directly into recurrence)");
     m.def("e38_no_wx_backward", &e38_no_wx_backward,

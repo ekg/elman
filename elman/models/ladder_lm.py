@@ -58,6 +58,7 @@ from .e34_diagonal_wh import E34DiagonalWh
 from .e35_cubic_gate import E35CubicGate
 from .e36_linear_recurrence import E36LinearRecurrence
 from .e37_tied_weights import E37TiedWeights
+from .e37_tied_weights_v2 import E37TiedWeightsV2
 from .e38_no_wx import E38NoWx
 from .e39_no_bias import E39NoBias
 from .e40_no_presilu import E40NoPresilu
@@ -109,6 +110,7 @@ def get_ladder_level(level):
         35: E35CubicGate,  # E35: E1 with cubic gating: output = h^3 instead of h * silu(z)
         36: E36LinearRecurrence,  # E36: Linear recurrence (no tanh!) + self-gate
         37: E37TiedWeights,  # E37: Tied weights: W_x = W_h = W, single GEMM per step
+        '37v2': E37TiedWeightsV2,  # E37v2: Tied weights with batched GEMM optimization
         38: E38NoWx,  # E38: No W_x: h = tanh(x + W_h @ h_prev + b), removes input transform
         39: E39NoBias,  # E39: No bias: h = tanh(x + W_h @ h_prev), simplest recurrence
         40: E40NoPresilu,  # E40: No pre-silu: x_proj = in_proj(x), NOT silu(in_proj(x))

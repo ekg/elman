@@ -417,6 +417,66 @@ private:
 };
 
 // =============================================================================
+// E37v2: Optimized Tied Weights Elman - Uses W @ x + W @ h instead of W @ (x + h)
+// Same math as E37 but allows batching W @ x across all timesteps (like E33)
+// This recovers the performance lost in E37 due to sequential W @ (x + h)
+// =============================================================================
+
+template<typename T>
+struct E37TiedWeightsV2Forward {
+    E37TiedWeightsV2Forward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Rh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E37TiedWeightsV2Backward {
+    E37TiedWeightsV2Backward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E35: Cubic-Gated Elman (simplification test: output = h^3)
 // h_t = tanh(W_x @ x_t + W_h @ h_{t-1} + b)  # Same recurrence as E1
 // output = h^3                               # KEY: cubic gating, no z needed
