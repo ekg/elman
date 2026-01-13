@@ -58,8 +58,9 @@ def parse_args():
                         help='State expansion for E16 (d_state = d_inner * state_expansion)')
     parser.add_argument('--n_groups', type=int, default=32,
                         help='Number of groups for compete softmax')
-    parser.add_argument('--r_h_mode', type=str, default='none',
-                        help='W_h constraint mode (spectral_norm, none)')
+    parser.add_argument('--r_h_mode', type=str, default='auto',
+                        help='W_h constraint mode (spectral_norm, learned, none, auto)')
+    # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
 
     # Training
     parser.add_argument('--batch_size', type=int, default=16,
@@ -210,6 +211,24 @@ def train(args):
     output_dir = setup_output_dir(args)
     print(f"Output directory: {output_dir}")
 
+    # Resolve 'auto' r_h_mode based on model architecture
+    r_h_mode = args.r_h_mode
+    if r_h_mode == 'auto' and args.level != 'mamba2':
+        # Models with full W_h matrix need spectral norm for stability
+        # Models with diagonal/scalar W_h are already bounded
+        full_wh_levels = {1, 33, 42, 51, 52, 53, 56, 57, 58}  # Full W_h matrix
+        diagonal_levels = {34, 44, 54}  # Diagonal W_h (already bounded)
+        scalar_levels = {43, 55}  # Scalar decay (already bounded)
+        no_wh_levels = {45, 46, 48}  # No W_h at all
+
+        level_int = int(args.level) if str(args.level).isdigit() else 0
+        if level_int in full_wh_levels:
+            r_h_mode = 'spectral_norm'
+            print(f"Auto r_h_mode: spectral_norm (level {level_int} has full W_h)")
+        else:
+            r_h_mode = 'none'
+            print(f"Auto r_h_mode: none (level {level_int} has bounded/no W_h)")
+
     # Create model
     if args.level == 'mamba2':
         # Special handling for Mamba2 - use Mamba2LM directly
@@ -235,7 +254,7 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             state_expansion=args.state_expansion,
-            r_h_mode=args.r_h_mode,
+            r_h_mode=r_h_mode,
         )
     else:
         model = create_ladder_model(
@@ -245,7 +264,7 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             state_expansion=args.state_expansion,
-            r_h_mode=args.r_h_mode,
+            r_h_mode=r_h_mode,
         )
 
     model = model.to(device)
