@@ -201,7 +201,7 @@ class E42LinearTied(nn.Module):
         dim,
         expansion=1.0,
         dropout=0.0,
-        r_h_mode='spectral_norm',
+        r_h_mode='none',  # No spectral norm needed - self-gating provides stability
         r_h_init_gain=1.0,
         use_conv=False,
         d_conv=4,

@@ -58,6 +58,8 @@ def parse_args():
                         help='State expansion for E16 (d_state = d_inner * state_expansion)')
     parser.add_argument('--n_groups', type=int, default=32,
                         help='Number of groups for compete softmax')
+    parser.add_argument('--r_h_mode', type=str, default='none',
+                        help='W_h constraint mode (spectral_norm, none)')
 
     # Training
     parser.add_argument('--batch_size', type=int, default=16,
@@ -215,8 +217,8 @@ def train(args):
         if args.dim is not None and args.depth is not None:
             model = Mamba2LM(
                 vocab_size=256,
-                d_model=args.dim,
-                n_layer=args.depth,
+                dim=args.dim,
+                depth=args.depth,
                 d_state=128,
                 expand=2,
                 headdim=64,
@@ -233,6 +235,7 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             state_expansion=args.state_expansion,
+            r_h_mode=args.r_h_mode,
         )
     else:
         model = create_ladder_model(
@@ -242,6 +245,7 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             state_expansion=args.state_expansion,
+            r_h_mode=args.r_h_mode,
         )
 
     model = model.to(device)
