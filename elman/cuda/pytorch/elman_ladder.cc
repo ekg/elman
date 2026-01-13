@@ -1177,8 +1177,9 @@ std::vector<Tensor> e42_linear_tied_backward(
     Tensor db = torch::zeros({dim}, options);
     const int64_t BD = batch_size * dim;
     const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
-    // Workspace: dv_all (T*BD) + dh (BD) + dh_recurrent (BD) + db_float (dim floats)
-    Tensor workspace = torch::empty({(time_steps + 2) * BD + float_in_T}, options);
+    // Workspace: dv_all (T*BD) + dh (BD) + dh_recurrent (BD) + x_plus_h (T*BD) + db_float (dim floats)
+    // x_plus_h is for fused dW GEMM optimization: dW = (x + h) @ dv_all.T
+    Tensor workspace = torch::empty({(2 * time_steps + 2) * BD + float_in_T}, options);
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "e42_linear_tied_backward", ([&] {
         using namespace hasty::v0::elman_ladder;

@@ -58,7 +58,7 @@ class MambaGatedElmanCell(nn.Module):
     output = h_t * silu(z_t)
     """
 
-    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0, mamba2_init=False):
+    def __init__(self, dim, w_h_mode='none', w_h_init_gain=1.0, mamba2_init=False):
         super().__init__()
         self.dim = dim
         self.w_h_mode = w_h_mode
@@ -72,7 +72,36 @@ class MambaGatedElmanCell(nn.Module):
         self._init_weights(w_h_init_gain)
 
     def _init_weights(self, w_h_init_gain):
-        if self.mamba2_init:
+        if self.mamba2_init == 's4d':
+            # S4D-style initialization: eigenvalues with varying decay rates
+            # Key insight: mix of fast and slow timescales for different memory horizons
+            nn.init.normal_(self.W_x, std=0.02)
+
+            # S4D uses A_n = -1/2 + n*i (HiPPO-LegS)
+            # For real dense matrix, we construct via eigendecomposition
+            # Eigenvalues: exp(-1/2 + i*theta) for theta in [0, 2pi)
+            # This gives varying oscillation frequencies with uniform decay
+            W_h_fp32 = torch.empty(self.dim, self.dim, dtype=torch.float32)
+
+            # Create orthogonal basis
+            Q = torch.empty(self.dim, self.dim, dtype=torch.float32)
+            nn.init.orthogonal_(Q)
+
+            # S4D eigenvalues: uniform angles, radius ~0.999 (close to unit circle)
+            # Mix some slower decay (0.9999) for long-range and faster (0.99) for short
+            radii = torch.linspace(0.99, 0.9999, self.dim)  # Varying timescales
+            angles = torch.linspace(0, 2 * 3.14159, self.dim + 1)[:-1]  # Uniform angles
+
+            # Build diagonal in complex domain, take real part of Q @ D @ Q.T
+            # For real eigenvalues, use: W_h = Q @ diag(radii) @ Q.T
+            D = torch.diag(radii)
+            W_h_fp32 = Q @ D @ Q.T
+
+            with torch.no_grad():
+                self.W_h.copy_(W_h_fp32.to(self.W_h.dtype))
+            nn.init.constant_(self.b, 0.0)
+
+        elif self.mamba2_init:
             # Mamba2-style initialization
             # W_x: small std like Mamba2's input projections
             nn.init.normal_(self.W_x, std=0.02)
@@ -181,7 +210,7 @@ class MambaGatedElman(nn.Module):
         dim,
         expansion=1.0,
         dropout=0.0,
-        r_h_mode='spectral_norm',
+        r_h_mode='none',  # No spectral norm needed for tanh nonlinearity
         r_h_init_gain=1.0,
         use_conv=False,
         d_conv=4,

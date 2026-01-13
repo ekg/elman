@@ -63,7 +63,7 @@ class E42LinearTiedCell(nn.Module):
     since linear recurrence can grow unbounded without it.
     """
 
-    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0, mamba2_init=False, spectral_radius=0.99):
+    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0, mamba2_init=False, spectral_radius=0.999):
         super().__init__()
         self.dim = dim
         self.w_h_mode = w_h_mode
@@ -206,7 +206,7 @@ class E42LinearTied(nn.Module):
         use_conv=False,
         d_conv=4,
         mamba2_init=False,
-        spectral_radius=0.99,  # Critical for linear recurrence stability
+        spectral_radius=0.999,  # Critical for linear recurrence stability (0.999 > 0.99)
         **kwargs
     ):
         super().__init__()

@@ -209,7 +209,22 @@ def train(args):
     print(f"Output directory: {output_dir}")
 
     # Create model
-    if args.dim is not None and args.depth is not None:
+    if args.level == 'mamba2':
+        # Special handling for Mamba2 - use Mamba2LM directly
+        from elman.models.mamba2_baseline import Mamba2LM
+        if args.dim is not None and args.depth is not None:
+            model = Mamba2LM(
+                vocab_size=256,
+                d_model=args.dim,
+                n_layer=args.depth,
+                d_state=128,
+                expand=2,
+                headdim=64,
+            )
+        else:
+            from elman.models.mamba2_baseline import create_mamba2_model
+            model = create_mamba2_model(target_params=args.params, vocab_size=256)
+    elif args.dim is not None and args.depth is not None:
         model = LadderLM(
             vocab_size=256,
             dim=args.dim,

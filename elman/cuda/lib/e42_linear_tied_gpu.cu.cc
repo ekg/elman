@@ -244,6 +244,31 @@ __global__ void VectorAddInplace(const int n, T* __restrict__ a, const T* __rest
     }
 }
 
+// Fused x+h kernel for backward dW optimization
+// Computes out = a + b (element-wise addition into a new buffer)
+__global__ void VectorAdd_BF16(
+    const int n,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ b,
+    __nv_bfloat16* __restrict__ out) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        out[idx] = bf16_add(a[idx], b[idx]);
+    }
+}
+
+template<typename T>
+__global__ void VectorAdd(
+    const int n,
+    const T* __restrict__ a,
+    const T* __restrict__ b,
+    T* __restrict__ out) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        out[idx] = static_cast<T>(static_cast<float>(a[idx]) + static_cast<float>(b[idx]));
+    }
+}
+
 template<typename T>
 __global__ void CopyFloatToT(const int n, const float* __restrict__ src, T* __restrict__ dst) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -377,11 +402,13 @@ void E42LinearTiedBackward<__nv_bfloat16>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
-    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim]
+    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [x_plus_h: T*BD] [db_float: dim]
+    // x_plus_h is for the fused dW GEMM: dW = (x + h) @ dv_all.T
     __nv_bfloat16* dv_all = workspace;
     __nv_bfloat16* dh = workspace + steps * BD;
     __nv_bfloat16* dh_recurrent = workspace + (steps + 1) * BD;
-    float* db_float = reinterpret_cast<float*>(workspace + (steps + 2) * BD);
+    __nv_bfloat16* x_plus_h = workspace + (steps + 2) * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + (2 * steps + 2) * BD);
 
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(__nv_bfloat16), stream_);
     cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
@@ -434,32 +461,30 @@ void E42LinearTiedBackward<__nv_bfloat16>::Run(
         dx, dim_);
 
     // =========================================================================
-    // KEY OPTIMIZATION: Batched GEMMs for dW
-    // dW = x @ dv_all.T + h @ dv_all.T (both batched across all timesteps)
-    // Since W is tied: dW gets gradient from both input and hidden paths
+    // FUSED dW OPTIMIZATION: Single GEMM instead of two
+    // Old: dW = x @ dv_all.T + h @ dv_all.T (two GEMMs with beta=1 accumulation)
+    // New: dW = (x + h) @ dv_all.T (one element-wise add + one GEMM)
+    // This is faster because:
+    // 1. Element-wise x+h is memory-bound but cheap (T*B*D elements)
+    // 2. Single GEMM is more efficient than two GEMMs with accumulation
     // =========================================================================
 
-    // dW += x @ dv_all.T (batched across all T*B)
+    // Step 1: Compute x_plus_h = x + h[0:T] (element-wise)
+    // h has shape [T+1, B, dim], we use h[0:T*B] as h_prev for each timestep
+    const int total_elements = steps * BD;
+    const int add_blocks = (total_elements + block_size - 1) / block_size;
+    VectorAdd_BF16<<<add_blocks, block_size, 0, stream_>>>(
+        total_elements, x, h, x_plus_h);
+
+    // Step 2: Single GEMM: dW = (x + h) @ dv_all.T
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, steps * batch_size_,
         &alpha_one,
-        x, dim_,
+        x_plus_h, dim_,
         dv_all, dim_,
         &beta_one,  // Accumulate into dW (which was zeroed)
-        dW, dim_);
-
-    // dW += h[:-1] @ dv_all.T (h[0:T] are the h_prev values)
-    // h has shape [T+1, B, dim], we use h[0:T] as h_prev for each timestep
-    blas<__nv_bfloat16>::gemm(
-        blas_handle_,
-        CUBLAS_OP_N, CUBLAS_OP_T,
-        dim_, dim_, steps * batch_size_,
-        &alpha_one,
-        h, dim_,              // h[0:T*B] = all h_prev values
-        dv_all, dim_,
-        &beta_one,            // Accumulate into dW
         dW, dim_);
 
     // Copy float gradients to bf16
@@ -571,10 +596,12 @@ void E42LinearTiedBackward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
+    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [x_plus_h: T*BD] [db_float: dim]
     T* dv_all = workspace;
     T* dh = workspace + steps * BD;
     T* dh_recurrent = workspace + (steps + 1) * BD;
-    float* db_float = reinterpret_cast<float*>(workspace + (steps + 2) * BD);
+    T* x_plus_h = workspace + (steps + 2) * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + (2 * steps + 2) * BD);
 
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
     cudaMemsetAsync(db_float, 0, dim_ * sizeof(float), stream_);
@@ -619,24 +646,20 @@ void E42LinearTiedBackward<T>::Run(
         &beta_zero,
         dx, dim_);
 
-    // Batched GEMM for dW from x
-    blas<T>::gemm(
-        blas_handle_,
-        CUBLAS_OP_N, CUBLAS_OP_T,
-        dim_, dim_, steps * batch_size_,
-        &alpha,
-        x, dim_,
-        dv_all, dim_,
-        &beta_one,
-        dW, dim_);
+    // FUSED dW OPTIMIZATION: Single GEMM instead of two
+    // Step 1: Compute x_plus_h = x + h[0:T]
+    const int total_elements = steps * BD;
+    const int add_blocks = (total_elements + block_size - 1) / block_size;
+    VectorAdd<T><<<add_blocks, block_size, 0, stream_>>>(
+        total_elements, x, h, x_plus_h);
 
-    // Batched GEMM for dW from h
+    // Step 2: Single GEMM: dW = (x + h) @ dv_all.T
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
         dim_, dim_, steps * batch_size_,
         &alpha,
-        h, dim_,
+        x_plus_h, dim_,
         dv_all, dim_,
         &beta_one,
         dW, dim_);

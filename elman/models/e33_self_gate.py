@@ -60,7 +60,7 @@ class E33SelfGateCell(nn.Module):
     output = h_t * silu(h_t)   # Self-gating: h gates h
     """
 
-    def __init__(self, dim, w_h_mode='spectral_norm', w_h_init_gain=1.0, mamba2_init=False):
+    def __init__(self, dim, w_h_mode='none', w_h_init_gain=1.0, mamba2_init=False):
         super().__init__()
         self.dim = dim
         self.w_h_mode = w_h_mode
@@ -210,7 +210,7 @@ class E33SelfGate(nn.Module):
         dim,
         expansion=1.0,
         dropout=0.0,
-        r_h_mode='spectral_norm',
+        r_h_mode='none',  # No spectral norm needed for tanh nonlinearity
         r_h_init_gain=1.0,
         use_conv=False,
         d_conv=4,
