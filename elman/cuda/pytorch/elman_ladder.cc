@@ -523,10 +523,11 @@ std::vector<Tensor> e33_self_gate_backward(
     Tensor dW_h = torch::zeros({dim, dim}, options);
     Tensor db = torch::zeros({dim}, options);
 
-    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim]
+    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_recurrent: BD] [dz_dummy: BD] [db_float: dim]
+    // Note: dz_dummy needed because E33 reuses MambaGateBackward kernel which expects z gradient buffer
     const int64_t BD = batch_size * dim;
     const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
-    const int64_t workspace_size = (time_steps + 2) * BD + float_in_T * 2;
+    const int64_t workspace_size = (time_steps + 3) * BD + float_in_T * 2;
     Tensor workspace = torch::empty({workspace_size}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
