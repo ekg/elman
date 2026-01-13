@@ -3652,6 +3652,737 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E54: Diagonal Decay + No Projections Elman
+// h_t = d * (x_t + h_{t-1}) + b   # Per-dimension decay (d is [dim] vector)
+// output = h * silu(h)           # Self-gating
+// Key: NO GEMM - pure element-wise ops. Mamba2-style diagonal without complexity.
+// =============================================================================
+
+template<typename T>
+struct E54DiagonalNoProjForward {
+    E54DiagonalNoProjForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* d,         // [dim] - per-dimension decay (already sigmoid)
+        const T* b,         // [dim] - bias
+        const T* x,         // [T, B, dim] - input (already silu'd)
+        T* h,               // [T+1, B, dim] - hidden states
+        T* output,          // [T, B, dim] - output
+        T* v,               // [T, B, dim] - pre-activation cache
+        T* workspace);      // [0] - no workspace needed!
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E54DiagonalNoProjBackward {
+    E54DiagonalNoProjBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* d,         // [dim] - decay
+        const T* x,         // [T, B, dim]
+        const T* h,         // [T+1, B, dim]
+        const T* v,         // [T, B, dim] - unused but kept for API
+        const T* d_output,  // [T, B, dim]
+        T* dx,              // [T, B, dim]
+        T* dd,              // [dim] - gradient for decay
+        T* db,              // [dim] - gradient for bias
+        T* workspace);      // [2*B*dim + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E55: Scalar Decay + No Projections Elman
+// h_t = lambda * (x_t + h_{t-1}) + b   # SINGLE scalar lambda!
+// output = h * silu(h)                  # Self-gating
+// Key: Ultimate minimal - 1 scalar lambda, no GEMM, pure element-wise.
+// Total recurrence params: 1 (lambda) + dim (b) = dim + 1
+// =============================================================================
+
+template<typename T>
+struct E55ScalarNoProjForward {
+    E55ScalarNoProjForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float lambda, // Single scalar (already sigmoid)
+        const T* b,         // [dim] - bias
+        const T* x,         // [T, B, dim] - input (already silu'd)
+        T* h,               // [T+1, B, dim] - hidden states
+        T* output,          // [T, B, dim] - output
+        T* v,               // [T, B, dim] - pre-activation cache
+        T* workspace);      // [0] - no workspace needed!
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E55ScalarNoProjBackward {
+    E55ScalarNoProjBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float lambda, // Single scalar
+        const T* x,         // [T, B, dim]
+        const T* h,         // [T+1, B, dim]
+        const T* v,         // [T, B, dim] - unused but kept for API
+        const T* d_output,  // [T, B, dim]
+        T* dx,              // [T, B, dim]
+        float* dlambda,     // [1] - gradient for scalar lambda (float output!)
+        T* db,              // [dim] - gradient for bias
+        T* workspace);      // [2*B*dim + dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E48: No Projections Elman
+// Removes BOTH in_proj and out_proj - operates directly on embedding space.
+// h_t = W @ (x_t + h_{t-1}) + b   # W is dim×dim, operates on embeddings
+// output = h * silu(h)            # Self-gating (only nonlinearity)
+// y = output                       # Direct to residual (no out_proj!)
+// =============================================================================
+
+template<typename T>
+struct E48NoProjectionsForward {
+    E48NoProjectionsForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Wh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E48NoProjectionsBackward {
+    E48NoProjectionsBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient
+        T* db,
+        T* workspace);      // [(2*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E51: No Self-Gate Elman
+// Tests if self-gating is necessary: removes h * silu(h) and uses linear output.
+// h_t = W @ (x_t + h_{t-1}) + b    # Same as E42
+// output = h_t                      # LINEAR! No gating!
+// =============================================================================
+
+template<typename T>
+struct E51NoSelfGateForward {
+    E51NoSelfGateForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output (= h, no gating!)
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Wh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E51NoSelfGateBackward {
+    E51NoSelfGateBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient
+        T* db,
+        T* workspace);      // [(2*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E45: Pure Accumulation Elman (NO GEMM - simplest possible)
+// h_t = x_t + h_{t-1}                   # Just add! No parameters in recurrence!
+// output = h_t * silu(h_t)               # Self-gating (only nonlinearity)
+// Key: NO GEMM at all! Pure element-wise operations.
+// =============================================================================
+
+template<typename T>
+struct E45PureAccumulationForward {
+    E45PureAccumulationForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* workspace);      // None needed, but kept for API consistency
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E45PureAccumulationBackward {
+    E45PureAccumulationBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* h,
+        const T* d_output,
+        T* dx,
+        T* workspace);      // [2*B*dim] for dh, dh_recurrent
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E45b: Pure Accumulation with Decay (learned scalar alpha)
+// h_t = x_t + alpha * h_{t-1}           # Decay prevents unbounded growth
+// output = h_t * silu(h_t)               # Same self-gating
+// =============================================================================
+
+template<typename T>
+struct E45bWithDecayForward {
+    E45bWithDecayForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float alpha,  // Scalar decay rate (from sigmoid(log_alpha))
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* workspace);      // None needed
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E45bWithDecayBackward {
+    E45bWithDecayBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float alpha,
+        const T* h,
+        const T* d_output,
+        T* dx,
+        float* d_alpha,     // Gradient for alpha (scalar)
+        T* workspace);      // [2*B*dim] for dh, dh_recurrent
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E46: No In-Projection Elman (operates directly on embeddings)
+// h_t = W @ (x_t + h_{t-1}) + b         # W is dim*dim, no expansion
+// output = h_t * silu(h_t)               # Self-gating
+// Key: Removes in_proj - W can incorporate the projection's role
+// =============================================================================
+
+template<typename T>
+struct E46NoInProjForward {
+    E46NoInProjForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - weight matrix
+        const T* b,         // [dim] - bias
+        const T* x,         // [T, B, dim] - input (pre-activated with silu)
+        T* h,               // [T+1, B, dim] - hidden states
+        T* output,          // [T, B, dim] - output
+        T* v,               // [T, B, dim] - pre-activation cache (training only)
+        T* workspace);      // [2*B*dim] for tmp_sum, tmp_Wsum
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E46NoInProjBackward {
+    E46NoInProjBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - weight gradient
+        T* db,              // [dim] - bias gradient
+        T* workspace);      // [(2*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E52: Quadratic Gate Elman
+// Tests if sigmoid in self-gate matters: uses pure h^2 instead of h * silu(h).
+// h_t = W @ x_t + W @ h_{t-1} + b        # LINEAR recurrence, tied (NO tanh!)
+// output = h^2                            # Pure quadratic (E52)
+// output = h * |h|                        # Signed quadratic (E52b)
+// =============================================================================
+
+template<typename T>
+struct E52QuadraticGateForward {
+    E52QuadraticGateForward(
+        bool training,
+        int batch_size,
+        int dim,
+        bool signed_quadratic,  // false = h^2, true = h*|h|
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix (tied)
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Wh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    bool signed_quadratic_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E52QuadraticGateBackward {
+    E52QuadraticGateBackward(
+        int batch_size,
+        int dim,
+        bool signed_quadratic,  // false = h^2, true = h*|h|
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient (tied)
+        T* db,
+        T* workspace);      // [(2*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    bool signed_quadratic_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E53: Sigmoid Gate Only Elman
+// Tests if the quadratic component matters: uses silu(h) instead of h * silu(h).
+// h_t = W @ x_t + W @ h_{t-1} + b        # LINEAR recurrence, tied (NO tanh!)
+// output = silu(h)                        # Just silu, NOT h * silu(h)!
+// =============================================================================
+
+template<typename T>
+struct E53SigmoidGateForward {
+    E53SigmoidGateForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix (tied)
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Wh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E53SigmoidGateBackward {
+    E53SigmoidGateBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient (tied)
+        T* db,
+        T* workspace);      // [(2*T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+
+// =============================================================================
+// E43: Scalar Decay Elman
+// The most radical W simplification: a single scalar λ replaces the d×d matrix.
+// h_t = λ * (x_t + h_{t-1}) + b         # Scalar decay (NO matrix!)
+// output = h_t * silu(h_t)               # Self-gating (only nonlinearity)
+// λ = sigmoid(log_lambda) ∈ (0, 1) for stability
+// =============================================================================
+
+template<typename T>
+struct E43ScalarDecayForward {
+    E43ScalarDecayForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* log_lambda,    // [1] - log(sigmoid^-1(λ))
+        const T* b,             // [dim]
+        const T* x,             // [T, B, dim] pre-activated input
+        T* h,                   // [T+1, B, dim] hidden states
+        T* output,              // [T, B, dim] output
+        T* v,                   // [T, B, dim] cache (stores x + h_prev)
+        T* workspace);          // unused
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E43ScalarDecayBackward {
+    E43ScalarDecayBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* log_lambda,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* d_log_lambda,        // [1] gradient for log_lambda
+        T* db,
+        T* workspace);          // [2*B*dim + dim + 1]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E44: Diagonal W Elman (Mamba2-style)
+// Per-dimension decay rates, no cross-dimension mixing.
+// h_t = d * (x_t + h_{t-1}) + b         # d is [dim] vector, element-wise
+// output = h_t * silu(h_t)               # Self-gating (only nonlinearity)
+// d = sigmoid(log_d) ∈ (0, 1)^dim for stability
+// =============================================================================
+
+template<typename T>
+struct E44DiagonalWForward {
+    E44DiagonalWForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* log_d,         // [dim] - per-dimension log decay
+        const T* b,             // [dim]
+        const T* x,             // [T, B, dim] pre-activated input
+        T* h,                   // [T+1, B, dim] hidden states
+        T* output,              // [T, B, dim] output
+        T* v,                   // [T, B, dim] cache (stores x + h_prev)
+        T* workspace);          // unused
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E44DiagonalWBackward {
+    E44DiagonalWBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* log_d,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* d_log_d,             // [dim] gradient for log_d
+        T* db,
+        T* workspace);          // [2*B*dim + 2*dim]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E56: Concat Elman - Single GEMM on concatenated [x, h] input
+// h_t = tanh(W @ [x_t; h_{t-1}] + b)  # Single GEMM with W [dim, 2*dim]
+// output = h * silu(z)                 # Gate with z branch
+// Key: Same params as E1, but one GEMM instead of two per timestep.
+// =============================================================================
+
+template<typename T>
+struct E56ConcatElmanForward {
+    E56ConcatElmanForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, 2*dim] - single weight matrix
+        const T* b,         // [dim] - bias
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [B*2*dim + B*dim] for xh_concat, Wxh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E56ConcatElmanBackward {
+    E56ConcatElmanBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, 2*dim]
+        const T* x,         // [T, B, dim]
+        const T* z,         // [T, B, dim]
+        const T* h,         // [T+1, B, dim]
+        const T* v,         // [T, B, dim]
+        const T* d_output,  // [T, B, dim]
+        T* dx,              // [T, B, dim]
+        T* dz,              // [T, B, dim]
+        T* dW,              // [dim, 2*dim]
+        T* db,              // [dim]
+        T* workspace);      // [(T+6)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
