@@ -1130,6 +1130,67 @@ std::vector<Tensor> e41_diagonal_wx_backward(
 }
 
 // =============================================================================
+// E42: Linear Tied Self-Gated Elman - Linear recurrence + tied weights
+// h_t = W @ x_t + W @ h_{t-1} + b    # LINEAR (no tanh!), tied
+// output = h * silu(h)               # Self-gating
+// =============================================================================
+
+std::vector<Tensor> e42_linear_tied_forward(
+    bool training,
+    Tensor x, Tensor h0, Tensor W, Tensor b) {
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    CHECK_INPUT(x); CHECK_INPUT(h0); CHECK_INPUT(W); CHECK_INPUT(b);
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options) : torch::empty({0}, options);
+    const int64_t BD = batch_size * dim;
+    // Workspace: tmp_Wx (T*BD) + tmp_Wh (BD)
+    Tensor workspace = torch::empty({(time_steps + 1) * BD}, options);
+    h[0] = h0;
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e42_linear_tied_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E42LinearTiedForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, at::cuda::getCurrentCUDABlasHandle(), at::cuda::getCurrentCUDAStream());
+        forward.Run(time_steps, ptr<scalar_t>(W), ptr<scalar_t>(b),
+            ptr<scalar_t>(x), ptr<scalar_t>(h), ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr, ptr<scalar_t>(workspace));
+    }));
+    return {h, output, v};
+}
+
+std::vector<Tensor> e42_linear_tied_backward(
+    Tensor W, Tensor x, Tensor h, Tensor v, Tensor d_output) {
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    CHECK_INPUT(W); CHECK_INPUT(x); CHECK_INPUT(h); CHECK_INPUT(v); CHECK_INPUT(d_output);
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+    Tensor dx = torch::empty_like(x);
+    Tensor dW = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    // Workspace: dv_all (T*BD) + dh (BD) + dh_recurrent (BD) + db_float (dim floats)
+    Tensor workspace = torch::empty({(time_steps + 2) * BD + float_in_T}, options);
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e42_linear_tied_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E42LinearTiedBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, at::cuda::getCurrentCUDABlasHandle(), at::cuda::getCurrentCUDAStream());
+        backward.Run(time_steps, ptr<scalar_t>(W), ptr<scalar_t>(x),
+            ptr<scalar_t>(h), ptr<scalar_t>(v), ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx), ptr<scalar_t>(dW), ptr<scalar_t>(db), ptr<scalar_t>(workspace));
+    }));
+    return {dx, dW, db};
+}
+
+// =============================================================================
 // E17: Selective W_h Elman (input-dependent gating on recurrence)
 // h_t = tanh(W_x @ x_t + (W_h @ h_{t-1}) * sigmoid(W_gate @ x_t) + b)
 // output = h * silu(z)
@@ -6676,4 +6737,8 @@ void elman_ladder_init(py::module& m) {
           "E41: Diagonal W_x Elman forward (W_x is diagonal, element-wise scaling)");
     m.def("e41_diagonal_wx_backward", &e41_diagonal_wx_backward,
           "E41: Diagonal W_x Elman backward");
+    m.def("e42_linear_tied_forward", &e42_linear_tied_forward,
+          "E42: Linear Tied Self-Gated Elman forward (h = W@x + W@h + b, no tanh)");
+    m.def("e42_linear_tied_backward", &e42_linear_tied_backward,
+          "E42: Linear Tied Self-Gated Elman backward");
 }

@@ -127,17 +127,23 @@ class E42Cell(nn.Module):
 
         W = self.get_W()
 
+        # CRITICAL: Batch the W @ x computation for all timesteps!
+        # This is the E37v2 lesson - don't compute W @ (x + h) per step
+        x_flat = x.reshape(T * B, D)      # [T*B, dim]
+        Wx_all = x_flat @ W.T             # [T*B, dim] - ONE batched GEMM!
+        Wx_all = Wx_all.reshape(T, B, D)  # [T, B, dim]
+
         h_list = [h0]
         output_list = []
 
         for t in range(T):
             h_prev = h_list[-1]
-            x_t = x[t]
 
-            # E42: Linear recurrence with tied weights
-            # h_t = W @ (x + h_prev) + b
-            combined = x_t + h_prev
-            h_new = combined @ W.T + self.b
+            # E42: Linear recurrence with tied weights (OPTIMIZED)
+            # Mathematically: h_t = W @ (x + h_prev) + b
+            # But computed as: h_t = (W @ x) + (W @ h_prev) + b
+            Wh = h_prev @ W.T             # GEMM per step (unavoidable)
+            h_new = Wx_all[t] + Wh + self.b  # Use pre-computed W @ x
             h_list.append(h_new)
 
             # Self-gating (only nonlinearity!)
@@ -168,13 +174,13 @@ With bounded inputs and spectral radius < 1, the system is stable:
 
 ## Expected Results
 
-| Metric | E33 | E36 | E37 | E42 (expected) |
-|--------|-----|-----|-----|----------------|
-| Loss | 1.665 | 1.630 | 1.601 | **~1.58-1.62?** |
-| Throughput | 140K | 138K | 92K* | **~160K?** |
-| Params | 39M | 39M | 37.4M | **~37.4M** |
+| Metric | E33 | E36 | E37v2 | E42 (expected) |
+|--------|-----|-----|-------|----------------|
+| Loss | 1.665 | 1.630 | 1.576 | **~1.55-1.60?** |
+| Throughput | 140K | 138K | 121K | **~140-150K?** |
+| Params | 39M | 39M | 29.8M | **~29.8M** |
 
-*E37 slowness was due to GEMM batching issue, now fixed.
+E37v2 uses batched GEMM (W @ x + W @ h instead of W @ (x + h)), which E42 should also use.
 
 **Optimistic scenario**: E42 combines benefits, achieves both best loss AND best speed.
 
@@ -232,23 +238,39 @@ Compromise between full and diagonal.
 
 ## CUDA Kernel Notes
 
-The E42 kernel is simpler than E33:
+**CRITICAL LESSON FROM E37v2**: Do NOT compute `W @ (x + h)` directly!
 
+E37 ran at 92K tok/s because it computed `W @ (x + h)` per timestep.
+E37v2 runs at 121K tok/s (+31%) by computing `W @ x + W @ h` instead.
+
+**Why?** The `W @ x` computation can be batched across ALL timesteps:
 ```cpp
-// E33 kernel (per timestep):
-// 1. x_proj = W_x @ x
-// 2. h_proj = W_h @ h
-// 3. raw = x_proj + h_proj + b
-// 4. h_new = tanh(raw)
-// 5. output = h_new * silu(h_new)
+// SLOW (E37 original):
+for t in range(T):
+    combined = x[t] + h_prev    // VectorAdd kernel
+    h_new = W @ combined + b    // GEMM per step, cannot batch!
 
-// E42 kernel (per timestep):
-// 1. combined = x + h_prev
-// 2. h_new = W @ combined + b     // Single GEMM!
-// 3. output = h_new * silu(h_new)
+// FAST (E37v2, use this for E42!):
+Wx_all = W @ x_all             // ONE batched GEMM for all T timesteps!
+for t in range(T):
+    Wh = W @ h_prev            // GEMM per step (unavoidable)
+    h_new = Wx_all[t] + Wh + b // Fused add kernel
 ```
 
-Fewer operations, should be faster.
+**E42 kernel should follow E37v2 pattern:**
+```cpp
+// E42 kernel (OPTIMIZED):
+// Phase 1: Batch GEMM (all timesteps at once)
+Wx_all = W @ x_all           // [T, B, dim] = W @ [T*B, dim].T
+
+// Phase 2: Sequential (per timestep, unavoidable)
+for t in range(T):
+    Wh = W @ h_prev          // GEMM
+    h_new = Wx_all[t] + Wh + b  // Fused kernel
+    output = h_new * silu(h_new)
+```
+
+This is mathematically identical to `W @ (x + h)` but 30%+ faster!
 
 ## Summary
 

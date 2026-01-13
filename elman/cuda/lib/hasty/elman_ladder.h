@@ -3409,6 +3409,68 @@ private:
 };
 
 // =============================================================================
+// E42: Linear Tied Self-Gated Elman
+// Combines E36 (linear recurrence) + E37 (tied weights) + E37v2 batched GEMM
+// h_t = W @ x_t + W @ h_{t-1} + b        # LINEAR recurrence, tied (NO tanh!)
+// output = h * silu(h)                    # Self-gating (only nonlinearity)
+// Uses E37v2 pattern: batch W @ x for all timesteps, W @ h_prev per step
+// =============================================================================
+
+template<typename T>
+struct E42LinearTiedForward {
+    E42LinearTiedForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,         // [dim, dim] - SINGLE weight matrix (tied)
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* workspace);      // [(T+1)*B*dim] for tmp_Wx (T*BD), tmp_Wh (BD)
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E42LinearTiedBackward {
+    E42LinearTiedBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* v,
+        const T* d_output,
+        T* dx,
+        T* dW,              // [dim, dim] - single gradient (tied)
+        T* db,
+        T* workspace);      // [(T+2)*B*dim + ceil(dim*4/sizeof(T))]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E38: No W_x Elman - removes W_x matrix entirely from E33
 // h_t = tanh(x_t + W_h @ h_{t-1} + b)         # NO W_x! Direct add
 // output = h * silu(h)                         # Self-gating from E33

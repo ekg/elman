@@ -73,7 +73,8 @@ CUDA_OBJS := \
 	lib/e38_no_wx_gpu.o \
 	lib/e39_no_bias_gpu.o \
 	lib/e40_no_presilu_gpu.o \
-	lib/e41_diagonal_wx_gpu.o
+	lib/e41_diagonal_wx_gpu.o \
+	lib/e42_linear_tied_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
