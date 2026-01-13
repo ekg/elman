@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-01-13T05:20:27.622948",
+  "results": {
+    "250M": {
+      "E1": {
+        "loss": 1.5756999999999999,
+        "throughput": 52192.09,
+        "final_step": 3960,
+        "n_samples": 100
+      },
+      "E33": {
+        "loss": 1.545548,
+        "throughput": 58105.74,
+        "final_step": 5310,
+        "n_samples": 100
+      },
+      "E42": {
+        "loss": 1.414584,
+        "throughput": 42810.09,
+        "final_step": 3210,
+        "n_samples": 100
+      },
+      "Mamba2": {
+        "loss": 1.635125925925926,
+        "throughput": 35611.351851851854,
+        "final_step": 2650,
+        "n_samples": 54
+      }
+    },
+    "500M": {
+      "E1": {
+        "loss": 1.51498,
+        "throughput": 30177.36,
+        "final_step": 3400,
+        "n_samples": 100
+      },
+      "E33": {
+        "loss": 1.5766419999999999,
+        "throughput": 28437.76,
+        "final_step": 3680,
+        "n_samples": 100
+      },
+      "E42": {
+        "loss": 1.6584649999999999,
+        "throughput": 21328.17,
+        "final_step": 2420,
+        "n_samples": 100
+      },
+      "Mamba2": {
+        "loss": 1.676091891891892,
+        "throughput": 16227.621621621622,
+        "final_step": 1800,
+        "n_samples": 37
+      }
+    }
+  }
+}

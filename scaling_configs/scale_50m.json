@@ -1,0 +1,40 @@
+{
+  "scale": "50M",
+  "notes": "Tested on 49GB RTX 6000 Ada. batch=256 fits all models with ~40-44GB peak memory. Should fit 48GB A100.",
+  "E1": {
+    "dim": 1280,
+    "depth": 6,
+    "batch": 256,
+    "params": 49496320,
+    "params_human": "49.50M",
+    "peak_memory_gb": 42.03
+  },
+  "E33": {
+    "dim": 1440,
+    "depth": 6,
+    "batch": 256,
+    "params": 50153760,
+    "params_human": "50.15M",
+    "peak_memory_gb": 40.92,
+    "notes": "CUDA kernel has bug (illegal memory access). Use PyTorch fallback."
+  },
+  "E42": {
+    "dim": 1664,
+    "depth": 6,
+    "batch": 256,
+    "params": 50287744,
+    "params_human": "50.29M",
+    "peak_memory_gb": 44.28
+  },
+  "Mamba2": {
+    "dim": 1152,
+    "depth": 6,
+    "batch": 256,
+    "params": 49307784,
+    "params_human": "49.31M",
+    "peak_memory_gb": 39.82,
+    "expand": 2,
+    "d_state": 64,
+    "headdim": 64
+  }
+}

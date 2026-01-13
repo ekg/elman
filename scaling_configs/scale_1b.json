@@ -1,0 +1,52 @@
+{
+  "description": "1B parameter scale comparison configs for 48GB A100",
+  "target_params": "~1000M",
+  "depth": 6,
+  "seq_len": 1024,
+  "gpu": "A100 48GB",
+  "configs": {
+    "E1": {
+      "level": 1,
+      "dim": 5888,
+      "depth": 6,
+      "params": 1041640192,
+      "params_m": 1041.6,
+      "max_batch_size": 56,
+      "seq_len": 1024,
+      "vocab_size": 256
+    },
+    "E33": {
+      "level": 33,
+      "dim": 6400,
+      "depth": 6,
+      "params": 984761600,
+      "params_m": 984.8,
+      "max_batch_size": 52,
+      "seq_len": 1024,
+      "vocab_size": 256
+    },
+    "E42": {
+      "level": 42,
+      "dim": 7680,
+      "depth": 6,
+      "params": 1063749120,
+      "params_m": 1063.7,
+      "max_batch_size": 52,
+      "seq_len": 1024,
+      "vocab_size": 256
+    },
+    "Mamba2": {
+      "model": "Mamba2LM",
+      "dim": 5248,
+      "depth": 6,
+      "d_state": 128,
+      "expand": 2,
+      "headdim": 64,
+      "params": 1006524552,
+      "params_m": 1006.5,
+      "max_batch_size": 60,
+      "seq_len": 1024,
+      "vocab_size": 256
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "target_scale": "250M",
+  "gpu": "A100-48GB",
+  "seq_len": 1024,
+  "depth": 6,
+  "models": {
+    "E1": {
+      "level": 1,
+      "dim": 2880,
+      "params": 249606720,
+      "params_readable": "249.6M",
+      "max_batch_size": 112,
+      "recommended_batch_size": 104,
+      "peak_memory_at_104": "44.94 GB",
+      "notes": "Most efficient at 250M scale - can use 4x larger batch than others"
+    },
+    "E33": {
+      "level": 33,
+      "dim": 3200,
+      "params": 246620800,
+      "params_readable": "246.6M",
+      "max_batch_size": 104,
+      "recommended_batch_size": 96,
+      "peak_memory_at_96": "34.69 GB",
+      "notes": "Self-gating variant (h * silu(h) instead of h * silu(z))"
+    },
+    "E42": {
+      "level": 42,
+      "dim": 3712,
+      "params": 249019520,
+      "params_readable": "249.0M",
+      "max_batch_size": 104,
+      "recommended_batch_size": 96,
+      "peak_memory_at_96": "40.16 GB",
+      "notes": "Linear recurrence + tied weights (E36 + E37)"
+    },
+    "Mamba2": {
+      "level": "mamba2",
+      "dim": 2624,
+      "params": 254083204,
+      "params_readable": "254.1M",
+      "max_batch_size": 104,
+      "recommended_batch_size": 96,
+      "peak_memory_at_96": "41.33 GB",
+      "notes": "Reference SSM baseline"
+    }
+  },
+  "comparison_batch_size": 96,
+  "fair_comparison_note": "Use batch_size=96 for all models to ensure fair throughput comparison",
+  "memory_summary": {
+    "E1_batch96": "38.62 GB",
+    "E33_batch96": "34.69 GB",
+    "E42_batch96": "40.16 GB",
+    "Mamba2_batch96": "41.33 GB"
+  }
+}

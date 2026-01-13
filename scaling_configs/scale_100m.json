@@ -1,0 +1,43 @@
+{
+  "target_params": "100M",
+  "depth": 6,
+  "seq_len": 1024,
+  "vocab_size": 256,
+  "gpu_memory_gb": 48,
+  "models": {
+    "E1": {
+      "dim": 1824,
+      "params": 100299936,
+      "params_M": 100.3,
+      "max_batch_size": 192,
+      "peak_memory_gb": 48.35,
+      "notes": "OOM at batch=200"
+    },
+    "E33": {
+      "dim": 2048,
+      "params": 101214208,
+      "params_M": 101.2,
+      "max_batch_size": 168,
+      "peak_memory_gb": 38.36,
+      "notes": "CUDA kernel bug at batch>=172, use 168 max"
+    },
+    "E42": {
+      "dim": 2352,
+      "params": 100206960,
+      "params_M": 100.2,
+      "max_batch_size": 184,
+      "peak_memory_gb": 48.46,
+      "notes": "OOM at batch=188"
+    },
+    "Mamba2": {
+      "dim": 1664,
+      "params": 102051240,
+      "params_M": 102.1,
+      "max_batch_size": 200,
+      "peak_memory_gb": 48.06,
+      "notes": "OOM at batch=208"
+    }
+  },
+  "recommended_batch_size": 160,
+  "recommended_batch_size_notes": "Using 160 for fair comparison (all models fit). E33 has CUDA bug at 172+, so 168 is true max there."
+}

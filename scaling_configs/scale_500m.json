@@ -1,0 +1,82 @@
+{
+  "target_scale": "500M",
+  "depth": 6,
+  "seq_len": 1024,
+  "gpu": "A100-48GB",
+  "notes": "Configs for ~500M parameter models at depth=6 on 48GB A100. All batch sizes tested with bfloat16, forward+backward pass.",
+
+  "models": {
+    "E1": {
+      "description": "Gated Elman - Mamba2-style split projection gating",
+      "dim": 4096,
+      "depth": 6,
+      "level": 1,
+      "params": 504418304,
+      "params_human": "504.4M",
+      "max_batch_size": 84,
+      "safe_batch_size": 80,
+      "peak_memory_at_max": "48.55GB",
+      "notes": "bs=88 OOMs. bs=84 uses 48.55GB, very close to limit."
+    },
+    "E33": {
+      "description": "Self-Gate Elman - h gates itself (h * silu(h))",
+      "dim": 4608,
+      "depth": 6,
+      "level": 33,
+      "params": 510847488,
+      "params_human": "510.8M",
+      "max_batch_size": 72,
+      "safe_batch_size": 64,
+      "peak_memory_at_max": "40.73GB",
+      "notes": "CUDA kernel has bug at bs>=76. PyTorch fallback maxes at bs=72. Safe to use bs=64 with CUDA kernel."
+    },
+    "E42": {
+      "description": "Linear Tied - Linear recurrence + tied weights (E36 + E37)",
+      "dim": 5376,
+      "depth": 6,
+      "level": 42,
+      "params": 521670912,
+      "params_human": "521.7M",
+      "max_batch_size": 72,
+      "safe_batch_size": 64,
+      "peak_memory_at_max": "44.34GB",
+      "notes": "bs=80 OOMs. bs=72 uses 44.34GB."
+    },
+    "Mamba2": {
+      "description": "Mamba2 SSM baseline",
+      "dim": 3712,
+      "depth": 6,
+      "level": "mamba2",
+      "d_state": 128,
+      "expand": 2,
+      "headdim": 64,
+      "params": 505606440,
+      "params_human": "505.6M",
+      "max_batch_size": 80,
+      "safe_batch_size": 64,
+      "peak_memory_at_max": "44.02GB",
+      "notes": "bs=96 OOMs. bs=80 uses 44.02GB."
+    }
+  },
+
+  "recommended_config": {
+    "description": "Use batch_size=64 for fair comparison across all models",
+    "batch_size": 64,
+    "seq_len": 1024,
+    "reason": "64 is the largest batch size that works reliably for all models including E33 with CUDA kernel."
+  },
+
+  "alternative_configs": {
+    "max_throughput_e1": {
+      "description": "E1 can use higher batch size for max throughput",
+      "batch_size": 80,
+      "models": ["E1"],
+      "note": "E1 only. Others would OOM or have kernel bugs."
+    },
+    "conservative": {
+      "description": "Conservative config with headroom",
+      "batch_size": 48,
+      "note": "Safe for all models with memory headroom for gradient accumulation or other overhead."
+    }
+  }
+}
