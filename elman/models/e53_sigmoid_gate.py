@@ -90,8 +90,9 @@ class E53SigmoidGateCell(nn.Module):
                 u = self.W @ v
                 u = u / (u.norm() + 1e-8)
             self._spectral_u = u
-        sigma = (u @ self.W @ v).abs()
-        return self.W * (target_radius / (sigma + 1e-8))
+            sigma = (u @ self.W @ v).abs()
+            scale = target_radius / (sigma + 1e-8)
+        return self.W * scale
 
     def forward(self, x, z=None, h0=None):
         """

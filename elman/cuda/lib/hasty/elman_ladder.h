@@ -4383,6 +4383,210 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E58: Per-Dimension Learned Radii Elman
+// h_t = tanh(W_x @ x_t + (W_h * radii.unsqueeze(1)) @ h_{t-1} + b)
+// output = h * silu(z)
+// Key: Each hidden dimension has its own learned spectral radius
+// =============================================================================
+
+template<typename T>
+struct E58LearnedRadiiForward {
+    E58LearnedRadiiForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim] (unscaled)
+        const T* radii,     // [dim] per-dimension scaling factors
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        const T* z,         // [T, B, dim] gate input (pre silu)
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* v,               // [T, B, dim] pre-activation cache
+        T* Rh_cache,        // [T, B, dim] cache W_h @ h for backward
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E58LearnedRadiiBackward {
+    E58LearnedRadiiBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const T* radii,     // [dim] per-dimension scaling
+        const T* x,
+        const T* z,
+        const T* h,
+        const T* v,
+        const T* Rh_cache,  // [T, B, dim] from forward
+        const T* d_output,
+        T* dx,
+        T* dz,
+        T* dW_x,
+        T* dW_h,
+        T* d_radii,         // [dim] gradient for radii
+        T* db,
+        T* workspace);      // [(2*T+2)*B*dim + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E59: Highway Elman - Residual Recurrence with Perfect Gradient Flow
+// h_t = h_{t-1} + alpha * (W @ x_t + b)   # Residual accumulation (gradient = I)
+// output_t = h_t * silu(h_t)              # Nonlinearity at output only
+// Where alpha = exp(log_alpha) is a learned positive scalar.
+// Key: The Jacobian dh_t/dh_{t-1} = I (identity), providing perfect gradient flow.
+// =============================================================================
+
+template<typename T>
+struct E59HighwayForward {
+    E59HighwayForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float alpha,  // exp(log_alpha) - positive scalar
+        const T* W,         // [dim, dim]
+        const T* b,         // [dim]
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* Wx_cache,        // [T, B, dim] cache of W@x+b for backward (training only)
+        T* workspace);      // [T*B*dim] for Wx_all
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E59HighwayBackward {
+    E59HighwayBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const float alpha,
+        const T* W,
+        const T* x,
+        const T* h,
+        const T* Wx_cache,      // [T, B, dim] from forward
+        const T* d_output,
+        T* dx,
+        T* dW,                  // [dim, dim]
+        T* db,                  // [dim]
+        float* d_log_alpha,     // [1] gradient for log_alpha
+        T* workspace);          // [(T+2)*B*dim + dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E60: Residual Nonlinear Elman
+// h_t = h_{t-1} + alpha * tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+// output = h_t * silu(h_t)
+// alpha = exp(log_alpha) is a learned positive scalar
+// =============================================================================
+
+template<typename T>
+struct E60ResidualNonlinearForward {
+    E60ResidualNonlinearForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,       // [dim, dim]
+        const T* W_h,       // [dim, dim]
+        const T* b,         // [dim]
+        const float* log_alpha,  // [1] scalar (in log space for positivity)
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* tanh_cache,      // [T, B, dim] stores tanh values for backward
+        T* workspace);      // [T*B*dim + B*dim] for Wx, Rh
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E60ResidualNonlinearBackward {
+    E60ResidualNonlinearBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_x,
+        const T* W_h,
+        const float* log_alpha,  // [1] scalar
+        const T* x,
+        const T* h,
+        const T* tanh_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_x,
+        T* dW_h,
+        T* db,
+        float* d_log_alpha,  // [1] gradient for log_alpha
+        T* workspace);       // [(T+2)*B*dim + dim*sizeof(float)/sizeof(T) + 1]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

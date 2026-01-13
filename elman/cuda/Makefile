@@ -74,7 +74,21 @@ CUDA_OBJS := \
 	lib/e39_no_bias_gpu.o \
 	lib/e40_no_presilu_gpu.o \
 	lib/e41_diagonal_wx_gpu.o \
-	lib/e42_linear_tied_gpu.o
+	lib/e42_linear_tied_gpu.o \
+	lib/e48_no_projections_gpu.o \
+	lib/e51_no_self_gate_gpu.o \
+	lib/e52_quadratic_gate_gpu.o \
+	lib/e53_sigmoid_gate_gpu.o \
+	lib/e54_diagonal_no_proj_gpu.o \
+	lib/e55_scalar_no_proj_gpu.o \
+	lib/e45_pure_accumulation_gpu.o \
+	lib/e46_no_in_proj_gpu.o \
+	lib/e43_scalar_decay_gpu.o \
+	lib/e44_diagonal_w_gpu.o \
+	lib/e56_concat_elman_gpu.o \
+	lib/e58_learned_radii_gpu.o \
+	lib/e59_highway_gpu.o \
+	lib/e60_residual_nonlinear_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

@@ -216,7 +216,7 @@ def train(args):
     if r_h_mode == 'auto' and args.level != 'mamba2':
         # Models with full W_h matrix need spectral norm for stability
         # Models with diagonal/scalar W_h are already bounded
-        full_wh_levels = {1, 33, 42, 51, 52, 53, 56, 57, 58}  # Full W_h matrix
+        full_wh_levels = {1, 33, 42, 51, 52, 53, 56, 57, 58, 60}  # Full W_h matrix (E59 is highway, no W_h)
         diagonal_levels = {34, 44, 54}  # Diagonal W_h (already bounded)
         scalar_levels = {43, 55}  # Scalar decay (already bounded)
         no_wh_levels = {45, 46, 48}  # No W_h at all

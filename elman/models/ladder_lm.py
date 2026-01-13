@@ -64,6 +64,21 @@ from .e39_no_bias import E39NoBias
 from .e40_no_presilu import E40NoPresilu
 from .e41_diagonal_wx import E41DiagonalWx
 from .e42_linear_tied import E42LinearTied
+from .e43_scalar_decay import E43ScalarDecay
+from .e44_diagonal_w import E44DiagonalW
+from .e45_pure_accumulation import E45PureAccumulation, E45bWithDecay
+from .e46_no_in_proj import E46NoInProj
+from .e48_no_projections import E48NoProjections
+from .e51_no_self_gate import E51NoSelfGate
+from .e52_quadratic_gate import E52QuadraticGate, E52bSignedQuadratic
+from .e53_sigmoid_gate import E53SigmoidGate
+from .e54_diagonal_no_proj import E54DiagonalNoProj
+from .e55_scalar_no_proj import E55ScalarNoProj
+from .e56_concat_elman import E56ConcatElman
+from .e57_learned_radius import E57LearnedRadius
+from .e58_learned_radii import E58LearnedRadii
+from .e59_highway import E59Highway, E59bGatedHighway, E59cMixedHighway
+from .e60_residual_nonlinear import E60ResidualNonlinear, E60bGatedResidual, E60cForgetGate
 
 
 def get_ladder_level(level):
@@ -117,6 +132,27 @@ def get_ladder_level(level):
         40: E40NoPresilu,  # E40: No pre-silu: x_proj = in_proj(x), NOT silu(in_proj(x))
         41: E41DiagonalWx,  # E41: Diagonal W_x (d_x vector instead of matrix)
         42: E42LinearTied,  # E42: Linear recurrence + tied weights (E36 + E37)
+        43: E43ScalarDecay,  # E43: Scalar decay (λ replaces d×d matrix)
+        44: E44DiagonalW,  # E44: Diagonal W (per-dimension decay, Mamba2-style)
+        45: E45PureAccumulation,  # E45: Pure accumulation (W=I, no params in recurrence)
+        '45b': E45bWithDecay,  # E45b: Pure accumulation + learned scalar decay
+        46: E46NoInProj,  # E46: No in_proj (recurrence on raw embeddings)
+        48: E48NoProjections,  # E48: No projections at all (minimal recurrent layer)
+        51: E51NoSelfGate,  # E51: No self-gate (linear output)
+        52: E52QuadraticGate,  # E52: Pure quadratic gate (h²)
+        '52b': E52bSignedQuadratic,  # E52b: Signed quadratic (h * |h|)
+        53: E53SigmoidGate,  # E53: Sigmoid gate only (silu, not h * silu)
+        54: E54DiagonalNoProj,  # E54: Diagonal W + no projections (Mamba2-style minimal)
+        55: E55ScalarNoProj,  # E55: Scalar + no projections (ultimate minimal)
+        56: E56ConcatElman,  # E56: Concat Elman - W @ [x;h] instead of W_x @ x + W_h @ h
+        57: E57LearnedRadius,  # E57: E1 with learned spectral radius (scalar)
+        58: E58LearnedRadii,  # E58: E1 with per-dimension learned radii
+        59: E59Highway,  # E59: Highway Elman (residual recurrence, gradient=I)
+        '59b': E59bGatedHighway,  # E59b: Gated residual highway
+        '59c': E59cMixedHighway,  # E59c: Mixed residual + small recurrent
+        60: E60ResidualNonlinear,  # E60: Residual nonlinear (h + tanh(Wh + Ux))
+        '60b': E60bGatedResidual,  # E60b: Gated residual nonlinear
+        '60c': E60cForgetGate,  # E60c: Forget-gate style (GRU-like)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -142,7 +178,7 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-42, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-55, 45b, 52b, mamba2")
 
 
 class LadderLM(nn.Module):

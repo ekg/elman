@@ -7311,6 +7311,400 @@ std::vector<Tensor> e29c_diagonal_backward(
     return {dx, dW_h, dW_xz, db_h, dW_write, dg_z, dg_r, dg_h_out, db_gate_out};
 }
 
+// =============================================================================
+// E58: Per-Dimension Learned Radii Elman
+// =============================================================================
+
+std::vector<Tensor> e58_learned_radii_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor z,           // [T, B, dim] gate input (pre silu)
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim] (unscaled)
+    Tensor radii,       // [dim] per-dimension scaling
+    Tensor b) {         // [dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(radii);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor v = training ? torch::empty({time_steps, batch_size, dim}, options)
+                        : torch::empty({0}, options);
+    Tensor Rh_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                               : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e58_learned_radii_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E58LearnedRadiiForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(radii),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(v) : nullptr,
+            training ? ptr<scalar_t>(Rh_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, v, Rh_cache};
+}
+
+std::vector<Tensor> e58_learned_radii_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor radii,
+    Tensor x,
+    Tensor z,
+    Tensor h,
+    Tensor v,
+    Tensor Rh_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(radii);
+    CHECK_INPUT(x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h);
+    CHECK_INPUT(v);
+    CHECK_INPUT(Rh_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dz = torch::empty_like(z);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor d_radii = torch::zeros({dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+
+    // Workspace layout: [dv_all: T*BD] [dRh_all: T*BD] [dh: BD] [dh_recurrent: BD]
+    //                   [db_float: dim] [d_radii_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (2 * dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (2 * time_steps + 2) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e58_learned_radii_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E58LearnedRadiiBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(radii),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(z),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(v),
+            ptr<scalar_t>(Rh_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dz),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(d_radii),
+            ptr<scalar_t>(db),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dz, dW_x, dW_h, d_radii, db};
+}
+
+// =============================================================================
+// E59: Highway Elman - Residual Recurrence with Perfect Gradient Flow
+// h_t = h_{t-1} + alpha * (W @ x_t + b)   # Residual accumulation (gradient = I)
+// output_t = h_t * silu(h_t)              # Nonlinearity at output only
+// =============================================================================
+
+std::vector<Tensor> e59_highway_forward(
+    bool training,
+    Tensor x,           // [T, B, dim]
+    Tensor h0,          // [B, dim]
+    Tensor W,           // [dim, dim]
+    Tensor b,           // [dim]
+    float alpha) {      // exp(log_alpha)
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W);
+    CHECK_INPUT(b);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor Wx_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                               : torch::empty({0}, options);
+
+    // Workspace: [T*BD] for Wx_all
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD}, options);
+
+    h[0] = h0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e59_highway_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E59HighwayForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            alpha,
+            ptr<scalar_t>(W),
+            ptr<scalar_t>(b),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(Wx_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, Wx_cache};
+}
+
+std::vector<Tensor> e59_highway_backward(
+    float alpha,
+    Tensor W,
+    Tensor x,
+    Tensor h,
+    Tensor Wx_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(Wx_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor d_log_alpha = torch::zeros({1}, options.dtype(torch::kFloat32));
+
+    // Workspace: [dWx_all: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    Tensor workspace = torch::empty({(time_steps + 2) * BD + float_in_T}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e59_highway_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E59HighwayBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            alpha,
+            ptr<scalar_t>(W),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(Wx_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW),
+            ptr<scalar_t>(db),
+            d_log_alpha.data_ptr<float>(),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW, db, d_log_alpha};
+}
+
+// =============================================================================
+// E60: Residual Nonlinear Elman
+// h_t = h_{t-1} + alpha * tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+// output = h_t * silu(h_t)
+// alpha = exp(log_alpha) is a learned positive scalar
+// =============================================================================
+
+std::vector<Tensor> e60_residual_nonlinear_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] pre-activated input
+    Tensor h0,          // [B, dim]
+    Tensor W_x,         // [dim, dim]
+    Tensor W_h,         // [dim, dim]
+    Tensor b,           // [dim]
+    Tensor log_alpha) { // [1] scalar (exp(log_alpha) gives alpha)
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b);
+    CHECK_INPUT(log_alpha);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor h = torch::empty({time_steps + 1, batch_size, dim}, options);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor tanh_cache = training ? torch::empty({time_steps, batch_size, dim}, options)
+                                 : torch::empty({0}, options);
+
+    // Forward workspace: [tmp_Wx: T*BD] [tmp_Rh: BD]
+    const int64_t BD = batch_size * dim;
+    Tensor workspace = torch::empty({time_steps * BD + BD}, options);
+
+    h[0] = h0;
+
+    // log_alpha needs to be float for the kernel
+    Tensor log_alpha_float = log_alpha.to(torch::kFloat32).contiguous();
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e60_residual_nonlinear_forward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E60ResidualNonlinearForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            ptr<scalar_t>(b),
+            log_alpha_float.data_ptr<float>(),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(tanh_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {h, output, tanh_cache};
+}
+
+std::vector<Tensor> e60_residual_nonlinear_backward(
+    Tensor W_x,
+    Tensor W_h,
+    Tensor log_alpha,
+    Tensor x,
+    Tensor h,
+    Tensor tanh_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+
+    CHECK_INPUT(W_x);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(log_alpha);
+    CHECK_INPUT(x);
+    CHECK_INPUT(h);
+    CHECK_INPUT(tanh_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_x = torch::zeros({dim, dim}, options);
+    Tensor dW_h = torch::zeros({dim, dim}, options);
+    Tensor db = torch::zeros({dim}, options);
+    Tensor d_log_alpha = torch::zeros({1}, options.dtype(torch::kFloat32));
+
+    // Workspace layout: [dv_all: T*BD] [dh_prev_out: BD] [dh_recurrent: BD]
+    //                   [db_float: dim] [d_log_alpha_float: 1]
+    const int64_t BD = batch_size * dim;
+    const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) + sizeof(float) - 1) / sizeof(float);
+    const int64_t workspace_size = (time_steps + 2) * BD + float_in_T * 2;
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    // log_alpha needs to be float for the kernel
+    Tensor log_alpha_float = log_alpha.to(torch::kFloat32).contiguous();
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e60_residual_nonlinear_backward", ([&] {
+        using namespace hasty::v0::elman_ladder;
+        E60ResidualNonlinearBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_x),
+            ptr<scalar_t>(W_h),
+            log_alpha_float.data_ptr<float>(),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(h),
+            ptr<scalar_t>(tanh_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_x),
+            ptr<scalar_t>(dW_h),
+            ptr<scalar_t>(db),
+            d_log_alpha.data_ptr<float>(),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_x, dW_h, db, d_log_alpha};
+}
+
 }  // anonymous namespace
 
 
@@ -7545,4 +7939,16 @@ void elman_ladder_init(py::module& m) {
           "E56: Concat Elman forward (h = tanh(W@[x;h] + b), output = h*silu(z), single GEMM)");
     m.def("e56_concat_elman_backward", &e56_concat_elman_backward,
           "E56: Concat Elman backward");
+    m.def("e58_learned_radii_forward", &e58_learned_radii_forward,
+          "E58: Per-Dimension Learned Radii Elman forward (W_h scaled by per-dim radii)");
+    m.def("e58_learned_radii_backward", &e58_learned_radii_backward,
+          "E58: Per-Dimension Learned Radii Elman backward");
+    m.def("e59_highway_forward", &e59_highway_forward,
+          "E59: Highway Elman forward (h = h_prev + alpha*(W@x + b), perfect gradient flow)");
+    m.def("e59_highway_backward", &e59_highway_backward,
+          "E59: Highway Elman backward");
+    m.def("e60_residual_nonlinear_forward", &e60_residual_nonlinear_forward,
+          "E60: Residual Nonlinear Elman forward (h = h + alpha*tanh(Wh + Wx + b))");
+    m.def("e60_residual_nonlinear_backward", &e60_residual_nonlinear_backward,
+          "E60: Residual Nonlinear Elman backward");
 }
