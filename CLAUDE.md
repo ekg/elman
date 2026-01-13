@@ -2,17 +2,31 @@
 
 ## Current Best Model
 
-**E1 (Gated Elman) d1280×6** - 1.43 loss, 254K tok/s at 50M params
-- Beats Mamba2 (1.53 loss, 101K tok/s) by 3× throughput
-- Sweet spot: depth=6, wider is better up to a point
+**E42 (Linear Tied Self-Gated) d1536×6** - 1.59 loss, 137K tok/s at 43M params
+- Linear recurrence (no tanh) + tied weights (W_x = W_h) + self-gating
+- Beats E33 baseline (1.62 loss, 116K tok/s) on both metrics
+- 25% fewer params than E33 at equal quality, or better quality at equal params
+
+**Architecture:**
+```python
+h_t = W @ x_t + W @ h_{t-1} + b    # Linear recurrence, tied weights
+output = h_t * silu(h_t)            # Self-gating (only nonlinearity)
+```
+
+**Key optimizations:**
+- Batched GEMM: pre-compute W @ x for all timesteps (E37v2 lesson)
+- Spectral normalization for stability (linear recurrence needs ||W|| < 1)
 
 ## Model Variants
 
 | Model | Description | Status |
 |-------|-------------|--------|
 | E0 | Stock Elman: h = tanh(W_h @ h + W_x @ x) | Baseline |
-| E1 | + h+x selective gating | **Best** |
-| E5 | Low-rank: U @ V @ h instead of W @ h | Slower |
+| E1 | + h+x selective gating | Fast |
+| E33 | Self-gating: output = h * silu(h) | Good |
+| E36 | Linear recurrence (no tanh) | Better loss |
+| E37v2 | Tied weights + batched GEMM | Efficient |
+| E42 | E36 + E37v2 (linear + tied + batched) | **Best** |
 
 ## Critical Design Principles
 
@@ -69,11 +83,13 @@
 
 ## Benchmarking Rules
 
-1. Always use the same batch size across models for fair comparison
-2. Use byte-level data (vocab_size=256) for benchmarks
-3. Report both throughput (tok/s) and loss
-4. Test at multiple batch sizes to understand scaling behavior
-5. Use Last-100-step averaged loss for fair comparison (not instantaneous)
+1. **CRITICAL: ONE MODEL PER GPU** - Never run multiple models on the same GPU. They interfere with each other and produce unreliable results. Always use separate GPUs for each model being compared.
+2. Always use the same batch size across models for fair comparison
+3. Use byte-level data (vocab_size=256) for benchmarks
+4. Report both throughput (tok/s) and loss
+5. Test at multiple batch sizes to understand scaling behavior
+6. Use Last-100-step averaged loss for fair comparison (not instantaneous)
+7. Use the same random seed for data loading across all models for fair comparison
 
 ## CRITICAL: Testing Models with LadderLM
 
@@ -107,22 +123,29 @@ For custom cells (E29a, E29c, etc.) that aren't in LadderLM:
 - Copy the exact forward pattern from LadderLM (fused_add_norm + residual stream)
 - Or add the cell to `ladder_lm.py:get_ladder_level()`
 
-## Latest Benchmark Results (50M params, 10 min training, Last-100 avg)
+## Latest Benchmark Results (10 min training, Last-100 avg, seed=42)
 
-| Model | Loss | Throughput |
-|-------|------|------------|
-| E1 d1280×6 | 1.43 | 254K tok/s |
-| E1 d1024×10 | 1.45 | 214K tok/s |
-| Mamba2 | 1.53 | 101K tok/s |
-| E5 d1536 r270 | 1.61 | 81K tok/s |
+### E42 vs Baselines (matched ~40M params, depth=6)
 
-**Key finding**: E1's throughput advantage (3×) dominates. Low-rank (E5) is theoretically interesting but slower in practice.
+| Model | Config | Params | Loss | Throughput |
+|-------|--------|--------|------|------------|
+| **E42** | d1536×6 | 42.9M | **1.59** | **137K tok/s** |
+| E33 | d1280×6 | 39.7M | 1.62 | 116K tok/s |
+| E36 | d1280×6 | 39.7M | 1.63 | 138K tok/s |
+| E37v2 | d1280×6 | 29.8M | 1.58 | 121K tok/s |
 
-## Activation Function Comparison (5 min training, d1280×6)
+### E33-E41 Simplification Experiments (d1280×6)
 
-| Activation | Loss | Throughput |
-|------------|------|------------|
-| tanh (E1) | 1.49 | 139.8K tok/s |
-| softsign (E15) | 1.53 | 138.6K tok/s |
+| Model | Loss | Throughput | Description |
+|-------|------|------------|-------------|
+| E33 | 1.665 | 140K | Self-gate baseline |
+| E34 | 1.769 | 253K | Diagonal W_h (+80% speed) |
+| E36 | 1.630 | 138K | Linear recurrence (best loss) |
+| E37v2 | 1.576 | 121K | Tied weights + batched GEMM |
+| E39 | 1.667 | 145K | No bias (fastest) |
 
-**Key finding**: tanh beats softsign by ~0.04 nats. Modern GPUs have optimized tanh implementations that make it competitive despite the exp() cost. Stick with tanh for E1.
+**Key findings:**
+- E42 combines E36 (linear) + E37v2 (tied + batched) for best overall
+- Linear recurrence removes tanh, improves gradient flow
+- Tied weights reduce params, batched GEMM recovers speed
+- Self-gating (h * silu(h)) provides sufficient nonlinearity
