@@ -4587,6 +4587,1079 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E61: Decay-Gated Elman - Mamba2-style Input-Dependent Decay
+// alpha_t = sigmoid(x @ W_alpha.T + b_alpha)    # Decay gate (input-dependent)
+// v_t = x @ W_v.T + b_v                         # New value (linear, no tanh)
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t # Gated update
+// output = h * silu(h)                          # Self-gating
+//
+// Linear in h: Jacobian dh_t/dh_{t-1} = diag(alpha_t)
+// Parallelizable via associative scan (future optimization)
+// =============================================================================
+
+template<typename T>
+struct E61DecayGatedForward {
+    E61DecayGatedForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,   // [dim, dim] decay gate weight
+        const T* b_alpha,   // [dim] decay gate bias
+        const T* W_v,       // [dim, dim] value weight
+        const T* b_v,       // [dim] value bias
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* alpha_cache,     // [T, B, dim] stores alpha values for backward
+        T* workspace);      // [2*T*B*dim] for alpha_logits, v
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E61DecayGatedBackward {
+    E61DecayGatedBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* W_v,
+        const T* b_v,
+        const T* x,
+        const T* h,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_v,
+        T* db_v,
+        T* workspace);      // [2*BD + 3*T*BD + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E62: Selective Write Elman
+// Vector analog of DeltaNet's selective memory updates.
+//
+// k_t = sigmoid(W_k @ x_t + b_k)     # Selection mask (0-1 per dimension)
+// v_t = tanh(W_v @ x_t + b_v)        # New values
+// h_t = (1 - k_t) * h_{t-1} + k_t * v_t   # Selective replacement
+// output_t = h_t * silu(h_t)         # Self-gating
+//
+// This is LINEAR in h - potentially parallelizable with associative scan.
+// =============================================================================
+
+template<typename T>
+struct E62SelectiveWriteForward {
+    E62SelectiveWriteForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,       // [dim, dim] selection weight
+        const T* b_k,       // [dim] selection bias
+        const T* W_v,       // [dim, dim] value weight
+        const T* b_v,       // [dim] value bias
+        const T* x,         // [T, B, dim] pre-activated input
+        T* h,               // [T+1, B, dim] hidden states
+        T* output,          // [T, B, dim] output
+        T* k_cache,         // [T, B, dim] stores k values for backward
+        T* v_cache,         // [T, B, dim] stores v values for backward
+        T* workspace);      // [2*T*B*dim] for Wk_x, Wv_x
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E62SelectiveWriteBackward {
+    E62SelectiveWriteBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* x,
+        const T* h,
+        const T* k_cache,
+        const T* v_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* db_k,
+        T* dW_v,
+        T* db_v,
+        T* workspace);      // [(2*T+2)*B*dim + 2*dim*sizeof(float)/sizeof(T)]
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E63: Nonlinear Delta Elman (UTM-Class Expressivity)
+// Key insight: E63 adds nonlinear h-dependence while preserving gated gradient control.
+// This makes E63 Turing complete while E61/E62 are not.
+//
+// E63a (Complementary) Architecture:
+// alpha_t = sigmoid(W_alpha @ x_t + b_alpha)           # Retain gate (x-only)
+// v_t = tanh(W_h @ h_{t-1} + W_x @ x_t + b)           # NONLINEAR value (h-dependent!)
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t       # Gated mixing
+// output = h * silu(h)                                 # Self-gating
+// =============================================================================
+
+template<typename T>
+struct E63NonlinearDeltaForward {
+    E63NonlinearDeltaForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,     // [dim, dim] retain gate weight
+        const T* b_alpha,     // [dim] retain gate bias
+        const T* W_h,         // [dim, dim] hidden-to-value weight (nonlinear path!)
+        const T* W_x,         // [dim, dim] input-to-value weight
+        const T* b,           // [dim] value bias
+        const T* x,           // [T, B, dim] pre-activated input
+        T* h,                 // [T+1, B, dim] hidden states
+        T* output,            // [T, B, dim] output
+        T* v_pre_cache,       // [T, B, dim] pre-tanh value cache (training only)
+        T* alpha_cache,       // [T, B, dim] alpha cache (training only)
+        T* workspace);        // [2*T*B*dim + B*dim] for alpha_x_all, Wx_all, tmp_Wh
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        return 2 * steps * batch_size * dim +  // alpha_x_all + Wx_all
+               batch_size * dim;                // tmp_Wh
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E63NonlinearDeltaBackward {
+    E63NonlinearDeltaBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* W_h,
+        const T* W_x,
+        const T* x,
+        const T* h,
+        const T* v_pre_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_h,
+        T* dW_x,
+        T* db,
+        T* workspace);       // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // dh, dh_recurrent, dh_prev: 3*B*dim
+        // dv_pre_all, dalpha_x_all: 2*T*B*dim
+        // db_float, db_alpha_float: 2*dim floats
+        // alpha_x_all: T*B*dim (for recompute)
+        int64_t float_bytes = 2 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 3 * batch_size * dim +
+               2 * steps * batch_size * dim +
+               float_in_T +
+               steps * batch_size * dim;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+
+// =============================================================================
+// E64: Additive H-Dependence - Cheapest UTM-Class Recurrence
+// The simplest way to get h into the nonlinearity:
+//    v_t = tanh(h_{t-1} + W_x @ x_t + b)
+//
+// Cost: O(d) per step vs O(d^2) for E63's W_h @ h
+// Still UTM-class: h is inside the tanh!
+//
+// Architecture:
+// alpha_t = sigmoid(W_alpha @ x_t + b_alpha)    # Retain gate (x-only)
+// v_t = tanh(h_{t-1} + W_x @ x_t + b)          # ADDITIVE h-dependence (no W_h!)
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t  # Gated mixing
+// output = h * silu(h)                          # Self-gating
+// =============================================================================
+
+template<typename T>
+struct E64AdditiveHForward {
+    E64AdditiveHForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,     // [dim, dim] retain gate weight
+        const T* b_alpha,     // [dim] retain gate bias
+        const T* W_x,         // [dim, dim] input-to-value weight
+        const T* b,           // [dim] value bias
+        const T* x,           // [T, B, dim] pre-activated input
+        T* h,                 // [T+1, B, dim] hidden states
+        T* output,            // [T, B, dim] output
+        T* v_pre_cache,       // [T, B, dim] pre-tanh value cache (training only)
+        T* alpha_cache,       // [T, B, dim] alpha cache (training only)
+        T* workspace);        // [2*T*B*dim] for alpha_x_all, Wx_all
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        return 2 * steps * batch_size * dim;  // alpha_x_all + Wx_all
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E64AdditiveHBackward {
+    E64AdditiveHBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* W_x,
+        const T* x,
+        const T* h,
+        const T* v_pre_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_x,
+        T* db,
+        T* workspace);       // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // dh, dh_recurrent, dh_prev: 3*B*dim
+        // dWx_pre_all, dalpha_x_all: 2*T*B*dim
+        // db_float, db_alpha_float: 2*dim floats
+        int64_t float_bytes = 2 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 3 * batch_size * dim +
+               2 * steps * batch_size * dim +
+               float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+// =============================================================================
+// E67: H-Dependent Gate Only - Nonlinearity Through Gate Selection
+//
+// Put h-dependence in the GATE, not the value:
+//     alpha_t = sigmoid(W_alpha @ x_t + d_alpha * h_{t-1} + b_alpha)   # h affects gate!
+//     v_t = tanh(W_x @ x_t + b_v)                                      # v is h-independent
+//     h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t
+//     output = h * silu(h)                                             # Self-gating
+//
+// Key insight: Gate h-dependence through diagonal d_alpha (O(d) per step).
+// UTM-class because gate depends nonlinearly on h through sigmoid.
+// =============================================================================
+
+template<typename T>
+struct E67HGatedForward {
+    E67HGatedForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,     // [dim, dim] gate weight
+        const T* d_alpha,     // [dim] diagonal for h in gate
+        const T* b_alpha,     // [dim] gate bias
+        const T* W_x,         // [dim, dim] value weight
+        const T* b_v,         // [dim] value bias
+        const T* x,           // [T, B, dim] pre-activated input
+        T* h,                 // [T+1, B, dim] hidden states
+        T* output,            // [T, B, dim] output
+        T* v_cache,           // [T, B, dim] value cache (training only)
+        T* alpha_cache,       // [T, B, dim] alpha cache (training only)
+        T* workspace);        // [2*T*B*dim] for alpha_x_all, v_all
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        return 2 * steps * batch_size * dim;  // alpha_x_all + v_all
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E67HGatedBackward {
+    E67HGatedBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* d_alpha,
+        const T* W_x,
+        const T* x,
+        const T* h,
+        const T* v_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* dd_alpha,
+        T* db_alpha,
+        T* dW_x,
+        T* db_v,
+        T* workspace);       // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // dh, dh_recurrent, dh_prev: 3*B*dim
+        // dalpha_x_all, dWx_pre_all: 2*T*B*dim
+        // dd_alpha_float, db_alpha_float, db_v_float: 3*dim floats
+        int64_t float_bytes = 3 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 3 * batch_size * dim +
+               2 * steps * batch_size * dim +
+               float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// GRU: Gated Recurrent Unit - BF16 Optimized
+// Custom implementation to avoid cuDNN's bfloat16 performance regression.
+//
+// GRU Equations:
+// z_t = sigmoid(W_z @ x_t + U_z @ h_{t-1} + b_z)  # update gate
+// r_t = sigmoid(W_r @ x_t + U_r @ h_{t-1} + b_r)  # reset gate
+// h_tilde = tanh(W_h @ x_t + U_h @ (r_t * h_{t-1}) + b_h)  # candidate
+// h_t = (1 - z_t) * h_{t-1} + z_t * h_tilde  # new hidden state
+// =============================================================================
+
+template<typename T>
+struct GRUForward {
+    GRUForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_zr,         // [2*dim, dim] - W_z and W_r stacked
+        const T* W_h,          // [dim, dim]
+        const T* U_zr,         // [2*dim, dim] - U_z and U_r stacked
+        const T* U_h,          // [dim, dim]
+        const T* b_zr,         // [2*dim] - b_z and b_r
+        const T* b_h,          // [dim]
+        const T* x,            // [T, B, dim]
+        T* h,                  // [T+1, B, dim] hidden states (h[0] is h_init)
+        T* z_cache,            // [T, B, dim] z values for backward (training only)
+        T* h_tilde_cache,      // [T, B, dim] h_tilde for backward (training only)
+        T* r_h_cache,          // [T, B, dim] r*h_prev for backward (training only)
+        T* workspace);         // [T*B*3*dim + 4*B*dim]
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // Wx_zr_all: T*B*2*dim, Wx_h_all: T*B*dim, Uh_zr: B*2*dim, Uh_h: B*dim
+        // r_h_prev: B*dim, z_tmp: B*dim
+        return steps * batch_size * 2 * dim +  // Wx_zr_all
+               steps * batch_size * dim +       // Wx_h_all
+               batch_size * 2 * dim +           // Uh_zr
+               batch_size * dim +               // Uh_h
+               batch_size * dim +               // r_h_prev
+               batch_size * dim;                // z_tmp
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct GRUBackward {
+    GRUBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_zr,
+        const T* W_h,
+        const T* U_zr,
+        const T* U_h,
+        const T* b_zr,
+        const T* b_h,
+        const T* x,
+        const T* h,
+        const T* z_cache,
+        const T* h_tilde_cache,
+        const T* r_h_cache,
+        const T* d_h_all,      // [T, B, dim] gradient on all hidden states
+        T* dx,
+        T* dW_zr,
+        T* dW_h,
+        T* dU_zr,
+        T* dU_h,
+        T* db_zr,
+        T* db_h,
+        T* workspace);
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // d_z_pre, d_h_tilde_pre, d_h_prev, d_r_pre, d_r_h_prev, dh_next: 6*B*dim
+        // db_zr_float: 2*dim, db_h_float: dim (in floats)
+        // Wx_zr_all: T*B*2*dim, Wx_h_all: T*B*dim, Uh_zr: B*2*dim
+        int64_t float_bytes = 3 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 6 * batch_size * dim +          // Temp buffers
+               float_in_T +                     // Float bias accumulators
+               steps * batch_size * 2 * dim +  // Wx_zr_all
+               steps * batch_size * dim +       // Wx_h_all
+               batch_size * 2 * dim;            // Uh_zr
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// LSTM: Long Short-Term Memory - BF16 Optimized
+// Custom implementation to avoid cuDNN's bfloat16 performance regression.
+//
+// LSTM Equations:
+// f_t = sigmoid(W_f @ x_t + U_f @ h_{t-1} + b_f)  # forget gate
+// i_t = sigmoid(W_i @ x_t + U_i @ h_{t-1} + b_i)  # input gate
+// o_t = sigmoid(W_o @ x_t + U_o @ h_{t-1} + b_o)  # output gate
+// c_tilde = tanh(W_c @ x_t + U_c @ h_{t-1} + b_c) # candidate cell
+// c_t = f_t * c_{t-1} + i_t * c_tilde             # cell state
+// h_t = o_t * tanh(c_t)                           # hidden state
+// =============================================================================
+
+template<typename T>
+struct LSTMForward {
+    LSTMForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_fio,        // [3*dim, dim] - W_f, W_i, W_o stacked
+        const T* W_c,          // [dim, dim]
+        const T* U_fio,        // [3*dim, dim] - U_f, U_i, U_o stacked
+        const T* U_c,          // [dim, dim]
+        const T* b_fio,        // [3*dim] - b_f, b_i, b_o
+        const T* b_c,          // [dim]
+        const T* x,            // [T, B, dim]
+        T* h,                  // [T+1, B, dim] hidden states (h[0] is h_init)
+        T* c,                  // [T+1, B, dim] cell states (c[0] is c_init)
+        T* f_cache,            // [T, B, dim] forget gate cache (training only)
+        T* i_cache,            // [T, B, dim] input gate cache (training only)
+        T* o_cache,            // [T, B, dim] output gate cache (training only)
+        T* c_tilde_cache,      // [T, B, dim] candidate cache (training only)
+        T* tanh_c_cache,       // [T, B, dim] tanh(c) cache (training only)
+        T* workspace);         // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // Wx_fio_all: T*B*3*dim, Wx_c_all: T*B*dim, Uh_fio: B*3*dim, Uh_c: B*dim
+        return steps * batch_size * 3 * dim +  // Wx_fio_all
+               steps * batch_size * dim +       // Wx_c_all
+               batch_size * 3 * dim +           // Uh_fio
+               batch_size * dim;                // Uh_c
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct LSTMBackward {
+    LSTMBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_fio,
+        const T* W_c,
+        const T* U_fio,
+        const T* U_c,
+        const T* x,
+        const T* h,
+        const T* c,
+        const T* f_cache,
+        const T* i_cache,
+        const T* o_cache,
+        const T* c_tilde_cache,
+        const T* tanh_c_cache,
+        const T* dh_all,       // [T, B, dim] gradients on ALL hidden states (can be null)
+        const T* d_c_final,    // [B, dim] gradient on final cell state (can be null)
+        T* dx,
+        T* dW_fio,
+        T* dW_c,
+        T* dU_fio,
+        T* dU_c,
+        T* db_fio,
+        T* db_c,
+        T* workspace);
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // d_f_pre, d_i_pre, d_o_pre, d_c_tilde_pre, dc_prev, dh_next, dc_next: 7*B*dim
+        // db_fio_float: 3*dim, db_c_float: dim (in floats)
+        int64_t float_bytes = 4 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 7 * batch_size * dim + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E63m: Matrix State Nonlinear Delta - Maximum Expressivity
+// Matrix state S ∈ ℝ^(N×D) with NONLINEAR retrieval and update.
+// This is UTM-class (nonlinear h-dependence prevents parallel scan).
+//
+// Forward:
+//     k_t = x @ W_k.T                                # [B, D] key
+//     q_t = x @ W_q.T                                # [B, D] query
+//     Sk = bmm(S, k_t.unsqueeze(-1)).squeeze(-1)     # [B, N]
+//     retrieved = tanh(Sk)                           # [B, N] nonlinear!
+//     v_t = tanh(retrieved @ W_r.T + x @ W_x.T + b)  # [B, N]
+//     alpha_t = sigmoid(x @ W_alpha.T + b_alpha)     # [B, N]
+//     v_outer_k = bmm(v_t.unsqueeze(-1), k_t.unsqueeze(1))  # [B, N, D]
+//     S_new = alpha_t * S + (1 - alpha_t) * v_outer_k
+//     output = tanh(S_new @ q_t)                     # [B, N]
+// =============================================================================
+
+template<typename T>
+struct E63mMatrixNonlinearForward {
+    E63mMatrixNonlinearForward(
+        bool training,
+        int batch_size,
+        int n_slots,     // N - number of slots in matrix state
+        int dim,         // D - dimension
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,           // [D, D] key projection
+        const T* W_q,           // [D, D] query projection
+        const T* W_x,           // [N, D] input-to-value projection
+        const T* W_r,           // [N, N] retrieval transformation
+        const T* b,             // [N] value bias
+        const T* W_alpha,       // [N, D] gate projection
+        const T* b_alpha,       // [N] gate bias
+        const T* x,             // [T, B, D] input
+        T* S,                   // [T+1, B, N, D] matrix states
+        T* output,              // [T, B, N] output
+        T* k_cache,             // [T, B, D] for backward
+        T* q_cache,             // [T, B, D] for backward
+        T* Wx_cache,            // [T, B, N] for backward
+        T* alpha_x_cache,       // [T, B, N] for backward
+        T* Sk_cache,            // [T, B, N] for backward (pre-tanh)
+        T* retrieved_cache,     // [T, B, N] for backward
+        T* Wr_ret_cache,        // [T, B, N] for backward
+        T* v_cache,             // [T, B, N] for backward
+        T* alpha_cache,         // [T, B, N] for backward
+        T* workspace);          // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_slots, int dim) {
+        int64_t BD = batch_size * dim;
+        int64_t BN = batch_size * n_slots;
+        // k_all, q_all: 2*T*BD
+        // Wx_all, alpha_x_all: 2*T*BN
+        // Sk_tmp, retrieved_tmp, Wr_ret_tmp, v_tmp, alpha_tmp: 5*BN
+        return 2 * steps * BD + 2 * steps * BN + 5 * BN;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E63mMatrixNonlinearBackward {
+    E63mMatrixNonlinearBackward(
+        int batch_size,
+        int n_slots,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_q,
+        const T* W_x,
+        const T* W_r,
+        const T* b,
+        const T* W_alpha,
+        const T* b_alpha,
+        const T* x,
+        const T* S,
+        const T* output,
+        const T* k_cache,
+        const T* q_cache,
+        const T* Wx_cache,
+        const T* alpha_x_cache,
+        const T* Sk_cache,
+        const T* retrieved_cache,
+        const T* Wr_ret_cache,
+        const T* v_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_q,
+        T* dW_x,
+        T* dW_r,
+        T* db,
+        T* dW_alpha,
+        T* db_alpha,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_slots, int dim) {
+        int64_t BD = batch_size * dim;
+        int64_t BN = batch_size * n_slots;
+        int64_t BND = batch_size * n_slots * dim;
+        // d_S, d_S_tmp: 2*BND (need two buffers for race-free state gradient propagation)
+        // d_k_all, d_q_all: 2*T*BD
+        // d_Wx_all, d_alpha_x_all: 2*T*BN
+        // d_retrieved, d_Wr_ret: 2*BN
+        // Float workspace: d_v_f, d_alpha_f (2*BN), d_k_f, d_q_f (2*BD), db_f, db_alpha_f (2*N)
+        int64_t float_elems = 2 * BN + 2 * BD + 2 * n_slots;
+        int64_t float_bytes = float_elems * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BND + 2 * steps * BD + 2 * steps * BN + 2 * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_slots_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E65: Diagonal H-Dependence - Learnable Per-Dimension Scaling
+// O(d) h-dependence cost instead of O(d^2)
+//
+// alpha_t = sigmoid(W_alpha @ x_t + b_alpha)        # Decay gate (x-only)
+// v_t = tanh(d_h * h_{t-1} + W_x @ x_t + b)         # d_h is [dim] diagonal vector
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t    # Gated update
+// output = h * silu(h)                              # Self-gating
+//
+// UTM-class: h is inside the tanh nonlinearity
+// =============================================================================
+
+template<typename T>
+struct E65DiagonalHForward {
+    E65DiagonalHForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,     // [dim, dim] decay gate weight
+        const T* b_alpha,     // [dim] decay gate bias
+        const T* d_h,         // [dim] diagonal h-scaling vector
+        const T* W_x,         // [dim, dim] input-to-value weight
+        const T* b,           // [dim] value bias
+        const T* x,           // [T, B, dim] pre-activated input
+        T* h,                 // [T+1, B, dim] hidden states
+        T* output,            // [T, B, dim] output
+        T* v_pre_cache,       // [T, B, dim] pre-tanh cache for backward
+        T* alpha_cache,       // [T, B, dim] alpha cache for backward
+        T* workspace);        // [2*T*B*dim] for alpha_logits, Wx
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        return 2 * steps * batch_size * dim;  // alpha_logits_all + Wx_all
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E65DiagonalHBackward {
+    E65DiagonalHBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* d_h,
+        const T* W_x,
+        const T* x,
+        const T* h,
+        const T* v_pre_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* d_d_h,             // [dim] gradient for diagonal vector
+        T* dW_x,
+        T* db,
+        T* workspace);        // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        // dh, dh_recurrent: 2*B*dim
+        // d_alpha_logit_all, dWx_all: 2*T*B*dim
+        // db_alpha_float, db_float, d_d_h_float: 3*dim floats
+        int64_t float_bytes = 3 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * batch_size * dim +
+               2 * steps * batch_size * dim +
+               float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E66: Low-Rank H-Dependence (UTM-Class with Cross-Dimension Mixing)
+// alpha_t = sigmoid(W_alpha @ x_t + b_alpha)           # Retain gate (x-only)
+// h_compressed = V @ h_{t-1}                           # Compress h to rank
+// h_transformed = U @ h_compressed                     # Expand back to dim
+// v_t = tanh(h_transformed + W_x @ x_t + b)           # NONLINEAR value
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t       # Gated mixing
+// output = h * silu(h)                                 # Self-gating
+//
+// Key: O(d*rank) cost per timestep instead of O(d^2) for full W_h @ h
+// UTM-class: h is inside tanh, providing Turing completeness
+// =============================================================================
+
+template<typename T>
+struct E66LowRankHForward {
+    E66LowRankHForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,     // [dim, dim] retain gate weight
+        const T* b_alpha,     // [dim] retain gate bias
+        const T* U,           // [dim, rank] expand matrix
+        const T* V,           // [rank, dim] compress matrix
+        const T* W_x,         // [dim, dim] input weight
+        const T* b,           // [dim] bias
+        const T* x,           // [T, B, dim] input
+        T* h,                 // [T+1, B, dim] hidden states (h[0] = h0)
+        T* output,            // [T, B, dim] output
+        T* v_pre_cache,       // [T, B, dim] pre-tanh cache (training)
+        T* alpha_cache,       // [T, B, dim] alpha cache (training)
+        T* Vh_cache,          // [T, B, rank] V @ h cache (training)
+        T* workspace);        // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim, int rank) {
+        // alpha_x_all: T*B*dim
+        // Wx_all: T*B*dim
+        // tmp_Vh: B*rank
+        // tmp_Uh: B*dim
+        return 2 * steps * batch_size * dim +
+               batch_size * rank +
+               batch_size * dim;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E66LowRankHBackward {
+    E66LowRankHBackward(
+        int batch_size,
+        int dim,
+        int rank,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* U,
+        const T* V,
+        const T* W_x,
+        const T* x,
+        const T* h,
+        const T* v_pre_cache,
+        const T* alpha_cache,
+        const T* Vh_cache,      // [T, B, rank] from forward
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dU,                  // [dim, rank]
+        T* dV,                  // [rank, dim]
+        T* dW_x,
+        T* db,
+        T* workspace);          // See WorkspaceSize
+
+    // Workspace size calculation
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim, int rank) {
+        // dh, dh_recurrent, dh_prev: 3*B*dim
+        // dv_pre_all: T*B*dim
+        // dalpha_x_all: T*B*dim
+        // dUh_all: T*B*dim
+        // db_float, db_alpha_float: 2*dim floats
+        // alpha_x_all: T*B*dim
+        // tmp_dVh: B*rank
+        int64_t float_bytes = 2 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 3 * batch_size * dim +
+               4 * steps * batch_size * dim +
+               float_in_T +
+               batch_size * rank;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    int rank_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E68: Self-Gating Elman - Multiplicative H-Dependence
+// alpha_t = sigmoid(x @ W_alpha.T + b_alpha)        # Retain gate (input-dependent)
+// g_t = sigmoid(d_g * h_{t-1} + b_g)               # SELF-GATING: h gates the value!
+// v_raw_t = tanh(x @ W_x.T + b_v)                  # Raw new value
+// v_t = v_raw_t * g_t                              # Gated value
+// h_t = alpha_t * h_{t-1} + (1 - alpha_t) * v_t    # Gated update
+// output = h * silu(h)                             # Self-gating output
+//
+// Key: O(d) cost per timestep, UTM-class (h inside sigmoid)
+// =============================================================================
+
+template<typename T>
+struct E68SelfGatingForward {
+    E68SelfGatingForward(
+        bool training,
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,       // [dim, dim] retain gate weight
+        const T* b_alpha,       // [dim] retain gate bias
+        const T* W_x,           // [dim, dim] value weight
+        const T* b_v,           // [dim] value bias
+        const T* d_g,           // [dim] diagonal gating weights (self-gating)
+        const T* b_g,           // [dim] gating bias
+        const T* x,             // [T, B, dim] pre-activated input
+        T* h,                   // [T+1, B, dim] hidden states
+        T* output,              // [T, B, dim] output
+        T* alpha_cache,         // [T, B, dim] stores alpha values for backward
+        T* g_cache,             // [T, B, dim] stores g values for backward
+        T* v_raw_tanh_cache,    // [T, B, dim] stores tanh(v_raw+b_v) for backward
+        T* workspace);          // [2*T*B*dim] for alpha_logits, v_raw
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        return 2 * steps * batch_size * dim;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E68SelfGatingBackward {
+    E68SelfGatingBackward(
+        int batch_size,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_alpha,
+        const T* W_x,
+        const T* d_g,
+        const T* x,
+        const T* h,
+        const T* alpha_cache,
+        const T* g_cache,
+        const T* v_raw_tanh_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_x,
+        T* db_v,
+        T* dd_g,                // [dim] gradient for diagonal gating weights
+        T* db_g,                // [dim] gradient for gating bias
+        T* workspace);          // [2*BD + 2*T*BD + 4*dim*sizeof(float)/sizeof(T)]
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int dim) {
+        int64_t BD = batch_size * dim;
+        // dh, dh_recurrent: 2*BD
+        // d_alpha_logit_all, dv_raw_all: 2*T*BD
+        // db_alpha_float, dd_g_float, db_g_float, db_v_float: 4*dim floats
+        int64_t float_bytes = 4 * dim * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BD + 2 * steps * BD + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

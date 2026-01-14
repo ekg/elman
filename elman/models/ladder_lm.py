@@ -79,6 +79,16 @@ from .e57_learned_radius import E57LearnedRadius
 from .e58_learned_radii import E58LearnedRadii
 from .e59_highway import E59Highway, E59bGatedHighway, E59cMixedHighway
 from .e60_residual_nonlinear import E60ResidualNonlinear, E60bGatedResidual, E60cForgetGate
+from .e61_decay_gated import E61DecayGated, E61bAdditiveDecay, E61cTiedDecay
+from .e62_selective_write import E62SelectiveWrite, E62bDecaySelective, E62cTiedSelective
+from .e63_nonlinear_delta import E63NonlinearDelta, E63aComplementary, E63bIndependent, E63cHDependent, E63dResidual
+from .e63m_matrix_nonlinear import E63mMatrixNonlinear, E63mFull, E63mLite, E63mRNN
+from .e64_additive_h import E64AdditiveH
+from .e65_diagonal_h import E65DiagonalH
+from .e66_lowrank_h import E66LowRankH
+from .e67_h_gated import E67HGated, E67HGatedDiagonal, E67HGatedLowRank
+from .e68_self_gating import E68SelfGating, E68SelfGatingStandard, E68SelfGatingInverse
+from .gated_delta_net import GatedDeltaNet, GatedDeltaNetVector
 
 
 def get_ladder_level(level):
@@ -153,6 +163,35 @@ def get_ladder_level(level):
         60: E60ResidualNonlinear,  # E60: Residual nonlinear (h + tanh(Wh + Ux))
         '60b': E60bGatedResidual,  # E60b: Gated residual nonlinear
         '60c': E60cForgetGate,  # E60c: Forget-gate style (GRU-like)
+        61: E61DecayGated,  # E61: Decay-gated (α·h + (1-α)·v, Mamba2-style)
+        '61b': E61bAdditiveDecay,  # E61b: Additive decay (α·h + v)
+        '61c': E61cTiedDecay,  # E61c: Tied decay (single-gate GRU)
+        62: E62SelectiveWrite,  # E62: Selective write ((1-k)·h + k·v, DeltaNet-style)
+        '62b': E62bDecaySelective,  # E62b: Decay + selective (α·(1-k)·h + k·v)
+        '62c': E62cTiedSelective,  # E62c: Tied selective (GRU-style)
+        63: E63NonlinearDelta,  # E63: Nonlinear delta (UTM-class! v=tanh(Wh+Ux))
+        '63a': E63aComplementary,  # E63a: Complementary gates (GRU-style)
+        '63b': E63bIndependent,  # E63b: Independent gates (LSTM-style)
+        '63c': E63cHDependent,  # E63c: H-dependent gates (maximum expressivity)
+        '63d': E63dResidual,  # E63d: Residual nonlinear (h + α*tanh(Wh+Ux))
+        '63m': E63mMatrixNonlinear,  # E63m: Matrix state + nonlinear retrieval (O(d²) state)
+        '63m-full': E63mFull,  # E63m-full: Full d×d matrix state
+        '63m-lite': E63mLite,  # E63m-lite: Reduced-rank N×d matrix
+        '63m-rnn': E63mRNN,  # E63m-rnn: + output recurrence (Delta RNN)
+        64: E64AdditiveH,  # E64: Additive h-dependence v=tanh(h+Wx) - O(d) UTM
+        65: E65DiagonalH,  # E65: Diagonal h-dependence v=tanh(d*h+Wx) - O(d) UTM
+        66: E66LowRankH,  # E66: Low-rank h-dependence v=tanh(UVh+Wx) - O(d*r) UTM
+        '66r16': lambda **kw: E66LowRankH(rank=16, **kw),  # E66 rank=16
+        '66r64': lambda **kw: E66LowRankH(rank=64, **kw),  # E66 rank=64
+        '66r128': lambda **kw: E66LowRankH(rank=128, **kw),  # E66 rank=128
+        67: E67HGated,  # E67: H-dependent gate α=σ(Wx+d*h) - O(d) UTM
+        '67d': E67HGatedDiagonal,  # E67d: Diagonal h in gate
+        '67lr': E67HGatedLowRank,  # E67lr: Low-rank h in gate
+        68: E68SelfGating,  # E68: Self-gating v=tanh(Wx)*σ(h) - O(d) UTM
+        '68s': E68SelfGatingStandard,  # E68s: Standard self-gating
+        '68i': E68SelfGatingInverse,  # E68i: Inverse (resist overwrite)
+        'gdn': GatedDeltaNet,  # GatedDeltaNet: ICLR 2025 baseline (matrix state)
+        'gdn-vec': GatedDeltaNetVector,  # GatedDeltaNet Vector: Simplified (vector state)
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -178,7 +217,7 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-55, 45b, 52b, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, mamba2")
 
 
 class LadderLM(nn.Module):

@@ -32,6 +32,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from elman.models import LadderLM, create_ladder_model
 from elman.data import DocumentStreamDataset, BatchedStreamDataset, create_dataloader
+from elman.models.gru_baseline import GRULM
+from elman.models.lstm_baseline import LSTMLM
+from elman.models.min_rnn_baseline import MinGRULM, MinLSTMLM
+from elman.models.cuda_gru import CudaGRULM
+from elman.models.cuda_lstm import CudaLSTMLM
 
 
 def parse_args():
@@ -245,6 +250,70 @@ def train(args):
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
             model = create_mamba2_model(target_params=args.params, vocab_size=256)
+    elif args.level == 'gru':
+        # GRU baseline
+        if args.dim is not None and args.depth is not None:
+            model = GRULM(
+                vocab_size=256,
+                dim=args.dim,
+                depth=args.depth,
+                expansion_factor=args.expansion,
+            )
+        else:
+            from elman.models.gru_baseline import create_gru_model
+            model = create_gru_model(target_params=args.params, vocab_size=256)
+    elif args.level == 'lstm':
+        # LSTM baseline
+        if args.dim is not None and args.depth is not None:
+            model = LSTMLM(
+                vocab_size=256,
+                dim=args.dim,
+                depth=args.depth,
+                expansion_factor=args.expansion,
+            )
+        else:
+            from elman.models.lstm_baseline import create_lstm_model
+            model = create_lstm_model(target_params=args.params, vocab_size=256)
+    elif args.level == 'mingru':
+        # minGRU baseline (parallel)
+        if args.dim is not None and args.depth is not None:
+            model = MinGRULM(
+                vocab_size=256,
+                dim=args.dim,
+                depth=args.depth,
+                expansion_factor=args.expansion,
+            )
+        else:
+            from elman.models.min_rnn_baseline import create_mingru_model
+            model = create_mingru_model(target_params=args.params, vocab_size=256)
+    elif args.level == 'minlstm':
+        # minLSTM baseline (parallel)
+        if args.dim is not None and args.depth is not None:
+            model = MinLSTMLM(
+                vocab_size=256,
+                dim=args.dim,
+                depth=args.depth,
+                expansion_factor=args.expansion,
+            )
+        else:
+            from elman.models.min_rnn_baseline import create_minlstm_model
+            model = create_minlstm_model(target_params=args.params, vocab_size=256)
+    elif args.level == 'cudagru':
+        # CUDA GRU (avoids cuDNN bfloat16 regression)
+        model = CudaGRULM(
+            vocab_size=256,
+            dim=args.dim,
+            depth=args.depth,
+            expansion_factor=args.expansion,
+        )
+    elif args.level == 'cudalstm':
+        # CUDA LSTM (avoids cuDNN bfloat16 regression)
+        model = CudaLSTMLM(
+            vocab_size=256,
+            dim=args.dim,
+            depth=args.depth,
+            expansion_factor=args.expansion,
+        )
     elif args.dim is not None and args.depth is not None:
         model = LadderLM(
             vocab_size=256,
@@ -322,6 +391,7 @@ def train(args):
     accumulated_steps = 0
     running_loss = 0
     tokens_processed = 0
+    avg_loss = 0.0  # Initialize to avoid UnboundLocalError if training ends before first log
     start_time = time.time()
 
     print(f"\nStarting training from step {start_step}...")

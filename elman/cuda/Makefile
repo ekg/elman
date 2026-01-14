@@ -88,7 +88,17 @@ CUDA_OBJS := \
 	lib/e56_concat_elman_gpu.o \
 	lib/e58_learned_radii_gpu.o \
 	lib/e59_highway_gpu.o \
-	lib/e60_residual_nonlinear_gpu.o
+	lib/e60_residual_nonlinear_gpu.o \
+	lib/e61_decay_gated_gpu.o \
+	lib/e62_selective_write_gpu.o \
+	lib/e63_nonlinear_delta_gpu.o \
+	lib/e63m_matrix_nonlinear_gpu.o \
+	lib/e64_additive_h_gpu.o \
+	lib/e65_diagonal_h_gpu.o \
+	lib/e66_lowrank_h_gpu.o \
+	lib/e67_h_gated_gpu.o \
+	lib/gru_gpu.o \
+	lib/lstm_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 
