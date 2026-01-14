@@ -48,11 +48,507 @@ __device__ __forceinline__ __nv_bfloat16 bf16_mul(__nv_bfloat16 a, __nv_bfloat16
 #endif
 }
 
+constexpr float RMSNORM_EPS = 1e-6f;
+
+// =============================================================================
+// RMSNorm Kernels
+// =============================================================================
+
+// RMSNorm: h = h_raw / sqrt(mean(h_raw^2) + eps)
+// One block per batch element, uses shared memory for reduction
+__global__ void E60RMSNormKernel_BF16(
+    const int batch_size,
+    const int dim,
+    __nv_bfloat16* __restrict__ h) {
+
+    extern __shared__ float sdata[];
+
+    const int b = blockIdx.x;  // batch index
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
+
+    // Compute sum of squares
+    float sum_sq = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float val = __bfloat162float(h[b * dim + d]);
+        sum_sq += val * val;
+    }
+
+    // Reduce within block
+    sdata[tid] = sum_sq;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    // Compute RMS and normalize
+    float rms = sqrtf(sdata[0] / dim + RMSNORM_EPS);
+    float inv_rms = 1.0f / rms;
+
+    for (int d = tid; d < dim; d += stride) {
+        float val = __bfloat162float(h[b * dim + d]);
+        h[b * dim + d] = __float2bfloat16(val * inv_rms);
+    }
+}
+
+template<typename T>
+__global__ void E60RMSNormKernel(
+    const int batch_size,
+    const int dim,
+    T* __restrict__ h) {
+
+    extern __shared__ float sdata[];
+
+    const int b = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
+
+    float sum_sq = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float val = static_cast<float>(h[b * dim + d]);
+        sum_sq += val * val;
+    }
+
+    sdata[tid] = sum_sq;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float rms = sqrtf(sdata[0] / dim + RMSNORM_EPS);
+    float inv_rms = 1.0f / rms;
+
+    for (int d = tid; d < dim; d += stride) {
+        float val = static_cast<float>(h[b * dim + d]);
+        h[b * dim + d] = static_cast<T>(val * inv_rms);
+    }
+}
+
+// RMSNorm backward: dh_raw = (dh - mean(dh * h) * h) / rms
+__global__ void E60RMSNormBackwardKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const __nv_bfloat16* __restrict__ h_raw,
+    const __nv_bfloat16* __restrict__ h,
+    const __nv_bfloat16* __restrict__ dh,
+    __nv_bfloat16* __restrict__ dh_raw) {
+
+    extern __shared__ float sdata[];
+
+    const int b = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
+
+    // Step 1: Compute RMS from h_raw
+    float sum_sq = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float val = __bfloat162float(h_raw[b * dim + d]);
+        sum_sq += val * val;
+    }
+
+    sdata[tid] = sum_sq;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float rms = sqrtf(sdata[0] / dim + RMSNORM_EPS);
+    float inv_rms = 1.0f / rms;
+
+    // Step 2: Compute mean(dh * h)
+    float dot_dh_h = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float dh_val = __bfloat162float(dh[b * dim + d]);
+        float h_val = __bfloat162float(h[b * dim + d]);
+        dot_dh_h += dh_val * h_val;
+    }
+
+    sdata[tid] = dot_dh_h;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float mean_dot = sdata[0] / dim;
+
+    // Step 3: Compute dh_raw = (dh - mean_dot * h) / rms
+    for (int d = tid; d < dim; d += stride) {
+        float dh_val = __bfloat162float(dh[b * dim + d]);
+        float h_val = __bfloat162float(h[b * dim + d]);
+        float dh_raw_val = (dh_val - mean_dot * h_val) * inv_rms;
+        dh_raw[b * dim + d] = __float2bfloat16(dh_raw_val);
+    }
+}
+
+template<typename T>
+__global__ void E60RMSNormBackwardKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h_raw,
+    const T* __restrict__ h,
+    const T* __restrict__ dh,
+    T* __restrict__ dh_raw) {
+
+    extern __shared__ float sdata[];
+
+    const int b = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int stride = blockDim.x;
+
+    // Step 1: Compute RMS
+    float sum_sq = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float val = static_cast<float>(h_raw[b * dim + d]);
+        sum_sq += val * val;
+    }
+
+    sdata[tid] = sum_sq;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float rms = sqrtf(sdata[0] / dim + RMSNORM_EPS);
+    float inv_rms = 1.0f / rms;
+
+    // Step 2: Compute mean(dh * h)
+    float dot_dh_h = 0.0f;
+    for (int d = tid; d < dim; d += stride) {
+        float dh_val = static_cast<float>(dh[b * dim + d]);
+        float h_val = static_cast<float>(h[b * dim + d]);
+        dot_dh_h += dh_val * h_val;
+    }
+
+    sdata[tid] = dot_dh_h;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    float mean_dot = sdata[0] / dim;
+
+    // Step 3: Compute dh_raw
+    for (int d = tid; d < dim; d += stride) {
+        float dh_val = static_cast<float>(dh[b * dim + d]);
+        float h_val = static_cast<float>(h[b * dim + d]);
+        float dh_raw_val = (dh_val - mean_dot * h_val) * inv_rms;
+        dh_raw[b * dim + d] = static_cast<T>(dh_raw_val);
+    }
+}
+
 // =============================================================================
 // Forward Kernels
 // =============================================================================
 
-// BF16-optimized: Fused residual update with tanh + self-gating output
+// Residual update with tanh (NO self-gate - RMSNorm will be applied after)
+// h_raw = h_prev + alpha * tanh(Wx + Rh + b)
+__global__ void E60ResidualTanhKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const __nv_bfloat16* __restrict__ h_prev,
+    const __nv_bfloat16* __restrict__ Wx,
+    const __nv_bfloat16* __restrict__ Rh,
+    const __nv_bfloat16* __restrict__ b,
+    __nv_bfloat16* __restrict__ h_raw,
+    __nv_bfloat16* __restrict__ tanh_cache) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        // Compute pre-activation: Wx + Rh + b
+        __nv_bfloat16 sum = bf16_add(bf16_add(Wx[idx], Rh[idx]), b[d]);
+
+        // Compute tanh
+        float val = __bfloat162float(sum);
+        float tanh_val = tanhf(val);
+
+        // Store tanh for backward
+        if (tanh_cache) tanh_cache[idx] = __float2bfloat16(tanh_val);
+
+        // Residual update: h_raw = h_prev + alpha * tanh(...)
+        float h_prev_f = __bfloat162float(h_prev[idx]);
+        float h_raw_f = h_prev_f + alpha * tanh_val;
+        h_raw[idx] = __float2bfloat16(h_raw_f);
+    }
+}
+
+template<typename T>
+__global__ void E60ResidualTanhKernel(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const T* __restrict__ h_prev,
+    const T* __restrict__ Wx,
+    const T* __restrict__ Rh,
+    const T* __restrict__ b,
+    T* __restrict__ h_raw,
+    T* __restrict__ tanh_cache) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        float val = static_cast<float>(Wx[idx]) + static_cast<float>(Rh[idx]) + static_cast<float>(b[d]);
+        float tanh_val = tanhf(val);
+
+        if (tanh_cache) tanh_cache[idx] = static_cast<T>(tanh_val);
+
+        float h_prev_f = static_cast<float>(h_prev[idx]);
+        float h_raw_f = h_prev_f + alpha * tanh_val;
+        h_raw[idx] = static_cast<T>(h_raw_f);
+    }
+}
+
+// Self-gate output kernel
+__global__ void E60SelfGateKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const __nv_bfloat16* __restrict__ h,
+    __nv_bfloat16* __restrict__ output) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_val = __bfloat162float(h[idx]);
+        float sigmoid_h = 1.0f / (1.0f + __expf(-h_val));
+        float silu_h = h_val * sigmoid_h;
+        output[idx] = __float2bfloat16(h_val * silu_h);
+    }
+}
+
+template<typename T>
+__global__ void E60SelfGateKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h,
+    T* __restrict__ output) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_val = static_cast<float>(h[idx]);
+        float sigmoid_h = 1.0f / (1.0f + expf(-h_val));
+        float silu_h = h_val * sigmoid_h;
+        output[idx] = static_cast<T>(h_val * silu_h);
+    }
+}
+
+// Self-gate backward kernel: compute gradient through h * silu(h)
+__global__ void E60SelfGateBackwardKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const __nv_bfloat16* __restrict__ h,
+    const __nv_bfloat16* __restrict__ d_output,
+    __nv_bfloat16* __restrict__ dh) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_val = __bfloat162float(h[idx]);
+        float dout = __bfloat162float(d_output[idx]);
+
+        float sigmoid_h = 1.0f / (1.0f + __expf(-h_val));
+        float silu_h = h_val * sigmoid_h;
+        float grad_factor = silu_h * (2.0f + h_val * (1.0f - sigmoid_h));
+
+        dh[idx] = __float2bfloat16(dout * grad_factor);
+    }
+}
+
+template<typename T>
+__global__ void E60SelfGateBackwardKernel(
+    const int batch_size,
+    const int dim,
+    const T* __restrict__ h,
+    const T* __restrict__ d_output,
+    T* __restrict__ dh) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_val = static_cast<float>(h[idx]);
+        float dout = static_cast<float>(d_output[idx]);
+
+        float sigmoid_h = 1.0f / (1.0f + expf(-h_val));
+        float silu_h = h_val * sigmoid_h;
+        float grad_factor = silu_h * (2.0f + h_val * (1.0f - sigmoid_h));
+
+        dh[idx] = static_cast<T>(dout * grad_factor);
+    }
+}
+
+// Add kernel
+__global__ void E60AddKernel_BF16(
+    const int total,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ b,
+    __nv_bfloat16* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        dst[idx] = __float2bfloat16(__bfloat162float(a[idx]) + __bfloat162float(b[idx]));
+    }
+}
+
+template<typename T>
+__global__ void E60AddKernel(
+    const int total,
+    const T* __restrict__ a,
+    const T* __restrict__ b,
+    T* __restrict__ dst) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        dst[idx] = static_cast<T>(static_cast<float>(a[idx]) + static_cast<float>(b[idx]));
+    }
+}
+
+// Simple residual kernel using cached tanh: h_raw = h_prev + alpha * tanh_cache
+__global__ void E60ResidualFromTanhCacheKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const __nv_bfloat16* __restrict__ h_prev,
+    const __nv_bfloat16* __restrict__ tanh_cache,
+    __nv_bfloat16* __restrict__ h_raw) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_prev_f = __bfloat162float(h_prev[idx]);
+        float tanh_val = __bfloat162float(tanh_cache[idx]);
+        h_raw[idx] = __float2bfloat16(h_prev_f + alpha * tanh_val);
+    }
+}
+
+template<typename T>
+__global__ void E60ResidualFromTanhCacheKernel(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const T* __restrict__ h_prev,
+    const T* __restrict__ tanh_cache,
+    T* __restrict__ h_raw) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        float h_prev_f = static_cast<float>(h_prev[idx]);
+        float tanh_val = static_cast<float>(tanh_cache[idx]);
+        h_raw[idx] = static_cast<T>(h_prev_f + alpha * tanh_val);
+    }
+}
+
+// Residual + tanh backward kernel: compute dh_prev, dv (gradient for pre-activation), d_log_alpha
+// Given dh_raw (gradient through RMSNorm), compute:
+//   dh_prev = dh_raw (identity path)
+//   dv = alpha * dh_raw * (1 - tanh^2)
+//   d_log_alpha += sum(dh_raw * tanh) * alpha
+__global__ void E60ResidualTanhBackwardKernel_BF16(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const __nv_bfloat16* __restrict__ tanh_cache,
+    const __nv_bfloat16* __restrict__ dh_raw,
+    __nv_bfloat16* __restrict__ dh_prev,
+    __nv_bfloat16* __restrict__ dv,
+    float* __restrict__ db,
+    float* __restrict__ d_log_alpha) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        float tanh_val = __bfloat162float(tanh_cache[idx]);
+        float dh_raw_val = __bfloat162float(dh_raw[idx]);
+
+        // dh_prev = dh_raw (identity path through residual)
+        dh_prev[idx] = __float2bfloat16(dh_raw_val);
+
+        // dv = d(alpha * tanh) = alpha * dh_raw * (1 - tanh^2)
+        float dtanh_deriv = 1.0f - tanh_val * tanh_val;
+        float dv_val = alpha * dh_raw_val * dtanh_deriv;
+        dv[idx] = __float2bfloat16(dv_val);
+
+        // Accumulate bias gradient
+        atomicAdd(&db[d], dv_val);
+
+        // d_log_alpha contribution
+        atomicAdd(d_log_alpha, dh_raw_val * tanh_val * alpha);
+    }
+}
+
+template<typename T>
+__global__ void E60ResidualTanhBackwardKernel(
+    const int batch_size,
+    const int dim,
+    const float alpha,
+    const T* __restrict__ tanh_cache,
+    const T* __restrict__ dh_raw,
+    T* __restrict__ dh_prev,
+    T* __restrict__ dv,
+    float* __restrict__ db,
+    float* __restrict__ d_log_alpha) {
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * dim;
+
+    if (idx < total) {
+        const int d = idx % dim;
+
+        float tanh_val = static_cast<float>(tanh_cache[idx]);
+        float dh_raw_val = static_cast<float>(dh_raw[idx]);
+
+        // dh_prev = dh_raw
+        dh_prev[idx] = static_cast<T>(dh_raw_val);
+
+        // dv = alpha * dh_raw * (1 - tanh^2)
+        float dtanh_deriv = 1.0f - tanh_val * tanh_val;
+        float dv_val = alpha * dh_raw_val * dtanh_deriv;
+        dv[idx] = static_cast<T>(dv_val);
+
+        atomicAdd(&db[d], dv_val);
+        atomicAdd(d_log_alpha, dh_raw_val * tanh_val * alpha);
+    }
+}
+
+// BF16-optimized: Fused residual update with tanh + self-gating output (LEGACY - without RMSNorm)
 // h_new = h_prev + alpha * tanh(Wx + Rh + b)
 // output = h_new * silu(h_new)
 __global__ void E60FusedResidualGateKernel_BF16(
@@ -328,7 +824,11 @@ void E60ResidualNonlinearForward<__nv_bfloat16>::Run(
         &beta_zero,
         tmp_Wx, dim_);
 
-    // Process each timestep
+    // RMSNorm config: one block per batch element
+    const int rmsnorm_threads = 256;
+    const size_t rmsnorm_smem = rmsnorm_threads * sizeof(float);
+
+    // Process each timestep: h_raw = h_prev + alpha * tanh(...), h = RMSNorm(h_raw), output = h * silu(h)
     for (int t = 0; t < steps; ++t) {
         const __nv_bfloat16* Wx_t = tmp_Wx + t * BD;
         const __nv_bfloat16* h_prev = h + t * BD;
@@ -347,9 +847,18 @@ void E60ResidualNonlinearForward<__nv_bfloat16>::Run(
             &beta_zero,
             tmp_Rh, dim_);
 
-        // Fused: h_t = h_prev + alpha * tanh(Wx + Rh + b), output = h_t * silu(h_t)
-        E60FusedResidualGateKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, alpha, h_prev, Wx_t, tmp_Rh, b, h_t, out_t, tanh_t);
+        // Phase 1: h_raw = h_prev + alpha * tanh(Wx + Rh + b)
+        // Store result in h_t (will be normalized in place)
+        E60ResidualTanhKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, h_prev, Wx_t, tmp_Rh, b, h_t, tanh_t);
+
+        // Phase 2: RMSNorm in place: h = h_raw / sqrt(mean(h_raw^2) + eps)
+        E60RMSNormKernel_BF16<<<batch_size_, rmsnorm_threads, rmsnorm_smem, stream_>>>(
+            batch_size_, dim_, h_t);
+
+        // Phase 3: Self-gate output = h * silu(h)
+        E60SelfGateKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, out_t);
     }
 }
 
@@ -399,16 +908,25 @@ void E60ResidualNonlinearBackward<__nv_bfloat16>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
+    // RMSNorm backward config
+    const int rmsnorm_threads = 256;
+    const size_t rmsnorm_smem = rmsnorm_threads * sizeof(float);
+
     // Workspace layout:
     // [T * BD] dv_all
-    // [BD] dh_prev_out (for each timestep, reused)
+    // [BD] dh (gradient w.r.t. normalized h)
+    // [BD] dh_raw (gradient w.r.t. pre-norm h)
     // [BD] dh_recurrent
+    // [BD] h_raw (recomputed pre-norm h)
+    // [BD] tmp_Rh (for recomputing W_h @ h)
     // [dim] db_float
     // [1] d_log_alpha_float
     __nv_bfloat16* dv_all = workspace;
-    __nv_bfloat16* dh_prev_out = workspace + steps * BD;
-    __nv_bfloat16* dh_recurrent = workspace + (steps + 1) * BD;
-    float* db_float = reinterpret_cast<float*>(workspace + (steps + 2) * BD);
+    __nv_bfloat16* dh = workspace + steps * BD;
+    __nv_bfloat16* dh_raw = workspace + (steps + 1) * BD;
+    __nv_bfloat16* dh_recurrent = workspace + (steps + 2) * BD;
+    __nv_bfloat16* h_raw = workspace + (steps + 3) * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + (steps + 4) * BD);
     float* d_log_alpha_device = db_float + dim_;
 
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(__nv_bfloat16), stream_);
@@ -417,48 +935,76 @@ void E60ResidualNonlinearBackward<__nv_bfloat16>::Run(
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(__nv_bfloat16), stream_);
     cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(__nv_bfloat16), stream_);
 
-    // BPTT loop
-    // The residual h_t = h_{t-1} + alpha * tanh(W_h @ h_{t-1} + ...)
-    // means dh_{t-1} = dh_t + dh_t * alpha * (1-tanh²) * W_h^T
-    //                = dh_prev_out + W_h @ dv
+    // BPTT loop with RMSNorm backward
+    //
+    // Forward per timestep:
+    //   h_raw[t] = h[t-1] + alpha * tanh(W_h @ h[t-1] + W_x @ x[t] + b)
+    //   h[t] = RMSNorm(h_raw[t])
+    //   output[t] = h[t] * silu(h[t])
+    //
+    // Backward per timestep:
+    //   dh[t] = self_gate_backward(d_output[t], h[t])
+    //   dh_total[t] = dh[t] + dh_recurrent[t]
+    //   dh_raw[t] = rmsnorm_backward(dh_total[t], h_raw[t], h[t])
+    //   dh_prev[t], dv[t] = residual_tanh_backward(dh_raw[t], tanh[t], alpha)
+    //   dh_recurrent[t-1] = dh_prev[t] + W_h @ dv[t]
+    //
     for (int t = steps - 1; t >= 0; --t) {
-        const __nv_bfloat16* h_prev = h + t * BD;
-        const __nv_bfloat16* h_new = h + (t + 1) * BD;
+        const __nv_bfloat16* h_t = h + (t + 1) * BD;        // Normalized h at timestep t+1
+        const __nv_bfloat16* h_prev = h + t * BD;           // Normalized h at timestep t
         const __nv_bfloat16* tanh_t = tanh_cache + t * BD;
         const __nv_bfloat16* d_out_t = d_output + t * BD;
         __nv_bfloat16* dv_t = dv_all + t * BD;
 
-        // Backward through self-gate and residual
-        // dh_prev_out contains the full gradient for h_prev (identity + through tanh paths)
-        E60BackwardKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, alpha, h_prev, h_new, tanh_t, d_out_t,
-            (t < steps - 1) ? dh_recurrent : nullptr,
-            dh_prev_out, dv_t, db_float, d_log_alpha_device);
+        // Step 1: Backward through self-gate: d_output -> dh
+        E60SelfGateBackwardKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, d_out_t, dh);
 
-        // dh_recurrent = dh_prev_out + W_h @ dv
-        // = identity path gradient + W_h path gradient
+        // Step 2: Combine with recurrent gradient
+        if (t < steps - 1) {
+            E60AddKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+                BD, dh, dh_recurrent, dh);
+        }
+
+        // Step 3: Recompute h_raw = h_prev + alpha * tanh_cache
+        // We saved tanh values in tanh_cache, so we can directly compute h_raw
+        E60ResidualFromTanhCacheKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, h_prev, tanh_t, h_raw);
+
+        // Step 4: RMSNorm backward: dh_total -> dh_raw
+        E60RMSNormBackwardKernel_BF16<<<batch_size_, rmsnorm_threads, rmsnorm_smem, stream_>>>(
+            batch_size_, dim_, h_raw, h_t, dh, dh_raw);
+
+        // Step 5: Residual + tanh backward: dh_raw -> dh_prev, dv
+        // For E60: dh_prev = dh_raw (identity), dv = alpha * dh_raw * (1 - tanh^2)
+        __nv_bfloat16* dh_prev_out = (t > 0) ? dh_recurrent : nullptr;
+        E60ResidualTanhBackwardKernel_BF16<<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, tanh_t, dh_raw,
+            dh_prev_out ? dh_prev_out : dh,  // Use dh as temp if t==0
+            dv_t, db_float, d_log_alpha_device);
+
+        // Step 6: Add W_h path to recurrent gradient: dh_recurrent += W_h @ dv
+        // Forward: Rh = W_h^T @ h_prev (uses CUBLAS_OP_T)
+        // Backward: dh_prev = (W_h^T)^T @ dv = W_h @ dv (uses CUBLAS_OP_N)
         if (t > 0) {
-            // Start with identity path: dh_prev_out
-            cudaMemcpyAsync(dh_recurrent, dh_prev_out, BD * sizeof(__nv_bfloat16),
-                           cudaMemcpyDeviceToDevice, stream_);
-            // Add W_h path: dh_recurrent += W_h @ dv
             blas<__nv_bfloat16>::gemm(
                 blas_handle_,
-                CUBLAS_OP_N, CUBLAS_OP_N,
+                CUBLAS_OP_N, CUBLAS_OP_N,  // No transpose - forward uses W_h^T, so backward uses W_h
                 dim_, batch_size_, dim_,
                 &alpha_one,
                 W_h, dim_,
                 dv_t, dim_,
-                &beta_one,  // IMPORTANT: add to existing dh_recurrent
+                &beta_one,  // Add to existing dh_recurrent
                 dh_recurrent, dim_);
         }
     }
 
     // Batch GEMMs for weight gradients
-    // dx = W_x @ dv_all
+    // For forward: y = W^T @ x
+    // dx = W @ dv_all (since d(W^T @ x)/dx = W^T, chain rule gives W @ dy)
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
-        CUBLAS_OP_N, CUBLAS_OP_N,
+        CUBLAS_OP_N, CUBLAS_OP_N,  // No transpose - forward uses W^T, backward uses W
         dim_, steps * batch_size_, dim_,
         &alpha_one,
         W_x, dim_,
@@ -466,7 +1012,7 @@ void E60ResidualNonlinearBackward<__nv_bfloat16>::Run(
         &beta_zero,
         dx, dim_);
 
-    // dW_x = x.T @ dv_all
+    // dW_x = x @ dv_all^T (gradient for W in y = W^T @ x is x @ dy^T)
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -477,7 +1023,7 @@ void E60ResidualNonlinearBackward<__nv_bfloat16>::Run(
         &beta_one,
         dW_x, dim_);
 
-    // dW_h = h[:-1].T @ dv_all
+    // dW_h = h[:-1] @ dv_all^T
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -551,6 +1097,11 @@ void E60ResidualNonlinearForward<T>::Run(
         &beta_zero,
         tmp_Wx, dim_);
 
+    // RMSNorm config
+    const int rmsnorm_threads = 256;
+    const size_t rmsnorm_smem = rmsnorm_threads * sizeof(float);
+
+    // Process each timestep: h_raw = h_prev + alpha * tanh(...), h = RMSNorm(h_raw), output = h * silu(h)
     for (int t = 0; t < steps; ++t) {
         const T* Wx_t = tmp_Wx + t * BD;
         const T* h_prev = h + t * BD;
@@ -568,8 +1119,17 @@ void E60ResidualNonlinearForward<T>::Run(
             &beta_zero,
             tmp_Rh, dim_);
 
-        E60FusedResidualGateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, alpha, h_prev, Wx_t, tmp_Rh, b, h_t, out_t, tanh_t);
+        // Phase 1: h_raw = h_prev + alpha * tanh(Wx + Rh + b)
+        E60ResidualTanhKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, h_prev, Wx_t, tmp_Rh, b, h_t, tanh_t);
+
+        // Phase 2: RMSNorm in place
+        E60RMSNormKernel<T><<<batch_size_, rmsnorm_threads, rmsnorm_smem, stream_>>>(
+            batch_size_, dim_, h_t);
+
+        // Phase 3: Self-gate output
+        E60SelfGateKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, out_t);
     }
 }
 
@@ -615,10 +1175,17 @@ void E60ResidualNonlinearBackward<T>::Run(
     const int block_size = 256;
     const int num_blocks = (BD + block_size - 1) / block_size;
 
+    // RMSNorm backward config
+    const int rmsnorm_threads = 256;
+    const size_t rmsnorm_smem = rmsnorm_threads * sizeof(float);
+
+    // Workspace layout
     T* dv_all = workspace;
-    T* dh_prev_out = workspace + steps * BD;
-    T* dh_recurrent = workspace + (steps + 1) * BD;
-    float* db_float = reinterpret_cast<float*>(workspace + (steps + 2) * BD);
+    T* dh = workspace + steps * BD;
+    T* dh_raw = workspace + (steps + 1) * BD;
+    T* dh_recurrent = workspace + (steps + 2) * BD;
+    T* h_raw = workspace + (steps + 3) * BD;
+    float* db_float = reinterpret_cast<float*>(workspace + (steps + 4) * BD);
     float* d_log_alpha_device = db_float + dim_;
 
     cudaMemsetAsync(dh_recurrent, 0, BD * sizeof(T), stream_);
@@ -627,38 +1194,57 @@ void E60ResidualNonlinearBackward<T>::Run(
     cudaMemsetAsync(dW_x, 0, dim_ * dim_ * sizeof(T), stream_);
     cudaMemsetAsync(dW_h, 0, dim_ * dim_ * sizeof(T), stream_);
 
-    // BPTT loop with proper residual gradient handling
+    // BPTT loop with RMSNorm backward
     for (int t = steps - 1; t >= 0; --t) {
+        const T* h_t = h + (t + 1) * BD;
         const T* h_prev = h + t * BD;
-        const T* h_new = h + (t + 1) * BD;
         const T* tanh_t = tanh_cache + t * BD;
         const T* d_out_t = d_output + t * BD;
         T* dv_t = dv_all + t * BD;
 
-        E60BackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
-            batch_size_, dim_, alpha, h_prev, h_new, tanh_t, d_out_t,
-            (t < steps - 1) ? dh_recurrent : nullptr,
-            dh_prev_out, dv_t, db_float, d_log_alpha_device);
+        // Step 1: Self-gate backward
+        E60SelfGateBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, h_t, d_out_t, dh);
 
-        // dh_recurrent = dh_prev_out + W_h @ dv
-        // = identity path gradient + W_h path gradient
+        // Step 2: Combine with recurrent gradient
+        if (t < steps - 1) {
+            E60AddKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+                BD, dh, dh_recurrent, dh);
+        }
+
+        // Step 3: Recompute h_raw
+        E60ResidualFromTanhCacheKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, h_prev, tanh_t, h_raw);
+
+        // Step 4: RMSNorm backward
+        E60RMSNormBackwardKernel<T><<<batch_size_, rmsnorm_threads, rmsnorm_smem, stream_>>>(
+            batch_size_, dim_, h_raw, h_t, dh, dh_raw);
+
+        // Step 5: Residual + tanh backward
+        T* dh_prev_out = (t > 0) ? dh_recurrent : nullptr;
+        E60ResidualTanhBackwardKernel<T><<<num_blocks, block_size, 0, stream_>>>(
+            batch_size_, dim_, alpha, tanh_t, dh_raw,
+            dh_prev_out ? dh_prev_out : dh,
+            dv_t, db_float, d_log_alpha_device);
+
+        // Step 6: Add W_h path to recurrent gradient: dh_recurrent += W_h @ dv
+        // Forward: Rh = W_h^T @ h_prev (uses CUBLAS_OP_T)
+        // Backward: dh_prev = (W_h^T)^T @ dv = W_h @ dv (uses CUBLAS_OP_N)
         if (t > 0) {
-            // Start with identity path: dh_prev_out
-            cudaMemcpyAsync(dh_recurrent, dh_prev_out, BD * sizeof(T),
-                           cudaMemcpyDeviceToDevice, stream_);
-            // Add W_h path: dh_recurrent += W_h @ dv
             blas<T>::gemm(
                 blas_handle_,
-                CUBLAS_OP_N, CUBLAS_OP_N,
+                CUBLAS_OP_N, CUBLAS_OP_N,  // No transpose - forward uses W_h^T, so backward uses W_h
                 dim_, batch_size_, dim_,
                 &alpha_one,
                 W_h, dim_,
                 dv_t, dim_,
-                &beta_one,  // IMPORTANT: add to existing dh_recurrent
+                &beta_one,
                 dh_recurrent, dim_);
         }
     }
 
+    // For forward: y = W^T @ x
+    // dx = W @ dv_all
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
@@ -669,6 +1255,7 @@ void E60ResidualNonlinearBackward<T>::Run(
         &beta_zero,
         dx, dim_);
 
+    // dW_x = x @ dv_all^T
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
@@ -679,6 +1266,7 @@ void E60ResidualNonlinearBackward<T>::Run(
         &beta_one,
         dW_x, dim_);
 
+    // dW_h = h[:-1] @ dv_all^T
     blas<T>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
