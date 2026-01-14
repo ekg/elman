@@ -1,0 +1,28 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/25layer_100m/E43_scalar_decay/level43_100m_20260113_192000
+Model: Level 43, 99,837,895 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.1261 | lr 4.90e-06 | grad 16.72 | tok/s 10815
+step    100 | loss 3.9409 | lr 9.90e-06 | grad 3.58 | tok/s 12396
+step    150 | loss 3.3694 | lr 1.49e-05 | grad 7.18 | tok/s 11918
+step    200 | loss 3.1525 | lr 1.99e-05 | grad 1.78 | tok/s 11794
+step    250 | loss 2.9414 | lr 2.49e-05 | grad 4.86 | tok/s 11579
+step    300 | loss 2.6113 | lr 2.99e-05 | grad 4.29 | tok/s 11546
+step    350 | loss 2.4784 | lr 3.49e-05 | grad 3.17 | tok/s 11452
+step    400 | loss 2.1444 | lr 3.99e-05 | grad 1.88 | tok/s 11981
+step    450 | loss 2.3642 | lr 4.49e-05 | grad 2.24 | tok/s 11808
+step    500 | loss 2.1425 | lr 4.99e-05 | grad 2.07 | tok/s 11753
+step    550 | loss 2.1241 | lr 5.49e-05 | grad 2.03 | tok/s 11473
+step    600 | loss 1.7547 | lr 5.99e-05 | grad 1.91 | tok/s 12293
+step    650 | loss 1.8161 | lr 6.49e-05 | grad 2.34 | tok/s 11998
+step    700 | loss 2.0136 | lr 6.99e-05 | grad 2.04 | tok/s 11670
+step    750 | loss 1.9567 | lr 7.49e-05 | grad 3.09 | tok/s 11848
+step    800 | loss 1.9948 | lr 7.99e-05 | grad 3.79 | tok/s 11949
+step    850 | loss 1.8947 | lr 8.49e-05 | grad 1.78 | tok/s 11629
+
+Training complete! Final step: 897

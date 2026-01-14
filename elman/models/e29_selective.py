@@ -545,20 +545,26 @@ class E29aSelectiveElmanFunction(torch.autograd.Function):
             W_h, W_xz, b_h, W_write, h_work_init = ctx.saved_tensors
         scale = ctx.scale
 
-        if ctx.use_cuda:
-            import hasty_pytorch_lib
-            dx, dW_h, dW_xz, db_h, dW_write = \
-                hasty_pytorch_lib.e29a_selective_backward(
-                    x_seq.contiguous(), h_work_all.contiguous(), h_work_init.contiguous(),
-                    h_tape_all.contiguous(), read_attn_all.contiguous(), write_attn_all.contiguous(),
-                    W_h.contiguous(), W_xz.contiguous(), W_write.contiguous(),
-                    d_output_all.contiguous(), d_h_tape_final.contiguous()
-                )
-        else:
-            dx, dW_h, dW_xz, db_h, dW_write = e29a_backward_python(
-                x_seq, h_work_all, h_tape_all, read_attn_all, write_attn_all,
-                W_h, W_xz, W_write, h_work_init, d_output_all, d_h_tape_final, scale
-            )
+        # Try CUDA backward first
+        if ctx.use_cuda and x_seq.is_cuda:
+            try:
+                import hasty_pytorch_lib
+                if hasattr(hasty_pytorch_lib, 'e29a_selective_backward'):
+                    dx, dW_h, dW_xz, db_h, dW_write = hasty_pytorch_lib.e29a_selective_backward(
+                        x_seq, h_work_all, h_work_init, h_tape_all,
+                        read_attn_all, write_attn_all,
+                        W_h, W_xz, W_write,
+                        d_output_all, d_h_tape_final
+                    )
+                    return None, dx, None, None, dW_h, dW_xz, db_h, dW_write, None
+            except Exception:
+                pass
+
+        # Python fallback
+        dx, dW_h, dW_xz, db_h, dW_write = e29a_backward_python(
+            x_seq, h_work_all, h_tape_all, read_attn_all, write_attn_all,
+            W_h, W_xz, W_write, h_work_init, d_output_all, d_h_tape_final, scale
+        )
 
         return None, dx, None, None, dW_h, dW_xz, db_h, dW_write, None
 
@@ -608,20 +614,26 @@ class E29bSelectiveElmanFunction(torch.autograd.Function):
             W_h, W_xz, b_h, W_write, W_gate, h_work_init = ctx.saved_tensors
         scale = ctx.scale
 
-        if ctx.use_cuda:
-            import hasty_pytorch_lib
-            dx, dW_h, dW_xz, db_h, dW_write, dW_gate = \
-                hasty_pytorch_lib.e29b_selective_backward(
-                    x_seq.contiguous(), h_work_all.contiguous(), h_work_init.contiguous(),
-                    h_tape_all.contiguous(), read_attn_all.contiguous(), write_attn_all.contiguous(),
-                    W_h.contiguous(), W_xz.contiguous(), W_write.contiguous(), W_gate.contiguous(),
-                    d_output_all.contiguous(), d_h_tape_final.contiguous()
-                )
-        else:
-            dx, dW_h, dW_xz, db_h, dW_write, dW_gate = e29b_backward_python(
-                x_seq, h_work_all, h_tape_all, read_attn_all, write_attn_all,
-                W_h, W_xz, W_write, W_gate, h_work_init, d_output_all, d_h_tape_final, scale
-            )
+        # Try CUDA backward first
+        if ctx.use_cuda and x_seq.is_cuda:
+            try:
+                import hasty_pytorch_lib
+                if hasattr(hasty_pytorch_lib, 'e29b_selective_backward'):
+                    dx, dW_h, dW_xz, db_h, dW_write, dW_gate = hasty_pytorch_lib.e29b_selective_backward(
+                        x_seq, h_work_all, h_work_init, h_tape_all,
+                        read_attn_all, write_attn_all,
+                        W_h, W_xz, W_write, W_gate,
+                        d_output_all, d_h_tape_final
+                    )
+                    return None, dx, None, None, dW_h, dW_xz, db_h, dW_write, dW_gate, None
+            except Exception:
+                pass
+
+        # Python fallback
+        dx, dW_h, dW_xz, db_h, dW_write, dW_gate = e29b_backward_python(
+            x_seq, h_work_all, h_tape_all, read_attn_all, write_attn_all,
+            W_h, W_xz, W_write, W_gate, h_work_init, d_output_all, d_h_tape_final, scale
+        )
 
         return None, dx, None, None, dW_h, dW_xz, db_h, dW_write, dW_gate, None
 
@@ -631,7 +643,10 @@ class E29bSelectiveElmanFunction(torch.autograd.Function):
 # =============================================================================
 
 class E29aSelectiveElmanCell(nn.Module):
-    """E29a cell: additive selective gate."""
+    """E29a cell: additive selective gate.
+
+    Uses CUDA forward kernel with Python backward (CUDA backward not implemented).
+    """
 
     def __init__(self, dim: int, n_slots: int = 8):
         super().__init__()
@@ -653,6 +668,7 @@ class E29aSelectiveElmanCell(nn.Module):
         nn.init.xavier_uniform_(self.W_write)
 
     def forward(self, x, h_tape=None, h_work=None, use_cuda=True):
+        """Forward using autograd Function (CUDA forward when available)."""
         if x.dim() == 3:
             if x.shape[0] > x.shape[1]:
                 x = x.permute(1, 0, 2).contiguous()
@@ -666,17 +682,25 @@ class E29aSelectiveElmanCell(nn.Module):
             h_work = torch.zeros(B, D, device=device, dtype=dtype)
 
         output_all, h_tape_final = E29aSelectiveElmanFunction.apply(
-            self.training, x.contiguous(), h_tape.contiguous(), h_work.contiguous(),
-            self.W_h.contiguous(), self.W_xz.contiguous(), self.b_h.contiguous(),
-            self.W_write.contiguous(), use_cuda
+            self.training,
+            x.contiguous(),
+            h_tape.contiguous(),
+            h_work.contiguous(),
+            self.W_h.contiguous(),
+            self.W_xz.contiguous(),
+            self.b_h.contiguous(),
+            self.W_write.contiguous(),
+            use_cuda
         )
 
-        h_work_final = output_all[:, -1]  # Note: this is the gated output, not h_work
-        return output_all, h_tape_final, h_work_final
+        return output_all, h_tape_final, output_all[:, -1]
 
 
 class E29bSelectiveElmanCell(nn.Module):
-    """E29b cell: learned selective gate."""
+    """E29b cell: learned selective gate.
+
+    Uses CUDA forward kernel with Python backward (CUDA backward not implemented).
+    """
 
     def __init__(self, dim: int, n_slots: int = 8):
         super().__init__()
@@ -700,6 +724,7 @@ class E29bSelectiveElmanCell(nn.Module):
         nn.init.xavier_uniform_(self.W_gate)
 
     def forward(self, x, h_tape=None, h_work=None, use_cuda=True):
+        """Forward using autograd Function (CUDA forward when available)."""
         if x.dim() == 3:
             if x.shape[0] > x.shape[1]:
                 x = x.permute(1, 0, 2).contiguous()
@@ -713,13 +738,19 @@ class E29bSelectiveElmanCell(nn.Module):
             h_work = torch.zeros(B, D, device=device, dtype=dtype)
 
         output_all, h_tape_final = E29bSelectiveElmanFunction.apply(
-            self.training, x.contiguous(), h_tape.contiguous(), h_work.contiguous(),
-            self.W_h.contiguous(), self.W_xz.contiguous(), self.b_h.contiguous(),
-            self.W_write.contiguous(), self.W_gate.contiguous(), use_cuda
+            self.training,
+            x.contiguous(),
+            h_tape.contiguous(),
+            h_work.contiguous(),
+            self.W_h.contiguous(),
+            self.W_xz.contiguous(),
+            self.b_h.contiguous(),
+            self.W_write.contiguous(),
+            self.W_gate.contiguous(),
+            use_cuda
         )
 
-        h_work_final = output_all[:, -1]
-        return output_all, h_tape_final, h_work_final
+        return output_all, h_tape_final, output_all[:, -1]
 
 
 if __name__ == '__main__':

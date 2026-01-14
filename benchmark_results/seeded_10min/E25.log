@@ -1,0 +1,10 @@
+Created Level 25 model: dim=512, depth=17, params=50,288,384
+E25: 50,288,384 params
+Step 100 | 80s | Loss 2.7031 | Avg100 2.8556 | 41.0K tok/s
+Step 200 | 156s | Loss 2.6562 | Avg100 2.6475 | 42.1K tok/s
+Step 300 | 231s | Loss 2.7656 | Avg100 2.6883 | 42.5K tok/s
+Step 400 | 307s | Loss 3.9062 | Avg100 3.7197 | 42.7K tok/s
+Step 500 | 383s | Loss 3.2812 | Avg100 3.6031 | 42.8K tok/s
+Step 600 | 458s | Loss 2.9375 | Avg100 3.0991 | 42.9K tok/s
+Step 700 | 534s | Loss 2.9531 | Avg100 2.9702 | 43.0K tok/s
+E25 FINAL: Loss=3.2675, 43.0K tok/s

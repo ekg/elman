@@ -1,0 +1,23 @@
+Config: dim=1280, depth=6, batch=32, seq=512
+Data: data/pile.txt
+
+============================================================
+E21
+============================================================
+Parameters: 140.1M
+  Step 1: loss = 5.8125
+  Step 50: loss = 2.7500
+  Step 100: loss = 2.3125
+  Step 150: loss = 3.0156
+  Step 200: loss = 2.0156
+  Step 250: loss = 2.0938
+  Step 300: loss = 1.9766
+  Step 350: loss = 1.9141
+  Step 400: loss = 2.2812
+  Step 450: loss = 1.9688
+  Step 500: loss = 2.0781
+  Step 550: loss = 1.7109
+  Step 600: loss = 1.8750
+  Step 650: loss = 2.5781
+  Step 700: loss = 1.7422
+E21: loss=1.9380, throughput=20.4K tok/s

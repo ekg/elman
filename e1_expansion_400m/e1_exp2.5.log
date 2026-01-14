@@ -1,0 +1,8 @@
+E1_exp2.5_d880: 403,018,000 params
+Initial: 3.6625, Memory: 10.3 GB
+Step 300: loss=1.7839, 13.9K tok/s
+Step 600: loss=1.6572, 13.9K tok/s
+Step 900: loss=1.5919, 13.9K tok/s
+Step 1200: loss=1.5459, 13.9K tok/s
+Step 1500: loss=1.5355, 13.9K tok/s
+FINAL: loss=1.5355, tok/s=13.9K, time=887s

@@ -1,0 +1,15 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_systematic/E51_no_self_gate/level51_100m_20260113_170959
+Created Level 51 model: dim=768, depth=32, params=99,349,248
+Model: Level 51, 99,349,248 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.6995 | lr 4.90e-06 | grad 18.62 | tok/s 2158
+step    100 | loss 5.3551 | lr 9.90e-06 | grad 17.12 | tok/s 2300
+step    150 | loss 4.7001 | lr 1.49e-05 | grad 43.25 | tok/s 2277
+
+Training complete! Final step: 167

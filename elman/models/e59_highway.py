@@ -1,27 +1,28 @@
 """
-E59: Highway Elman - Residual Recurrence with Perfect Gradient Flow
+E59: Highway Elman - Residual Recurrence with RMSNorm-Bounded State
 
 The temporal analog of ResNet: just as residual connections revolutionized
 depth in feedforward networks, temporal skip connections revolutionize
 sequence length in recurrent networks.
 
-Core Innovation: The Jacobian dh_t/dh_{t-1} = I (identity), providing
-perfect gradient preservation through time - no vanishing, no exploding.
+Core Innovation: Residual updates with RMSNorm to bound hidden state while
+preserving gradient flow. Without RMSNorm, h grows unboundedly over time.
 
 Architecture:
-    h_t = h_{t-1} + alpha * W @ x_t     # Residual accumulation (gradient = I)
-    output_t = h_t * silu(h_t)          # Nonlinearity at output only
+    h_t = RMSNorm(h_{t-1} + alpha * W @ x_t)   # Bounded residual
+    output_t = h_t * silu(h_t)                  # Nonlinearity at output only
+
+The RMSNorm acts as "temporal normalization" - keeping h bounded while
+allowing information to accumulate through the residual pathway.
 
 Variants:
-    E59 (pure):   h_t = h_{t-1} + alpha * W @ x_t
-    E59b (gated): h_t = h_{t-1} + gate(x_t) * W @ x_t
-    E59c (mixed): h_t = h_{t-1} + alpha * W @ x_t + beta * W' @ h_{t-1}
+    E59 (pure):   h_t = RMSNorm(h_{t-1} + alpha * W @ x_t)
+    E59b (gated): h_t = RMSNorm(h_{t-1} + gate(x_t) * W @ x_t)
+    E59c (mixed): h_t = RMSNorm(h_{t-1} + alpha * W @ x_t + beta * W' @ h_{t-1})
 
 Mathematical Insight:
-    E42: dh_t/dh_{t-1} = W         → gradient through T steps = W^T (vanishes)
-    E59: dh_t/dh_{t-1} = I         → gradient through T steps = I (preserved!)
-
-This should enable stable training at T=2048+ where E42 struggles.
+    Without RMSNorm: h grows as O(T) causing output explosion (h * silu(h) ~ h²)
+    With RMSNorm: h stays bounded, enabling stable training at any sequence length.
 """
 
 import math
@@ -35,6 +36,11 @@ try:
     E59_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e59_highway_forward')
 except ImportError:
     E59_CUDA_AVAILABLE = False
+
+
+def rms_norm(x, eps=1e-6):
+    """RMSNorm: x / sqrt(mean(x^2) + eps)"""
+    return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
 
 
 class E59HighwayFunction(torch.autograd.Function):
@@ -160,8 +166,9 @@ class E59HighwayCell(nn.Module):
         output_list = []
 
         for t in range(T):
-            # E59: Residual accumulation (gradient = I!)
+            # E59: Residual accumulation + RMSNorm for bounded state
             h_new = h_list[-1] + alpha * Wx_all[t]
+            h_new = rms_norm(h_new)  # Keep h bounded!
             h_list.append(h_new)
 
             # Self-gating (only nonlinearity)
@@ -227,6 +234,7 @@ class E59bGatedHighwayCell(nn.Module):
         for t in range(T):
             # Gated residual: gate scales input, not h_{t-1}
             h_new = h_list[-1] + gate_all[t] * Wx_all[t]
+            h_new = rms_norm(h_new)  # Keep h bounded!
             h_list.append(h_new)
 
             output = h_new * F.silu(h_new)
@@ -306,9 +314,10 @@ class E59cMixedHighwayCell(nn.Module):
         for t in range(T):
             h_prev = h_list[-1]
 
-            # E59c: Residual + small recurrent mixing
+            # E59c: Residual + small recurrent mixing + RMSNorm
             Wh = h_prev @ self.W_h.T
             h_new = h_prev + alpha * Wx_all[t] + beta * Wh
+            h_new = rms_norm(h_new)  # Keep h bounded!
             h_list.append(h_new)
 
             output = h_new * F.silu(h_new)

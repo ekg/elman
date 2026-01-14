@@ -1,0 +1,21 @@
+E18A: 49,505,280 params
+Step 100 (30s): loss=2.5528, 108.1K tok/s
+Step 200 (61s): loss=2.1215, 107.0K tok/s
+Step 300 (93s): loss=1.8974, 106.1K tok/s
+Step 400 (124s): loss=1.7925, 105.4K tok/s
+Step 500 (156s): loss=1.7174, 104.9K tok/s
+Step 600 (188s): loss=1.6802, 104.5K tok/s
+Step 700 (220s): loss=1.6321, 104.3K tok/s
+Step 800 (252s): loss=1.6252, 104.1K tok/s
+Step 900 (284s): loss=1.5898, 103.9K tok/s
+Step 1000 (322s): loss=1.5717, 101.9K tok/s
+Step 1100 (354s): loss=1.5519, 101.7K tok/s
+Step 1200 (387s): loss=1.5405, 101.6K tok/s
+Step 1300 (420s): loss=1.5393, 101.5K tok/s
+Step 1400 (453s): loss=1.5206, 101.2K tok/s
+Step 1500 (486s): loss=1.5092, 101.1K tok/s
+Step 1600 (519s): loss=1.4952, 101.0K tok/s
+Step 1700 (552s): loss=1.4871, 100.9K tok/s
+Step 1800 (585s): loss=1.4805, 100.8K tok/s
+Step 1900 (598s): loss=1.4747, 104.2K tok/s
+FINAL E18A: steps=1916, tokens=62.8M, loss=1.4760, tok/s=104.6K

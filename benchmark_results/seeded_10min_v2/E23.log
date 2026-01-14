@@ -1,0 +1,11 @@
+Created Level 23 model: dim=512, depth=17, params=50,288,384
+E23: 50,288,384 params
+Step 100 | 77s | Loss 2.3594 | Avg100 2.6167 | 42.4K tok/s
+Step 200 | 149s | Loss 2.1406 | Avg100 2.2392 | 44.1K tok/s
+Step 300 | 219s | Loss 2.0312 | Avg100 2.1142 | 45.0K tok/s
+Step 400 | 287s | Loss 2.1562 | Avg100 2.1166 | 45.7K tok/s
+Step 500 | 355s | Loss 2.1094 | Avg100 2.1395 | 46.1K tok/s
+Step 600 | 425s | Loss 2.1562 | Avg100 2.1587 | 46.3K tok/s
+Step 700 | 494s | Loss 2.1719 | Avg100 2.1197 | 46.4K tok/s
+Step 800 | 564s | Loss 2.1562 | Avg100 2.1131 | 46.5K tok/s
+E23 FINAL: Loss=2.0866, 46.1K tok/s

@@ -7538,10 +7538,10 @@ std::vector<Tensor> e59_highway_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor d_log_alpha = torch::zeros({1}, options.dtype(torch::kFloat32));
 
-    // Workspace: [dWx_all: T*BD] [dh: BD] [dh_recurrent: BD] [db_float: dim]
+    // Workspace: [dWx_all: T*BD] [dh: BD] [dh_raw: BD] [dh_recurrent: BD] [h_raw: BD] [db_float: dim]
     const int64_t BD = batch_size * dim;
     const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) - 1) / sizeof(float);
-    Tensor workspace = torch::empty({(time_steps + 2) * BD + float_in_T}, options);
+    Tensor workspace = torch::empty({(time_steps + 4) * BD + float_in_T}, options);
 
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "e59_highway_backward", ([&] {
@@ -7667,11 +7667,11 @@ std::vector<Tensor> e60_residual_nonlinear_backward(
     Tensor db = torch::zeros({dim}, options);
     Tensor d_log_alpha = torch::zeros({1}, options.dtype(torch::kFloat32));
 
-    // Workspace layout: [dv_all: T*BD] [dh_prev_out: BD] [dh_recurrent: BD]
+    // Workspace layout: [dv_all: T*BD] [dh: BD] [dh_raw: BD] [dh_recurrent: BD] [h_raw: BD]
     //                   [db_float: dim] [d_log_alpha_float: 1]
     const int64_t BD = batch_size * dim;
     const int64_t float_in_T = (dim * sizeof(float) + sizeof(float) + sizeof(float) - 1) / sizeof(float);
-    const int64_t workspace_size = (time_steps + 2) * BD + float_in_T * 2;
+    const int64_t workspace_size = (time_steps + 4) * BD + float_in_T * 2;
     Tensor workspace = torch::empty({workspace_size}, options);
 
     // log_alpha needs to be float for the kernel

@@ -1,0 +1,23 @@
+Loading data from data/pile.txt...
+
+Creating 23 model with ~50m parameters...
+Created Level 23 model: dim=512, depth=17, params=50,297,600
+
+============================================================
+Training: 23 (timeout=600.0s)
+Parameters: 50.30M
+Vocab size: 256
+============================================================
+[23] step    1 | loss 5.6250 | ppl 277.3 | grad 6.97 | 154 tok/s | 13.3s | 13324ms/step
+[23] Timeout reached at 616.3s
+
+23 Final: loss=5.6250, grad=6.97, steps=35, tokens=69,632, time=616.3s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+23              50.30M       5.6250     35       69,632       113        616.3   s
+
+Results saved to: benchmark_results

@@ -1,0 +1,20 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_cuda/E43_scalar_decay/level43_100m_20260113_180448
+Model: Level 43, 99,416,916 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.1957 | lr 4.90e-06 | grad 9.95 | tok/s 6075
+step    100 | loss 4.3162 | lr 9.90e-06 | grad 2.36 | tok/s 6919
+step    150 | loss 3.5360 | lr 1.49e-05 | grad 4.27 | tok/s 6637
+step    200 | loss 3.3346 | lr 1.99e-05 | grad 1.40 | tok/s 6575
+step    250 | loss 3.1884 | lr 2.49e-05 | grad 2.73 | tok/s 6451
+step    300 | loss 2.9354 | lr 2.99e-05 | grad 4.13 | tok/s 6452
+step    350 | loss 2.8266 | lr 3.49e-05 | grad 2.42 | tok/s 6432
+step    400 | loss 2.6056 | lr 3.99e-05 | grad 1.85 | tok/s 6695
+step    450 | loss 2.6581 | lr 4.49e-05 | grad 1.83 | tok/s 6606
+
+Training complete! Final step: 499

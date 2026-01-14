@@ -1,0 +1,6 @@
+E28 (prenorm): 27,731,968 params
+Step 100 | 57s | Loss 2.5312 | Avg100 2.9911 | 57.5K tok/s
+Step 200 | 109s | Loss 2.3125 | Avg100 2.3780 | 60.3K tok/s
+Step 300 | 166s | Loss 2.1719 | Avg100 2.2563 | 59.4K tok/s
+Step 400 | 215s | Loss 2.4531 | Avg100 2.3053 | 60.9K tok/s
+Step 500 | 267s | Loss 2.5469 | Avg100 2.6486 | 61.3K tok/s

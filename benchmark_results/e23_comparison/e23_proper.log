@@ -1,0 +1,14 @@
+Created Level 23 model: dim=512, depth=17, params=50,297,600
+E23_50M: params=50,297,600
+[E23_50M] Step 50 | 52s | Loss 2.3281 | Avg100 2.8256 | 31388 tok/s
+[E23_50M] Step 100 | 104s | Loss 2.2188 | Avg100 2.5397 | 31434 tok/s
+[E23_50M] Step 150 | 156s | Loss 1.9844 | Avg100 2.1879 | 31449 tok/s
+[E23_50M] Step 200 | 208s | Loss 2.0156 | Avg100 2.0829 | 31456 tok/s
+[E23_50M] Step 250 | 260s | Loss 2.0000 | Avg100 2.0172 | 31460 tok/s
+[E23_50M] Step 300 | 312s | Loss 1.8672 | Avg100 1.9733 | 31463 tok/s
+[E23_50M] Step 350 | 364s | Loss 1.9922 | Avg100 1.9345 | 31465 tok/s
+[E23_50M] Step 400 | 417s | Loss 1.8516 | Avg100 1.9080 | 31465 tok/s
+[E23_50M] Step 450 | 469s | Loss 1.8828 | Avg100 1.8885 | 31465 tok/s
+[E23_50M] Step 500 | 521s | Loss 1.8281 | Avg100 1.8653 | 31464 tok/s
+[E23_50M] Step 550 | 573s | Loss 1.8750 | Avg100 1.8512 | 31464 tok/s
+FINAL E23_50M: steps=577, tokens=18.9M, loss=1.8421, tok/s=31.5K

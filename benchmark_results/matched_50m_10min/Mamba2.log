@@ -1,0 +1,88 @@
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Config: dim=672, depth=18, batch=32, seq=512
+
+============================================================
+Mamba2
+============================================================
+Parameters: 50,928,750 (50.9M)
+  Step 1: loss = 5.6562
+  Step 50: loss = 2.2188
+  Step 100: loss = 1.7734
+  Step 150: loss = 2.6406
+  Step 200: loss = 1.3750
+  Step 250: loss = 1.6328
+  Step 300: loss = 1.5156
+  Step 350: loss = 1.5469
+  Step 400: loss = 1.8438
+  Step 450: loss = 1.6250
+  Step 500: loss = 1.6406
+  Step 550: loss = 1.3906
+  Step 600: loss = 1.5000
+  Step 650: loss = 2.2969
+  Step 700: loss = 1.4531
+  Step 750: loss = 1.5000
+  Step 800: loss = 1.3203
+  Step 850: loss = 1.5547
+  Step 900: loss = 1.4766
+  Step 950: loss = 1.3906
+  Step 1000: loss = 1.4922
+  Step 1050: loss = 0.7852
+  Step 1100: loss = 1.7422
+  Step 1150: loss = 1.5938
+  Step 1200: loss = 1.3359
+  Step 1250: loss = 1.3203
+  Step 1300: loss = 1.3984
+  Step 1350: loss = 1.4766
+  Step 1400: loss = 1.3906
+  Step 1450: loss = 1.3594
+  Step 1500: loss = 1.3359
+  Step 1550: loss = 1.2344
+  Step 1600: loss = 1.3438
+  Step 1650: loss = 1.3672
+  Step 1700: loss = 1.8359
+  Step 1750: loss = 1.5547
+  Step 1800: loss = 1.2656
+  Step 1850: loss = 1.5234
+  Step 1900: loss = 1.1797
+  Step 1950: loss = 1.3438
+  Step 2000: loss = 1.4688
+  Step 2050: loss = 1.2500
+  Step 2100: loss = 1.6328
+  Step 2150: loss = 1.3906
+  Step 2200: loss = 1.2578
+  Step 2250: loss = 1.5938
+  Step 2300: loss = 1.3047
+  Step 2350: loss = 2.2812
+  Step 2400: loss = 1.5781
+  Step 2450: loss = 1.4453
+  Step 2500: loss = 1.3359
+  Step 2550: loss = 1.3047
+  Step 2600: loss = 1.5000
+  Step 2650: loss = 1.3984
+  Step 2700: loss = 1.8125
+  Step 2750: loss = 1.6016
+  Step 2800: loss = 1.2188
+  Step 2850: loss = 1.4453
+  Step 2900: loss = 1.4844
+  Step 2950: loss = 1.2969
+  Step 3000: loss = 1.5078
+  Step 3050: loss = 1.2031
+  Step 3100: loss = 1.3750
+  Step 3150: loss = 1.7969
+  Step 3200: loss = 1.7266
+  Step 3250: loss = 1.3047
+  Step 3300: loss = 1.6172
+  Step 3350: loss = 1.4609
+  Step 3400: loss = 1.4062
+  Step 3450: loss = 3.3281
+  Step 3500: loss = 1.3359
+  Step 3550: loss = 2.4219
+  Step 3600: loss = 1.3125
+  Step 3650: loss = 1.3281
+  Step 3700: loss = 1.5156
+  Step 3750: loss = 1.3203
+  Step 3800: loss = 1.4609
+  Step 3850: loss = 1.5234
+  Step 3900: loss = 1.2969
+  Step 3950: loss = 1.3438
+Mamba2: loss=1.3784, throughput=108.0K tok/s, params=50.9M

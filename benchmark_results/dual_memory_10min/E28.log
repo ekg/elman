@@ -1,0 +1,20 @@
+Created Level 28 model: dim=512, depth=21, params=49,784,320
+Created Level 28 model: dim=512, depth=21, params=49,784,320
+E28: 49,784,320 params, fused=False
+Step 100 | 59s | Loss 2.7969 | Avg100 3.2630 | 3.5K tok/s
+Step 200 | 108s | Loss 2.5000 | Avg100 2.5969 | 3.8K tok/s
+Step 300 | 157s | Loss 2.2188 | Avg100 2.5131 | 3.9K tok/s
+Step 400 | 207s | Loss 2.3594 | Avg100 2.4366 | 4.0K tok/s
+Step 500 | 255s | Loss 2.0469 | Avg100 2.3552 | 4.0K tok/s
+Step 600 | 304s | Loss 2.4062 | Avg100 2.3637 | 4.0K tok/s
+Step 700 | 358s | Loss 2.0781 | Avg100 2.3092 | 4.0K tok/s
+Step 800 | 408s | Loss 2.2812 | Avg100 2.2741 | 4.0K tok/s
+Step 900 | 458s | Loss 2.6875 | Avg100 2.2489 | 4.0K tok/s
+Step 1000 | 507s | Loss 2.5000 | Avg100 2.2293 | 4.0K tok/s
+Step 1100 | 557s | Loss 2.2344 | Avg100 2.2182 | 4.0K tok/s
+
+=== FINAL: E28 ===
+Params: 49,784,320
+Steps: 1168
+Final Avg100 Loss: 2.2559
+Throughput: 4.0K tok/s

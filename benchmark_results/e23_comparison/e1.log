@@ -1,0 +1,68 @@
+Loading data from data/pile.txt...
+
+Creating 1 model with ~50m parameters...
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+
+============================================================
+Training: 1 (timeout=600.0s)
+Parameters: 49.71M
+Vocab size: 256
+============================================================
+[1] step    1 | loss 5.6562 | ppl 286.1 | grad 13.12 | 2713 tok/s | 0.8s | 753ms/step
+[1] step   50 | loss 2.3594 | ppl 10.6 | grad 4.34 | 7252 tok/s | 14.1s | 277ms/step
+[1] step  100 | loss 4.2500 | ppl 70.1 | grad 19.12 | 7371 tok/s | 27.8s | 270ms/step
+[1] step  150 | loss 1.8984 | ppl 6.7 | grad 5.88 | 7418 tok/s | 41.4s | 278ms/step
+[1] step  200 | loss 3.6406 | ppl 38.1 | grad 3.95 | 7473 tok/s | 54.8s | 269ms/step
+[1] step  250 | loss 3.2031 | ppl 24.6 | grad 3.12 | 7499 tok/s | 68.3s | 275ms/step
+[1] step  300 | loss 2.0938 | ppl 8.1 | grad 3.53 | 7509 tok/s | 81.8s | 267ms/step
+[1] step  350 | loss 1.7734 | ppl 5.9 | grad 2.64 | 7529 tok/s | 95.2s | 268ms/step
+[1] step  400 | loss 1.6250 | ppl 5.1 | grad 1.54 | 7545 tok/s | 108.6s | 263ms/step
+[1] step  450 | loss 2.0000 | ppl 7.4 | grad 3.44 | 7553 tok/s | 122.0s | 267ms/step
+[1] step  500 | loss 2.1094 | ppl 8.2 | grad 3.08 | 7561 tok/s | 135.4s | 270ms/step
+[1] step  550 | loss 1.8438 | ppl 6.3 | grad 3.06 | 7594 tok/s | 148.3s | 268ms/step
+[1] step  600 | loss 0.8711 | ppl 2.4 | grad 4.56 | 7608 tok/s | 161.5s | 264ms/step
+[1] step  650 | loss 2.2188 | ppl 9.2 | grad 5.66 | 7616 tok/s | 174.8s | 265ms/step
+[1] step  700 | loss 2.0469 | ppl 7.7 | grad 3.69 | 7637 tok/s | 187.7s | 263ms/step
+[1] step  750 | loss 1.9375 | ppl 6.9 | grad 4.66 | 7641 tok/s | 201.0s | 271ms/step
+[1] step  800 | loss 1.8359 | ppl 6.3 | grad 3.48 | 7620 tok/s | 215.0s | 284ms/step
+[1] step  850 | loss 1.8828 | ppl 6.6 | grad 3.66 | 7621 tok/s | 228.4s | 329ms/step
+[1] step  900 | loss 1.9609 | ppl 7.1 | grad 3.61 | 7627 tok/s | 241.7s | 265ms/step
+[1] step  950 | loss 1.7812 | ppl 5.9 | grad 4.94 | 7631 tok/s | 255.0s | 266ms/step
+[1] step 1000 | loss 1.8359 | ppl 6.3 | grad 3.55 | 7644 tok/s | 267.9s | 233ms/step
+[1] step 1050 | loss 2.0625 | ppl 7.9 | grad 3.42 | 7660 tok/s | 280.7s | 279ms/step
+[1] step 1100 | loss 1.7969 | ppl 6.0 | grad 3.12 | 7659 tok/s | 294.1s | 263ms/step
+[1] step 1150 | loss 1.6094 | ppl 5.0 | grad 9.06 | 7666 tok/s | 307.2s | 265ms/step
+[1] step 1200 | loss 1.8594 | ppl 6.4 | grad 3.22 | 7670 tok/s | 320.4s | 265ms/step
+[1] step 1250 | loss 1.7812 | ppl 5.9 | grad 2.83 | 7676 tok/s | 333.5s | 239ms/step
+[1] step 1300 | loss 1.7188 | ppl 5.6 | grad 3.81 | 7683 tok/s | 346.5s | 263ms/step
+[1] step 1350 | loss 2.0156 | ppl 7.5 | grad 4.25 | 7686 tok/s | 359.7s | 263ms/step
+[1] step 1400 | loss 2.4062 | ppl 11.1 | grad 5.12 | 7693 tok/s | 372.7s | 267ms/step
+[1] step 1450 | loss 2.0312 | ppl 7.6 | grad 3.67 | 7693 tok/s | 386.0s | 263ms/step
+[1] step 1500 | loss 1.6016 | ppl 5.0 | grad 2.89 | 7701 tok/s | 398.9s | 262ms/step
+[1] step 1550 | loss 1.3906 | ppl 4.0 | grad 2.70 | 7704 tok/s | 412.1s | 263ms/step
+[1] step 1600 | loss 1.5312 | ppl 4.6 | grad 5.00 | 7704 tok/s | 425.3s | 264ms/step
+[1] step 1650 | loss 1.8516 | ppl 6.4 | grad 3.89 | 7712 tok/s | 438.2s | 265ms/step
+[1] step 1700 | loss 2.1250 | ppl 8.4 | grad 4.47 | 7712 tok/s | 451.5s | 263ms/step
+[1] step 1750 | loss 1.7344 | ppl 5.7 | grad 4.09 | 7715 tok/s | 464.5s | 265ms/step
+[1] step 1800 | loss 1.9062 | ppl 6.7 | grad 4.72 | 7719 tok/s | 477.6s | 267ms/step
+[1] step 1850 | loss 2.3906 | ppl 10.9 | grad 4.78 | 7718 tok/s | 490.9s | 267ms/step
+[1] step 1900 | loss 1.4297 | ppl 4.2 | grad 3.86 | 7721 tok/s | 503.9s | 250ms/step
+[1] step 1950 | loss 1.8438 | ppl 6.3 | grad 5.34 | 7722 tok/s | 517.1s | 264ms/step
+[1] step 2000 | loss 1.4062 | ppl 4.1 | grad 3.20 | 7722 tok/s | 530.4s | 267ms/step
+[1] step 2050 | loss 1.5938 | ppl 4.9 | grad 4.84 | 7729 tok/s | 543.2s | 263ms/step
+[1] step 2100 | loss 1.7578 | ppl 5.8 | grad 4.34 | 7730 tok/s | 556.4s | 265ms/step
+[1] step 2150 | loss 1.8203 | ppl 6.2 | grad 6.78 | 7731 tok/s | 569.6s | 243ms/step
+[1] step 2200 | loss 1.4531 | ppl 4.3 | grad 3.62 | 7734 tok/s | 582.6s | 266ms/step
+[1] step 2250 | loss 1.5469 | ppl 4.7 | grad 3.03 | 7734 tok/s | 595.8s | 266ms/step
+[1] Timeout reached at 600.2s
+
+1 Final: loss=2.0324, grad=4.58, steps=2268, tokens=4,642,816, time=600.2s
+
+==========================================================================================
+BENCHMARK SUMMARY
+==========================================================================================
+Model           Params       Loss       Steps    Tokens       tok/s      Time    
+------------------------------------------------------------------------------------------
+1               49.71M       2.0324     2268     4,642,816    7735       600.2   s
+
+Results saved to: benchmark_results/e23_comparison

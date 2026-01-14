@@ -1,0 +1,50 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_systematic/E33_self_gate/level33_100m_20260113_170959
+Created Level 33 model: dim=768, depth=23, params=101,986,176
+Model: Level 33, 101,986,176 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.5232 | lr 4.90e-06 | grad 11.56 | tok/s 14738
+step    100 | loss 5.2034 | lr 9.90e-06 | grad 7.50 | tok/s 18826
+step    150 | loss 4.0134 | lr 1.49e-05 | grad 7.84 | tok/s 18048
+step    200 | loss 3.1500 | lr 1.99e-05 | grad 3.23 | tok/s 22269
+step    250 | loss 2.8018 | lr 2.49e-05 | grad 4.44 | tok/s 25607
+step    300 | loss 2.4239 | lr 2.99e-05 | grad 5.72 | tok/s 25561
+step    350 | loss 2.3621 | lr 3.49e-05 | grad 5.16 | tok/s 25443
+step    400 | loss 2.1264 | lr 3.99e-05 | grad 3.38 | tok/s 26783
+step    450 | loss 2.3166 | lr 4.49e-05 | grad 3.06 | tok/s 26127
+step    500 | loss 2.1198 | lr 4.99e-05 | grad 3.27 | tok/s 25969
+step    550 | loss 2.1185 | lr 5.49e-05 | grad 2.83 | tok/s 25280
+step    600 | loss 1.7803 | lr 5.99e-05 | grad 3.17 | tok/s 26987
+step    650 | loss 1.8421 | lr 6.49e-05 | grad 3.42 | tok/s 26377
+step    700 | loss 2.0163 | lr 6.99e-05 | grad 3.27 | tok/s 25525
+step    750 | loss 2.0176 | lr 7.49e-05 | grad 5.72 | tok/s 26000
+step    800 | loss 2.0473 | lr 7.99e-05 | grad 6.62 | tok/s 26192
+step    850 | loss 1.9171 | lr 8.49e-05 | grad 2.53 | tok/s 25501
+step    900 | loss 1.9779 | lr 8.99e-05 | grad 2.09 | tok/s 25893
+step    950 | loss 1.8483 | lr 9.49e-05 | grad 1.53 | tok/s 25804
+step   1000 | loss 1.9907 | lr 9.99e-05 | grad 2.03 | tok/s 25771
+  >>> saved checkpoint: checkpoint_step_001000_loss_1.9907.pt
+step   1050 | loss 1.9619 | lr 1.59e-06 | grad 7.12 | tok/s 23690
+step   1100 | loss 2.0359 | lr 3.37e-06 | grad 2.14 | tok/s 25445
+step   1150 | loss 1.9851 | lr 6.32e-06 | grad 4.31 | tok/s 25690
+step   1200 | loss 2.0945 | lr 1.04e-05 | grad 3.61 | tok/s 24777
+step   1250 | loss 1.8933 | lr 1.54e-05 | grad 1.35 | tok/s 25282
+step   1300 | loss 1.9288 | lr 2.13e-05 | grad 2.28 | tok/s 25156
+step   1350 | loss 1.9301 | lr 2.79e-05 | grad 1.89 | tok/s 24947
+step   1400 | loss 1.9220 | lr 3.51e-05 | grad 4.16 | tok/s 24717
+step   1450 | loss 1.8846 | lr 4.26e-05 | grad 2.30 | tok/s 24879
+step   1500 | loss 1.8077 | lr 5.03e-05 | grad 2.31 | tok/s 24916
+step   1550 | loss 1.8714 | lr 5.81e-05 | grad 2.20 | tok/s 24808
+step   1600 | loss 1.7159 | lr 6.56e-05 | grad 1.98 | tok/s 25199
+step   1650 | loss 2.0307 | lr 7.28e-05 | grad 1.59 | tok/s 25479
+step   1700 | loss 1.6921 | lr 7.95e-05 | grad 2.06 | tok/s 25667
+step   1750 | loss 1.7240 | lr 8.54e-05 | grad 2.08 | tok/s 24875
+step   1800 | loss 1.8920 | lr 9.05e-05 | grad 1.77 | tok/s 24674
+step   1850 | loss 1.7435 | lr 9.45e-05 | grad 2.03 | tok/s 24603
+
+Training complete! Final step: 1857

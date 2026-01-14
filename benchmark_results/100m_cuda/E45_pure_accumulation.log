@@ -1,0 +1,38 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_cuda/E45_pure_accumulation/level45_100m_20260113_180449
+Model: Level 45, 100,532,736 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.3783 | lr 4.90e-06 | grad 14.49 | tok/s 11608
+step    100 | loss 4.6523 | lr 9.90e-06 | grad 7.21 | tok/s 17743
+step    150 | loss 3.9466 | lr 1.49e-05 | grad 3.41 | tok/s 18385
+step    200 | loss 3.6620 | lr 1.99e-05 | grad 1.73 | tok/s 18239
+step    250 | loss 3.6248 | lr 2.49e-05 | grad 3.01 | tok/s 17769
+step    300 | loss 3.3709 | lr 2.99e-05 | grad 1.91 | tok/s 17438
+step    350 | loss 3.3669 | lr 3.49e-05 | grad 3.09 | tok/s 16925
+step    400 | loss 3.3754 | lr 3.99e-05 | grad 5.05 | tok/s 18372
+step    450 | loss 3.4606 | lr 4.49e-05 | grad 1.84 | tok/s 17697
+step    500 | loss 3.3437 | lr 4.99e-05 | grad 2.94 | tok/s 17277
+step    550 | loss 3.3185 | lr 5.49e-05 | grad 2.71 | tok/s 17150
+step    600 | loss 3.1586 | lr 5.99e-05 | grad 0.69 | tok/s 18428
+step    650 | loss 3.2773 | lr 6.49e-05 | grad 2.11 | tok/s 17877
+step    700 | loss 3.2940 | lr 6.99e-05 | grad 1.29 | tok/s 16919
+step    750 | loss 3.3430 | lr 7.49e-05 | grad 3.52 | tok/s 17718
+step    800 | loss 3.3289 | lr 7.99e-05 | grad 4.40 | tok/s 17808
+step    850 | loss 3.1666 | lr 8.49e-05 | grad 1.54 | tok/s 16926
+step    900 | loss 3.3256 | lr 8.99e-05 | grad 0.88 | tok/s 17269
+step    950 | loss 3.2185 | lr 9.49e-05 | grad 1.14 | tok/s 17019
+step   1000 | loss 3.3288 | lr 9.99e-05 | grad 1.75 | tok/s 17065
+  >>> saved checkpoint: checkpoint_step_001000_loss_3.3288.pt
+step   1050 | loss 3.2287 | lr 1.59e-06 | grad 4.87 | tok/s 15967
+step   1100 | loss 3.2454 | lr 3.37e-06 | grad 0.80 | tok/s 17160
+step   1150 | loss 3.2537 | lr 6.32e-06 | grad 3.11 | tok/s 17216
+step   1200 | loss 3.3271 | lr 1.04e-05 | grad 2.89 | tok/s 17004
+step   1250 | loss 3.2586 | lr 1.54e-05 | grad 0.85 | tok/s 17173
+step   1300 | loss 3.3425 | lr 2.13e-05 | grad 0.81 | tok/s 17307
+
+Training complete! Final step: 1302

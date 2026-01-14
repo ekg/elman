@@ -1,0 +1,18 @@
+Created Level 23 model: dim=512, depth=17, params=50,288,384
+Created Level 23 model: dim=512, depth=17, params=50,288,384
+E23: 50,288,384 params, fused=False
+Step 100 | 65s | Loss 2.5000 | Avg100 2.8505 | 3.2K tok/s
+Step 200 | 126s | Loss 2.7344 | Avg100 2.4502 | 3.3K tok/s
+Step 300 | 188s | Loss 2.1406 | Avg100 2.4227 | 3.3K tok/s
+Step 400 | 256s | Loss 2.3906 | Avg100 2.3202 | 3.2K tok/s
+Step 500 | 323s | Loss 2.5938 | Avg100 2.3682 | 3.2K tok/s
+Step 600 | 389s | Loss 2.2031 | Avg100 2.3067 | 3.2K tok/s
+Step 700 | 451s | Loss 2.1875 | Avg100 2.2891 | 3.2K tok/s
+Step 800 | 511s | Loss 2.3125 | Avg100 2.2709 | 3.2K tok/s
+Step 900 | 590s | Loss 2.3906 | Avg100 2.2662 | 3.1K tok/s
+
+=== FINAL: E23 ===
+Params: 50,288,384
+Steps: 911
+Final Avg100 Loss: 2.2702
+Throughput: 3.1K tok/s

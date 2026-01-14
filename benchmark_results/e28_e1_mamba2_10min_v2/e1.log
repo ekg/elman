@@ -1,0 +1,11 @@
+Created Level 1 model: dim=512, depth=21, params=49,714,944
+E1 LadderLM: 49,714,944 params
+Step 100 | 36s | Loss 1.9062 | Avg100 2.2149 | 91.9K tok/s
+Step 200 | 70s | Loss 1.6953 | Avg100 1.7723 | 93.8K tok/s
+Step 300 | 104s | Loss 1.6094 | Avg100 1.6909 | 94.4K tok/s
+Step 400 | 138s | Loss 1.5859 | Avg100 1.6473 | 94.9K tok/s
+Step 500 | 168s | Loss 1.5938 | Avg100 1.6188 | 97.5K tok/s
+Step 600 | 197s | Loss 1.6016 | Avg100 1.6052 | 99.8K tok/s
+Step 700 | 226s | Loss 1.5781 | Avg100 1.5755 | 101.5K tok/s
+Step 800 | 255s | Loss 1.5781 | Avg100 1.5755 | 102.8K tok/s
+Step 900 | 284s | Loss 1.5156 | Avg100 1.5537 | 103.8K tok/s

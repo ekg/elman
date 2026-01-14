@@ -1,0 +1,24 @@
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Mamba2_50M: 50,928,750 params
+Step 100 (26s): loss=2.1401, 126.1K tok/s
+Step 200 (53s): loss=1.7052, 123.7K tok/s
+Step 300 (81s): loss=1.5962, 121.8K tok/s
+Step 400 (109s): loss=1.5373, 120.3K tok/s
+Step 500 (137s): loss=1.4937, 119.3K tok/s
+Step 600 (166s): loss=1.4695, 118.6K tok/s
+Step 700 (194s): loss=1.4357, 118.1K tok/s
+Step 800 (223s): loss=1.4316, 117.8K tok/s
+Step 900 (251s): loss=1.4020, 117.5K tok/s
+Step 1000 (279s): loss=1.3899, 117.3K tok/s
+Step 1100 (308s): loss=1.3737, 117.2K tok/s
+Step 1200 (336s): loss=1.3620, 117.2K tok/s
+Step 1300 (364s): loss=1.3623, 117.1K tok/s
+Step 1400 (392s): loss=1.3431, 117.1K tok/s
+Step 1500 (420s): loss=1.3331, 117.1K tok/s
+Step 1600 (448s): loss=1.3191, 117.1K tok/s
+Step 1700 (476s): loss=1.3152, 117.1K tok/s
+Step 1800 (504s): loss=1.3066, 117.1K tok/s
+Step 1900 (532s): loss=1.3013, 117.1K tok/s
+Step 2000 (560s): loss=1.3030, 117.1K tok/s
+Step 2100 (588s): loss=1.2816, 117.1K tok/s
+FINAL Mamba2_50M: steps=2145, tokens=70.3M, loss=1.2895, tok/s=117.1K

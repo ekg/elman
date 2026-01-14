@@ -1,0 +1,3 @@
+Created Level 25 model: dim=512, depth=17, params=50,288,384
+Created Level 25 model: dim=512, depth=17, params=50,288,384
+E25: 50,288,384 params, fused=False

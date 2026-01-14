@@ -1,0 +1,31 @@
+E20: 26,626,176 params
+Traceback (most recent call last):
+  File "<string>", line 33, in <module>
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 219, in forward
+    x_out, h_final = layer(x_norm, prev_hiddens[i])
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/mamba2_informed_elman.py", line 197, in forward
+    cell_out, H_all = self.cell(x_rnn, B_rnn, C_rnn, dt_rnn, z_rnn, H0)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/mamba2_informed_elman.py", line 107, in forward
+    H = torch.stack(H_list, dim=0)  # [T+1, B, nheads, headdim, d_state]
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.01 GiB. GPU 0 has a total capacity of 47.38 GiB of which 2.65 GiB is free. Including non-PyTorch memory, this process has 44.72 GiB memory in use. Of the allocated memory 39.23 GiB is allocated by PyTorch, and 5.00 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

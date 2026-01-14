@@ -1,0 +1,33 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/25layer_specnorm/E52_quadratic/level52_100m_20260113_194402
+Model: Level 52, 99,540,550 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 4.9874 | lr 4.90e-06 | grad 90.81 | tok/s 13226
+step    100 | loss 4.8949 | lr 9.90e-06 | grad 13.35 | tok/s 15367
+step    150 | loss 3.8810 | lr 1.49e-05 | grad 9.61 | tok/s 14660
+step    200 | loss 3.3977 | lr 1.99e-05 | grad 2.62 | tok/s 14438
+step    250 | loss 3.3169 | lr 2.49e-05 | grad 5.94 | tok/s 14027
+step    300 | loss 2.7764 | lr 2.99e-05 | grad 3.70 | tok/s 14012
+step    350 | loss 2.4994 | lr 3.49e-05 | grad 2.78 | tok/s 13929
+step    400 | loss 2.0596 | lr 3.99e-05 | grad 1.63 | tok/s 14513
+step    450 | loss 2.2444 | lr 4.49e-05 | grad 1.86 | tok/s 14281
+step    500 | loss 1.9910 | lr 4.99e-05 | grad 1.91 | tok/s 14187
+step    550 | loss 1.9861 | lr 5.49e-05 | grad 2.01 | tok/s 13792
+step    600 | loss 1.5772 | lr 5.99e-05 | grad 1.83 | tok/s 14692
+step    650 | loss 1.6917 | lr 6.49e-05 | grad 2.15 | tok/s 14382
+step    700 | loss 1.8838 | lr 6.99e-05 | grad 1.83 | tok/s 13973
+step    750 | loss 1.8479 | lr 7.49e-05 | grad 3.90 | tok/s 14212
+step    800 | loss 1.8798 | lr 7.99e-05 | grad 4.13 | tok/s 14292
+step    850 | loss 1.7606 | lr 8.49e-05 | grad 1.91 | tok/s 13919
+step    900 | loss 1.8313 | lr 8.99e-05 | grad 1.57 | tok/s 14122
+step    950 | loss 1.6816 | lr 9.49e-05 | grad 1.16 | tok/s 14088
+step   1000 | loss 1.8475 | lr 9.99e-05 | grad 1.44 | tok/s 14050
+  >>> saved checkpoint: checkpoint_step_001000_loss_1.8475.pt
+step   1050 | loss 1.7675 | lr 1.59e-06 | grad 4.94 | tok/s 13279
+
+Training complete! Final step: 1080

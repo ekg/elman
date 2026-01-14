@@ -1,0 +1,23 @@
+Mamba2: 49,619,360 params
+Step 100 | 39s | Loss 1.8047 | Avg100 2.1180 | 84.8K tok/s
+Step 200 | 64s | Loss 1.5703 | Avg100 1.6677 | 101.6K tok/s
+Step 300 | 91s | Loss 1.4688 | Avg100 1.5659 | 107.7K tok/s
+Step 400 | 119s | Loss 1.4297 | Avg100 1.5106 | 110.2K tok/s
+Step 500 | 147s | Loss 1.4609 | Avg100 1.4693 | 111.5K tok/s
+Step 600 | 175s | Loss 1.4453 | Avg100 1.4484 | 112.3K tok/s
+Step 700 | 203s | Loss 1.4297 | Avg100 1.4163 | 112.7K tok/s
+Step 800 | 232s | Loss 1.3984 | Avg100 1.4138 | 113.1K tok/s
+Step 900 | 260s | Loss 1.3516 | Avg100 1.3859 | 113.4K tok/s
+Step 1000 | 289s | Loss 1.3906 | Avg100 1.3743 | 113.6K tok/s
+Step 1100 | 317s | Loss 1.3281 | Avg100 1.3580 | 113.8K tok/s
+Step 1200 | 345s | Loss 1.3125 | Avg100 1.3469 | 113.9K tok/s
+Step 1300 | 374s | Loss 1.3281 | Avg100 1.3488 | 114.0K tok/s
+Step 1400 | 402s | Loss 1.3281 | Avg100 1.3302 | 114.2K tok/s
+Step 1500 | 430s | Loss 1.3359 | Avg100 1.3207 | 114.3K tok/s
+Step 1600 | 458s | Loss 1.2891 | Avg100 1.3066 | 114.4K tok/s
+Step 1700 | 487s | Loss 1.3750 | Avg100 1.3024 | 114.5K tok/s
+Step 1800 | 515s | Loss 1.2969 | Avg100 1.2944 | 114.5K tok/s
+Step 1900 | 543s | Loss 1.4219 | Avg100 1.2898 | 114.6K tok/s
+Step 2000 | 572s | Loss 1.3203 | Avg100 1.2923 | 114.7K tok/s
+Step 2100 | 600s | Loss 1.2500 | Avg100 1.2701 | 114.7K tok/s
+Mamba2 FINAL: Loss=1.2702, 114.7K tok/s

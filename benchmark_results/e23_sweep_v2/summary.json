@@ -1,0 +1,82 @@
+[
+  {
+    "name": "d256_n64",
+    "dim": 256,
+    "n_slots": 64,
+    "depth": 96,
+    "batch_size": 32,
+    "params": null,
+    "loss": null,
+    "throughput": null
+  },
+  {
+    "name": "d512_n64",
+    "dim": 512,
+    "n_slots": 64,
+    "depth": 32,
+    "batch_size": 32,
+    "params": 50.5,
+    "loss": 2.094,
+    "throughput": 10100.0
+  },
+  {
+    "name": "d768_n64",
+    "dim": 768,
+    "n_slots": 64,
+    "depth": 14,
+    "batch_size": 32,
+    "params": 49.8,
+    "loss": 2.0321,
+    "throughput": 16200.0
+  },
+  {
+    "name": "d1024_n64",
+    "dim": 1024,
+    "n_slots": 64,
+    "depth": 8,
+    "batch_size": 16,
+    "params": 50.6,
+    "loss": 2.243,
+    "throughput": 11800.0
+  },
+  {
+    "name": "d512_n32",
+    "dim": 512,
+    "n_slots": 32,
+    "depth": 32,
+    "batch_size": 64,
+    "params": 50.5,
+    "loss": 1.998,
+    "throughput": 26200.0
+  },
+  {
+    "name": "d512_n16",
+    "dim": 512,
+    "n_slots": 16,
+    "depth": 32,
+    "batch_size": 64,
+    "params": 50.5,
+    "loss": 2.0201,
+    "throughput": 32299.999999999996
+  },
+  {
+    "name": "d512_n8",
+    "dim": 512,
+    "n_slots": 8,
+    "depth": 32,
+    "batch_size": 64,
+    "params": 50.5,
+    "loss": 2.0869,
+    "throughput": 37000.0
+  },
+  {
+    "name": "d768_n8",
+    "dim": 768,
+    "n_slots": 8,
+    "depth": 14,
+    "batch_size": 64,
+    "params": 49.8,
+    "loss": 2.123,
+    "throughput": 61300.0
+  }
+]

@@ -172,8 +172,8 @@ class E28ConvElmanCell(nn.Module):
         self._init_weights(w_h_init_scale)
 
     def _init_weights(self, w_h_init_scale: float):
-        # Conv init (Mamba2 style)
-        nn.init.uniform_(self.conv_weight, -0.1, 0.1)
+        # Conv init: Match Mamba2 exactly (uniform[-0.5, 0.5], std~0.29)
+        nn.init.uniform_(self.conv_weight, -0.5, 0.5)
 
         # Elman weights
         nn.init.xavier_uniform_(self.W_x)

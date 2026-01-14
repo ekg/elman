@@ -1,0 +1,34 @@
+Config: dim=3328, depth=6, batch=32, seq=512
+
+============================================================
+E5
+============================================================
+Parameters: 50,735,360 (50.7M)
+  Step 1: loss = 57.7500
+  Step 50: loss = 3.5781
+  Step 100: loss = 2.4219
+  Step 150: loss = 3.3906
+  Step 200: loss = 2.0156
+  Step 250: loss = 2.1406
+  Step 300: loss = 2.0000
+  Step 350: loss = 1.9766
+  Step 400: loss = 2.3281
+  Step 450: loss = 1.9844
+  Step 500: loss = 2.0938
+  Step 550: loss = 1.6953
+  Step 600: loss = 1.8281
+  Step 650: loss = 2.6562
+  Step 700: loss = 1.7188
+  Step 750: loss = 1.7266
+  Step 800: loss = 1.5391
+  Step 850: loss = 1.8047
+  Step 900: loss = 1.7188
+  Step 950: loss = 1.6172
+  Step 1000: loss = 1.7188
+  Step 1050: loss = 0.9375
+  Step 1100: loss = 1.9688
+  Step 1150: loss = 1.7656
+  Step 1200: loss = 1.4922
+  Step 1250: loss = 1.4219
+  Step 1300: loss = 1.5703
+E5: loss=1.7264, throughput=36.0K tok/s, params=50.7M

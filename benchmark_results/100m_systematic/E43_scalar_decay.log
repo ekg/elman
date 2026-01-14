@@ -1,0 +1,12 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_systematic/E43_scalar_decay/level43_100m_20260113_172029
+Model: Level 43, 99,416,916 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.6665 | lr 4.90e-06 | grad 11.56 | tok/s 885
+
+Training complete! Final step: 69

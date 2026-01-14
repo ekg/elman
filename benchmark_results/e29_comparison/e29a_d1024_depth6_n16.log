@@ -1,0 +1,15 @@
+Config: E29A D=1024, depth=6, batch=64
+Data seed: 42
+============================================================
+
+E29A D=1024 depth=6: params=25,435,136
+Step 50 | 65s | Loss 3.5000 | Avg100 3.9969 | 25.4K tok/s
+Step 100 | 127s | Loss 3.6094 | Avg100 3.7545 | 25.8K tok/s
+Step 150 | 188s | Loss 3.3906 | Avg100 3.5052 | 26.1K tok/s
+Step 200 | 250s | Loss 3.5312 | Avg100 3.4909 | 26.2K tok/s
+Step 250 | 311s | Loss 3.6406 | Avg100 3.4861 | 26.3K tok/s
+Step 300 | 374s | Loss 3.4844 | Avg100 3.4833 | 26.3K tok/s
+Step 350 | 438s | Loss 3.5156 | Avg100 3.4717 | 26.2K tok/s
+Step 400 | 501s | Loss 3.5312 | Avg100 3.4744 | 26.1K tok/s
+Step 450 | 567s | Loss 3.5000 | Avg100 3.4752 | 26.0K tok/s
+FINAL: steps=476, params=25.4M, loss=3.4747, tok/s=26.0K

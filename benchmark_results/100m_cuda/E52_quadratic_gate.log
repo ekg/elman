@@ -1,0 +1,22 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_cuda/E52_quadratic_gate/level52_100m_20260113_173331
+Created Level 52 model: dim=768, depth=32, params=99,349,248
+Model: Level 52, 99,349,248 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 4.9723 | lr 4.90e-06 | grad 62.82 | tok/s 5446
+step    100 | loss 4.8227 | lr 9.90e-06 | grad 13.72 | tok/s 6239
+step    150 | loss 3.8513 | lr 1.49e-05 | grad 3.68 | tok/s 6037
+step    200 | loss 3.4316 | lr 1.99e-05 | grad 1.26 | tok/s 6014
+step    250 | loss 3.3810 | lr 2.49e-05 | grad 3.31 | tok/s 5875
+step    300 | loss 2.9029 | lr 2.99e-05 | grad 2.77 | tok/s 5892
+step    350 | loss 2.5779 | lr 3.49e-05 | grad 2.21 | tok/s 5868
+step    400 | loss 2.1553 | lr 3.99e-05 | grad 1.41 | tok/s 8133
+step    450 | loss 2.2762 | lr 4.49e-05 | grad 1.51 | tok/s 12883
+step    500 | loss 2.0276 | lr 4.99e-05 | grad 1.60 | tok/s 12782
+
+Training complete! Final step: 539

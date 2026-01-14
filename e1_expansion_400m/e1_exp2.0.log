@@ -1,0 +1,8 @@
+E1_exp2.0_d1056: 406,291,776 params
+Initial: 3.6906, Memory: 10.3 GB
+Step 300: loss=1.7984, 14.6K tok/s
+Step 600: loss=1.6655, 14.6K tok/s
+Step 900: loss=1.5995, 14.5K tok/s
+Step 1200: loss=1.5525, 14.5K tok/s
+Step 1500: loss=1.5419, 14.5K tok/s
+FINAL: loss=1.5419, tok/s=14.5K, time=847s

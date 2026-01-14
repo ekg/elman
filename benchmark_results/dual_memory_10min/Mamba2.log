@@ -1,0 +1,66 @@
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Mamba2: 50,928,750 params, fused=N/A
+Step 100 | 27s | Loss 2.2344 | Avg100 2.5428 | 7.6K tok/s
+Step 200 | 42s | Loss 1.8594 | Avg100 2.1129 | 9.7K tok/s
+Step 300 | 56s | Loss 1.8750 | Avg100 2.0161 | 11.0K tok/s
+Step 400 | 66s | Loss 2.0000 | Avg100 1.9281 | 12.4K tok/s
+Step 500 | 75s | Loss 1.9141 | Avg100 1.8986 | 13.7K tok/s
+Step 600 | 83s | Loss 2.1250 | Avg100 1.9089 | 14.7K tok/s
+Step 700 | 92s | Loss 2.2344 | Avg100 1.8098 | 15.6K tok/s
+Step 800 | 101s | Loss 1.6719 | Avg100 1.8001 | 16.3K tok/s
+Step 900 | 109s | Loss 1.7031 | Avg100 1.7940 | 17.0K tok/s
+Step 1000 | 117s | Loss 2.1562 | Avg100 1.7358 | 17.5K tok/s
+Step 1100 | 125s | Loss 1.7109 | Avg100 1.7723 | 18.0K tok/s
+Step 1200 | 134s | Loss 1.8672 | Avg100 1.7521 | 18.4K tok/s
+Step 1300 | 142s | Loss 1.7969 | Avg100 1.7440 | 18.7K tok/s
+Step 1400 | 151s | Loss 1.4219 | Avg100 1.7320 | 19.0K tok/s
+Step 1500 | 160s | Loss 1.6016 | Avg100 1.6902 | 19.2K tok/s
+Step 1600 | 170s | Loss 1.8594 | Avg100 1.7540 | 19.3K tok/s
+Step 1700 | 180s | Loss 1.6484 | Avg100 1.7002 | 19.3K tok/s
+Step 1800 | 190s | Loss 1.5312 | Avg100 1.7084 | 19.4K tok/s
+Step 1900 | 200s | Loss 1.6250 | Avg100 1.7152 | 19.5K tok/s
+Step 2000 | 210s | Loss 1.7188 | Avg100 1.7091 | 19.5K tok/s
+Step 2100 | 220s | Loss 1.9766 | Avg100 1.6918 | 19.5K tok/s
+Step 2200 | 230s | Loss 1.6172 | Avg100 1.6678 | 19.6K tok/s
+Step 2300 | 240s | Loss 1.6016 | Avg100 1.6367 | 19.7K tok/s
+Step 2400 | 250s | Loss 2.0469 | Avg100 1.6709 | 19.7K tok/s
+Step 2500 | 260s | Loss 1.3750 | Avg100 1.6681 | 19.7K tok/s
+Step 2600 | 269s | Loss 1.9688 | Avg100 1.6507 | 19.8K tok/s
+Step 2700 | 279s | Loss 1.5547 | Avg100 1.6408 | 19.8K tok/s
+Step 2800 | 289s | Loss 1.5391 | Avg100 1.6452 | 19.8K tok/s
+Step 2900 | 299s | Loss 1.4922 | Avg100 1.6273 | 19.8K tok/s
+Step 3000 | 309s | Loss 1.5312 | Avg100 1.6330 | 19.9K tok/s
+Step 3100 | 319s | Loss 1.7969 | Avg100 1.6150 | 19.9K tok/s
+Step 3200 | 329s | Loss 1.7969 | Avg100 1.6341 | 19.9K tok/s
+Step 3300 | 339s | Loss 1.4375 | Avg100 1.6573 | 19.9K tok/s
+Step 3400 | 349s | Loss 1.6641 | Avg100 1.6301 | 19.9K tok/s
+Step 3500 | 359s | Loss 1.5312 | Avg100 1.6136 | 19.9K tok/s
+Step 3600 | 370s | Loss 1.6328 | Avg100 1.6345 | 19.9K tok/s
+Step 3700 | 384s | Loss 1.6328 | Avg100 1.5774 | 19.7K tok/s
+Step 3800 | 395s | Loss 1.4609 | Avg100 1.6427 | 19.7K tok/s
+Step 3900 | 406s | Loss 1.6172 | Avg100 1.6290 | 19.7K tok/s
+Step 4000 | 417s | Loss 1.4688 | Avg100 1.6126 | 19.6K tok/s
+Step 4100 | 428s | Loss 1.8984 | Avg100 1.6500 | 19.6K tok/s
+Step 4200 | 439s | Loss 1.5859 | Avg100 1.6241 | 19.6K tok/s
+Step 4300 | 450s | Loss 1.5859 | Avg100 1.5809 | 19.6K tok/s
+Step 4400 | 461s | Loss 1.4922 | Avg100 1.6198 | 19.5K tok/s
+Step 4500 | 472s | Loss 1.3828 | Avg100 1.6360 | 19.5K tok/s
+Step 4600 | 483s | Loss 1.5781 | Avg100 1.6048 | 19.5K tok/s
+Step 4700 | 494s | Loss 1.5000 | Avg100 1.5873 | 19.5K tok/s
+Step 4800 | 505s | Loss 1.6328 | Avg100 1.5393 | 19.5K tok/s
+Step 4900 | 516s | Loss 1.3203 | Avg100 1.5725 | 19.4K tok/s
+Step 5000 | 528s | Loss 1.6562 | Avg100 1.5858 | 19.4K tok/s
+Step 5100 | 539s | Loss 1.1953 | Avg100 1.5702 | 19.4K tok/s
+Step 5200 | 549s | Loss 1.6094 | Avg100 1.6173 | 19.4K tok/s
+Step 5300 | 559s | Loss 1.6406 | Avg100 1.6153 | 19.4K tok/s
+Step 5400 | 569s | Loss 1.4609 | Avg100 1.5802 | 19.4K tok/s
+Step 5500 | 578s | Loss 1.3828 | Avg100 1.5666 | 19.5K tok/s
+Step 5600 | 587s | Loss 1.3359 | Avg100 1.5536 | 19.6K tok/s
+Step 5700 | 595s | Loss 1.3906 | Avg100 1.5694 | 19.6K tok/s
+
+=== FINAL: Mamba2 ===
+Params: 50,928,750
+Steps: 5745
+Final Avg100 Loss: 1.5920
+Throughput: 19.6K tok/s

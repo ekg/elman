@@ -1,0 +1,240 @@
+{
+  "timestamp": "2026-01-13T06:18:32.218192",
+  "results": {
+    "50M": {
+      "E1": {
+        "loss": 1.435185,
+        "throughput": 231329.79,
+        "final_step": 6550,
+        "config": {
+          "dim": 1280,
+          "depth": 6,
+          "batch": 256,
+          "level": 1
+        },
+        "exit_code": 0
+      },
+      "E33": {
+        "loss": 1.4435660000000001,
+        "throughput": 233842.54,
+        "final_step": 8850,
+        "config": {
+          "dim": 1440,
+          "depth": 6,
+          "batch": 192,
+          "level": 33
+        },
+        "exit_code": 0
+      },
+      "E42": {
+        "loss": 1.333177,
+        "throughput": 191165.72,
+        "final_step": 5440,
+        "config": {
+          "dim": 1664,
+          "depth": 6,
+          "batch": 256,
+          "level": 42
+        },
+        "exit_code": 0
+      },
+      "Mamba2": {
+        "error": "Failed to extract metrics",
+        "config": {
+          "dim": 1152,
+          "depth": 6,
+          "batch": 256
+        },
+        "exit_code": 0
+      }
+    },
+    "100M": {
+      "E1": {
+        "loss": 1.416275,
+        "throughput": 118995.03,
+        "final_step": 5430,
+        "config": {
+          "dim": 1824,
+          "depth": 6,
+          "batch": 160,
+          "level": 1
+        },
+        "exit_code": 0
+      },
+      "E33": {
+        "loss": 1.494972,
+        "throughput": 132053.16,
+        "final_step": 6660,
+        "config": {
+          "dim": 2048,
+          "depth": 6,
+          "batch": 144,
+          "level": 33
+        },
+        "exit_code": 0
+      },
+      "E42": {
+        "loss": 1.4424549999999998,
+        "throughput": 92646.61,
+        "final_step": 4220,
+        "config": {
+          "dim": 2352,
+          "depth": 6,
+          "batch": 160,
+          "level": 42
+        },
+        "exit_code": 0
+      },
+      "Mamba2": {
+        "error": "Failed to extract metrics",
+        "config": {
+          "dim": 1664,
+          "depth": 6,
+          "batch": 160
+        },
+        "exit_code": 0
+      }
+    },
+    "250M": {
+      "E1": {
+        "loss": 1.5756999999999999,
+        "throughput": 52192.09,
+        "final_step": 3960,
+        "config": {
+          "dim": 2880,
+          "depth": 6,
+          "batch": 96,
+          "level": 1
+        },
+        "exit_code": 0
+      },
+      "E33": {
+        "loss": 1.545548,
+        "throughput": 58105.74,
+        "final_step": 5310,
+        "config": {
+          "dim": 3200,
+          "depth": 6,
+          "batch": 80,
+          "level": 33
+        },
+        "exit_code": 0
+      },
+      "E42": {
+        "loss": 1.414584,
+        "throughput": 42810.09,
+        "final_step": 3210,
+        "config": {
+          "dim": 3712,
+          "depth": 6,
+          "batch": 96,
+          "level": 42
+        },
+        "exit_code": 0
+      },
+      "Mamba2": {
+        "error": "Failed to extract metrics",
+        "config": {
+          "dim": 2624,
+          "depth": 6,
+          "batch": 96
+        },
+        "exit_code": 0
+      }
+    },
+    "500M": {
+      "E1": {
+        "loss": 1.51498,
+        "throughput": 30177.36,
+        "final_step": 3400,
+        "config": {
+          "dim": 4096,
+          "depth": 6,
+          "batch": 64,
+          "level": 1
+        },
+        "exit_code": 0
+      },
+      "E33": {
+        "loss": 1.5766419999999999,
+        "throughput": 28437.76,
+        "final_step": 3680,
+        "config": {
+          "dim": 4608,
+          "depth": 6,
+          "batch": 56,
+          "level": 33
+        },
+        "exit_code": 0
+      },
+      "E42": {
+        "loss": 1.6584649999999999,
+        "throughput": 21328.17,
+        "final_step": 2420,
+        "config": {
+          "dim": 5376,
+          "depth": 6,
+          "batch": 64,
+          "level": 42
+        },
+        "exit_code": 0
+      },
+      "Mamba2": {
+        "error": "Failed to extract metrics",
+        "config": {
+          "dim": 3712,
+          "depth": 6,
+          "batch": 64
+        },
+        "exit_code": 0
+      }
+    },
+    "1B": {
+      "E1": {
+        "loss": 1.764179,
+        "throughput": 13501.04,
+        "final_step": 2040,
+        "config": {
+          "dim": 5888,
+          "depth": 6,
+          "batch": 48,
+          "level": 1
+        },
+        "exit_code": 0
+      },
+      "E33": {
+        "loss": 1.799824,
+        "throughput": 14758.43,
+        "final_step": 2680,
+        "config": {
+          "dim": 6400,
+          "depth": 6,
+          "batch": 40,
+          "level": 33
+        },
+        "exit_code": 0
+      },
+      "E42": {
+        "loss": 1.813785,
+        "throughput": 8513.63,
+        "final_step": 1300,
+        "config": {
+          "dim": 7680,
+          "depth": 6,
+          "batch": 48,
+          "level": 42
+        },
+        "exit_code": 0
+      },
+      "Mamba2": {
+        "error": "Failed to extract metrics",
+        "config": {
+          "dim": 5248,
+          "depth": 6,
+          "batch": 48
+        },
+        "exit_code": 0
+      }
+    }
+  }
+}

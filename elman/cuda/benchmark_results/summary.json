@@ -1,0 +1,37 @@
+{
+  "config": {
+    "data": "/home/erikg/elman/data/pile.txt",
+    "params": "50m",
+    "batch_size": 4,
+    "chunk_size": 512,
+    "max_steps": 1000,
+    "lr": 0.0003
+  },
+  "results": [
+    {
+      "model": "23",
+      "num_params": 50297600,
+      "losses": [
+        5.625,
+        2.671875,
+        4.25
+      ],
+      "grad_norms": [
+        6.9375,
+        2.546875,
+        8.25
+      ],
+      "step_times_ms": [
+        5407.767772674561,
+        4993.457317352295,
+        4998.493909835815
+      ],
+      "final_loss": 4.182291666666667,
+      "final_grad_norm": 5.911458333333333,
+      "avg_step_time_ms": 5133.239666620891,
+      "total_time_s": 600.5421850681305,
+      "total_steps": 122,
+      "tokens_seen": 247808
+    }
+  ]
+}

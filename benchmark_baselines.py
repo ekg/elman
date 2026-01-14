@@ -68,7 +68,8 @@ def get_args():
     parser.add_argument("--model", type=str, default="all",
                         choices=["all", "gru", "lstm", "mamba2", "pure", "auto", "ssm", "x_gated", "diagonal",
                                  "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-                                 "log_0", "log_1", "log_2", "log_3", "log_4", "log_5", "log_6"],
+                                 "log_0", "log_1", "log_2", "log_3", "log_4", "log_5", "log_6",
+                                 "23"],
                         help="Model to benchmark (default: all)")
     parser.add_argument("--params", type=str, default="50m",
                         help="Target parameter count (e.g., 20m, 50m, 100m)")

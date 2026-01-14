@@ -1,0 +1,81 @@
+Config: dim=1280, depth=6, batch=32, seq=512
+Data: data/pile.txt
+
+============================================================
+E16
+============================================================
+Parameters: 69.2M
+  Step 1: loss = 5.7500
+  Step 50: loss = 2.2812
+  Step 100: loss = 2.1094
+  Step 150: loss = 2.8594
+  Step 200: loss = 1.6953
+  Step 250: loss = 1.8750
+  Step 300: loss = 1.6797
+  Step 350: loss = 1.7031
+  Step 400: loss = 2.0000
+  Step 450: loss = 1.7656
+  Step 500: loss = 1.7969
+  Step 550: loss = 1.5000
+  Step 600: loss = 1.5938
+  Step 650: loss = 2.4062
+  Step 700: loss = 1.5625
+  Step 750: loss = 1.5859
+  Step 800: loss = 1.3906
+  Step 850: loss = 1.6406
+  Step 900: loss = 1.5781
+  Step 950: loss = 1.4766
+  Step 1000: loss = 1.5938
+  Step 1050: loss = 0.8945
+  Step 1100: loss = 1.8516
+  Step 1150: loss = 1.6953
+  Step 1200: loss = 1.3516
+  Step 1250: loss = 1.3281
+  Step 1300: loss = 1.5000
+  Step 1350: loss = 1.5156
+  Step 1400: loss = 1.4922
+  Step 1450: loss = 1.4375
+  Step 1500: loss = 1.4297
+  Step 1550: loss = 1.2656
+  Step 1600: loss = 1.4453
+  Step 1650: loss = 1.4141
+  Step 1700: loss = 1.8281
+  Step 1750: loss = 1.6484
+  Step 1800: loss = 1.2812
+  Step 1850: loss = 1.5938
+  Step 1900: loss = 1.2812
+  Step 1950: loss = 1.4141
+  Step 2000: loss = 1.5938
+  Step 2050: loss = 1.2891
+  Step 2100: loss = 1.7188
+  Step 2150: loss = 1.5000
+  Step 2200: loss = 1.3203
+  Step 2250: loss = 1.5703
+  Step 2300: loss = 1.3828
+  Step 2350: loss = 2.4531
+  Step 2400: loss = 1.5938
+  Step 2450: loss = 1.5156
+  Step 2500: loss = 1.4219
+  Step 2550: loss = 1.3906
+  Step 2600: loss = 1.5703
+  Step 2650: loss = 1.4766
+  Step 2700: loss = 1.8828
+  Step 2750: loss = 1.7188
+  Step 2800: loss = 1.3203
+  Step 2850: loss = 1.5625
+  Step 2900: loss = 1.5703
+  Step 2950: loss = 1.4219
+  Step 3000: loss = 1.5938
+  Step 3050: loss = 1.2812
+  Step 3100: loss = 1.4766
+  Step 3150: loss = 1.6406
+  Step 3200: loss = 1.8047
+  Step 3250: loss = 1.3594
+  Step 3300: loss = 1.5781
+  Step 3350: loss = 1.6797
+  Step 3400: loss = 1.3047
+  Step 3450: loss = 3.2656
+  Step 3500: loss = 1.4141
+  Step 3550: loss = 2.6406
+  Step 3600: loss = 1.3750
+E16: loss=1.5415, throughput=99.5K tok/s

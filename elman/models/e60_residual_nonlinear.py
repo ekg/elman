@@ -1,36 +1,34 @@
 """
-E60: Residual Nonlinear Elman - The Best of Both Worlds
+E60: Residual Nonlinear Elman - RMSNorm-Bounded Residual RNN
 
-Combines E59's gradient highway with nonlinear h-dependence.
+Combines residual gradient highway with nonlinear h-dependence and RMSNorm
+to keep hidden state bounded while preserving gradient flow.
 
 Core Innovation:
-    h_t = h_{t-1} + tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+    h_t = RMSNorm(h_{t-1} + alpha * tanh(W_h @ h_{t-1} + W_x @ x_t + b))
 
-    Jacobian: dh_t/dh_{t-1} = I + diag(tanh'(...)) @ W_h
-
-    - When tanh saturates: tanh' ≈ 0, Jacobian ≈ I (gradient preserved)
-    - When tanh is linear: tanh' ≈ 1, Jacobian ≈ I + W_h (h interaction)
-
-This is the "residual RNN" pattern - an identity skip plus nonlinear update.
+The RMSNorm acts as "temporal normalization" - bounding h to unit RMS while
+preserving the direction of accumulation. Without it, h grows unboundedly
+causing output explosion (output = h * silu(h) ~ h² for large h).
 
 Architecture:
-    h_t = h_{t-1} + alpha * tanh(W_h @ h_{t-1} + W_x @ x_t + b)
+    h_t = RMSNorm(h_{t-1} + alpha * tanh(W_h @ h_{t-1} + W_x @ x_t + b))
     output_t = h_t * silu(h_t)
 
 Variants:
-    E60 (pure):   h + tanh(W_h @ h + W_x @ x)
-    E60b (scaled): h + alpha * tanh(W_h @ h + W_x @ x)
-    E60c (gated): h + gate(x) * tanh(W_h @ h + W_x @ x)
+    E60 (pure):   RMSNorm(h + alpha * tanh(W_h @ h + W_x @ x))
+    E60b (gated): RMSNorm(h + gate(x) * tanh(W_h @ h + W_x @ x))
+    E60c (forget): forget * h + (1 - forget) * tanh(...)
 
 Comparison:
-    E42: h = W @ (h + x)           → gradient = W (vanishes)
-    E59: h = h + W @ x             → gradient = I (preserved, no h mixing)
-    E60: h = h + tanh(Wh + Ux)     → gradient = I + tanh'*W (preserved + mixing)
+    E42: h = W @ (h + x)                      → gradient = W (vanishes)
+    E59: h = RMSNorm(h + W @ x)               → bounded, no h mixing
+    E60: h = RMSNorm(h + tanh(W_h@h + W_x@x)) → bounded + h mixing!
 
-The tanh acts as a natural regularizer:
-- Bounded output prevents explosion
-- Saturation → gradient flows through identity
-- Linear regime → h-dependent computation
+The RMSNorm provides:
+- Bounded hidden state (unit RMS) prevents explosion
+- Preserved gradient direction through residual path
+- Stable training at any sequence length
 """
 
 import math
@@ -44,6 +42,11 @@ try:
     E60_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e60_residual_nonlinear_forward')
 except ImportError:
     E60_CUDA_AVAILABLE = False
+
+
+def rms_norm(x, eps=1e-6):
+    """RMSNorm: x / sqrt(mean(x^2) + eps)"""
+    return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
 
 
 class E60ResidualNonlinearFunction(torch.autograd.Function):
@@ -166,10 +169,11 @@ class E60ResidualNonlinearCell(nn.Module):
             else:
                 Wh = h_prev @ self.W.T
 
-            # E60: Residual + nonlinear update
-            # h_t = h_{t-1} + alpha * tanh(W_h @ h + W_x @ x + b)
+            # E60: Residual + nonlinear update + RMSNorm
+            # h_t = RMSNorm(h_{t-1} + alpha * tanh(W_h @ h + W_x @ x + b))
             pre_act = Wh + Wx_all[t] + self.b
             h_new = h_prev + alpha * torch.tanh(pre_act)
+            h_new = rms_norm(h_new)  # Keep h bounded!
             h_list.append(h_new)
 
             # Self-gating output
@@ -228,9 +232,10 @@ class E60bGatedResidualCell(nn.Module):
             h_prev = h_list[-1]
             Wh = h_prev @ self.W_h.T
 
-            # Gated residual nonlinear update
+            # Gated residual nonlinear update + RMSNorm
             pre_act = Wh + Wx_all[t] + self.b
             h_new = h_prev + gate_all[t] * torch.tanh(pre_act)
+            h_new = rms_norm(h_new)  # Keep h bounded!
             h_list.append(h_new)
 
             output = h_new * F.silu(h_new)

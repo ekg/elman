@@ -1,0 +1,12 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_systematic/E46_no_in_proj/level46_100m_20260113_172029
+Model: Level 46, 99,416,832 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.6467 | lr 4.90e-06 | grad 28.38 | tok/s 689
+
+Training complete! Final step: 53

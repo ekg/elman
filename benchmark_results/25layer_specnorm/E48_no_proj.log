@@ -1,0 +1,25 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/25layer_specnorm/E48_no_proj/level48_100m_20260113_194402
+Model: Level 48, 99,613,430 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     50 | loss 5.1635 | lr 4.90e-06 | grad 27.87 | tok/s 9117
+step    100 | loss 4.6742 | lr 9.90e-06 | grad 12.70 | tok/s 10268
+step    150 | loss 3.6997 | lr 1.49e-05 | grad 3.89 | tok/s 9841
+step    200 | loss 3.3795 | lr 1.99e-05 | grad 2.18 | tok/s 9741
+step    250 | loss 3.2706 | lr 2.49e-05 | grad 4.13 | tok/s 9499
+step    300 | loss 2.7356 | lr 2.99e-05 | grad 4.38 | tok/s 9520
+step    350 | loss 2.5042 | lr 3.49e-05 | grad 2.80 | tok/s 9473
+step    400 | loss 2.2022 | lr 3.99e-05 | grad 1.47 | tok/s 9882
+step    450 | loss 2.3304 | lr 4.49e-05 | grad 1.65 | tok/s 9737
+step    500 | loss 2.1174 | lr 4.99e-05 | grad 2.26 | tok/s 9670
+step    550 | loss 2.0815 | lr 5.49e-05 | grad 1.96 | tok/s 9411
+step    600 | loss 1.7261 | lr 5.99e-05 | grad 1.66 | tok/s 10048
+step    650 | loss 1.7929 | lr 6.49e-05 | grad 2.78 | tok/s 9820
+step    700 | loss 1.9479 | lr 6.99e-05 | grad 2.17 | tok/s 9528
+
+Training complete! Final step: 738

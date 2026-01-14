@@ -337,17 +337,15 @@ class E25DualMemoryElmanFunction(torch.autograd.Function):
         N = h_tape_all.shape[2]
 
         if ctx.use_cuda:
-            # CUDA backward
+            # CUDA backward - returns dx, dW_h, dW_x, db_h, dW_write
+            # Note: pass x_seq (not x_proj) - CUDA kernel needs original x for dW_x computation
             import hasty_pytorch_lib
-            x_proj = (x_seq @ W_x.T).contiguous()
-            dx_proj, dW_h, db_h, dW_write = \
+            dx, dW_h, dW_x, db_h, dW_write = \
                 hasty_pytorch_lib.e25_entmax_backward(
-                    x_proj, h_work_all, h_work_init.contiguous(), h_tape_all,
+                    x_seq.contiguous(), h_work_all, h_work_init.contiguous(), h_tape_all,
                     read_attn_all, write_attn_all,
-                    W_h, W_write, d_h_work_all.contiguous(), d_h_tape_final.contiguous()
+                    W_h, W_x, W_write, d_h_work_all.contiguous(), d_h_tape_final.contiguous()
                 )
-            dx = dx_proj @ W_x
-            dW_x = torch.einsum('btd,bti->di', dx_proj, x_seq)
         else:
             # Python backward
             dx, dW_h, dW_x, db_h, dW_write = e25_backward_python(

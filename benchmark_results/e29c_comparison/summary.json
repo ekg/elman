@@ -1,0 +1,53 @@
+{
+  "config": {
+    "dim": 1024,
+    "depth": 6,
+    "batch_size": 64,
+    "seq_len": 512,
+    "time_limit": 600,
+    "data_seed": 42
+  },
+  "results": [
+    {
+      "name": "mamba2_d1024_depth6",
+      "model_type": "mamba2",
+      "dim": 1024,
+      "depth": 6,
+      "batch_size": 64,
+      "params_m": 39.1,
+      "loss": 1.3269,
+      "throughput": 209600.0
+    },
+    {
+      "name": "e1_d1024_depth6",
+      "model_type": "e1",
+      "dim": 1024,
+      "depth": 6,
+      "batch_size": 64,
+      "params_m": 31.7,
+      "loss": 2.4656,
+      "throughput": 268800.0
+    },
+    {
+      "name": "e29a_d1024_n8",
+      "model_type": "e29a",
+      "dim": 1024,
+      "depth": 6,
+      "batch_size": 64,
+      "params_m": 25.4,
+      "loss": 3.4686,
+      "throughput": 29900.0
+    },
+    {
+      "name": "e29c_d1024_n8",
+      "model_type": "e29c",
+      "dim": 1024,
+      "depth": 6,
+      "batch_size": 64,
+      "params_m": 25.5,
+      "loss": null,
+      "throughput": 19200.0
+    }
+  ],
+  "timestamp": "2026-01-12T00:17:01.627167"
+}

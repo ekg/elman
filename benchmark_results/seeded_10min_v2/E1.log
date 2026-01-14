@@ -1,0 +1,20 @@
+Created Level 1 model: dim=512, depth=21, params=49,703,680
+E1: 49,703,680 params
+Step 100 | 36s | Loss 1.8906 | Avg100 2.2191 | 90.9K tok/s
+Step 200 | 68s | Loss 1.6719 | Avg100 1.7555 | 96.4K tok/s
+Step 300 | 98s | Loss 1.5703 | Avg100 1.6599 | 100.4K tok/s
+Step 400 | 130s | Loss 1.5312 | Avg100 1.6103 | 101.0K tok/s
+Step 500 | 160s | Loss 1.5547 | Avg100 1.5726 | 102.4K tok/s
+Step 600 | 191s | Loss 1.5547 | Avg100 1.5554 | 103.0K tok/s
+Step 700 | 224s | Loss 1.5234 | Avg100 1.5215 | 102.6K tok/s
+Step 800 | 260s | Loss 1.5156 | Avg100 1.5238 | 101.0K tok/s
+Step 900 | 296s | Loss 1.4531 | Avg100 1.4940 | 99.8K tok/s
+Step 1000 | 331s | Loss 1.4922 | Avg100 1.4829 | 98.9K tok/s
+Step 1100 | 368s | Loss 1.4297 | Avg100 1.4669 | 98.0K tok/s
+Step 1200 | 404s | Loss 1.4297 | Avg100 1.4579 | 97.3K tok/s
+Step 1300 | 440s | Loss 1.4453 | Avg100 1.4605 | 96.8K tok/s
+Step 1400 | 476s | Loss 1.4375 | Avg100 1.4430 | 96.3K tok/s
+Step 1500 | 512s | Loss 1.4531 | Avg100 1.4343 | 95.9K tok/s
+Step 1600 | 548s | Loss 1.4062 | Avg100 1.4217 | 95.6K tok/s
+Step 1700 | 584s | Loss 1.4922 | Avg100 1.4148 | 95.3K tok/s
+E1 FINAL: Loss=1.4106, 95.2K tok/s

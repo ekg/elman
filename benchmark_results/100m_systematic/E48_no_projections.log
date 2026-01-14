@@ -1,0 +1,16 @@
+Using device: cuda
+Output directory: /home/erikg/elman/benchmark_results/100m_systematic/E48_no_projections/level48_100m_20260113_172028
+Model: Level 48, 100,072,448 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 439, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 433, in train
+    save_checkpoint(model, optimizer, step, avg_loss, output_dir, args.keep_checkpoints)
+                                            ^^^^^^^^
+UnboundLocalError: cannot access local variable 'avg_loss' where it is not associated with a value

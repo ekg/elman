@@ -1,0 +1,26 @@
+Config: D=512, N=16, depth=32, K=64, batch=64
+============================================================
+
+E23c_v2 D=512 N=16 depth=32 K=64 batch=64: params=58,868,224
+Step 50 | 27s | Loss 11.2500 | Avg100 63.1750 | 60.2K tok/s
+Step 100 | 55s | Loss 7.0938 | Avg100 35.5353 | 59.7K tok/s
+Step 150 | 83s | Loss 5.3125 | Avg100 6.9931 | 59.0K tok/s
+Step 200 | 111s | Loss 5.0312 | Avg100 5.6894 | 59.1K tok/s
+Step 250 | 139s | Loss 6.6562 | Avg100 5.0875 | 59.0K tok/s
+Step 300 | 166s | Loss 4.1562 | Avg100 4.6916 | 59.2K tok/s
+Step 350 | 194s | Loss 4.4062 | Avg100 4.3375 | 59.2K tok/s
+Step 400 | 221s | Loss 4.0625 | Avg100 4.1136 | 59.2K tok/s
+Step 450 | 249s | Loss 3.6719 | Avg100 3.8970 | 59.2K tok/s
+Step 500 | 276s | Loss 3.5312 | Avg100 3.7675 | 59.3K tok/s
+Step 550 | 304s | Loss 3.7656 | Avg100 3.7064 | 59.3K tok/s
+Step 600 | 331s | Loss 3.3750 | Avg100 3.6086 | 59.3K tok/s
+Step 650 | 360s | Loss 3.3906 | Avg100 3.5769 | 59.2K tok/s
+Step 700 | 390s | Loss 3.3594 | Avg100 3.5420 | 58.8K tok/s
+Step 750 | 422s | Loss 3.2500 | Avg100 3.5022 | 58.2K tok/s
+Step 800 | 454s | Loss 3.4062 | Avg100 3.4241 | 57.7K tok/s
+Step 850 | 484s | Loss 3.5312 | Avg100 3.3494 | 57.5K tok/s
+Step 900 | 511s | Loss 3.1719 | Avg100 3.2984 | 57.7K tok/s
+Step 950 | 539s | Loss 3.0625 | Avg100 3.2561 | 57.8K tok/s
+Step 1000 | 566s | Loss 3.1562 | Avg100 3.2469 | 57.9K tok/s
+Step 1050 | 593s | Loss 3.0312 | Avg100 3.2128 | 58.0K tok/s
+FINAL: steps=1063, params=58.9M, loss=3.1847, tok/s=58.0K

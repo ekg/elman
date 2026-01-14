@@ -40,7 +40,7 @@
 
 = Introduction
 
-Memory-augmented neural networks (MANNs) such as Neural Turing Machines (NTMs) #cite(<graves2014ntm>) and Differentiable Neural Computers (DNCs) #cite(<graves2016dnc>) have demonstrated remarkable capabilities in learning algorithmic solutions to complex tasks. At the heart of these architectures lies the attention mechanism, which determines how the network reads from and writes to external memory.
+Memory-augmented neural networks (MANNs) such as Neural Turing Machines (NTMs) [graves2014ntm] and Differentiable Neural Computers (DNCs) [graves2016dnc] have demonstrated remarkable capabilities in learning algorithmic solutions to complex tasks. At the heart of these architectures lies the attention mechanism, which determines how the network reads from and writes to external memory.
 
 The standard approach uses *soft attention* based on the softmax function, which produces a dense probability distribution over all memory locations. While this is fully differentiable and amenable to gradient-based optimization, it suffers from fundamental limitations when applied to memory systems:
 
@@ -71,11 +71,11 @@ When a memory-augmented network reads from memory using soft attention, it compu
 
 $ bold(r) = sum_(i=1)^N w_i bold(M)_i $
 
-where $bold(w)$ is the attention distribution and $bold(M)_i$ are memory rows. Even when the network "intends" to read from location $j$, it retrieves a contaminated signal mixing in content from all other locations #cite(<sukhbaatar2015memn2n>).
+where $bold(w)$ is the attention distribution and $bold(M)_i$ are memory rows. Even when the network "intends" to read from location $j$, it retrieves a contaminated signal mixing in content from all other locations [sukhbaatar2015memn2n].
 
 This creates several problems:
 
-1. *Catastrophic interference*: Similar to catastrophic forgetting in neural networks #cite(<kirkpatrick2017ewc>), stored patterns interfere with each other. As the number of patterns approaches memory capacity, signal-to-noise ratio degrades exponentially with gradient descent approaches.
+1. *Catastrophic interference*: Similar to catastrophic forgetting in neural networks [kirkpatrick2017ewc], stored patterns interfere with each other. As the number of patterns approaches memory capacity, signal-to-noise ratio degrades exponentially with gradient descent approaches.
 
 2. *Attention dilution*: With large memories, even a "peaked" softmax distribution spreads probability mass across many slots. For memory size $N$, the maximum attention weight on any single slot is bounded.
 
@@ -93,7 +93,7 @@ Algorithmically, we want Turing machine semantics---read or write exactly one ta
 
 == Origins and Formulation
 
-Martins and Astudillo #cite(<martins2016sparsemax>) introduced sparsemax as a sparse alternative to softmax. While softmax can be viewed as maximizing entropy subject to moment constraints, sparsemax solves a different optimization problem---Euclidean projection onto the probability simplex:
+Martins and Astudillo [martins2016sparsemax] introduced sparsemax as a sparse alternative to softmax. While softmax can be viewed as maximizing entropy subject to moment constraints, sparsemax solves a different optimization problem---Euclidean projection onto the probability simplex:
 
 $ "sparsemax"(bold(z)) = arg min_(bold(p) in Delta^(K-1)) ||bold(p) - bold(z)||_2^2 $
 
@@ -105,7 +105,7 @@ The projection has an elegant closed-form solution:
 
 $ "sparsemax"_i (bold(z)) = [z_i - tau(bold(z))]_+ $
 
-where $[t]_+ = max(0, t)$ and $tau(bold(z))$ is a threshold determined by the constraint that outputs sum to 1. The threshold can be found in $O(K log K)$ time via sorting or $O(K)$ time with median-finding algorithms #cite(<duchi2008projection>).
+where $[t]_+ = max(0, t)$ and $tau(bold(z))$ is a threshold determined by the constraint that outputs sum to 1. The threshold can be found in $O(K log K)$ time via sorting or $O(K)$ time with median-finding algorithms [duchi2008projection].
 
 == Sparsity Property
 
@@ -127,7 +127,7 @@ For training with sparsemax outputs, a corresponding loss function is needed. Th
 
 $ L_"sparsemax"(bold(z), y) = -z_y + 1/2 sum_(j in S(bold(z))) (z_j^2 - tau^2) + 1/2 $
 
-This loss is smooth and convex, and reveals an unexpected connection to the Huber classification loss #cite(<martins2016sparsemax>).
+This loss is smooth and convex, and reveals an unexpected connection to the Huber classification loss [martins2016sparsemax].
 
 == Empirical Results
 
@@ -142,7 +142,7 @@ However, sparsemax can be "too aggressive" in some cases, assigning zero probabi
 
 == Generalization via Tsallis Entropy
 
-The $alpha$-entmax family #cite(<peters2019sparse>, <correia2019adaptively>) generalizes both softmax and sparsemax through the lens of Tsallis entropy. The transformation is defined as:
+The $alpha$-entmax family [peters2019sparse] [correia2019adaptively] generalizes both softmax and sparsemax through the lens of Tsallis entropy. The transformation is defined as:
 
 $ alpha"-entmax"(bold(z)) = arg max_(bold(p) in Delta^(K-1)) [bold(p)^T bold(z) + H_alpha^T (bold(p))] $
 
@@ -175,7 +175,7 @@ where $alpha = 1.5$ gives an exponent of 2. This provides:
 
 == Learnable Alpha
 
-A powerful extension allows the $alpha$ parameter itself to be learned #cite(<correia2019adaptively>). Different attention heads can learn different sparsity levels:
+A powerful extension allows the $alpha$ parameter itself to be learned [correia2019adaptively]. Different attention heads can learn different sparsity levels:
 - Some heads may prefer soft, diffuse attention ($alpha$ close to 1)
 - Others may learn sharp, sparse attention ($alpha$ close to 2 or higher)
 
@@ -195,7 +195,7 @@ Implementations are available in the `entmax` library (deep-spin/entmax on GitHu
 
 Sampling from discrete distributions is inherently non-differentiable. Given class probabilities $bold(pi)$, drawing a one-hot sample $bold(y)$ via $y_i = 1$ if $i = arg max_j [log pi_j + g_j]$ (where $g_j$ are i.i.d. Gumbel noise) has zero gradient with respect to $bold(pi)$.
 
-Jang et al. #cite(<jang2017gumbel>) and Maddison et al. #cite(<maddison2017concrete>) independently discovered a continuous relaxation that enables gradient-based learning.
+Jang et al. [jang2017gumbel] and Maddison et al. [maddison2017concrete] independently discovered a continuous relaxation that enables gradient-based learning.
 
 == The Gumbel-Softmax Distribution
 
@@ -203,7 +203,7 @@ Replace the hard argmax with a temperature-scaled softmax:
 
 $ y_i = exp((log pi_i + g_i) / tau) / (sum_(j=1)^K exp((log pi_j + g_j) / tau)) $
 
-where $g_i sim "Gumbel"(0, 1)$ and $tau > 0$ is the temperature parameter.
+where $g_i tilde.op "Gumbel"(0, 1)$ and $tau > 0$ is the temperature parameter.
 
 This defines the *Gumbel-Softmax* (or *Concrete*) distribution, which:
 - Is reparameterizable: samples can be computed as a differentiable function of parameters
@@ -240,7 +240,7 @@ Reported successful configurations include annealing from $tau = 30$ to $tau = 1
 
 == Comparison to REINFORCE
 
-Gumbel-Softmax offers several advantages over REINFORCE-style gradient estimators #cite(<williams1992reinforce>):
+Gumbel-Softmax offers several advantages over REINFORCE-style gradient estimators [williams1992reinforce]:
 - *Lower variance*: Reparameterization provides much lower variance than score function estimators
 - *Simpler implementation*: No need for baselines or control variates
 - *Faster convergence*: Empirically trains more stably
@@ -251,7 +251,7 @@ The tradeoff is bias---Gumbel-Softmax gradients are biased estimates of the true
 
 == Concept and Origins
 
-The Straight-Through Estimator #cite(<bengio2013ste>) is a simple but effective heuristic for training networks with discrete operations:
+The Straight-Through Estimator [bengio2013ste] is a simple but effective heuristic for training networks with discrete operations:
 - *Forward pass*: Apply the discrete operation (e.g., argmax, thresholding, quantization)
 - *Backward pass*: Pretend the operation was the identity (or some smooth proxy)
 
@@ -280,7 +280,7 @@ In practice, this bias-variance tradeoff often favors STE, especially in large n
 
 == Theoretical Justification
 
-Recent work #cite(<yin2019ste>) has provided theoretical justification for STE:
+Recent work [yin2019ste] has provided theoretical justification for STE:
 - If the STE is properly chosen, the expected "coarse gradient" correlates positively with the true population gradient
 - The negative coarse gradient is a descent direction for minimizing population loss
 - Coarse gradient descent converges to critical points of the loss
@@ -317,7 +317,7 @@ Pure top-k selection is non-differentiable. Several approaches enable gradient f
 
 1. *Straight-through*: Use hard top-k forward, softmax gradients backward
 2. *Relaxed top-k*: Use smooth approximations like entmax or Gumbel-Softmax
-3. *SparseK attention* #cite(<sparsekattention>): A differentiable top-k mask operator
+3. *SparseK attention* [sparsekattention]: A differentiable top-k mask operator
 
 == Local/Window Attention
 
@@ -325,7 +325,7 @@ An alternative to content-based sparsity is *position-based* sparsity:
 - Each position attends only to nearby positions (sliding window)
 - Reduces complexity from $O(N^2)$ to $O(N dot W)$ for window size $W$
 
-Architectures like BigBird #cite(<bigbird>) combine:
+Architectures like BigBird [bigbird] combine:
 - *Local attention*: Sliding window around each position
 - *Global attention*: A few positions attend to all others
 - *Random attention*: Sparse random connections
@@ -382,13 +382,13 @@ Research has found:
 Rather than a fixed schedule, temperature can be learned:
 - Per-head learnable temperature in multi-head attention
 - Allows different heads to specialize in sharp vs. diffuse attention
-- Small but consistent improvements reported in transformer models #cite(<learnable_temp>)
+- Small but consistent improvements reported in transformer models [learnable_temp]
 
 = Empirical Findings from Memory Networks Literature
 
 == Neural Turing Machines (NTM)
 
-Graves et al. #cite(<graves2014ntm>) introduced NTMs with soft attention over external memory. Key findings:
+Graves et al. [graves2014ntm] introduced NTMs with soft attention over external memory. Key findings:
 
 - Soft attention enables end-to-end training via backpropagation
 - Content-based + location-based addressing provides flexibility
@@ -397,7 +397,7 @@ Graves et al. #cite(<graves2014ntm>) introduced NTMs with soft attention over ex
 
 == Dynamic NTM with Hard Attention
 
-Gulcehre et al. #cite(<dntm>) extended NTMs with both soft and hard attention:
+Gulcehre et al. [dntm] extended NTMs with both soft and hard attention:
 - *Hard attention*: Discrete read/write to single locations
 - *Soft attention*: Traditional weighted combination
 
@@ -408,19 +408,19 @@ Key findings on Facebook bAbI tasks:
 
 == Differentiable Neural Computer (DNC)
 
-The DNC #cite(<graves2016dnc>) extended NTMs with:
+The DNC [graves2016dnc] extended NTMs with:
 - Dynamic memory allocation (tracking usage)
 - Temporal memory linkage (recording write order)
 - Three forms of differentiable attention (content, allocation, temporal)
 
 Sparse addressing refinements:
 - Sparse memory addressing reduces time and space complexity by 1000x+
-- Sparse Access Memory (SAM) #cite(<sam2016>) achieves $O(N log N)$ time with $O(N)$ memory
+- Sparse Access Memory (SAM) [sam2016] achieves $O(N log N)$ time with $O(N)$ memory
 - SAM reads from only $K = 4$ locations per head with minimal performance loss
 
 == End-to-End Memory Networks (MemN2N)
 
-Sukhbaatar et al. #cite(<sukhbaatar2015memn2n>) introduced MemN2N:
+Sukhbaatar et al. [sukhbaatar2015memn2n] introduced MemN2N:
 - Soft attention over memory, trained end-to-end
 - Multiple "hops" over memory for multi-step reasoning
 - Key insight: soft attention enables learning without explicit supervision of attention
@@ -526,9 +526,9 @@ The empirical literature suggests that sparse and hard attention mechanisms can 
 
 = References
 
-#bibliography(
-  title: none,
-  style: "ieee",
+// #bibliography(
+  // title: none,
+  // style: "ieee",
 )
 
 // Note: In actual Typst compilation, you would have a .bib file.

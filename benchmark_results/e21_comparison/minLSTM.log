@@ -1,0 +1,9 @@
+minLSTM: 29,836,800 params
+Step 100 (47s): loss=2.7570, 69.5K tok/s
+Step 200 (106s): loss=2.1603, 62.0K tok/sSStep 300 (163s): loss=1.9473, 60.2K tok/sSStep 400 (221s): loss=1.8423, 59.3K tok/sSStep 500 (281s): loss=1.7711, 58.3K tok/sSStep 600 (339s): loss=1.7305, 58.0K tok/sSStep 700 (394s): loss=1.6859, 58.1K tok/s
+Step 800 (453s): loss=1.6716, 57.9K tok/s
+Step 900 (510s): loss=1.6375, 57.8K tok/s
+Step 1000 (566s): loss=1.6180, 57.8K tok/s
+FINAL minLSTM: steps=1062, tokens=34.8M, loss=1.6054, tok/s=58.0K
+.5810, 68.2K tok/s
+FINAL minLSTM: steps=1267, tokens=41.5M, loss=1.5829, tok/s=69.2K

@@ -1,0 +1,9 @@
+Created Mamba2 model: dim=672, depth=18, expand=2, params=50,928,750
+Mamba2: dim=672, depth=18, params=50.9M
+  Step 50: loss=2.9453
+  Step 100: loss=2.3356
+  Step 200: loss=1.7625
+  Step 300: loss=1.6206
+  Step 400: loss=1.6722
+  Step 500: loss=1.6555
+RESULT|Mamba2|50.9|1.6555|98.6|{50: 2.9453125, 100: 2.335625, 200: 1.7625, 300: 1.620625, 400: 1.6721875, 500: 1.65546875}

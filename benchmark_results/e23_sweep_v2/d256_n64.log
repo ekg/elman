@@ -1,0 +1,41 @@
+Config: D=256, N=64, depth=96, batch=32
+============================================================
+
+E23 D=256 N=64 depth=96 batch=32: params=37,888,512
+Traceback (most recent call last):
+  File "/home/erikg/elman/benchmark_results/e23_sweep_v2/d256_n64.py", line 42, in <module>
+    loss = model(batch, return_loss=True)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 234, in forward
+    x_out, h_final = layer(x_norm, prev_hiddens[i])
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/dual_memory_elman.py", line 540, in forward
+    h_work_all, h_tape_final, h_work_final = self.cell(x_proj, h_tape, h_work)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/dual_memory_elman.py", line 449, in forward
+    h_work_all, h_tape_final = DualMemoryElmanFunction.apply(
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/function.py", line 581, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/dual_memory_elman.py", line 159, in forward
+    hasty_pytorch_lib.dual_memory_elman_forward(
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 12.69 MiB is free. Including non-PyTorch memory, this process has 47.36 GiB memory in use. Of the allocated memory 46.21 GiB is allocated by PyTorch, and 666.06 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
