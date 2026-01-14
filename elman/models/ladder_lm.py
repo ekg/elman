@@ -89,6 +89,8 @@ from .e66_lowrank_h import E66LowRankH
 from .e67_h_gated import E67HGated, E67HGatedDiagonal, E67HGatedLowRank
 from .e68_self_gating import E68SelfGating, E68SelfGatingStandard, E68SelfGatingInverse
 from .gated_delta_net import GatedDeltaNet, GatedDeltaNetVector
+from .fla_gated_delta import FLAGatedDeltaNetLayer
+from .llama_baseline import LlamaLayer
 
 
 def get_ladder_level(level):
@@ -192,6 +194,8 @@ def get_ladder_level(level):
         '68i': E68SelfGatingInverse,  # E68i: Inverse (resist overwrite)
         'gdn': GatedDeltaNet,  # GatedDeltaNet: ICLR 2025 baseline (matrix state)
         'gdn-vec': GatedDeltaNetVector,  # GatedDeltaNet Vector: Simplified (vector state)
+        'fla-gdn': FLAGatedDeltaNetLayer,  # FLA GatedDeltaNet: Optimized Triton kernels (ICLR 2025)
+        'llama': LlamaLayer,  # Llama Transformer: attention baseline
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -217,7 +221,7 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, mamba2")
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2")
 
 
 class LadderLM(nn.Module):

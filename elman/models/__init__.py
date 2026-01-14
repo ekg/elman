@@ -95,6 +95,13 @@ from .min_rnn_baseline import (
     create_mingru_model, create_minlstm_model,
 )
 
+# FLA GatedDeltaNet baseline (ICLR 2025 "Gated Delta Networks")
+try:
+    from .fla_gated_delta import FLAGatedDeltaNetLayer, FLA_GDN_AVAILABLE
+except ImportError:
+    FLAGatedDeltaNetLayer = None
+    FLA_GDN_AVAILABLE = False
+
 
 def get_available_levels():
     """Return dict of available ladder levels."""
@@ -152,6 +159,8 @@ __all__ = [
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline
     'Mamba2LM', 'create_mamba2_model', 'MAMBA2_AVAILABLE',
+    # FLA GatedDeltaNet baseline
+    'FLAGatedDeltaNetLayer', 'FLA_GDN_AVAILABLE',
     # Helpers
     'get_available_levels', 'get_ladder_level',
 ]

@@ -428,6 +428,9 @@ void LSTMForward<__nv_bfloat16>::Run(
     __nv_bfloat16* tanh_c_cache,   // [T, B, dim] tanh(c) cache (training only)
     __nv_bfloat16* workspace) {    // See workspace layout below
 
+    // Set cuBLAS stream to match our kernel stream for proper synchronization
+    cublasSetStream(blas_handle_, stream_);
+
     static const __nv_bfloat16 alpha = __float2bfloat16(1.0f);
     static const __nv_bfloat16 beta_zero = __float2bfloat16(0.0f);
 
@@ -555,6 +558,9 @@ void LSTMBackward<__nv_bfloat16>::Run(
     __nv_bfloat16* db_fio,
     __nv_bfloat16* db_c,
     __nv_bfloat16* workspace) {
+
+    // Set cuBLAS stream to match our kernel stream for proper synchronization
+    cublasSetStream(blas_handle_, stream_);
 
     static const __nv_bfloat16 alpha_one = __float2bfloat16(1.0f);
     static const __nv_bfloat16 beta_zero = __float2bfloat16(0.0f);

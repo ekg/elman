@@ -463,32 +463,133 @@ def count_e68_params(dim, depth, vocab_size=256, expansion=2.0):
     return total
 
 
-def count_mamba2_params(dim, depth, vocab_size=256, expand=2):
-    """Approximate Mamba2 parameters."""
-    d_inner = dim * expand
-    d_state = 64  # SSM state size
+def count_fla_gdn_params(dim, depth, vocab_size=256, expansion=2.0):
+    """Count FLA GatedDeltaNet parameters.
 
-    # Per layer (rough estimate):
-    # - in_proj: dim -> d_inner * 2 (x, z)
-    # - x_proj for dt, B, C: d_inner -> (1 + 2*d_state) per head
-    # - dt_bias, A_log, D params
-    # - out_proj: d_inner -> dim
-    # - norm: dim
+    FLA's GatedDeltaNet has (per layer):
+    - q_proj: dim x dim
+    - k_proj: dim x dim
+    - v_proj: dim x (dim * expand_v)
+    - a_proj: dim x num_heads (alpha gate)
+    - b_proj: dim x num_heads (beta gate)
+    - q_conv1d: dim * 4 (depthwise, kernel_size=4)
+    - k_conv1d: dim * 4
+    - v_conv1d: (dim * expand_v) * 4
+    - g_proj: dim x (dim * expand_v) (output gate)
+    - o_norm: 2 * (dim * expand_v / num_heads) (FusedRMSNormGated per head)
+    - o_proj: (dim * expand_v) x dim
+    - layer norm: dim
+    """
+    d_inner = int(dim * expansion)
+    num_heads = max(1, dim // 128)  # Match default head_dim=128
 
     per_layer = (
-        dim * d_inner * 2 +      # in_proj
-        d_inner * dim +          # out_proj (approx)
-        dim                      # norm
+        dim * dim +              # q_proj
+        dim * dim +              # k_proj
+        dim * d_inner +          # v_proj
+        dim * num_heads +        # a_proj (alpha)
+        dim * num_heads +        # b_proj (beta)
+        dim * 4 +                # q_conv1d (kernel_size=4, depthwise)
+        dim * 4 +                # k_conv1d
+        d_inner * 4 +            # v_conv1d
+        dim * d_inner +          # g_proj (output gate)
+        2 * d_inner +            # o_norm (weight + bias-like params)
+        d_inner * dim +          # o_proj
+        dim                      # layer RMSNorm weight
     )
 
-    # This is a rough estimate - Mamba2 has complex structure
     total = (
-        vocab_size * dim +
-        per_layer * depth +
-        dim * 2
+        vocab_size * dim +       # embedding
+        per_layer * depth +      # layers
+        dim                      # final norm
     )
-    # Add ~20% for SSM-specific params
-    return int(total * 1.2)
+    return total
+
+
+def count_llama_params(dim, depth, vocab_size=256, head_dim=64, hidden_dim=None):
+    """Count Llama Transformer parameters.
+
+    Per layer:
+    - Attention: 4 * dim * (n_heads * head_dim) for Q, K, V, O projections
+    - FFN: 3 * dim * hidden_dim for gate, up, down projections (SwiGLU)
+    - Norms: 2 * dim for attention_norm and ffn_norm
+
+    Args:
+        dim: Model dimension
+        depth: Number of layers
+        vocab_size: Vocabulary size
+        head_dim: Head dimension (determines n_heads = dim // head_dim)
+        hidden_dim: FFN hidden dimension (default: 8/3 * dim rounded to 256)
+
+    Returns:
+        Total parameter count
+    """
+    n_heads = max(1, dim // head_dim)
+    attn_dim = n_heads * head_dim
+
+    if hidden_dim is None:
+        hidden_dim = int(8 / 3 * dim)
+        hidden_dim = ((hidden_dim + 255) // 256) * 256
+
+    per_layer = (
+        4 * dim * attn_dim +      # Q, K, V, O projections
+        3 * dim * hidden_dim +    # FFN: gate, up, down
+        2 * dim                   # RMSNorm weights (attention + ffn)
+    )
+
+    total = (
+        vocab_size * dim +        # embedding (tied with lm_head)
+        per_layer * depth +       # layers
+        dim                       # final norm
+    )
+
+    return total
+
+
+def find_llama_config_at_depth(target_params, target_depth=20, vocab_size=256, head_dim=64):
+    """Find dim to hit target_params at target_depth for Llama.
+
+    Searches all valid dim values (128-2048 in 128 increments) and returns
+    the one closest to target_params.
+
+    Returns:
+        (dim, depth, params) tuple
+    """
+    depth = target_depth
+    best_dim = 128
+    best_params = count_llama_params(128, depth, vocab_size, head_dim)
+    best_diff = abs(best_params - target_params)
+
+    # Try all dims in 128 increments
+    for dim in range(128, 2049, 128):
+        params = count_llama_params(dim, depth, vocab_size, head_dim)
+        diff = abs(params - target_params)
+        if diff < best_diff:
+            best_diff = diff
+            best_dim = dim
+            best_params = params
+
+    return (best_dim, depth, best_params)
+
+
+def count_mamba2_params(dim, depth, vocab_size=256, expand=2):
+    """Approximate Mamba2 parameters based on mamba2_baseline.py formula.
+
+    From mamba2_baseline.py:
+    - embed_params = vocab_size * dim * 2  # embedding + lm_head (tied, so just 1x)
+    - layer_params = depth * expand * 3.05 * dim * dim
+    """
+    # Embedding (lm_head is tied, so just embedding)
+    embed_params = vocab_size * dim
+
+    # Layer params: expand * 3.05 * dim^2 per layer
+    layer_params = depth * expand * 3.05 * dim * dim
+
+    # Layer norms: 2*dim per layer + final norm
+    norm_params = depth * 2 * dim + 2 * dim
+
+    total = int(embed_params + layer_params + norm_params)
+    return total
 
 
 def find_config(count_fn, target_params, expansion, max_depth=50):
@@ -528,59 +629,49 @@ def find_config(count_fn, target_params, expansion, max_depth=50):
 
 
 def find_config_at_depth(count_fn, target_params, expansion, target_depth=20):
-    """Find dim to hit target_params at a specific depth."""
+    """Find dim to hit target_params at a specific depth.
+
+    Searches all valid dim values (128-2048 in 128 increments) and returns
+    the one closest to target_params.
+    """
     depth = target_depth
+    best_dim = 128
+    best_params = count_fn(128, depth, expansion=expansion)
+    best_diff = abs(best_params - target_params)
 
-    # Binary search for dim
-    low, high = 128, 2048
-    while low < high:
-        mid = align_to_128((low + high) // 2)
-        params = count_fn(mid, depth, expansion=expansion)
-        if params < target_params:
-            low = mid + 128
-        else:
-            high = mid
-
-    dim = align_to_128(low)
-    params = count_fn(dim, depth, expansion=expansion)
-
-    # Also try one step down
-    if dim > 128:
-        dim2 = dim - 128
-        params2 = count_fn(dim2, depth, expansion=expansion)
-        if abs(params2 - target_params) < abs(params - target_params):
-            dim, params = dim2, params2
-
-    return (dim, depth, params)
-
-
-def find_mamba2_config(target_params, expand=2):
-    """Find dim, depth for Mamba2."""
-    # Mamba2 structure is different - use empirical values
-    # At expand=2, roughly: params ≈ dim² * depth * 5 + vocab * dim
-    best = None
-    best_diff = float('inf')
-
-    for depth in range(8, 40):
-        # Binary search for dim
-        low, high = 128, 2048
-        while low < high:
-            mid = align_to_128((low + high) // 2)
-            params = count_mamba2_params(mid, depth, expand=expand)
-            if params < target_params:
-                low = mid + 128
-            else:
-                high = mid
-
-        dim = align_to_128(low)
-        params = count_mamba2_params(dim, depth, expand=expand)
+    # Try all dims in 128 increments
+    for dim in range(128, 2049, 128):
+        params = count_fn(dim, depth, expansion=expansion)
         diff = abs(params - target_params)
-
         if diff < best_diff:
             best_diff = diff
-            best = (dim, depth, params)
+            best_dim = dim
+            best_params = params
 
-    return best
+    return (best_dim, depth, best_params)
+
+
+def find_mamba2_config(target_params, expand=2, target_depth=20):
+    """Find dim for Mamba2 at fixed depth.
+
+    Searches all valid dim values (128-2048 in 128 increments) and returns
+    the one closest to target_params at the specified depth.
+    """
+    depth = target_depth
+    best_dim = 128
+    best_params = count_mamba2_params(128, depth, expand=expand)
+    best_diff = abs(best_params - target_params)
+
+    # Try all dims in 128 increments
+    for dim in range(128, 2049, 128):
+        params = count_mamba2_params(dim, depth, expand=expand)
+        diff = abs(params - target_params)
+        if diff < best_diff:
+            best_diff = diff
+            best_dim = dim
+            best_params = params
+
+    return (best_dim, depth, best_params)
 
 
 def main():
@@ -663,10 +754,20 @@ def main():
     configs['cudalstm'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 'cudalstm'}
     print(f"LSTM:   dim={dim}, depth={depth}, params={params:,}")
 
-    # Mamba2 - use expand=2 to match
-    dim, depth, params = find_mamba2_config(TARGET_PARAMS, expand=2)
+    # Mamba2 - use expand=2 to match, same depth as other models
+    dim, depth, params = find_mamba2_config(TARGET_PARAMS, expand=2, target_depth=TARGET_DEPTH)
     configs['mamba2'] = {'dim': dim, 'depth': depth, 'params': params, 'expand': 2, 'level': 'mamba2'}
     print(f"Mamba2: dim={dim}, depth={depth}, params={params:,} (estimated)")
+
+    # FLA GatedDeltaNet - ICLR 2025 optimized baseline
+    dim, depth, params = find_config_at_depth(count_fla_gdn_params, TARGET_PARAMS, EXPANSION, TARGET_DEPTH)
+    configs['fla-gdn'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 'fla-gdn'}
+    print(f"FLA-GDN: dim={dim}, depth={depth}, params={params:,}")
+
+    # Llama Transformer - attention baseline
+    dim, depth, params = find_llama_config_at_depth(TARGET_PARAMS, target_depth=TARGET_DEPTH)
+    configs['llama'] = {'dim': dim, 'depth': depth, 'params': params, 'level': 'llama'}
+    print(f"Llama:  dim={dim}, depth={depth}, params={params:,}")
 
     # Save configs
     with open(OUTPUT_DIR / "configs.json", "w") as f:
@@ -677,7 +778,7 @@ def main():
     print(f"\nAvailable GPUs: {available_gpus}")
 
     # Models to benchmark (priority order)
-    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2']
+    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2', 'fla-gdn', 'llama']
 
     print("\n" + "=" * 60)
     print(f"Starting {TRAIN_MINUTES}-minute benchmarks with dynamic GPU allocation")
