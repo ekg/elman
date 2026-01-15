@@ -1,8 +1,8 @@
 // Copyright 2025 Erik Garrison. Apache 2.0 License.
 //
-// E70: Matrix Linear Elman - Square Matrix State with Linear Update
+// E70: Matrix Linear Elman - Square Matrix State with E42-style Linear Update
 //
-// Architecture:
+// Architecture (E42-style - LINEAR recurrence):
 // State S is [B, n_state, n_state] square matrix
 //
 // Forward per timestep:
@@ -10,17 +10,17 @@
 //     v_t = x @ W_v.T                      # [B, n_state]
 //     q_t = x @ W_q.T                      # [B, n_state]
 //
-//     S = decay * S + outer(v, k)          # [B, n_state, n_state]
-//     S = tanh(S)                          # Nonlinear state update
+//     S = decay * S + outer(v, k)          # [B, n_state, n_state] - LINEAR, no tanh!
 //
 //     out = S @ q                          # [B, n_state]
-//     out = out * silu(out)                # Self-gating output
+//     out = out * silu(out)                # Self-gating output (ONLY nonlinearity)
 //
-// Key Properties:
+// Key Properties (E42-style):
 // - Square matrix state S ∈ ℝ^(n×n) enables rich associative storage
-// - Nonlinear tanh on S makes this UTM-class
-// - Self-gating output for expressivity
-// - Decay parameter controls memory retention
+// - LINEAR recurrence: NO tanh! Better gradient flow (E42's key insight)
+// - Self-gating output h * silu(h) is the ONLY nonlinearity
+// - Stability via spectral norm on W_k, W_v (done in Python)
+// - Decay < 1 controls memory retention
 //
 // Key Optimization: Batch k, v, q projections upfront (3 batched GEMMs)
 
@@ -41,11 +41,12 @@ namespace {
 // Forward Kernels
 // =============================================================================
 
-// State update: S_new = tanh(decay * S_prev + outer(v, k))
+// State update: S_new = decay * S_prev + outer(v, k)
+// E42-style LINEAR update - NO TANH!
 // S: [B, N, N], v: [B, N], k: [B, N] -> S_new: [B, N, N]
 // decay is a scalar
 template<typename T>
-__global__ void StateUpdateTanhKernel(
+__global__ void StateUpdateLinearKernel(
     const int batch_size,
     const int N,   // n_state
     const float decay,
@@ -69,13 +70,13 @@ __global__ void StateUpdateTanhKernel(
         float v_val = static_cast<float>(v[bi_idx]);
         float k_val = static_cast<float>(k[bj_idx]);
 
-        // S_new = tanh(decay * S_prev + v * k)
+        // S_new = decay * S_prev + v * k  (LINEAR - no tanh!)
         float s_new_val = decay * s_prev_val + v_val * k_val;
-        S_new[idx] = static_cast<T>(tanhf(s_new_val));
+        S_new[idx] = static_cast<T>(s_new_val);  // NO tanh!
     }
 }
 
-__global__ void StateUpdateTanhKernel_BF16(
+__global__ void StateUpdateLinearKernel_BF16(
     const int batch_size,
     const int N,
     const float decay,
@@ -99,8 +100,9 @@ __global__ void StateUpdateTanhKernel_BF16(
         float v_val = __bfloat162float(v[bi_idx]);
         float k_val = __bfloat162float(k[bj_idx]);
 
+        // LINEAR update - no tanh!
         float s_new_val = decay * s_prev_val + v_val * k_val;
-        S_new[idx] = __float2bfloat16(tanhf(s_new_val));
+        S_new[idx] = __float2bfloat16(s_new_val);  // NO tanh!
     }
 }
 
@@ -422,20 +424,19 @@ inline void MatVecTransposeCuBLAS(
         batch_size);
 }
 
-// Backward through state update: S_new = tanh(decay * S_prev + outer(v, k))
-// Let pre_tanh = decay * S_prev + v @ k^T
-// d_pre_tanh = d_S_new * (1 - S_new^2)
-// d_S_prev[b,i,j] = d_pre_tanh[b,i,j] * decay
-// d_v[b,i] += sum_j(d_pre_tanh[b,i,j] * k[b,j])
-// d_k[b,j] += sum_i(d_pre_tanh[b,i,j] * v[b,i])
-// d_decay += sum_b,i,j(d_pre_tanh[b,i,j] * S_prev[b,i,j])
+// Backward through state update: S_new = decay * S_prev + outer(v, k)
+// E42-style LINEAR update - NO tanh derivative!
+// d_S_prev[b,i,j] = d_S_new[b,i,j] * decay
+// d_v[b,i] += sum_j(d_S_new[b,i,j] * k[b,j])
+// d_k[b,j] += sum_i(d_S_new[b,i,j] * v[b,i])
+// d_decay += sum_b,i,j(d_S_new[b,i,j] * S_prev[b,i,j])
 template<typename T>
-__global__ void StateBackwardKernel(
+__global__ void StateBackwardLinearKernel(
     const int batch_size,
     const int N,
     const float decay,
     const T* __restrict__ S_prev,     // [B, N, N]
-    const T* __restrict__ S_new,      // [B, N, N] (tanh result)
+    const T* __restrict__ S_new,      // [B, N, N] (unused now - linear, no tanh)
     const T* __restrict__ v,          // [B, N]
     const T* __restrict__ k,          // [B, N]
     const T* __restrict__ d_S_new,    // [B, N, N]
@@ -455,35 +456,32 @@ __global__ void StateBackwardKernel(
         const int bi_idx = b * N + i;
         const int bj_idx = b * N + j;
 
-        float s_new_val = static_cast<float>(S_new[idx]);
         float ds_new = static_cast<float>(d_S_new[idx]);
 
-        // d_pre_tanh = d_S_new * (1 - S_new^2)  [tanh derivative]
-        float d_pre_tanh = ds_new * (1.0f - s_new_val * s_new_val);
+        // LINEAR backward: no tanh derivative! Gradient flows directly.
+        // d_S_prev = d_S_new * decay
+        d_S_prev[idx] = static_cast<T>(ds_new * decay);
 
-        // d_S_prev = d_pre_tanh * decay
-        d_S_prev[idx] = static_cast<T>(d_pre_tanh * decay);
-
-        // d_v[b,i] += d_pre_tanh * k[b,j]
+        // d_v[b,i] += d_S_new * k[b,j]
         float k_val = static_cast<float>(k[bj_idx]);
-        atomicAdd(&d_v_f[bi_idx], d_pre_tanh * k_val);
+        atomicAdd(&d_v_f[bi_idx], ds_new * k_val);
 
-        // d_k[b,j] += d_pre_tanh * v[b,i]
+        // d_k[b,j] += d_S_new * v[b,i]
         float v_val = static_cast<float>(v[bi_idx]);
-        atomicAdd(&d_k_f[bj_idx], d_pre_tanh * v_val);
+        atomicAdd(&d_k_f[bj_idx], ds_new * v_val);
 
-        // d_decay += d_pre_tanh * S_prev
+        // d_decay += d_S_new * S_prev
         float s_prev_val = static_cast<float>(S_prev[idx]);
-        atomicAdd(d_decay_f, d_pre_tanh * s_prev_val);
+        atomicAdd(d_decay_f, ds_new * s_prev_val);
     }
 }
 
-__global__ void StateBackwardKernel_BF16(
+__global__ void StateBackwardLinearKernel_BF16(
     const int batch_size,
     const int N,
     const float decay,
     const __nv_bfloat16* __restrict__ S_prev,
-    const __nv_bfloat16* __restrict__ S_new,
+    const __nv_bfloat16* __restrict__ S_new,  // unused - linear, no tanh
     const __nv_bfloat16* __restrict__ v,
     const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ d_S_new,
@@ -503,21 +501,19 @@ __global__ void StateBackwardKernel_BF16(
         const int bi_idx = b * N + i;
         const int bj_idx = b * N + j;
 
-        float s_new_val = __bfloat162float(S_new[idx]);
         float ds_new = __bfloat162float(d_S_new[idx]);
 
-        float d_pre_tanh = ds_new * (1.0f - s_new_val * s_new_val);
-
-        d_S_prev[idx] = __float2bfloat16(d_pre_tanh * decay);
+        // LINEAR backward: no tanh derivative!
+        d_S_prev[idx] = __float2bfloat16(ds_new * decay);
 
         float k_val = __bfloat162float(k[bj_idx]);
-        atomicAdd(&d_v_f[bi_idx], d_pre_tanh * k_val);
+        atomicAdd(&d_v_f[bi_idx], ds_new * k_val);
 
         float v_val = __bfloat162float(v[bi_idx]);
-        atomicAdd(&d_k_f[bj_idx], d_pre_tanh * v_val);
+        atomicAdd(&d_k_f[bj_idx], ds_new * v_val);
 
         float s_prev_val = __bfloat162float(S_prev[idx]);
-        atomicAdd(d_decay_f, d_pre_tanh * s_prev_val);
+        atomicAdd(d_decay_f, ds_new * s_prev_val);
     }
 }
 
@@ -646,8 +642,8 @@ void E70MatrixLinearForward<__nv_bfloat16>::Run(
             cudaMemcpyAsync(q_cache + t * BN, q_t, BN * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, stream_);
         }
 
-        // 1. State update: S_new = tanh(decay * S_prev + outer(v, k))
-        StateUpdateTanhKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+        // 1. State update: S_new = decay * S_prev + outer(v, k)  [LINEAR - no tanh!]
+        StateUpdateLinearKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n_state_, clamped_decay, S_prev, v_t, k_t, S_t);
 
         // 2. Compute Sq = S_new @ q using cuBLAS batched GEMM
@@ -773,8 +769,8 @@ void E70MatrixLinearBackward<__nv_bfloat16>::Run(
         MatVecTransposeCuBLAS<__nv_bfloat16>(
             blas_handle_, stream_, batch_size_, n_state_, S_t, d_Sq, d_q_t);
 
-        // 3. Backward through state update: S_new = tanh(decay * S_prev + outer(v, k))
-        StateBackwardKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+        // 3. Backward through state update: S_new = decay * S_prev + outer(v, k) [LINEAR - no tanh!]
+        StateBackwardLinearKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n_state_, clamped_decay, S_prev, S_t, v_t, k_t, d_S,
             d_S_prev, d_v_f, d_k_f, d_decay_f);
 
@@ -933,7 +929,7 @@ void E70MatrixLinearForward<T>::Run(
             cudaMemcpyAsync(q_cache + t * BN, q_t, BN * sizeof(T), cudaMemcpyDeviceToDevice, stream_);
         }
 
-        StateUpdateTanhKernel<T><<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+        StateUpdateLinearKernel<T><<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n_state_, clamped_decay, S_prev, v_t, k_t, S_t);
 
         MatVecKernel<T><<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(

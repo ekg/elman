@@ -1,0 +1,17 @@
+Using device: cuda
+Output directory: benchmark_results/100m_10min/e72/level72_100m_20260115_104347
+Auto r_h_mode: none (level 72 is matrix state - gated update is bounded)
+Model: Level 72, 104,024,576 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.9023 | lr 2.70e-06 | grad 55.50 | tok/s 1332
+step     20 | loss 5.8511 | lr 5.70e-06 | grad 48.25 | tok/s 1474
+step     30 | loss 5.8141 | lr 8.70e-06 | grad 43.75 | tok/s 1565
+step     40 | loss 5.7362 | lr 1.17e-05 | grad 58.75 | tok/s 1572
+step     50 | loss 5.6061 | lr 1.47e-05 | grad 58.50 | tok/s 1384
+
+Training complete! Final step: 55

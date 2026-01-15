@@ -6,7 +6,7 @@
 //     k_t = W_k @ x_t                              # [B, n] key
 //     v_t = W_v @ x_t                              # [B, n] value
 //     q_t = W_q @ x_t                              # [B, n] query
-//     z_t = sigmoid(W_z @ x_t + b_z)               # [B, n] modulation gate
+//     z_t = tanh(W_z @ x_t + b_z)                  # [B, n] bounded modulation (-1, 1)
 //
 //     # Column modulation (default variant):
 //     S_modulated = S * z.unsqueeze(1)             # Scale each column by z
@@ -456,13 +456,13 @@ __global__ void E73UpdateBackwardKernel_BF16(
     }
 }
 
-// Backward through z sigmoid: z = sigmoid(z_logit)
-// d_z_logit = d_z * z * (1 - z)
+// Backward for tanh z: z = tanh(z_logit + b_z)
+// d_z_logit = d_z * (1 - z^2) where z is post-tanh value
 template<typename T>
-__global__ void E73SigmoidBackwardKernel(
+__global__ void E73TanhBackwardKernel(
     const int batch_size,
     const int n,
-    const T* __restrict__ z,           // [B, n] already sigmoid
+    const T* __restrict__ z,           // [B, n] post-tanh value
     const float* __restrict__ d_z_f,   // [B, n] float
     T* __restrict__ d_z_logit)         // [B, n]
 {
@@ -472,12 +472,12 @@ __global__ void E73SigmoidBackwardKernel(
     if (idx < total) {
         float z_val = static_cast<float>(z[idx]);
         float d_z = d_z_f[idx];
-        float d_logit = d_z * z_val * (1.0f - z_val);
+        float d_logit = d_z * (1.0f - z_val * z_val);  // tanh derivative
         d_z_logit[idx] = static_cast<T>(d_logit);
     }
 }
 
-__global__ void E73SigmoidBackwardKernel_BF16(
+__global__ void E73TanhBackwardKernel_BF16(
     const int batch_size,
     const int n,
     const __nv_bfloat16* __restrict__ z,
@@ -490,7 +490,7 @@ __global__ void E73SigmoidBackwardKernel_BF16(
     if (idx < total) {
         float z_val = __bfloat162float(z[idx]);
         float d_z = d_z_f[idx];
-        float d_logit = d_z * z_val * (1.0f - z_val);
+        float d_logit = d_z * (1.0f - z_val * z_val);  // tanh derivative
         d_z_logit[idx] = __float2bfloat16(d_logit);
     }
 }
@@ -504,11 +504,40 @@ __global__ void CopyFloatToT_E73(const int n, const float* __restrict__ src, T* 
     }
 }
 
-// Apply sigmoid to z_logit
+// Accumulate d_z_logit into db_z using atomicAdd
+// d_z_logit is [T*B, n], we sum across T*B to get db_z[n]
+__global__ void AccumulateDBzKernel_BF16(
+    const int total,           // T*B*n total elements
+    const int n,               // state dimension
+    const __nv_bfloat16* __restrict__ d_z_logit,  // [T*B, n]
+    float* __restrict__ db_z)  // [n] accumulator
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        const int j = idx % n;  // Which bias element this contributes to
+        atomicAdd(&db_z[j], __bfloat162float(d_z_logit[idx]));
+    }
+}
+
 template<typename T>
-__global__ void SigmoidKernel(
+__global__ void AccumulateDBzKernel(
+    const int total,
     const int n,
-    const T* __restrict__ z_logit,     // [n] pre-sigmoid
+    const T* __restrict__ d_z_logit,
+    float* __restrict__ db_z)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < total) {
+        const int j = idx % n;
+        atomicAdd(&db_z[j], static_cast<float>(d_z_logit[idx]));
+    }
+}
+
+// Apply tanh to z_logit with bias (bounded modulation to (-1, 1))
+template<typename T>
+__global__ void TanhBiasKernel(
+    const int n,
+    const T* __restrict__ z_logit,     // [n] input
     const T* __restrict__ b_z,         // [N] bias
     T* __restrict__ z,                 // [n] output
     const int batch_size,
@@ -517,12 +546,12 @@ __global__ void SigmoidKernel(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         const int d = idx % N;
-        float logit = static_cast<float>(z_logit[idx]) + static_cast<float>(b_z[d]);
-        z[idx] = static_cast<T>(1.0f / (1.0f + expf(-logit)));
+        float val = static_cast<float>(z_logit[idx]) + static_cast<float>(b_z[d]);
+        z[idx] = static_cast<T>(tanhf(val));
     }
 }
 
-__global__ void SigmoidKernel_BF16(
+__global__ void TanhBiasKernel_BF16(
     const int n,
     const __nv_bfloat16* __restrict__ z_logit,
     const __nv_bfloat16* __restrict__ b_z,
@@ -533,8 +562,8 @@ __global__ void SigmoidKernel_BF16(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         const int d = idx % N;
-        float logit = __bfloat162float(z_logit[idx]) + __bfloat162float(b_z[d]);
-        z[idx] = __float2bfloat16(1.0f / (1.0f + __expf(-logit)));
+        float val = __bfloat162float(z_logit[idx]) + __bfloat162float(b_z[d]);
+        z[idx] = __float2bfloat16(tanhf(val));
     }
 }
 
@@ -654,8 +683,8 @@ void E73MatrixNonlinearForward<__nv_bfloat16>::Run(
         &beta_zero,
         z_logit_all, n);
 
-    // Apply sigmoid to z_logit_all -> z_all (with bias)
-    SigmoidKernel_BF16<<<(steps * BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+    // Apply tanh with bias to z_logit_all -> z_all (bounded modulation)
+    TanhBiasKernel_BF16<<<(steps * BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
         steps * BN, z_logit_all, b_z, z_all, batch_size_, n);
 
     // Process each timestep sequentially (recurrence)
@@ -816,8 +845,8 @@ void E73MatrixNonlinearBackward<__nv_bfloat16>::Run(
             batch_size_, n, variant_, S_prev, z_t, v_t, k_t, pre_tanh_t, d_S,
             d_S_tmp, d_z_f, d_v_f, d_k_f);
 
-        // 4. Backward through z sigmoid
-        E73SigmoidBackwardKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+        // 4. Backward through tanh z: d_z_logit = d_z * (1 - z^2)
+        E73TanhBackwardKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n, z_t, d_z_f, d_z_logit_t);
 
         // Accumulate db_z
@@ -931,16 +960,15 @@ void E73MatrixNonlinearBackward<__nv_bfloat16>::Run(
         &beta_one,
         dW_z, dim_);
 
-    // Sum d_z_logit_all to db_z (simple kernel)
-    // For each element in d_z_logit_all, atomicAdd to db_z_f[j]
-    // Then copy to db_z
-    // Using a simple approach: launch T*B threads, each adds to db_z_f
-    for (int t = 0; t < steps; ++t) {
-        for (int b_idx = 0; b_idx < batch_size_; ++b_idx) {
-            // This would be slow - use proper reduction kernel in production
-        }
+    // Sum d_z_logit_all to db_z: db_z[j] = sum over (t, b) of d_z_logit_all[t, b, j]
+    // Call the accumulation kernel defined in anonymous namespace
+    {
+        const int total_elements = steps * BN;
+        const int block_sz = 256;
+        AccumulateDBzKernel_BF16<<<(total_elements + block_sz - 1) / block_sz, block_sz, 0, stream_>>>(
+            total_elements, n, d_z_logit_all, db_z_f);
     }
-    // Copy db_z_f to db_z
+    // Copy accumulated db_z_f (float) to db_z (bf16)
     CopyFloatToT_E73<__nv_bfloat16><<<(n + 255) / 256, 256, 0, stream_>>>(n, db_z_f, db_z);
 }
 
@@ -1009,8 +1037,8 @@ void E73MatrixNonlinearForward<T>::Run(
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
         n, steps * batch_size_, dim_, &alpha_one, W_z, dim_, x, dim_, &beta_zero, z_logit_all, n);
 
-    // Apply sigmoid
-    SigmoidKernel<T><<<(steps * BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+    // Apply tanh with bias (bounded modulation)
+    TanhBiasKernel<T><<<(steps * BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
         steps * BN, z_logit_all, b_z, z_all, batch_size_, n);
 
     for (int t = 0; t < steps; ++t) {

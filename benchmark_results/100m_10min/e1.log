@@ -1,0 +1,24 @@
+Using device: cuda
+Output directory: benchmark_results/100m_10min/e1/level1_100m_20260115_104357
+Auto r_h_mode: spectral_norm (level 1 has full W_h)
+Model: Level 1, 114,890,880 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.6049 | lr 2.70e-06 | grad 52.25 | tok/s 3117
+step     20 | loss 5.3961 | lr 5.70e-06 | grad 10.56 | tok/s 3406
+step     30 | loss 5.5687 | lr 8.70e-06 | grad 9.75 | tok/s 3702
+step     40 | loss 5.2094 | lr 1.17e-05 | grad 8.38 | tok/s 3396
+step     50 | loss 4.5434 | lr 1.47e-05 | grad 6.75 | tok/s 3369
+step     60 | loss 4.1338 | lr 1.77e-05 | grad 8.12 | tok/s 3616
+step     70 | loss 3.4355 | lr 2.07e-05 | grad 4.72 | tok/s 3397
+step     80 | loss 3.3900 | lr 2.37e-05 | grad 6.66 | tok/s 3121
+step     90 | loss 3.1620 | lr 2.67e-05 | grad 11.06 | tok/s 3000
+step    100 | loss 2.7771 | lr 2.97e-05 | grad 3.47 | tok/s 3370
+step    110 | loss 2.6378 | lr 3.27e-05 | grad 4.03 | tok/s 3382
+step    120 | loss 2.7417 | lr 3.57e-05 | grad 4.09 | tok/s 3174
+
+Training complete! Final step: 127

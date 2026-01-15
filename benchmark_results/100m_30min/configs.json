@@ -1,0 +1,73 @@
+{
+  "e61": {
+    "dim": 640,
+    "depth": 20,
+    "params": 98545920,
+    "expansion": 2.0,
+    "level": 61
+  },
+  "e62": {
+    "dim": 640,
+    "depth": 20,
+    "params": 98545920,
+    "expansion": 2.0,
+    "level": 62
+  },
+  "e63": {
+    "dim": 512,
+    "depth": 20,
+    "params": 84079616,
+    "expansion": 2.0,
+    "level": 63
+  },
+  "e63m": {
+    "dim": 640,
+    "depth": 20,
+    "params": 86291200,
+    "expansion": 2.0,
+    "level": "63m",
+    "n_slots": 64
+  },
+  "e1": {
+    "dim": 640,
+    "depth": 20,
+    "params": 114929920,
+    "expansion": 2.0,
+    "level": 1
+  },
+  "e42": {
+    "dim": 768,
+    "depth": 20,
+    "params": 94631424,
+    "expansion": 2.0,
+    "level": 42
+  },
+  "e56": {
+    "dim": 640,
+    "depth": 20,
+    "params": 114904320,
+    "expansion": 2.0,
+    "level": 56
+  },
+  "cudagru": {
+    "dim": 384,
+    "depth": 20,
+    "params": 82781952,
+    "expansion": 2.0,
+    "level": "cudagru"
+  },
+  "cudalstm": {
+    "dim": 384,
+    "depth": 20,
+    "params": 106405632,
+    "expansion": 2.0,
+    "level": "cudalstm"
+  },
+  "mamba2": {
+    "dim": 640,
+    "depth": 34,
+    "params": 100494336,
+    "expand": 2,
+    "level": "mamba2"
+  }
+}

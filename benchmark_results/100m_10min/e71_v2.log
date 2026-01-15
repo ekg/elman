@@ -1,0 +1,31 @@
+Using device: cuda
+Output directory: benchmark_results/100m_10min/e71_v2/level71_100m_20260115_105758
+Auto r_h_mode: none (level 71 is matrix state - gated update is bounded)
+Model: Level 71, 104,022,656 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.8467 | lr 2.70e-06 | grad 99.00 | tok/s 2883
+step     20 | loss 5.8193 | lr 5.70e-06 | grad 95.00 | tok/s 3318
+step     30 | loss 5.8272 | lr 8.70e-06 | grad 92.50 | tok/s 3520
+step     40 | loss 5.8060 | lr 1.17e-05 | grad 101.00 | tok/s 3537
+step     50 | loss 5.7487 | lr 1.47e-05 | grad 116.50 | tok/s 3522
+step     60 | loss 5.6814 | lr 1.77e-05 | grad 91.00 | tok/s 3455
+step     70 | loss 5.4024 | lr 2.07e-05 | grad 76.00 | tok/s 3329
+step     80 | loss 5.0623 | lr 2.37e-05 | grad 58.25 | tok/s 4275
+step     90 | loss 4.5956 | lr 2.67e-05 | grad 58.00 | tok/s 8023
+step    100 | loss 4.0865 | lr 2.97e-05 | grad 27.88 | tok/s 8101
+step    110 | loss 3.7431 | lr 3.27e-05 | grad 217.00 | tok/s 7986
+step    120 | loss 3.7512 | lr 3.57e-05 | grad 121.00 | tok/s 7881
+step    130 | loss 3.6588 | lr 3.87e-05 | grad 10.19 | tok/s 8063
+step    140 | loss 3.3917 | lr 4.17e-05 | grad 7.56 | tok/s 8082
+step    150 | loss 3.2244 | lr 4.47e-05 | grad 8.88 | tok/s 7709
+step    160 | loss 3.1237 | lr 4.77e-05 | grad 4.38 | tok/s 7778
+step    170 | loss 3.2443 | lr 5.07e-05 | grad 17.38 | tok/s 8049
+step    180 | loss 3.3204 | lr 5.37e-05 | grad 7.34 | tok/s 8073
+step    190 | loss 3.1110 | lr 5.67e-05 | grad 6.38 | tok/s 8202
+
+Training complete! Final step: 198

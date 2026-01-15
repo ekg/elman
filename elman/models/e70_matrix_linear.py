@@ -1,10 +1,10 @@
 """
 E70: Matrix Linear Elman - Simplest Matrix State Model
 
-The simplest possible matrix state RNN with:
-- decay * S + outer(v, k) update
-- tanh(S) normalization
-- S @ q output with self-gating
+The simplest possible matrix state RNN with E42-style linear recurrence:
+- decay * S + outer(v, k) update (NO TANH - linear like E42!)
+- S @ q output with self-gating (ONLY nonlinearity)
+- Spectral norm on W_k, W_v to bound ||outer(v,k)|| for stability
 
 State S is [B, n_state, n_state] matrix.
 
@@ -15,16 +15,16 @@ Forward:
         v = W_v @ x[t]                    # [B, n]
         q = W_q @ x[t]                    # [B, n]
 
-        S = decay * S + outer(v, k)       # [B, n, n]
-        S = tanh(S)
+        S = decay * S + outer(v, k)       # [B, n, n] - LINEAR, no tanh!
 
         out = S @ q                       # [B, n]
-        out = out * silu(out)             # self-gate
+        out = out * silu(out)             # self-gate (ONLY nonlinearity)
 
-Key properties:
-- Linear recurrence with outer product update (E42-style)
-- tanh normalization keeps S bounded
-- Self-gating output (E42's key innovation)
+Key properties (E42-style):
+- Linear recurrence: NO tanh on state! Better gradient flow.
+- Self-gating output: h * silu(h) is the ONLY nonlinearity
+- Spectral norm on W_k, W_v: bounds ||outer(v,k)||, ensures stability
+- decay < 1: state exponentially decays old information
 - O(n^2) state, O(n^2) compute per step
 """
 
@@ -86,20 +86,25 @@ class E70MatrixLinearCell(nn.Module):
     """
     E70 Matrix Linear cell - E42-style for matrix state.
 
-    S_t = decay * S_{t-1} + outer(v_t, k_t)
-    S_t = tanh(S_t)
-    out_t = (S @ q) * silu(S @ q)
+    S_t = decay * S_{t-1} + outer(v_t, k_t)    # LINEAR - no tanh!
+    out_t = (S @ q) * silu(S @ q)              # Self-gate is ONLY nonlinearity
+
+    Stability via spectral norm on W_k and W_v:
+    - bounds ||outer(v,k)|| = ||v|| * ||k||
+    - with decay < 1, ensures bounded state
 
     Args:
         dim: Input dimension
         n_state: State matrix size (S is n_state x n_state)
         init_decay: Initial decay value (default 0.9)
+        spectral_radius: Max singular value for W_k and W_v (default 0.5)
     """
 
-    def __init__(self, dim, n_state=64, init_decay=0.9):
+    def __init__(self, dim, n_state=64, init_decay=0.9, spectral_radius=0.5):
         super().__init__()
         self.dim = dim
         self.n_state = n_state
+        self.spectral_radius = spectral_radius
 
         # Projections from input to state dimension
         self.W_k = nn.Linear(dim, n_state, bias=False)
@@ -115,6 +120,26 @@ class E70MatrixLinearCell(nn.Module):
         nn.init.xavier_uniform_(self.W_k.weight)
         nn.init.xavier_uniform_(self.W_v.weight)
         nn.init.xavier_uniform_(self.W_q.weight)
+
+    def _get_spectral_normed_weight(self, W, name):
+        """Apply spectral normalization to bound ||W|| <= spectral_radius."""
+        # Power iteration to estimate largest singular value
+        u = getattr(self, f'_spectral_u_{name}', None)
+        if u is None or u.shape[0] != W.shape[0]:
+            u = torch.randn(W.shape[0], device=W.device, dtype=W.dtype)
+            u = u / (u.norm() + 1e-8)
+
+        with torch.no_grad():
+            for _ in range(3):  # Power iteration
+                v = W.T @ u
+                v = v / (v.norm() + 1e-8)
+                u = W @ v
+                u = u / (u.norm() + 1e-8)
+            setattr(self, f'_spectral_u_{name}', u)
+
+        sigma = (u @ W @ v).abs()
+        # Scale to target spectral radius
+        return W * (self.spectral_radius / (sigma + 1e-8))
 
     def forward(self, x, z=None, S0=None, use_cuda=True):
         """
@@ -139,20 +164,25 @@ class E70MatrixLinearCell(nn.Module):
         # Clamp decay to [0, 0.999]
         decay = torch.clamp(self.decay, 0.0, 0.999).item()
 
+        # Get spectral-normed weights for stability (E42-style)
+        W_k = self._get_spectral_normed_weight(self.W_k.weight, 'k')
+        W_v = self._get_spectral_normed_weight(self.W_v.weight, 'v')
+        W_q = self.W_q.weight  # q doesn't need spectral norm
+
         # Use CUDA kernel if available
         if use_cuda and E70_CUDA_AVAILABLE and x.is_cuda:
             S_all, output = E70MatrixLinearCUDAFunction.apply(
                 self.training, x, S0, decay,
-                self.W_k.weight, self.W_v.weight, self.W_q.weight
+                W_k, W_v, W_q
             )
             return output, S_all
 
         # PyTorch fallback
-        # Batch projections
+        # Batch projections with spectral-normed weights
         x_flat = x.reshape(T * B, D)
-        k_all = self.W_k(x_flat).reshape(T, B, n)  # [T, B, n]
-        v_all = self.W_v(x_flat).reshape(T, B, n)  # [T, B, n]
-        q_all = self.W_q(x_flat).reshape(T, B, n)  # [T, B, n]
+        k_all = F.linear(x_flat, W_k).reshape(T, B, n)  # [T, B, n]
+        v_all = F.linear(x_flat, W_v).reshape(T, B, n)  # [T, B, n]
+        q_all = F.linear(x_flat, W_q).reshape(T, B, n)  # [T, B, n]
 
         S_list = [S0]
         output_list = []
@@ -163,16 +193,14 @@ class E70MatrixLinearCell(nn.Module):
             v = v_all[t]  # [B, n]
             q = q_all[t]  # [B, n]
 
-            # Linear accumulation: S = decay * S + outer(v, k)
+            # LINEAR accumulation: S = decay * S + outer(v, k)
+            # NO TANH! (E42-style linear recurrence)
             outer = torch.einsum('bi,bj->bij', v, k)  # [B, n, n]
             S = decay * S + outer
 
-            # Bound with tanh
-            S = torch.tanh(S)
-
             S_list.append(S)
 
-            # Self-gating output (E42's key innovation)
+            # Self-gating output (E42's key innovation) - the ONLY nonlinearity!
             out = torch.einsum('bij,bj->bi', S, q)  # S @ q -> [B, n]
             out = out * F.silu(out)
             output_list.append(out)
@@ -189,11 +217,14 @@ class E70MatrixLinear(nn.Module):
     Key insight from E42: linear recurrence + self-gating works great.
     Apply same pattern to matrix state for O(n^2) capacity.
 
-    Architecture:
+    Architecture (E42-style):
         x = in_proj(x)
         x = silu(x)
-        [matrix linear operations]
-        output = out_proj(y)
+        S = decay * S + outer(v, k)       # LINEAR - no tanh!
+        out = S @ q * silu(S @ q)         # Self-gate is ONLY nonlinearity
+        output = out_proj(out)
+
+    Stability via spectral norm on W_k, W_v (like E42's spectral norm on W).
 
     Args:
         dim: Model dimension
@@ -203,6 +234,7 @@ class E70MatrixLinear(nn.Module):
         use_conv: Use 1D convolution (default False)
         d_conv: Convolution kernel size (default 4)
         mamba2_init: Use Mamba2-style initialization (default False)
+        spectral_radius: Max singular value for W_k, W_v (default 0.5)
     """
 
     def __init__(
@@ -214,6 +246,7 @@ class E70MatrixLinear(nn.Module):
         use_conv=False,
         d_conv=4,
         mamba2_init=False,
+        spectral_radius=0.5,
         **kwargs
     ):
         super().__init__()
@@ -221,6 +254,7 @@ class E70MatrixLinear(nn.Module):
         self.d_inner = int(dim * expansion)
         self.n_state = n_state
         self.use_conv = use_conv
+        self.spectral_radius = spectral_radius
 
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
@@ -234,7 +268,7 @@ class E70MatrixLinear(nn.Module):
                 bias=True,
             )
 
-        self.cell = E70MatrixLinearCell(self.d_inner, n_state=n_state)
+        self.cell = E70MatrixLinearCell(self.d_inner, n_state=n_state, spectral_radius=spectral_radius)
 
         # Output projection from n_state back to dim
         self.out_proj = nn.Linear(n_state, dim, bias=False)
@@ -292,11 +326,11 @@ class E70MatrixLinear(nn.Module):
         return output, S_final
 
     def extra_repr(self):
-        return f'dim={self.dim}, d_inner={self.d_inner}, n_state={self.n_state}, LEVEL=70_MATRIX_LINEAR'
+        return f'dim={self.dim}, d_inner={self.d_inner}, n_state={self.n_state}, spectral_radius={self.spectral_radius}, LEVEL=70_MATRIX_LINEAR'
 
 
 if __name__ == "__main__":
-    print("Testing E70 (Matrix Linear Elman)...")
+    print("Testing E70 (Matrix Linear Elman - E42-style)...")
     print("=" * 60)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -386,7 +420,8 @@ if __name__ == "__main__":
         print(f"Input gradient norm: {x_cell.grad.norm().item():.4f}")
 
     print("\n" + "=" * 60)
-    print("E70: Simplest matrix state model (E42-style)")
-    print("S = decay * S + outer(v, k) -> tanh(S)")
-    print("out = S @ q * silu(S @ q)")
+    print("E70: Matrix Linear Elman (E42-style)")
+    print("S = decay * S + outer(v, k)   # LINEAR - no tanh!")
+    print("out = S @ q * silu(S @ q)     # Self-gate is ONLY nonlinearity")
+    print("Stability: spectral norm on W_k, W_v")
     print("=" * 60)

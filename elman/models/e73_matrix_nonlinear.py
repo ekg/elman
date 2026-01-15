@@ -8,7 +8,7 @@ Architecture:
     k_t = W_k @ x[t]
     v_t = W_v @ x[t]
     q_t = W_q @ x[t]
-    z_t = sigmoid(W_z @ x[t] + b_z)             # Modulation signal
+    z_t = tanh(W_z @ x[t] + b_z)                # Bounded modulation (-1, 1)
 
     # Column modulation (default)
     S_t = tanh(S_{t-1} * z.unsqueeze(1) + outer(v, k))
@@ -95,7 +95,7 @@ class E73MatrixNonlinearCell(nn.Module):
     """
     E73 Matrix Nonlinear cell - E1-style for matrix state.
 
-    z = sigmoid(W_z @ x + b_z)
+    z = tanh(W_z @ x + b_z)    # Bounded to (-1, 1)
     S = tanh(S * z.unsqueeze(1) + outer(v, k))
     out = (S @ q) * silu(S @ q)
 
@@ -105,7 +105,7 @@ class E73MatrixNonlinearCell(nn.Module):
         'full': S * outer(z, z) - element-wise
     """
 
-    def __init__(self, dim, n_state=64, variant='column', init_z_bias=2.0, use_triton=True, use_cuda=True):
+    def __init__(self, dim, n_state=64, variant='column', init_z_bias=1.0, use_triton=True, use_cuda=True):
         super().__init__()
         self.dim = dim
         self.n_state = n_state
@@ -163,7 +163,7 @@ class E73MatrixNonlinearCell(nn.Module):
         k_all = (x_flat @ self.W_k.T).reshape(T, B, n)
         v_all = (x_flat @ self.W_v.T).reshape(T, B, n)
         q_all = (x_flat @ self.W_q.T).reshape(T, B, n)
-        z_all = torch.sigmoid((x_flat @ self.W_z.T + self.b_z).reshape(T, B, n))
+        z_all = torch.tanh((x_flat @ self.W_z.T + self.b_z).reshape(T, B, n))  # tanh bounds to (-1, 1)
 
         # Use Triton kernel if available
         if self.use_triton and E73_TRITON_AVAILABLE and x.is_cuda:

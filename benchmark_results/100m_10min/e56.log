@@ -1,0 +1,25 @@
+Using device: cuda
+Output directory: benchmark_results/100m_10min/e56/level56_100m_20260115_104412
+Auto r_h_mode: spectral_norm (level 56 has full W_h)
+Model: Level 56, 114,890,880 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.6400 | lr 2.70e-06 | grad 24.50 | tok/s 3101
+step     20 | loss 5.5990 | lr 5.70e-06 | grad 3.64 | tok/s 3439
+step     30 | loss 5.6511 | lr 8.70e-06 | grad 3.45 | tok/s 3507
+step     40 | loss 5.6343 | lr 1.17e-05 | grad 3.58 | tok/s 3611
+step     50 | loss 5.5907 | lr 1.47e-05 | grad 3.47 | tok/s 3594
+step     60 | loss 5.4816 | lr 1.77e-05 | grad 12.81 | tok/s 3547
+step     70 | loss 5.2396 | lr 2.07e-05 | grad 4.84 | tok/s 3414
+step     80 | loss 4.9625 | lr 2.37e-05 | grad 3.58 | tok/s 3861
+step     90 | loss 4.9810 | lr 2.67e-05 | grad 10.06 | tok/s 3714
+step    100 | loss 4.6732 | lr 2.97e-05 | grad 4.25 | tok/s 3521
+step    110 | loss 4.0461 | lr 3.27e-05 | grad 2.98 | tok/s 3312
+step    120 | loss 3.6303 | lr 3.57e-05 | grad 2.64 | tok/s 3279
+step    130 | loss 3.3921 | lr 3.87e-05 | grad 2.16 | tok/s 3391
+
+Training complete! Final step: 132
