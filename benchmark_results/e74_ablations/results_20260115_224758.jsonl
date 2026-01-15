@@ -1,0 +1,1 @@
+{"config_id": 19, "config_desc": "Lowrank-8, linear", "state": "lowrank", "proj": "tied_kq", "nonlin": "linear", "gate": "output", "parameters": 360960, "memory_mb": 33.49560546875, "mean_loss": 6.90625, "final_loss": 6.90625, "mean_time_ms": 311.50457225739956, "tokens_per_sec": 3287.2711709472364, "mean_grad_norm": 0.0, "max_grad_norm": 0.0, "checkpointed": false}

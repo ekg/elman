@@ -1,0 +1,23 @@
+{
+  "timestamp": "20260115_224619",
+  "num_configs": 1,
+  "results": [
+    {
+      "config_id": 6,
+      "config_desc": "Diagonal, no z",
+      "state": "diagonal",
+      "proj": "no_z",
+      "nonlin": "tanh",
+      "gate": "output",
+      "parameters": 393216,
+      "memory_mb": 32.6728515625,
+      "mean_loss": 7.09375,
+      "final_loss": 7.0625,
+      "mean_time_ms": 145.68196088075638,
+      "tokens_per_sec": 7029.010275597297,
+      "mean_grad_norm": 1.4527631131292746,
+      "max_grad_norm": 1.5130517883110703,
+      "checkpointed": false
+    }
+  ]
+}
