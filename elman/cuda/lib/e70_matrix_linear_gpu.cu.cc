@@ -104,8 +104,13 @@ __global__ void StateUpdateTanhKernel_BF16(
     }
 }
 
-// Compute out = S @ q (batched matrix-vector multiply)
+// Compute out = S @ q using cuBLAS batched GEMM
 // S: [B, N, N], q: [B, N] -> out: [B, N]
+// This is a matrix-vector multiply, but we use batched GEMM with k=1 for efficiency
+// cuBLAS: C = alpha * A * B + beta * C
+// For S @ q: out = S @ q (treating q as [N, 1] column vector)
+//
+// Note: The naive kernel below is kept as fallback but the main path uses cuBLAS
 template<typename T>
 __global__ void MatVecKernel(
     const int batch_size,
@@ -154,6 +159,67 @@ __global__ void MatVecKernel_BF16(
         }
         out[idx] = __float2bfloat16(sum);
     }
+}
+
+// cuBLAS-based mat-vec: out = S @ q using strided batched GEMM
+// S: [B, N, N] row-major, q: [B, N], out: [B, N]
+// cuBLAS expects column-major, so we compute: out^T = q^T @ S^T
+// Which is: out[b] = S[b] @ q[b]
+template<typename T>
+inline void MatVecCuBLAS(
+    const cublasHandle_t& blas_handle,
+    const cudaStream_t& stream,
+    int batch_size,
+    int N,
+    const T* S,    // [B, N, N]
+    const T* q,    // [B, N]
+    T* out) {      // [B, N]
+
+    // cuBLAS is column-major, our tensors are row-major
+    // S[b] is [N, N] row-major = [N, N]^T column-major
+    // To compute out = S @ q in row-major:
+    // out = S @ q  (row-major)
+    // = (q^T @ S^T)^T  (column-major view)
+    //
+    // Using GEMM: C = alpha * op(A) * op(B) + beta * C
+    // We want: out = S @ q
+    //
+    // In cuBLAS column-major with our row-major data:
+    // - S is stored as S^T in column-major (N x N)
+    // - q is stored as q^T in column-major (1 x N)
+    // - out will be stored as out^T in column-major (1 x N)
+    //
+    // So: out^T = q^T @ S^T  =>  out = S @ q
+    // GEMM: C(1,N) = A(1,N) @ B(N,N) = q^T @ S^T
+    // m=1, n=N, k=N, A=q, B=S, C=out (all transposed view)
+    //
+    // Actually simpler: use CUBLAS_OP_T on S to get S^T^T = S
+    // Then: out = S @ q as GEMM(N, 1, N): C(N,1) = A(N,N) @ B(N,1)
+
+    static const T alpha_one = static_cast<T>(1.0f);
+    static const T beta_zero = static_cast<T>(0.0f);
+
+    // GEMM: out = S @ q
+    // m=N, n=1, k=N
+    // A=S (N x N), B=q (N x 1), C=out (N x 1)
+    // But S is row-major, cuBLAS expects column-major
+    // Row-major S[i,j] = Column-major S^T[j,i]
+    // So S in memory is S^T to cuBLAS
+    // We want out = S @ q, i.e., out = S^T^T @ q
+    // cuBLAS: C = op(A) @ op(B)
+    // With A=S (stored as S^T), op(A)=CUBLAS_OP_T gives S^T^T = S
+    // Result: out = S @ q  (correct!)
+
+    blas<T>::gemmStridedBatched(
+        blas_handle,
+        CUBLAS_OP_T, CUBLAS_OP_N,  // transpose S (row->col), no transpose q
+        N, 1, N,                   // m, n, k
+        &alpha_one,
+        S, N, N * N,               // A=S, lda=N, strideA=N*N
+        q, N, N,                   // B=q, ldb=N (as column vector), strideB=N
+        &beta_zero,
+        out, N, N,                 // C=out, ldc=N, strideC=N
+        batch_size);
 }
 
 // Self-gate output: output = Sq * silu(Sq)
@@ -297,6 +363,63 @@ __global__ void MatVecBackwardKernel_BF16(
             atomicAdd(&d_q_f[b * N + j], d_sq_val * s_val);
         }
     }
+}
+
+// Optimized backward kernel for outer product only: d_S[b,i,j] += d_Sq[b,i] * q[b,j]
+// This is fully parallel over all B*N*N elements
+__global__ void OuterProductAddKernel_BF16(
+    const int batch_size,
+    const int N,
+    const __nv_bfloat16* __restrict__ d_Sq,   // [B, N]
+    const __nv_bfloat16* __restrict__ q,       // [B, N]
+    __nv_bfloat16* __restrict__ d_S) {         // [B, N, N] - add to existing
+
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = batch_size * N * N;
+
+    if (idx < total) {
+        const int j = idx % N;                    // column
+        const int i = (idx / N) % N;              // row
+        const int b = idx / (N * N);              // batch
+
+        float d_sq_val = __bfloat162float(d_Sq[b * N + i]);
+        float q_val = __bfloat162float(q[b * N + j]);
+        float d_s_val = __bfloat162float(d_S[idx]);
+
+        d_S[idx] = __float2bfloat16(d_s_val + d_sq_val * q_val);
+    }
+}
+
+// cuBLAS-based backward for d_q: d_q = S^T @ d_Sq
+// This is faster than the naive atomicAdd-based kernel
+template<typename T>
+inline void MatVecTransposeCuBLAS(
+    const cublasHandle_t& blas_handle,
+    const cudaStream_t& stream,
+    int batch_size,
+    int N,
+    const T* S,      // [B, N, N]
+    const T* d_Sq,   // [B, N]
+    T* d_q) {        // [B, N]
+
+    static const T alpha_one = static_cast<T>(1.0f);
+    static const T beta_zero = static_cast<T>(0.0f);
+
+    // We want: d_q = S^T @ d_Sq
+    // S is row-major, so in cuBLAS column-major view it's S^T
+    // Using CUBLAS_OP_N on our row-major S gives S^T in math
+    // GEMM: d_q = S^T @ d_Sq where S^T is [N, N] and d_Sq is [N, 1]
+
+    blas<T>::gemmStridedBatched(
+        blas_handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,  // no transpose (S stored as S^T), no transpose d_Sq
+        N, 1, N,                   // m, n, k
+        &alpha_one,
+        S, N, N * N,               // A=S (stored as S^T), lda=N, strideA=N*N
+        d_Sq, N, N,                // B=d_Sq (column vector), ldb=N, strideB=N
+        &beta_zero,
+        d_q, N, N,                 // C=d_q, ldc=N, strideC=N
+        batch_size);
 }
 
 // Backward through state update: S_new = tanh(decay * S_prev + outer(v, k))
@@ -527,9 +650,10 @@ void E70MatrixLinearForward<__nv_bfloat16>::Run(
         StateUpdateTanhKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n_state_, clamped_decay, S_prev, v_t, k_t, S_t);
 
-        // 2. Compute Sq = S_new @ q
-        MatVecKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
-            batch_size_, n_state_, S_t, q_t, Sq_c);
+        // 2. Compute Sq = S_new @ q using cuBLAS batched GEMM
+        // Much faster than naive MatVecKernel for n_state >= 32
+        MatVecCuBLAS<__nv_bfloat16>(
+            blas_handle_, stream_, batch_size_, n_state_, S_t, q_t, Sq_c);
 
         // 3. Self-gate output: output = Sq * silu(Sq)
         SelfGateKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
@@ -632,32 +756,33 @@ void E70MatrixLinearBackward<__nv_bfloat16>::Run(
         __nv_bfloat16* d_v_t = d_v_all + t * BN;
         __nv_bfloat16* d_q_t = d_q_all + t * BN;
 
-        // Zero per-timestep float accumulators
+        // Zero per-timestep float accumulators (only for v and k now - q uses cuBLAS)
         cudaMemsetAsync(d_k_f, 0, BN * sizeof(float), stream_);
         cudaMemsetAsync(d_v_f, 0, BN * sizeof(float), stream_);
-        cudaMemsetAsync(d_q_f, 0, BN * sizeof(float), stream_);
 
         // 1. Backward through self-gate: output = Sq * silu(Sq)
         SelfGateBackwardKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             BN, Sq_t, d_out_t, d_Sq);
 
-        // 2. Backward through S @ q
-        // Adds gradient to d_S (grad w.r.t. S[t+1])
-        MatVecBackwardKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
-            batch_size_, n_state_, S_t, q_t, d_Sq, d_S, d_q_f);
+        // 2. Backward through S @ q using optimized kernels
+        // 2a. d_S[b,i,j] += d_Sq[b,i] * q[b,j] (outer product - fully parallel)
+        OuterProductAddKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
+            batch_size_, n_state_, d_Sq, q_t, d_S);
+
+        // 2b. d_q = S^T @ d_Sq using cuBLAS (much faster than atomicAdd)
+        MatVecTransposeCuBLAS<__nv_bfloat16>(
+            blas_handle_, stream_, batch_size_, n_state_, S_t, d_Sq, d_q_t);
 
         // 3. Backward through state update: S_new = tanh(decay * S_prev + outer(v, k))
         StateBackwardKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n_state_, clamped_decay, S_prev, S_t, v_t, k_t, d_S,
             d_S_prev, d_v_f, d_k_f, d_decay_f);
 
-        // Copy float accumulators to output
+        // Copy float accumulators to output (v and k only - q done by cuBLAS)
         CopyFloatToT<__nv_bfloat16><<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             BN, d_k_f, d_k_t);
         CopyFloatToT<__nv_bfloat16><<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             BN, d_v_f, d_v_t);
-        CopyFloatToT<__nv_bfloat16><<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
-            BN, d_q_f, d_q_t);
 
         // Swap d_S and d_S_prev for next iteration
         std::swap(d_S, d_S_prev);

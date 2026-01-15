@@ -6033,6 +6033,7 @@ struct E72MatrixSelfGateForward {
     E72MatrixSelfGateForward(
         bool training,
         int batch_size,
+        int dim,
         int n_state,
         bool inverse_gate,
         const cublasHandle_t& blas_handle,
@@ -6040,7 +6041,7 @@ struct E72MatrixSelfGateForward {
 
     void Run(
         int steps,
-        const T* W_k,               // [n_state, dim] key projection (dim = n_state for now)
+        const T* W_k,               // [n_state, dim] key projection
         const T* W_v,               // [n_state, dim] value projection
         const T* W_q,               // [n_state, dim] query projection
         const T* W_alpha,           // [n_state, dim] retain gate weight
@@ -6067,6 +6068,7 @@ struct E72MatrixSelfGateForward {
 private:
     bool training_;
     int batch_size_;
+    int dim_;
     int n_state_;
     bool inverse_gate_;
     cublasHandle_t blas_handle_;
@@ -6077,6 +6079,7 @@ template<typename T>
 struct E72MatrixSelfGateBackward {
     E72MatrixSelfGateBackward(
         int batch_size,
+        int dim,
         int n_state,
         bool inverse_gate,
         const cublasHandle_t& blas_handle,
@@ -6122,6 +6125,7 @@ struct E72MatrixSelfGateBackward {
 
 private:
     int batch_size_;
+    int dim_;
     int n_state_;
     bool inverse_gate_;
     cublasHandle_t blas_handle_;

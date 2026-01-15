@@ -924,12 +924,14 @@ template<>
 E72MatrixSelfGateForward<__nv_bfloat16>::E72MatrixSelfGateForward(
     bool training,
     int batch_size,
+    int dim,
     int n_state,
     bool inverse_gate,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : training_(training),
       batch_size_(batch_size),
+      dim_(dim),
       n_state_(n_state),
       inverse_gate_(inverse_gate),
       blas_handle_(blas_handle),
@@ -959,7 +961,6 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
     static const __nv_bfloat16 alpha_one = __float2bfloat16(1.0f);
     static const __nv_bfloat16 beta_zero = __float2bfloat16(0.0f);
 
-    const int dim = n_state_;  // For now, dim = n_state (simplification)
     const int BN = batch_size_ * n_state_;
     const int BNN = batch_size_ * n_state_ * n_state_;
     const int block_size = 256;
@@ -983,10 +984,10 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim,
+        n_state_, steps * batch_size_, dim_,
         &alpha_one,
-        W_k, dim,
-        x, dim,
+        W_k, dim_,
+        x, dim_,
         &beta_zero,
         k_all, n_state_);
 
@@ -994,10 +995,10 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim,
+        n_state_, steps * batch_size_, dim_,
         &alpha_one,
-        W_v, dim,
-        x, dim,
+        W_v, dim_,
+        x, dim_,
         &beta_zero,
         v_all, n_state_);
 
@@ -1005,10 +1006,10 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim,
+        n_state_, steps * batch_size_, dim_,
         &alpha_one,
-        W_q, dim,
-        x, dim,
+        W_q, dim_,
+        x, dim_,
         &beta_zero,
         q_all, n_state_);
 
@@ -1016,10 +1017,10 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim,
+        n_state_, steps * batch_size_, dim_,
         &alpha_one,
-        W_alpha, dim,
-        x, dim,
+        W_alpha, dim_,
+        x, dim_,
         &beta_zero,
         alpha_x_all, n_state_);
 
@@ -1082,11 +1083,13 @@ void E72MatrixSelfGateForward<__nv_bfloat16>::Run(
 template<>
 E72MatrixSelfGateBackward<__nv_bfloat16>::E72MatrixSelfGateBackward(
     int batch_size,
+    int dim,
     int n_state,
     bool inverse_gate,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : batch_size_(batch_size),
+      dim_(dim),
       n_state_(n_state),
       inverse_gate_(inverse_gate),
       blas_handle_(blas_handle),
@@ -1123,7 +1126,6 @@ void E72MatrixSelfGateBackward<__nv_bfloat16>::Run(
     static const __nv_bfloat16 beta_zero = __float2bfloat16(0.0f);
     static const __nv_bfloat16 beta_one = __float2bfloat16(1.0f);
 
-    const int dim = n_state_;
     const int BN = batch_size_ * n_state_;
     const int BNN = batch_size_ * n_state_ * n_state_;
     const int block_size = 256;
@@ -1170,10 +1172,10 @@ void E72MatrixSelfGateBackward<__nv_bfloat16>::Run(
 
     // Initialize gradients
     cudaMemsetAsync(d_S, 0, BNN * sizeof(__nv_bfloat16), stream_);
-    cudaMemsetAsync(dW_k, 0, n_state_ * dim * sizeof(__nv_bfloat16), stream_);
-    cudaMemsetAsync(dW_v, 0, n_state_ * dim * sizeof(__nv_bfloat16), stream_);
-    cudaMemsetAsync(dW_q, 0, n_state_ * dim * sizeof(__nv_bfloat16), stream_);
-    cudaMemsetAsync(dW_alpha, 0, n_state_ * dim * sizeof(__nv_bfloat16), stream_);
+    cudaMemsetAsync(dW_k, 0, n_state_ * dim_ * sizeof(__nv_bfloat16), stream_);
+    cudaMemsetAsync(dW_v, 0, n_state_ * dim_ * sizeof(__nv_bfloat16), stream_);
+    cudaMemsetAsync(dW_q, 0, n_state_ * dim_ * sizeof(__nv_bfloat16), stream_);
+    cudaMemsetAsync(dW_alpha, 0, n_state_ * dim_ * sizeof(__nv_bfloat16), stream_);
     cudaMemsetAsync(dd_g_f, 0, n_state_ * sizeof(float), stream_);
     cudaMemsetAsync(db_g_f, 0, n_state_ * sizeof(float), stream_);
     cudaMemsetAsync(db_alpha_f, 0, n_state_ * sizeof(float), stream_);
@@ -1256,90 +1258,90 @@ void E72MatrixSelfGateBackward<__nv_bfloat16>::Run(
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
-        dim, steps * batch_size_, n_state_,
+        dim_, steps * batch_size_, n_state_,
         &alpha_one,
-        W_k, dim,
+        W_k, dim_,
         d_k_all, n_state_,
         &beta_zero,
-        dx, dim);
+        dx, dim_);
 
     // dx += d_v_all @ W_v
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
-        dim, steps * batch_size_, n_state_,
+        dim_, steps * batch_size_, n_state_,
         &alpha_one,
-        W_v, dim,
+        W_v, dim_,
         d_v_all, n_state_,
         &beta_one,
-        dx, dim);
+        dx, dim_);
 
     // dx += d_q_all @ W_q
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
-        dim, steps * batch_size_, n_state_,
+        dim_, steps * batch_size_, n_state_,
         &alpha_one,
-        W_q, dim,
+        W_q, dim_,
         d_q_all, n_state_,
         &beta_one,
-        dx, dim);
+        dx, dim_);
 
     // dx += d_alpha_x_all @ W_alpha
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_N,
-        dim, steps * batch_size_, n_state_,
+        dim_, steps * batch_size_, n_state_,
         &alpha_one,
-        W_alpha, dim,
+        W_alpha, dim_,
         d_alpha_x_all, n_state_,
         &beta_one,
-        dx, dim);
+        dx, dim_);
 
     // Weight gradients: dW = x.T @ d_proj
     // dW_k = x.T @ d_k_all
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
-        dim, n_state_, steps * batch_size_,
+        dim_, n_state_, steps * batch_size_,
         &alpha_one,
-        x, dim,
+        x, dim_,
         d_k_all, n_state_,
         &beta_one,
-        dW_k, dim);
+        dW_k, dim_);
 
     // dW_v = x.T @ d_v_all
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
-        dim, n_state_, steps * batch_size_,
+        dim_, n_state_, steps * batch_size_,
         &alpha_one,
-        x, dim,
+        x, dim_,
         d_v_all, n_state_,
         &beta_one,
-        dW_v, dim);
+        dW_v, dim_);
 
     // dW_q = x.T @ d_q_all
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
-        dim, n_state_, steps * batch_size_,
+        dim_, n_state_, steps * batch_size_,
         &alpha_one,
-        x, dim,
+        x, dim_,
         d_q_all, n_state_,
         &beta_one,
-        dW_q, dim);
+        dW_q, dim_);
 
     // dW_alpha = x.T @ d_alpha_x_all
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_N, CUBLAS_OP_T,
-        dim, n_state_, steps * batch_size_,
+        dim_, n_state_, steps * batch_size_,
         &alpha_one,
-        x, dim,
+        x, dim_,
         d_alpha_x_all, n_state_,
         &beta_one,
-        dW_alpha, dim);
+        dW_alpha, dim_);
 
     // Copy bias gradients
     CopyFloatToT<__nv_bfloat16><<<(n_state_ + 255) / 256, 256, 0, stream_>>>(n_state_, db_alpha_f, db_alpha);
@@ -1355,12 +1357,14 @@ template<typename T>
 E72MatrixSelfGateForward<T>::E72MatrixSelfGateForward(
     bool training,
     int batch_size,
+    int dim,
     int n_state,
     bool inverse_gate,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : training_(training),
       batch_size_(batch_size),
+      dim_(dim),
       n_state_(n_state),
       inverse_gate_(inverse_gate),
       blas_handle_(blas_handle),
@@ -1391,7 +1395,6 @@ void E72MatrixSelfGateForward<T>::Run(
     static const T alpha_one = static_cast<T>(1.0);
     static const T beta_zero = static_cast<T>(0.0);
 
-    const int dim = n_state_;
     const int BN = batch_size_ * n_state_;
     const int BNN = batch_size_ * n_state_ * n_state_;
     const int block_size = 256;
@@ -1405,13 +1408,13 @@ void E72MatrixSelfGateForward<T>::Run(
 
     // Pre-compute projections
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim, &alpha_one, W_k, dim, x, dim, &beta_zero, k_all, n_state_);
+        n_state_, steps * batch_size_, dim_, &alpha_one, W_k, dim_, x, dim_, &beta_zero, k_all, n_state_);
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim, &alpha_one, W_v, dim, x, dim, &beta_zero, v_all, n_state_);
+        n_state_, steps * batch_size_, dim_, &alpha_one, W_v, dim_, x, dim_, &beta_zero, v_all, n_state_);
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim, &alpha_one, W_q, dim, x, dim, &beta_zero, q_all, n_state_);
+        n_state_, steps * batch_size_, dim_, &alpha_one, W_q, dim_, x, dim_, &beta_zero, q_all, n_state_);
     blas<T>::gemm(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
-        n_state_, steps * batch_size_, dim, &alpha_one, W_alpha, dim, x, dim, &beta_zero, alpha_x_all, n_state_);
+        n_state_, steps * batch_size_, dim_, &alpha_one, W_alpha, dim_, x, dim_, &beta_zero, alpha_x_all, n_state_);
 
     for (int t = 0; t < steps; ++t) {
         const T* k_t = k_all + t * BN;
@@ -1457,11 +1460,13 @@ void E72MatrixSelfGateForward<T>::Run(
 template<typename T>
 E72MatrixSelfGateBackward<T>::E72MatrixSelfGateBackward(
     int batch_size,
+    int dim,
     int n_state,
     bool inverse_gate,
     const cublasHandle_t& blas_handle,
     const cudaStream_t& stream)
     : batch_size_(batch_size),
+      dim_(dim),
       n_state_(n_state),
       inverse_gate_(inverse_gate),
       blas_handle_(blas_handle),
@@ -1495,7 +1500,7 @@ void E72MatrixSelfGateBackward<T>::Run(
     T* workspace) {
 
     // Placeholder - follows BF16 pattern
-    cudaMemsetAsync(dx, 0, steps * batch_size_ * n_state_ * sizeof(T), stream_);
+    cudaMemsetAsync(dx, 0, steps * batch_size_ * dim_ * sizeof(T), stream_);
 }
 
 // Explicit template instantiations

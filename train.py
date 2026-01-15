@@ -227,11 +227,16 @@ def train(args):
         diagonal_levels = {34, 44, 54}  # Diagonal W_h (already bounded)
         scalar_levels = {43, 55}  # Scalar decay (already bounded)
         no_wh_levels = {45, 46, 48}  # No W_h at all
+        # E70-73: Matrix state models use gated updates (alpha*S + (1-alpha)*outer), naturally bounded
+        matrix_state_levels = {70, 71, 72, 73}  # No spectral norm needed - gated update is bounded
 
         level_int = int(args.level) if str(args.level).isdigit() else 0
         if level_int in full_wh_levels:
             r_h_mode = 'spectral_norm'
             print(f"Auto r_h_mode: spectral_norm (level {level_int} has full W_h)")
+        elif level_int in matrix_state_levels:
+            r_h_mode = 'none'
+            print(f"Auto r_h_mode: none (level {level_int} is matrix state - gated update is bounded)")
         else:
             r_h_mode = 'none'
             print(f"Auto r_h_mode: none (level {level_int} has bounded/no W_h)")

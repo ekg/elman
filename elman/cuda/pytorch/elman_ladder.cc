@@ -9790,7 +9790,7 @@ std::vector<Tensor> e72_matrix_selfgate_forward(
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "e72_matrix_selfgate_forward", ([&] {
         E72MatrixSelfGateForward<typename native_type<scalar_t>::T> forward(
-            training, batch_size, n_state, inverse_gate,
+            training, batch_size, dim, n_state, inverse_gate,
             at::cuda::getCurrentCUDABlasHandle(),
             at::cuda::getCurrentCUDAStream());
 
@@ -9876,7 +9876,7 @@ std::vector<Tensor> e72_matrix_selfgate_backward(
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
         x.scalar_type(), "e72_matrix_selfgate_backward", ([&] {
         E72MatrixSelfGateBackward<typename native_type<scalar_t>::T> backward(
-            batch_size, n_state, inverse_gate,
+            batch_size, dim, n_state, inverse_gate,
             at::cuda::getCurrentCUDABlasHandle(),
             at::cuda::getCurrentCUDAStream());
 

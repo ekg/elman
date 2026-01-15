@@ -324,14 +324,11 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("Gradient correctness test: CUDA vs PyTorch")
         print("=" * 60)
-        print("NOTE: CUDA kernel requires d_inner == n_state (dim == n_state)")
-        print("      Using matching dimensions for test.\n")
 
         torch.manual_seed(42)
-        # IMPORTANT: CUDA kernel has dim == n_state constraint
-        # d_inner must equal n_state for CUDA kernel to work correctly
+        # Test with dim != n_state (now supported by CUDA kernel)
         n_state = 64
-        dim = n_state  # Must match for CUDA kernel
+        dim = 128  # Can differ from n_state
         T, B = 16, 2
 
         forward_passed = True

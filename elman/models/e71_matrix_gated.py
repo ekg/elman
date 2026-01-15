@@ -14,6 +14,18 @@ Why this might work:
 - E67 works because state-dependent gating allows memory management
 - "Should I retain?" depends on what's already stored
 - S @ k retrieves current content → informs retain decision
+
+Performance characteristics:
+- Matrix state is O(n_state^2) per timestep vs O(dim) for vector models
+- With n_state=64: ~12K FLOPs per step (vs ~768 for E67)
+- Expected throughput scales as ~50K/depth tok/s
+- Use n_state=32 for 4x speedup (203K vs 52K single layer)
+- No spectral norm needed - gated update is naturally bounded
+
+Stability notes:
+- The gated update S = alpha*S + (1-alpha)*outer(v,k) is bounded
+- alpha is sigmoid output (0-1), so ||S|| cannot grow unbounded
+- r_h_mode='none' is correct - no spectral norm needed
 """
 
 import torch
