@@ -5660,6 +5660,474 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E70: Matrix Linear Elman - Square Matrix State with Linear Update
+// Forward per timestep:
+//     k_t = x @ W_k.T                      # [B, n_state]
+//     v_t = x @ W_v.T                      # [B, n_state]
+//     q_t = x @ W_q.T                      # [B, n_state]
+//
+//     S = decay * S + outer(v, k)          # [B, n_state, n_state]
+//     S = tanh(S)                          # Nonlinear state update
+//
+//     out = S @ q                          # [B, n_state]
+//     out = out * silu(out)                # Self-gating output
+//
+// Key: Square matrix state S enables rich associative storage
+// =============================================================================
+
+template<typename T>
+struct E70MatrixLinearForward {
+    E70MatrixLinearForward(
+        bool training,
+        int batch_size,
+        int dim,
+        int n_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float decay,                // Clamped to [0, 0.999]
+        const T* W_k,               // [n_state, dim] key projection
+        const T* W_v,               // [n_state, dim] value projection
+        const T* W_q,               // [n_state, dim] query projection
+        const T* x,                 // [T, B, dim] input
+        T* S,                       // [T+1, B, n_state, n_state] state matrices
+        T* output,                  // [T, B, n_state] output
+        T* k_cache,                 // [T, B, n_state] for backward
+        T* v_cache,                 // [T, B, n_state] for backward
+        T* q_cache,                 // [T, B, n_state] for backward
+        T* Sq_cache,                // [T, B, n_state] for backward (S @ q result)
+        T* workspace);              // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_all, v_all, q_all: 3*T*B*n_state
+        // Sq_tmp: B*n_state
+        return 3 * steps * batch_size * n_state + batch_size * n_state;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int dim_;
+    int n_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E70MatrixLinearBackward {
+    E70MatrixLinearBackward(
+        int batch_size,
+        int dim,
+        int n_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float decay,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* x,
+        const T* S,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* Sq_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* d_decay,                 // [1] gradient for decay parameter
+        T* workspace);              // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t BNN = batch_size * n_state * n_state;
+        // d_S, d_S_prev: 2*B*N*N
+        // d_Sq: B*N
+        // d_k_all, d_v_all, d_q_all: 3*T*B*N
+        // d_k_f, d_v_f, d_q_f: 3*B*N floats
+        // d_decay_f: 1 float
+        int64_t float_bytes = (3 * BN + 1) * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BNN + BN + 3 * steps * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int dim_;
+    int n_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E71: Matrix Gated Elman - E67-style state-dependent gating with matrix state
+//
+// Architecture:
+//     k_t = W_k @ x_t                              # [B, n_state] key
+//     v_t = W_v @ x_t                              # [B, n_state] value
+//     q_t = W_q @ x_t                              # [B, n_state] query
+//     alpha_x_t = W_alpha @ x_t                    # [B, n_state]
+//
+//     # S-dependent gate (E67 insight: state affects gating decision)
+//     retrieved = S @ k_t                          # [B, n_state] (matrix-vector product)
+//     alpha = sigmoid(alpha_x + d_alpha * retrieved + b_alpha)
+//
+//     # Gated update
+//     S_new = alpha.unsqueeze(-1) * S + (1 - alpha.unsqueeze(-1)) * outer(v, k)
+//
+//     # Self-gating output
+//     out = S_new @ q
+//     output = out * silu(out)
+//
+// State S is [B, n_state, n_state] - square matrix
+// Cannot parallelize due to S-dependence in gating (UTM-class)
+// =============================================================================
+
+template<typename T>
+struct E71MatrixGatedForward {
+    E71MatrixGatedForward(
+        bool training,
+        int batch_size,
+        int n_state,    // N - square matrix dimension
+        int dim,        // D - input dimension
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,           // [n_state, dim] key projection
+        const T* W_v,           // [n_state, dim] value projection
+        const T* W_q,           // [n_state, dim] query projection
+        const T* W_alpha,       // [n_state, dim] gate projection
+        const T* d_alpha,       // [n_state] gate h-scaling
+        const T* b_alpha,       // [n_state] gate bias
+        const T* x,             // [T, B, dim] input
+        T* S,                   // [T+1, B, n_state, n_state] state matrices
+        T* output,              // [T, B, n_state] output
+        T* k_cache,             // [T, B, n_state] for backward
+        T* v_cache,             // [T, B, n_state] for backward
+        T* q_cache,             // [T, B, n_state] for backward
+        T* alpha_x_cache,       // [T, B, n_state] for backward
+        T* retrieved_cache,     // [T, B, n_state] for backward
+        T* alpha_cache,         // [T, B, n_state] for backward
+        T* workspace);          // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        // k_all, v_all, q_all, alpha_x_all: 4*T*BN
+        // retrieved_tmp, alpha_tmp: 2*BN
+        return 4 * steps * BN + 2 * BN;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E71MatrixGatedBackward {
+    E71MatrixGatedBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_alpha,
+        const T* d_alpha,
+        const T* b_alpha,
+        const T* x,
+        const T* S,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* alpha_x_cache,
+        const T* retrieved_cache,
+        const T* alpha_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_alpha,
+        T* dd_alpha,            // [n_state] gradient for gate h-scaling
+        T* db_alpha,            // [n_state] gradient for gate bias
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t BNN = batch_size * n_state * n_state;
+        // d_S, d_S_tmp: 2*BNN
+        // d_k_all, d_v_all, d_q_all, d_alpha_x_all: 4*T*BN
+        // d_retrieved: BN
+        // Float workspace: d_alpha_f, d_k_f, d_v_f, d_q_f (4*BN), dd_alpha_f, db_alpha_f (2*n_state)
+        int64_t float_elems = 4 * BN + 2 * n_state;
+        int64_t float_bytes = float_elems * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BNN + 4 * steps * BN + BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E73: Matrix Nonlinear Elman - E1-style with S inside tanh
+//
+// Architecture (column variant):
+//     k_t = W_k @ x_t                              # [B, n] key
+//     v_t = W_v @ x_t                              # [B, n] value
+//     q_t = W_q @ x_t                              # [B, n] query
+//     z_t = sigmoid(W_z @ x_t + b_z)               # [B, n] modulation gate
+//
+//     S = tanh(S * z.unsqueeze(1) + outer(v, k))   # [B, n, n] (column modulation)
+//
+//     out = S @ q                                   # [B, n]
+//     out = out * silu(out)                        # Self-gating output
+//
+// State S is [B, n, n] square matrix.
+//
+// Variants:
+// - 0 (column): S[i,j] *= z[j] (scale each column by z[j])
+// - 1 (row):    S[i,j] *= z[i] (scale each row by z[i])
+// - 2 (full):   S[i,j] *= z[i] * z[j] (outer product scaling)
+// =============================================================================
+
+template<typename T>
+struct E73MatrixNonlinearForward {
+    E73MatrixNonlinearForward(
+        bool training,
+        int batch_size,
+        int n_state,     // n - state matrix dimension (n x n)
+        int dim,         // input dimension
+        int variant,     // 0=column, 1=row, 2=full
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,           // [n, dim] key projection
+        const T* W_v,           // [n, dim] value projection
+        const T* W_q,           // [n, dim] query projection
+        const T* W_z,           // [n, dim] modulation gate projection
+        const T* b_z,           // [n] modulation gate bias
+        const T* x,             // [T, B, dim] input
+        T* S,                   // [T+1, B, n, n] state matrices
+        T* output,              // [T, B, n] output
+        T* k_cache,             // [T, B, n] for backward
+        T* v_cache,             // [T, B, n] for backward
+        T* q_cache,             // [T, B, n] for backward
+        T* z_cache,             // [T, B, n] for backward (post-sigmoid)
+        T* pre_tanh_cache,      // [T, B, n, n] for backward
+        T* Sq_cache,            // [T, B, n] for backward (pre-self-gate)
+        T* workspace);          // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        // k_all, v_all, q_all, z_logit_all, z_all: 5*T*BN
+        return 5 * steps * BN;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E73MatrixNonlinearBackward {
+    E73MatrixNonlinearBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int variant,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* S,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* pre_tanh_cache,
+        const T* Sq_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_z,
+        T* db_z,
+        T* workspace);          // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t BNN = batch_size * n_state * n_state;
+        // d_S, d_S_tmp: 2*BNN
+        // d_Sq: BN
+        // d_k_all, d_v_all, d_q_all, d_z_logit_all: 4*T*BN
+        // Float workspace: d_k_f, d_v_f, d_q_f, d_z_f (4*BN), db_z_f (n_state)
+        int64_t float_bytes = (4 * BN + n_state) * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BNN + BN + 4 * steps * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E72: Matrix SelfGate Elman - Memory content controls writing
+// k = W_k @ x, v = W_v @ x, q = W_q @ x
+// alpha = sigmoid(W_alpha @ x + b_alpha)     # Retain gate
+// retrieved = S @ k                          # Query memory
+// g = sigmoid(d_g * retrieved + b_g)         # Gate from memory content
+// v_gated = v * g                            # Memory controls writing
+// S = alpha * S + (1 - alpha) * outer(v_gated, k)
+// out = S @ q
+// out = out * silu(out)                      # Self-gating output
+//
+// Variants:
+// - standard (inverse_gate=false): g = sigmoid(d_g * retrieved + b_g) - content enables writing
+// - inverse (inverse_gate=true):   g = sigmoid(-d_g * |retrieved| + b_g) - content resists writing
+// =============================================================================
+
+template<typename T>
+struct E72MatrixSelfGateForward {
+    E72MatrixSelfGateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        bool inverse_gate,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,               // [n_state, dim] key projection (dim = n_state for now)
+        const T* W_v,               // [n_state, dim] value projection
+        const T* W_q,               // [n_state, dim] query projection
+        const T* W_alpha,           // [n_state, dim] retain gate weight
+        const T* b_alpha,           // [n_state] retain gate bias
+        const T* d_g,               // [n_state] gating weight (self-gating)
+        const T* b_g,               // [n_state] gating bias
+        const T* x,                 // [T, B, dim] input
+        T* S,                       // [T+1, B, n_state, n_state] state matrices
+        T* output,                  // [T, B, n_state] output
+        T* k_cache,                 // [T, B, n_state] for backward
+        T* v_cache,                 // [T, B, n_state] for backward
+        T* q_cache,                 // [T, B, n_state] for backward
+        T* alpha_cache,             // [T, B, n_state] for backward
+        T* retrieved_cache,         // [T, B, n_state] for backward
+        T* g_cache,                 // [T, B, n_state] for backward
+        T* workspace);              // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_all, v_all, q_all, alpha_x_all: 4*T*B*n_state
+        // v_gated_tmp, alpha_tmp: 2*B*n_state
+        return 4 * steps * batch_size * n_state + 2 * batch_size * n_state;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    bool inverse_gate_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E72MatrixSelfGateBackward {
+    E72MatrixSelfGateBackward(
+        int batch_size,
+        int n_state,
+        bool inverse_gate,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_alpha,
+        const T* d_g,
+        const T* x,
+        const T* S,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* alpha_cache,
+        const T* retrieved_cache,
+        const T* g_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dd_g,
+        T* db_g,
+        T* workspace);              // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t BNN = batch_size * n_state * n_state;
+        // d_S, d_S_tmp: 2*B*N*N
+        // d_k_all, d_v_all, d_q_all, d_alpha_x_all: 4*T*B*N
+        // v_gated_tmp: B*N (recomputed in backward)
+        // Float accumulators: 7*B*N + 3*N floats
+        int64_t float_bytes = (7 * BN + 3 * n_state) * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BNN + 4 * steps * BN + BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    bool inverse_gate_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty

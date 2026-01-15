@@ -63,6 +63,8 @@ def parse_args():
                         help='State expansion for E16 (d_state = d_inner * state_expansion)')
     parser.add_argument('--n_groups', type=int, default=32,
                         help='Number of groups for compete softmax')
+    parser.add_argument('--n_state', type=int, default=64,
+                        help='Matrix state size for E70-E73 (S is n_state x n_state)')
     parser.add_argument('--r_h_mode', type=str, default='auto',
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
@@ -322,6 +324,7 @@ def train(args):
             level=args.level,
             expansion=args.expansion,
             n_groups=args.n_groups,
+            n_state=args.n_state,
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,
         )

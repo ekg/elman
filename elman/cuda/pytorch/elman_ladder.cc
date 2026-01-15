@@ -9390,6 +9390,700 @@ std::vector<Tensor> e63m_matrix_nonlinear_backward(
     return {dx, dW_k, dW_q, dW_x, dW_r, db, dW_alpha, db_alpha};
 }
 
+// =============================================================================
+// E70: Matrix Linear Elman - Square Matrix State with Linear Update
+// S = tanh(decay * S + outer(v, k))
+// out = (S @ q) * silu(S @ q)
+// =============================================================================
+
+std::vector<Tensor> e70_matrix_linear_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    float decay,        // Clamped to [0, 0.999]
+    Tensor W_k,         // [n_state, dim] key projection
+    Tensor W_v,         // [n_state, dim] value projection
+    Tensor W_q) {       // [n_state, dim] query projection
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor Sq_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                               : torch::empty({0}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E70MatrixLinearForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    S[0] = S0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e70_matrix_linear_forward", ([&] {
+        E70MatrixLinearForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, dim, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            decay,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(q_cache) : nullptr,
+            training ? ptr<scalar_t>(Sq_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {S, output, k_cache, v_cache, q_cache, Sq_cache};
+}
+
+std::vector<Tensor> e70_matrix_linear_backward(
+    float decay,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor x,
+    Tensor S,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor Sq_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(x);
+    CHECK_INPUT(S);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(Sq_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::zeros({time_steps, batch_size, dim}, options);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor d_decay = torch::zeros({1}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E70MatrixLinearBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e70_matrix_linear_backward", ([&] {
+        E70MatrixLinearBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, dim, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            decay,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(q_cache),
+            ptr<scalar_t>(Sq_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_k),
+            ptr<scalar_t>(dW_v),
+            ptr<scalar_t>(dW_q),
+            ptr<scalar_t>(d_decay),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_k, dW_v, dW_q, d_decay};
+}
+
+// =============================================================================
+// E71: Matrix Gated Elman - E67-style state-dependent gating with matrix state
+// retrieved = S @ k, alpha = sigmoid(alpha_x + d_alpha * retrieved + b_alpha)
+// S_new = alpha * S + (1 - alpha) * outer(v, k)
+// out = (S @ q) * silu(S @ q)
+// =============================================================================
+
+std::vector<Tensor> e71_matrix_gated_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    Tensor W_k,         // [n_state, dim] key projection
+    Tensor W_v,         // [n_state, dim] value projection
+    Tensor W_q,         // [n_state, dim] query projection
+    Tensor W_alpha,     // [n_state, dim] gate projection
+    Tensor d_alpha,     // [n_state] gate h-scaling
+    Tensor b_alpha) {   // [n_state] gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_alpha);
+    CHECK_INPUT(d_alpha);
+    CHECK_INPUT(b_alpha);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // S: [T+1, B, n_state, n_state]
+    Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor alpha_x_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                    : torch::empty({0}, options);
+    Tensor retrieved_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                      : torch::empty({0}, options);
+    Tensor alpha_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                  : torch::empty({0}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E71MatrixGatedForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    S[0] = S0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e71_matrix_gated_forward", ([&] {
+        E71MatrixGatedForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(d_alpha),
+            ptr<scalar_t>(b_alpha),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(q_cache) : nullptr,
+            training ? ptr<scalar_t>(alpha_x_cache) : nullptr,
+            training ? ptr<scalar_t>(retrieved_cache) : nullptr,
+            training ? ptr<scalar_t>(alpha_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {S, output, k_cache, v_cache, q_cache, alpha_x_cache, retrieved_cache, alpha_cache};
+}
+
+std::vector<Tensor> e71_matrix_gated_backward(
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor W_alpha,
+    Tensor d_alpha,
+    Tensor b_alpha,
+    Tensor x,
+    Tensor S,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor alpha_x_cache,
+    Tensor retrieved_cache,
+    Tensor alpha_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_alpha);
+    CHECK_INPUT(d_alpha);
+    CHECK_INPUT(b_alpha);
+    CHECK_INPUT(x);
+    CHECK_INPUT(S);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(alpha_x_cache);
+    CHECK_INPUT(retrieved_cache);
+    CHECK_INPUT(alpha_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output gradients
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_alpha = torch::zeros({n_state, dim}, options);
+    Tensor dd_alpha = torch::zeros({n_state}, options);
+    Tensor db_alpha = torch::zeros({n_state}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E71MatrixGatedBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e71_matrix_gated_backward", ([&] {
+        E71MatrixGatedBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(d_alpha),
+            ptr<scalar_t>(b_alpha),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(q_cache),
+            ptr<scalar_t>(alpha_x_cache),
+            ptr<scalar_t>(retrieved_cache),
+            ptr<scalar_t>(alpha_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_k),
+            ptr<scalar_t>(dW_v),
+            ptr<scalar_t>(dW_q),
+            ptr<scalar_t>(dW_alpha),
+            ptr<scalar_t>(dd_alpha),
+            ptr<scalar_t>(db_alpha),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_k, dW_v, dW_q, dW_alpha, dd_alpha, db_alpha};
+}
+
+// =============================================================================
+// E72: Matrix SelfGate Elman - Memory content controls writing
+// =============================================================================
+
+std::vector<Tensor> e72_matrix_selfgate_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    bool inverse_gate,  // false=standard, true=inverse
+    Tensor W_k,         // [n_state, dim] key projection
+    Tensor W_v,         // [n_state, dim] value projection
+    Tensor W_q,         // [n_state, dim] query projection
+    Tensor W_alpha,     // [n_state, dim] retain gate weight
+    Tensor b_alpha,     // [n_state] retain gate bias
+    Tensor d_g,         // [n_state] gating weight
+    Tensor b_g) {       // [n_state] gating bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_alpha);
+    CHECK_INPUT(b_alpha);
+    CHECK_INPUT(d_g);
+    CHECK_INPUT(b_g);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor alpha_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                  : torch::empty({0}, options);
+    Tensor retrieved_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                      : torch::empty({0}, options);
+    Tensor g_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E72MatrixSelfGateForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    S[0] = S0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e72_matrix_selfgate_forward", ([&] {
+        E72MatrixSelfGateForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, n_state, inverse_gate,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(b_alpha),
+            ptr<scalar_t>(d_g),
+            ptr<scalar_t>(b_g),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(q_cache) : nullptr,
+            training ? ptr<scalar_t>(alpha_cache) : nullptr,
+            training ? ptr<scalar_t>(retrieved_cache) : nullptr,
+            training ? ptr<scalar_t>(g_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {S, output, k_cache, v_cache, q_cache, alpha_cache, retrieved_cache, g_cache};
+}
+
+std::vector<Tensor> e72_matrix_selfgate_backward(
+    bool inverse_gate,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor W_alpha,
+    Tensor d_g,
+    Tensor x,
+    Tensor S,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor alpha_cache,
+    Tensor retrieved_cache,
+    Tensor g_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_alpha);
+    CHECK_INPUT(d_g);
+    CHECK_INPUT(x);
+    CHECK_INPUT(S);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(alpha_cache);
+    CHECK_INPUT(retrieved_cache);
+    CHECK_INPUT(g_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::zeros({time_steps, batch_size, dim}, options);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_alpha = torch::zeros({n_state, dim}, options);
+    Tensor db_alpha = torch::zeros({n_state}, options);
+    Tensor dd_g = torch::zeros({n_state}, options);
+    Tensor db_g = torch::zeros({n_state}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E72MatrixSelfGateBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e72_matrix_selfgate_backward", ([&] {
+        E72MatrixSelfGateBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, n_state, inverse_gate,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_alpha),
+            ptr<scalar_t>(d_g),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(q_cache),
+            ptr<scalar_t>(alpha_cache),
+            ptr<scalar_t>(retrieved_cache),
+            ptr<scalar_t>(g_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_k),
+            ptr<scalar_t>(dW_v),
+            ptr<scalar_t>(dW_q),
+            ptr<scalar_t>(dW_alpha),
+            ptr<scalar_t>(db_alpha),
+            ptr<scalar_t>(dd_g),
+            ptr<scalar_t>(db_g),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_k, dW_v, dW_q, dW_alpha, db_alpha, dd_g, db_g};
+}
+
+// =============================================================================
+// E73: Matrix Nonlinear Elman - E1-style with S inside tanh
+// S = tanh(S * z_mod + outer(v, k))
+// out = (S @ q) * silu(S @ q)
+// Variants: 0=column (z[j]), 1=row (z[i]), 2=full (z[i]*z[j])
+// =============================================================================
+
+std::vector<Tensor> e73_matrix_nonlinear_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    int variant,        // 0=column, 1=row, 2=full
+    Tensor W_k,         // [n_state, dim] key projection
+    Tensor W_v,         // [n_state, dim] value projection
+    Tensor W_q,         // [n_state, dim] query projection
+    Tensor W_z,         // [n_state, dim] modulation gate projection
+    Tensor b_z) {       // [n_state] modulation gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_z);
+    CHECK_INPUT(b_z);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor z_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor pre_tanh_cache = training ? torch::empty({time_steps, batch_size, n_state, n_state}, options)
+                                     : torch::empty({0}, options);
+    Tensor Sq_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                               : torch::empty({0}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E73MatrixNonlinearForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    S[0] = S0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e73_matrix_nonlinear_forward", ([&] {
+        E73MatrixNonlinearForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, n_state, dim, variant,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_z),
+            ptr<scalar_t>(b_z),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(q_cache) : nullptr,
+            training ? ptr<scalar_t>(z_cache) : nullptr,
+            training ? ptr<scalar_t>(pre_tanh_cache) : nullptr,
+            training ? ptr<scalar_t>(Sq_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {S, output, k_cache, v_cache, q_cache, z_cache, pre_tanh_cache, Sq_cache};
+}
+
+std::vector<Tensor> e73_matrix_nonlinear_backward(
+    int variant,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor W_z,
+    Tensor x,
+    Tensor S,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor z_cache,
+    Tensor pre_tanh_cache,
+    Tensor Sq_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_z);
+    CHECK_INPUT(x);
+    CHECK_INPUT(S);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(z_cache);
+    CHECK_INPUT(pre_tanh_cache);
+    CHECK_INPUT(Sq_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::zeros({time_steps, batch_size, dim}, options);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_z = torch::zeros({n_state, dim}, options);
+    Tensor db_z = torch::zeros({n_state}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E73MatrixNonlinearBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e73_matrix_nonlinear_backward", ([&] {
+        E73MatrixNonlinearBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, n_state, dim, variant,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_z),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(q_cache),
+            ptr<scalar_t>(z_cache),
+            ptr<scalar_t>(pre_tanh_cache),
+            ptr<scalar_t>(Sq_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_k),
+            ptr<scalar_t>(dW_v),
+            ptr<scalar_t>(dW_q),
+            ptr<scalar_t>(dW_z),
+            ptr<scalar_t>(db_z),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_k, dW_v, dW_q, dW_z, db_z};
+}
+
 }  // anonymous namespace
 
 
@@ -9682,4 +10376,20 @@ void elman_ladder_init(py::module& m) {
           "E63m: Matrix State Nonlinear Delta forward (UTM-class with N×D matrix state)");
     m.def("e63m_matrix_nonlinear_backward", &e63m_matrix_nonlinear_backward,
           "E63m: Matrix State Nonlinear Delta backward");
+    m.def("e70_matrix_linear_forward", &e70_matrix_linear_forward,
+          "E70: Matrix Linear forward (S = tanh(decay*S + outer(v,k)), out = (S@q)*silu(S@q))");
+    m.def("e70_matrix_linear_backward", &e70_matrix_linear_backward,
+          "E70: Matrix Linear backward");
+    m.def("e71_matrix_gated_forward", &e71_matrix_gated_forward,
+          "E71: Matrix Gated forward (alpha = sigmoid(W_alpha@x + d_alpha*retrieved + b_alpha), S-dependent gating)");
+    m.def("e71_matrix_gated_backward", &e71_matrix_gated_backward,
+          "E71: Matrix Gated backward");
+    m.def("e72_matrix_selfgate_forward", &e72_matrix_selfgate_forward,
+          "E72: Matrix SelfGate forward (g = sigmoid(d_g*retrieved + b_g), memory content controls writing)");
+    m.def("e72_matrix_selfgate_backward", &e72_matrix_selfgate_backward,
+          "E72: Matrix SelfGate backward");
+    m.def("e73_matrix_nonlinear_forward", &e73_matrix_nonlinear_forward,
+          "E73: Matrix Nonlinear forward (S = tanh(S*z + outer(v,k)), variants: 0=column, 1=row, 2=full)");
+    m.def("e73_matrix_nonlinear_backward", &e73_matrix_nonlinear_backward,
+          "E73: Matrix Nonlinear backward");
 }

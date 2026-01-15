@@ -463,6 +463,123 @@ def count_e68_params(dim, depth, vocab_size=256, expansion=2.0):
     return total
 
 
+def count_e70_params(dim, depth, vocab_size=256, expansion=2.0, n_state=64):
+    """Count E70 (Matrix Linear) parameters.
+
+    E70: Matrix state S [n_state, n_state]
+    - W_k, W_v, W_q: [n_state, d_inner]
+    - decay: scalar
+    - out_proj: [n_state, dim]
+    """
+    d_inner = int(dim * expansion)
+
+    per_layer = (
+        dim * d_inner +          # in_proj
+        n_state * d_inner +      # W_k
+        n_state * d_inner +      # W_v
+        n_state * d_inner +      # W_q
+        1 +                      # decay
+        n_state * dim +          # out_proj
+        2 * dim                  # LayerNorm
+    )
+
+    total = (
+        vocab_size * dim +       # embedding
+        per_layer * depth +      # layers
+        2 * dim                  # final norm
+    )
+    return total
+
+
+def count_e71_params(dim, depth, vocab_size=256, expansion=2.0, n_state=64):
+    """Count E71 (Matrix Gated) parameters.
+
+    E71: Matrix state with S-dependent gating
+    - W_k, W_v, W_q: [n_state, d_inner]
+    - W_alpha: [n_state, d_inner], b_alpha: [n_state]
+    - d_alpha, b_alpha_h: [n_state]
+    """
+    d_inner = int(dim * expansion)
+
+    per_layer = (
+        dim * d_inner +          # in_proj
+        n_state * d_inner +      # W_k
+        n_state * d_inner +      # W_v
+        n_state * d_inner +      # W_q
+        n_state * d_inner +      # W_alpha
+        n_state +                # d_alpha
+        n_state +                # b_alpha
+        n_state * dim +          # out_proj
+        2 * dim                  # LayerNorm
+    )
+
+    total = (
+        vocab_size * dim +       # embedding
+        per_layer * depth +      # layers
+        2 * dim                  # final norm
+    )
+    return total
+
+
+def count_e72_params(dim, depth, vocab_size=256, expansion=2.0, n_state=64):
+    """Count E72 (Matrix SelfGate) parameters.
+
+    E72: Matrix state with memory-gated value
+    - W_k, W_v, W_q: [n_state, d_inner]
+    - W_alpha: [n_state, d_inner], b_alpha: [n_state]
+    - d_g, b_g: [n_state]
+    """
+    d_inner = int(dim * expansion)
+
+    per_layer = (
+        dim * d_inner +          # in_proj
+        n_state * d_inner +      # W_k
+        n_state * d_inner +      # W_v
+        n_state * d_inner +      # W_q
+        n_state * d_inner +      # W_alpha
+        n_state +                # b_alpha
+        n_state +                # d_g
+        n_state +                # b_g
+        n_state * dim +          # out_proj
+        2 * dim                  # LayerNorm
+    )
+
+    total = (
+        vocab_size * dim +       # embedding
+        per_layer * depth +      # layers
+        2 * dim                  # final norm
+    )
+    return total
+
+
+def count_e73_params(dim, depth, vocab_size=256, expansion=2.0, n_state=64):
+    """Count E73 (Matrix Nonlinear) parameters.
+
+    E73: Matrix state with nonlinear update
+    - W_k, W_v, W_q: [n_state, d_inner]
+    - W_z: [n_state, d_inner], b_z: [n_state]
+    """
+    d_inner = int(dim * expansion)
+
+    per_layer = (
+        dim * d_inner +          # in_proj
+        n_state * d_inner +      # W_k
+        n_state * d_inner +      # W_v
+        n_state * d_inner +      # W_q
+        n_state * d_inner +      # W_z
+        n_state +                # b_z
+        n_state * dim +          # out_proj
+        2 * dim                  # LayerNorm
+    )
+
+    total = (
+        vocab_size * dim +       # embedding
+        per_layer * depth +      # layers
+        2 * dim                  # final norm
+    )
+    return total
+
+
 def count_fla_gdn_params(dim, depth, vocab_size=256, expansion=2.0):
     """Count FLA GatedDeltaNet parameters.
 
@@ -729,6 +846,42 @@ def main():
     configs['e68'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 68}
     print(f"E68:    dim={dim}, depth={depth}, params={params:,}")
 
+    # E70 (Matrix Linear) - O(n^2) matrix state with E42-style
+    n_state_70 = 96
+    dim, depth, params = find_config_at_depth(
+        lambda d, dp, expansion: count_e70_params(d, dp, expansion=expansion, n_state=n_state_70),
+        TARGET_PARAMS, EXPANSION, TARGET_DEPTH
+    )
+    configs['e70'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 70, 'n_state': n_state_70}
+    print(f"E70:    dim={dim}, depth={depth}, params={params:,} (n_state={n_state_70})")
+
+    # E71 (Matrix Gated) - matrix state with S-dependent gating
+    n_state_71 = 96
+    dim, depth, params = find_config_at_depth(
+        lambda d, dp, expansion: count_e71_params(d, dp, expansion=expansion, n_state=n_state_71),
+        TARGET_PARAMS, EXPANSION, TARGET_DEPTH
+    )
+    configs['e71'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 71, 'n_state': n_state_71}
+    print(f"E71:    dim={dim}, depth={depth}, params={params:,} (n_state={n_state_71})")
+
+    # E72 (Matrix SelfGate) - matrix state with memory-gated value
+    n_state_72 = 96
+    dim, depth, params = find_config_at_depth(
+        lambda d, dp, expansion: count_e72_params(d, dp, expansion=expansion, n_state=n_state_72),
+        TARGET_PARAMS, EXPANSION, TARGET_DEPTH
+    )
+    configs['e72'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 72, 'n_state': n_state_72}
+    print(f"E72:    dim={dim}, depth={depth}, params={params:,} (n_state={n_state_72})")
+
+    # E73 (Matrix Nonlinear) - matrix state with nonlinear update
+    n_state_73 = 96
+    dim, depth, params = find_config_at_depth(
+        lambda d, dp, expansion: count_e73_params(d, dp, expansion=expansion, n_state=n_state_73),
+        TARGET_PARAMS, EXPANSION, TARGET_DEPTH
+    )
+    configs['e73'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 73, 'n_state': n_state_73}
+    print(f"E73:    dim={dim}, depth={depth}, params={params:,} (n_state={n_state_73})")
+
     # E1 (MambaGatedElman)
     dim, depth, params = find_config_at_depth(count_e1_params, TARGET_PARAMS, EXPANSION, TARGET_DEPTH)
     configs['e1'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 1}
@@ -778,7 +931,7 @@ def main():
     print(f"\nAvailable GPUs: {available_gpus}")
 
     # Models to benchmark (priority order)
-    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2', 'fla-gdn', 'llama']
+    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e70', 'e71', 'e72', 'e73', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2', 'fla-gdn', 'llama']
 
     print("\n" + "=" * 60)
     print(f"Starting {TRAIN_MINUTES}-minute benchmarks with dynamic GPU allocation")
@@ -809,6 +962,10 @@ def main():
         # Add expansion if present
         if 'expansion' in config:
             cmd_parts.append(f"--expansion {config['expansion']}")
+
+        # Add n_state for E70-E73 matrix models
+        if 'n_state' in config:
+            cmd_parts.append(f"--n_state {config['n_state']}")
 
         cmd = " ".join(cmd_parts)
 

@@ -98,6 +98,10 @@ CUDA_OBJS := \
 	lib/e66_lowrank_h_gpu.o \
 	lib/e67_h_gated_gpu.o \
 	lib/e68_self_gating_gpu.o \
+	lib/e70_matrix_linear_gpu.o \
+	lib/e71_matrix_gated_gpu.o \
+	lib/e72_matrix_selfgate_gpu.o \
+	lib/e73_matrix_nonlinear_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

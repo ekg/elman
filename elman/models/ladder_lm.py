@@ -91,6 +91,10 @@ from .e68_self_gating import E68SelfGating, E68SelfGatingStandard, E68SelfGating
 from .gated_delta_net import GatedDeltaNet, GatedDeltaNetVector
 from .fla_gated_delta import FLAGatedDeltaNetLayer
 from .llama_baseline import LlamaLayer
+from .e70_matrix_linear import E70MatrixLinear
+from .e71_matrix_gated import E71MatrixGated
+from .e72_matrix_selfgate import E72MatrixSelfGate, E72MatrixSelfGateStandard, E72MatrixSelfGateInverse
+from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73MatrixRow, E73MatrixFull
 
 
 def get_ladder_level(level):
@@ -196,6 +200,19 @@ def get_ladder_level(level):
         'gdn-vec': GatedDeltaNetVector,  # GatedDeltaNet Vector: Simplified (vector state)
         'fla-gdn': FLAGatedDeltaNetLayer,  # FLA GatedDeltaNet: Optimized Triton kernels (ICLR 2025)
         'llama': LlamaLayer,  # Llama Transformer: attention baseline
+        70: E70MatrixLinear,  # E70: Matrix Linear (E42-style) - linear accum + self-gate
+        '70n32': lambda **kw: E70MatrixLinear(n_state=32, **kw),
+        '70n128': lambda **kw: E70MatrixLinear(n_state=128, **kw),
+        71: E71MatrixGated,  # E71: Matrix Gated (E67-style) - S affects gate
+        '71n32': lambda **kw: E71MatrixGated(n_state=32, **kw),
+        '71n128': lambda **kw: E71MatrixGated(n_state=128, **kw),
+        72: E72MatrixSelfGate,  # E72: Matrix Self-Gate (E68-style) - S gates value
+        '72s': E72MatrixSelfGateStandard,  # Standard: content enables writing
+        '72i': E72MatrixSelfGateInverse,  # Inverse: content resists writing
+        73: E73MatrixNonlinear,  # E73: Matrix Nonlinear (E1-style) - S inside tanh
+        '73c': E73MatrixColumn,  # Column modulation
+        '73r': E73MatrixRow,  # Row modulation
+        '73f': E73MatrixFull,  # Full element-wise modulation
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -251,6 +268,7 @@ class LadderLM(nn.Module):
         n_groups=32,
         n_slots=8,
         n_banks=4,  # For E10 multi-scale: number of EMA memory banks
+        n_state=64,  # For E70-E73: matrix state size (S is n_state x n_state)
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
@@ -269,6 +287,7 @@ class LadderLM(nn.Module):
         self.level = level
         self.n_slots = n_slots
         self.n_banks = n_banks
+        self.n_state = n_state
         self.rank = rank
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
@@ -297,6 +316,7 @@ class LadderLM(nn.Module):
                 n_groups=n_groups,
                 n_slots=n_slots,
                 n_banks=n_banks,  # For E10 multi-scale
+                n_state=n_state,  # For E70-E73 matrix state
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,
