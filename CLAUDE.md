@@ -158,3 +158,75 @@ For custom cells (E29a, E29c, etc.) that aren't in LadderLM:
 - Linear recurrence removes tanh, improves gradient flow
 - Tied weights reduce params, batched GEMM recovers speed
 - Self-gating (h * silu(h)) provides sufficient nonlinearity
+
+## 100M Parameter Benchmark (Reference: Jan 14, 2026)
+
+### Running the Benchmark
+
+```bash
+# Run all models (uses all available GPUs automatically)
+python run_100m_benchmark.py
+
+# Results saved to: benchmark_results/100m_10min/
+# - Logs: benchmark_results/100m_10min/{model}.log
+# - Checkpoints: benchmark_results/100m_10min/{model}/level{model}_100m_{timestamp}/
+# - Configs: benchmark_results/100m_10min/configs.json
+```
+
+### Benchmark Configuration
+
+- **Data**: `data/pile.txt` (byte-level, vocab_size=256)
+- **Training time**: 10 minutes per model
+- **Batch size**: 32, Chunk size: 512
+- **Learning rate**: 3e-4, Warmup: 1000 steps
+- **Target params**: ~100M (dim varies by model architecture)
+- **Depth**: 20 layers for all models
+- **Seed**: 42
+
+### Extracting Results
+
+**If logs are overwritten, get results from checkpoint filenames:**
+```bash
+for dir in benchmark_results/100m_10min/*/level*; do
+  model=$(echo $dir | sed 's|.*/\([^/]*\)/level.*|\1|')
+  latest=$(ls -t $dir/checkpoint_*.pt 2>/dev/null | head -1)
+  if [ -n "$latest" ]; then
+    loss=$(basename $latest | sed 's/.*loss_\([0-9.]*\)\.pt/\1/')
+    steps=$(basename $latest | sed 's/.*step_0*\([0-9]*\)_.*/\1/')
+    echo "$model: steps=$steps loss=$loss"
+  fi
+done | sort -t'=' -k3 -n
+```
+
+### Reference Results (Jan 14, 2026 run)
+
+| Model | Steps | Final Loss | Dim | Notes |
+|-------|-------|------------|-----|-------|
+| **fla-gdn** | 2228 | **1.16** | 768 | FLA GatedDeltaNet (ICLR 2025) |
+| **mamba2** | 2200 | **1.23** | 896 | Mamba2 SSM baseline |
+| e68 | 3047 | 1.44 | 640 | Self-gating h-dependence |
+| e67 | 2971 | 1.52 | 640 | H-gated alpha |
+| e1 | 1657 | 1.58 | 640 | Gated Elman baseline |
+| e42 | 1838 | 1.59 | 768 | Linear tied self-gate |
+| e56 | 1424 | 1.63 | 640 | Concat Elman |
+| e65 | 3233 | 1.63 | 640 | Diagonal H |
+| e64 | 3122 | 1.69 | 640 | Additive H |
+| llama | 1690 | 1.69 | 640 | Transformer baseline |
+| e61 | 2964 | 1.76 | 640 | Decay gated |
+| e63 | 2154 | 1.77 | 512 | Nonlinear delta |
+| e62 | 2960 | 1.78 | 640 | Selective write |
+| e66 | 1021 | 1.85 | 640 | Low-rank H |
+
+### Matrix State Models (E70-E73)
+
+Matrix state models have O(n²) state size and require different dims to hit 100M params:
+
+| Model | Dim | n_state | State Size | Notes |
+|-------|-----|---------|------------|-------|
+| E70 | 1408 | 96 | 96×96 | Linear matrix update |
+| E71 | 1408 | 96 | 96×96 | S-dependent gating |
+| E72 | 1408 | 96 | 96×96 | Memory-gated value |
+| E73 | 1408 | 96 | 96×96 | Nonlinear delta rule |
+| E73cp | 1408 | 96 | 96×96 | E73 with gradient checkpointing |
+
+**E73cp Checkpointing**: 2.5x memory reduction (7.8 GB vs 19.7 GB) with ~6% throughput overhead.

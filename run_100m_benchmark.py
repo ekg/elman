@@ -882,6 +882,10 @@ def main():
     configs['e73'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 73, 'n_state': n_state_73}
     print(f"E73:    dim={dim}, depth={depth}, params={params:,} (n_state={n_state_73})")
 
+    # E73cp (Matrix Nonlinear Checkpointed) - same as E73 but with gradient checkpointing
+    configs['e73cp'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': '73cp', 'n_state': n_state_73}
+    print(f"E73cp:  dim={dim}, depth={depth}, params={params:,} (n_state={n_state_73}, checkpointed)")
+
     # E1 (MambaGatedElman)
     dim, depth, params = find_config_at_depth(count_e1_params, TARGET_PARAMS, EXPANSION, TARGET_DEPTH)
     configs['e1'] = {'dim': dim, 'depth': depth, 'params': params, 'expansion': EXPANSION, 'level': 1}
@@ -931,7 +935,7 @@ def main():
     print(f"\nAvailable GPUs: {available_gpus}")
 
     # Models to benchmark (priority order)
-    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e70', 'e71', 'e72', 'e73', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2', 'fla-gdn', 'llama']
+    model_order = ['e61', 'e62', 'e63', 'e63m', 'e64', 'e65', 'e66', 'e67', 'e68', 'e70', 'e71', 'e72', 'e73', 'e73cp', 'e1', 'e42', 'e56', 'cudagru', 'cudalstm', 'mamba2', 'fla-gdn', 'llama']
 
     print("\n" + "=" * 60)
     print(f"Starting {TRAIN_MINUTES}-minute benchmarks with dynamic GPU allocation")
