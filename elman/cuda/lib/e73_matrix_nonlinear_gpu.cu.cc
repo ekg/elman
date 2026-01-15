@@ -216,6 +216,94 @@ __global__ void E73OutputKernel_BF16(
 }
 
 // =============================================================================
+// FUSED Update + Output Kernel
+// One block per batch element, n threads per block
+// Each thread handles one row of S and computes corresponding output element
+// Uses shared memory to cache k, q, z vectors for reduced memory traffic
+// =============================================================================
+__global__ void E73FusedUpdateOutputKernel_BF16(
+    const int n,           // State dimension
+    const int variant,     // 0=column, 1=row, 2=full
+    const __nv_bfloat16* __restrict__ S_prev,     // [B, n, n]
+    const __nv_bfloat16* __restrict__ z,          // [B, n]
+    const __nv_bfloat16* __restrict__ v,          // [B, n]
+    const __nv_bfloat16* __restrict__ k,          // [B, n]
+    const __nv_bfloat16* __restrict__ q,          // [B, n]
+    __nv_bfloat16* __restrict__ S_new,            // [B, n, n]
+    __nv_bfloat16* __restrict__ output,           // [B, n]
+    __nv_bfloat16* __restrict__ pre_tanh_cache,   // [B, n, n] optional
+    __nv_bfloat16* __restrict__ Sq_cache)         // [B, n] optional
+{
+    // Shared memory for k, q, z vectors (3 * n floats)
+    extern __shared__ float smem[];
+    float* k_shared = smem;          // [n]
+    float* q_shared = smem + n;      // [n]
+    float* z_shared = smem + 2 * n;  // [n]
+
+    const int b = blockIdx.x;   // Batch index
+    const int i = threadIdx.x;  // Row index (0 to n-1)
+    const int bn = b * n;
+    const int bnn = b * n * n;
+
+    // Collaboratively load k, q, z into shared memory
+    if (i < n) {
+        k_shared[i] = __bfloat162float(k[bn + i]);
+        q_shared[i] = __bfloat162float(q[bn + i]);
+        z_shared[i] = __bfloat162float(z[bn + i]);
+    }
+    __syncthreads();
+
+    if (i < n) {
+        // Load v[i] and z[i] for this thread's row
+        float v_i = __bfloat162float(v[bn + i]);
+        float z_i = z_shared[i];
+
+        // Process row i of S and compute output[i] = sum_j(S[i,j] * q[j])
+        float output_sum = 0.0f;
+
+        for (int j = 0; j < n; ++j) {
+            // Load S_prev[b, i, j]
+            float s_prev = __bfloat162float(S_prev[bnn + i * n + j]);
+
+            // Compute z modulation based on variant
+            float z_mod;
+            if (variant == 0) {
+                z_mod = z_shared[j];  // Column: z[j]
+            } else if (variant == 1) {
+                z_mod = z_i;          // Row: z[i]
+            } else {
+                z_mod = z_i * z_shared[j];  // Full: z[i] * z[j]
+            }
+
+            // Update: S_new = tanh(S_prev * z_mod + v[i] * k[j])
+            float pre_tanh = s_prev * z_mod + v_i * k_shared[j];
+            float s_new = tanhf(pre_tanh);
+
+            // Store S_new[b, i, j]
+            S_new[bnn + i * n + j] = __float2bfloat16(s_new);
+            if (pre_tanh_cache) {
+                pre_tanh_cache[bnn + i * n + j] = __float2bfloat16(pre_tanh);
+            }
+
+            // Accumulate for output: sum_j(S_new[i,j] * q[j])
+            output_sum += s_new * q_shared[j];
+        }
+
+        // Cache Sq before self-gate (if needed for backward)
+        if (Sq_cache) {
+            Sq_cache[bn + i] = __float2bfloat16(output_sum);
+        }
+
+        // Self-gate: output = Sq * silu(Sq) = Sq^2 * sigmoid(Sq)
+        float sigmoid_sq = 1.0f / (1.0f + __expf(-output_sum));
+        float silu_sq = output_sum * sigmoid_sq;
+        float out = output_sum * silu_sq;
+
+        output[bn + i] = __float2bfloat16(out);
+    }
+}
+
+// =============================================================================
 // Backward Kernels
 // =============================================================================
 
@@ -623,20 +711,21 @@ void E73MatrixNonlinearForward<__nv_bfloat16>::Run(
     const int BNN = batch_size_ * n * n;
     const int block_size = 256;
 
-    // Workspace layout:
-    // k_all: [T, B, n]
-    // v_all: [T, B, n]
-    // q_all: [T, B, n]
-    // z_logit_all: [T, B, n]
-    // z_all: [T, B, n] (post-sigmoid)
-    __nv_bfloat16* k_all = workspace;
-    __nv_bfloat16* v_all = k_all + steps * BN;
-    __nv_bfloat16* q_all = v_all + steps * BN;
-    __nv_bfloat16* z_logit_all = q_all + steps * BN;
-    __nv_bfloat16* z_all = z_logit_all + steps * BN;
+    // =========================================================================
+    // OPTIMIZATION: Compute projections directly into cache buffers (training)
+    // or into workspace (inference). Eliminates 4 memcpy per timestep!
+    // =========================================================================
+
+    // When training: k_cache, v_cache, q_cache, z_cache are the target buffers
+    // When not training: use workspace for temporary storage
+    __nv_bfloat16* k_all = training_ ? k_cache : workspace;
+    __nv_bfloat16* v_all = training_ ? v_cache : (workspace + steps * BN);
+    __nv_bfloat16* q_all = training_ ? q_cache : (workspace + 2 * steps * BN);
+    __nv_bfloat16* z_all = training_ ? z_cache : (workspace + 3 * steps * BN);
+    __nv_bfloat16* z_logit_all = workspace + 4 * steps * BN;  // Always temp
 
     // =========================================================================
-    // Batch all 4 projections upfront
+    // Batch all 4 projections upfront - directly into final destination!
     // =========================================================================
 
     // k_all = x @ W_k.T  [T*B, n]
@@ -672,7 +761,7 @@ void E73MatrixNonlinearForward<__nv_bfloat16>::Run(
         &beta_zero,
         q_all, n);
 
-    // z_logit_all = x @ W_z.T  [T*B, n]
+    // z_logit_all = x @ W_z.T  [T*B, n] (always to workspace)
     blas<__nv_bfloat16>::gemm(
         blas_handle_,
         CUBLAS_OP_T, CUBLAS_OP_N,
@@ -683,11 +772,15 @@ void E73MatrixNonlinearForward<__nv_bfloat16>::Run(
         &beta_zero,
         z_logit_all, n);
 
-    // Apply tanh with bias to z_logit_all -> z_all (bounded modulation)
+    // Apply tanh with bias: z_logit_all -> z_all (directly to cache if training!)
     TanhBiasKernel_BF16<<<(steps * BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
         steps * BN, z_logit_all, b_z, z_all, batch_size_, n);
 
-    // Process each timestep sequentially (recurrence)
+    // =========================================================================
+    // Sequential recurrence - separate Update + Output kernels
+    // The fused kernel had poor occupancy with only n=96 threads per block.
+    // Separate kernels achieve better parallelism.
+    // =========================================================================
     for (int t = 0; t < steps; ++t) {
         const __nv_bfloat16* k_t = k_all + t * BN;
         const __nv_bfloat16* v_t = v_all + t * BN;
@@ -699,23 +792,13 @@ void E73MatrixNonlinearForward<__nv_bfloat16>::Run(
         __nv_bfloat16* pre_tanh_t = training_ ? (pre_tanh_cache + t * BNN) : nullptr;
         __nv_bfloat16* Sq_t = training_ ? (Sq_cache + t * BN) : nullptr;
 
-        // Cache k, v, q, z for backward
-        if (training_) {
-            cudaMemcpyAsync(k_cache + t * BN, k_t, BN * sizeof(__nv_bfloat16),
-                           cudaMemcpyDeviceToDevice, stream_);
-            cudaMemcpyAsync(v_cache + t * BN, v_t, BN * sizeof(__nv_bfloat16),
-                           cudaMemcpyDeviceToDevice, stream_);
-            cudaMemcpyAsync(q_cache + t * BN, q_t, BN * sizeof(__nv_bfloat16),
-                           cudaMemcpyDeviceToDevice, stream_);
-            cudaMemcpyAsync(z_cache + t * BN, z_t, BN * sizeof(__nv_bfloat16),
-                           cudaMemcpyDeviceToDevice, stream_);
-        }
-
         // Update: S_t = tanh(S_prev * z_mod + outer(v, k))
+        // BNN threads, highly parallel (one thread per S element)
         E73UpdateKernel_BF16<<<(BNN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n, variant_, S_prev, z_t, v_t, k_t, S_t, pre_tanh_t);
 
         // Output: out = S @ q, then self-gate
+        // BN threads, each does n-element reduction
         E73OutputKernel_BF16<<<(BN + block_size - 1) / block_size, block_size, 0, stream_>>>(
             batch_size_, n, S_t, q_t, out_t, Sq_t);
     }
