@@ -73,6 +73,11 @@ class GateType(Enum):
     STATE = 'state'         # state-dependent delta gate (G2)
 
 
+class UpdateType(Enum):
+    DELTA = 'delta'         # S = f(S + outer(v - S@k, k)) - erase before write
+    SIMPLE = 'simple'       # S = f(α*S + outer(v, k)) - just decay + write
+
+
 # =============================================================================
 # Core Cell Implementations
 # =============================================================================
@@ -81,7 +86,8 @@ class E74DiagonalCell(nn.Module):
     """
     Diagonal state cell.
 
-    S[i] = f(S[i] * (1 - k²[i]) + v[i] * k[i])
+    Delta update: S[i] = f(S[i] * (1 - k²[i]) + v[i] * k[i])
+    Simple update: S[i] = f(α * S[i] + v[i] * k[i])
 
     This is equivalent to input-dependent EMA per dimension.
     """
@@ -93,6 +99,7 @@ class E74DiagonalCell(nn.Module):
         proj_type: ProjType = ProjType.NO_Z,
         nonlin_type: NonlinType = NonlinType.TANH,
         gate_type: GateType = GateType.OUTPUT,
+        update_type: UpdateType = UpdateType.DELTA,
         spectral_radius: float = 0.999,
     ):
         super().__init__()
@@ -101,6 +108,7 @@ class E74DiagonalCell(nn.Module):
         self.proj_type = proj_type
         self.nonlin_type = nonlin_type
         self.gate_type = gate_type
+        self.update_type = update_type
         self.spectral_radius = spectral_radius
 
         # Projections based on type
@@ -124,6 +132,10 @@ class E74DiagonalCell(nn.Module):
         if gate_type in [GateType.RETAIN, GateType.STATE]:
             self.d_g = nn.Parameter(torch.full((n_state,), 0.5))
             self.b_g = nn.Parameter(torch.zeros(n_state))
+
+        # Simple update: learnable decay (initialized to ~0.9)
+        if update_type == UpdateType.SIMPLE:
+            self.log_alpha = nn.Parameter(torch.full((n_state,), -0.1))  # sigmoid → ~0.475
 
         self._init_weights()
 
@@ -203,24 +215,31 @@ class E74DiagonalCell(nn.Module):
 
             # Normalize k
             k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)
-            k_sq = k_norm ** 2
 
-            # Diagonal delta update
-            if self.gate_type == GateType.OUTPUT:
-                # S = f(S * (1 - k²) + v * k)
-                S_raw = S * (1.0 - k_sq) + v_t * k_norm
-            elif self.gate_type == GateType.RETAIN:
-                # α = sigmoid(d_g * S + b_g)
-                # S = α * S + (1-α) * update
-                alpha = torch.sigmoid(self.d_g * S + self.b_g)
-                update = S * (1.0 - k_sq) + v_t * k_norm
-                S_raw = alpha * S + (1.0 - alpha) * update
-            elif self.gate_type == GateType.STATE:
-                # g = sigmoid(d_g * S + b_g)
-                # delta = (v - S*k) * k * g
-                g = torch.sigmoid(self.d_g * S + self.b_g)
-                delta = (v_t - S * k_norm) * k_norm * g
-                S_raw = S + delta
+            # Choose update rule
+            if self.update_type == UpdateType.SIMPLE:
+                # Simple: S = f(α*S + v*k) - no delta rule, just decay + write
+                alpha = torch.sigmoid(self.log_alpha)
+                S_raw = alpha * S + v_t * k_norm
+            else:
+                # Delta rule: S = f(S*(1-k²) + v*k)
+                k_sq = k_norm ** 2
+
+                if self.gate_type == GateType.OUTPUT:
+                    # S = f(S * (1 - k²) + v * k)
+                    S_raw = S * (1.0 - k_sq) + v_t * k_norm
+                elif self.gate_type == GateType.RETAIN:
+                    # α = sigmoid(d_g * S + b_g)
+                    # S = α * S + (1-α) * update
+                    alpha = torch.sigmoid(self.d_g * S + self.b_g)
+                    update = S * (1.0 - k_sq) + v_t * k_norm
+                    S_raw = alpha * S + (1.0 - alpha) * update
+                elif self.gate_type == GateType.STATE:
+                    # g = sigmoid(d_g * S + b_g)
+                    # delta = (v - S*k) * k * g
+                    g = torch.sigmoid(self.d_g * S + self.b_g)
+                    delta = (v_t - S * k_norm) * k_norm * g
+                    S_raw = S + delta
 
             S = self._apply_nonlin(S_raw)
 
@@ -237,7 +256,8 @@ class E74FullMatrixCell(nn.Module):
     """
     Full matrix state cell (simplified from E73).
 
-    S[i,j] = f(S[i,j] + (v[i] - retrieved[i]) * k_norm[j])
+    Delta update: S[i,j] = f(S[i,j] + (v[i] - retrieved[i]) * k_norm[j])
+    Simple update: S = f(α * S + outer(v, k))
     """
 
     def __init__(
@@ -247,6 +267,7 @@ class E74FullMatrixCell(nn.Module):
         proj_type: ProjType = ProjType.NO_Z,
         nonlin_type: NonlinType = NonlinType.TANH,
         gate_type: GateType = GateType.OUTPUT,
+        update_type: UpdateType = UpdateType.DELTA,
     ):
         super().__init__()
         self.dim = dim
@@ -254,6 +275,7 @@ class E74FullMatrixCell(nn.Module):
         self.proj_type = proj_type
         self.nonlin_type = nonlin_type
         self.gate_type = gate_type
+        self.update_type = update_type
 
         # Projections
         if proj_type == ProjType.FULL:
@@ -275,6 +297,10 @@ class E74FullMatrixCell(nn.Module):
         if gate_type in [GateType.RETAIN, GateType.STATE]:
             self.d_g = nn.Parameter(torch.full((n_state,), 0.5))
             self.b_g = nn.Parameter(torch.zeros(n_state))
+
+        # Simple update: learnable scalar decay
+        if update_type == UpdateType.SIMPLE:
+            self.log_alpha = nn.Parameter(torch.tensor(0.0))  # sigmoid → 0.5
 
         self._init_weights()
 
@@ -331,27 +357,35 @@ class E74FullMatrixCell(nn.Module):
             # Normalize k
             k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)
 
-            # Retrieval (with optional z modulation)
-            if z_t is not None:
-                S_mod = S * z_t.unsqueeze(1)  # Column modulation
+            # Choose update rule
+            if self.update_type == UpdateType.SIMPLE:
+                # Simple: S = f(α*S + outer(v, k)) - no retrieval, no delta
+                alpha = torch.sigmoid(self.log_alpha)
+                outer = torch.einsum('bi,bj->bij', v_t, k_norm)
+                S_raw = alpha * S + outer
             else:
-                S_mod = S
-            retrieved = torch.einsum('bij,bj->bi', S_mod, k_norm)
+                # Delta rule: S = f(S + outer(v - retrieved, k))
+                # Retrieval (with optional z modulation)
+                if z_t is not None:
+                    S_mod = S * z_t.unsqueeze(1)  # Column modulation
+                else:
+                    S_mod = S
+                retrieved = torch.einsum('bij,bj->bi', S_mod, k_norm)
 
-            # Delta update
-            delta = v_t - retrieved
-            outer = torch.einsum('bi,bj->bij', delta, k_norm)
+                # Delta update
+                delta = v_t - retrieved
+                outer = torch.einsum('bi,bj->bij', delta, k_norm)
 
-            if self.gate_type == GateType.OUTPUT:
-                S_raw = S + outer
-            elif self.gate_type == GateType.RETAIN:
-                S_energy = (S ** 2).mean(dim=-1)
-                alpha = torch.sigmoid(self.d_g * S_energy + self.b_g)
-                S_raw = alpha.unsqueeze(-1) * S + (1 - alpha.unsqueeze(-1)) * (S + outer)
-            elif self.gate_type == GateType.STATE:
-                S_energy = (S ** 2).mean(dim=-1)
-                g = torch.sigmoid(self.d_g * S_energy + self.b_g)
-                S_raw = S + outer * g.unsqueeze(-1)
+                if self.gate_type == GateType.OUTPUT:
+                    S_raw = S + outer
+                elif self.gate_type == GateType.RETAIN:
+                    S_energy = (S ** 2).mean(dim=-1)
+                    alpha = torch.sigmoid(self.d_g * S_energy + self.b_g)
+                    S_raw = alpha.unsqueeze(-1) * S + (1 - alpha.unsqueeze(-1)) * (S + outer)
+                elif self.gate_type == GateType.STATE:
+                    S_energy = (S ** 2).mean(dim=-1)
+                    g = torch.sigmoid(self.d_g * S_energy + self.b_g)
+                    S_raw = S + outer * g.unsqueeze(-1)
 
             S = self._apply_nonlin(S_raw)
 
@@ -589,6 +623,7 @@ class E74AblationCell(nn.Module):
         proj_type: str = 'no_z',
         nonlin_type: str = 'tanh',
         gate_type: str = 'output',
+        update_type: str = 'delta',
         rank: int = 8,
         block_size: int = 8,
         spectral_radius: float = 0.999,
@@ -599,14 +634,17 @@ class E74AblationCell(nn.Module):
         self.proj_type = ProjType(proj_type)
         self.nonlin_type = NonlinType(nonlin_type)
         self.gate_type = GateType(gate_type)
+        self.update_type = UpdateType(update_type)
 
         if self.state_type == StateType.DIAGONAL:
             self.cell = E74DiagonalCell(
-                dim, n_state, self.proj_type, self.nonlin_type, self.gate_type, spectral_radius
+                dim, n_state, self.proj_type, self.nonlin_type, self.gate_type,
+                self.update_type, spectral_radius
             )
         elif self.state_type == StateType.FULL:
             self.cell = E74FullMatrixCell(
-                dim, n_state, self.proj_type, self.nonlin_type, self.gate_type
+                dim, n_state, self.proj_type, self.nonlin_type, self.gate_type,
+                self.update_type
             )
         elif self.state_type == StateType.LOWRANK:
             self.cell = E74LowRankCell(
@@ -637,6 +675,7 @@ class E74Ablation(nn.Module):
         proj_type: str = 'no_z',
         nonlin_type: str = 'tanh',
         gate_type: str = 'output',
+        update_type: str = 'delta',
         rank: int = 8,
         block_size: int = 8,
         dropout: float = 0.0,
@@ -649,6 +688,7 @@ class E74Ablation(nn.Module):
         self.d_inner = int(dim * expansion)
         self.n_state = n_state
         self.state_type = state_type
+        self.update_type = update_type
 
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
@@ -671,6 +711,7 @@ class E74Ablation(nn.Module):
             proj_type=proj_type,
             nonlin_type=nonlin_type,
             gate_type=gate_type,
+            update_type=update_type,
             rank=rank,
             block_size=block_size,
         )
@@ -725,9 +766,9 @@ class E74Ablation(nn.Module):
 # =============================================================================
 
 def get_ablation_configs():
-    """Generate all 20 recommended ablation configs."""
+    """Generate ablation configs including simple (no-delta) variants."""
     configs = [
-        # Phase 1: State structure with baseline projections
+        # Phase 1: State structure with baseline projections (delta rule)
         {'id': 1, 'state': 'full', 'proj': 'full', 'nonlin': 'tanh', 'gate': 'output', 'desc': 'E73 baseline'},
         {'id': 2, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'desc': 'Remove z'},
         {'id': 3, 'state': 'full', 'proj': 'tied_kq', 'nonlin': 'tanh', 'gate': 'output', 'desc': 'Tie k=q'},
@@ -750,10 +791,21 @@ def get_ablation_configs():
         {'id': 16, 'state': 'diagonal', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'state', 'desc': 'Diag, state gate'},
         {'id': 17, 'state': 'diagonal', 'proj': 'tied_kq', 'nonlin': 'linear', 'gate': 'retain', 'desc': 'Diag, linear, retain'},
 
-        # Phase 4: Best combo candidates
+        # Phase 4: Best combo candidates (delta rule)
         {'id': 18, 'state': 'lowrank', 'proj': 'tied_kq', 'nonlin': 'tanh', 'gate': 'output', 'desc': 'Lowrank-4, tied k=q', 'rank': 4},
         {'id': 19, 'state': 'lowrank', 'proj': 'tied_kq', 'nonlin': 'linear', 'gate': 'output', 'desc': 'Lowrank-8, linear', 'rank': 8},
         {'id': 20, 'state': 'diagonal', 'proj': 'tied_kvq', 'nonlin': 'linear', 'gate': 'output', 'desc': 'Minimal: diag, tied, linear'},
+
+        # Phase 5: Simple update (no delta rule) - just decay + write
+        # S = f(α*S + outer(v, k)) instead of S = f(S + outer(v - S@k, k))
+        {'id': 21, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'simple',
+         'desc': 'Simple: full, tied, tanh'},
+        {'id': 22, 'state': 'diagonal', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'simple',
+         'desc': 'Simple: diag, tied, tanh'},
+        {'id': 23, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'linear', 'gate': 'output', 'update': 'simple',
+         'desc': 'Simple: full, tied, linear'},
+        {'id': 24, 'state': 'diagonal', 'proj': 'tied_kvq', 'nonlin': 'linear', 'gate': 'output', 'update': 'simple',
+         'desc': 'Simple: diag, tied, linear'},
     ]
     return configs
 
@@ -766,6 +818,7 @@ def create_model_from_config(config: dict, dim: int = 512, **kwargs) -> E74Ablat
         proj_type=config['proj'],
         nonlin_type=config['nonlin'],
         gate_type=config['gate'],
+        update_type=config.get('update', 'delta'),
         rank=config.get('rank', 8),
         **kwargs
     )

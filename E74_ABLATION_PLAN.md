@@ -38,6 +38,15 @@ Systematic ablation of E73 matrix state RNN to find optimal architecture without
 | G1 | retain_gate | α*S_prev + (1-α)*delta |
 | G2 | state_gate | delta * sigmoid(f(S)) |
 
+### E. Update Rule Ablations (2 variants)
+| ID | Update Rule | Formula |
+|----|-------------|---------|
+| U0 | delta | S = f(S + outer(v - S@k, k)) - erase before write |
+| U1 | simple | S = f(α*S + outer(v, k)) - just decay + write |
+
+The **delta rule** does retrieval-based erasure before writing (like content-addressable memory).
+The **simple rule** just decays old state and writes new input (like standard RNN/GRU).
+
 ---
 
 ## 2. Ablation Priority
