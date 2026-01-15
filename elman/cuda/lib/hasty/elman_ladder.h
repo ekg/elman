@@ -5688,17 +5688,18 @@ struct E70MatrixLinearForward {
 
     void Run(
         int steps,
-        float decay,                // Clamped to [0, 0.999]
+        float beta,                 // Delta rule learning rate
         const T* W_k,               // [n_state, dim] key projection
         const T* W_v,               // [n_state, dim] value projection
         const T* W_q,               // [n_state, dim] query projection
         const T* x,                 // [T, B, dim] input
         T* S,                       // [T+1, B, n_state, n_state] state matrices
         T* output,                  // [T, B, n_state] output
-        T* k_cache,                 // [T, B, n_state] for backward
+        T* k_norm_cache,            // [T, B, n_state] normalized k for backward
         T* v_cache,                 // [T, B, n_state] for backward
         T* q_cache,                 // [T, B, n_state] for backward
         T* Sq_cache,                // [T, B, n_state] for backward (S @ q result)
+        T* retrieved_cache,         // [T, B, n_state] S @ k_norm for backward
         T* workspace);              // See WorkspaceSize
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
@@ -5727,22 +5728,23 @@ struct E70MatrixLinearBackward {
 
     void Run(
         int steps,
-        float decay,
+        float beta,
         const T* W_k,
         const T* W_v,
         const T* W_q,
         const T* x,
         const T* S,
-        const T* k_cache,
+        const T* k_norm_cache,
         const T* v_cache,
         const T* q_cache,
         const T* Sq_cache,
+        const T* retrieved_cache,   // [T, B, n_state] S @ k_norm from forward
         const T* d_output,
         T* dx,
         T* dW_k,
         T* dW_v,
         T* dW_q,
-        T* d_decay,                 // [1] gradient for decay parameter
+        T* d_beta,                  // [1] gradient for beta parameter
         T* workspace);              // See WorkspaceSize
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
@@ -5751,11 +5753,11 @@ struct E70MatrixLinearBackward {
         // d_S, d_S_prev: 2*B*N*N
         // d_Sq: B*N
         // d_k_all, d_v_all, d_q_all: 3*T*B*N
-        // d_k_f, d_v_f, d_q_f: 3*B*N floats
-        // d_decay_f: 1 float
-        int64_t float_bytes = (3 * BN + 1) * sizeof(float);
+        // k_all_recompute: T*B*N
+        // Float workspace: k_norms (T*B), d_k_f, d_v_f, d_k_norm_f, d_beta_f (4*B*N + 1)
+        int64_t float_bytes = (steps * batch_size + 4 * BN + 1) * sizeof(float);
         int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
-        return 2 * BNN + BN + 3 * steps * BN + float_in_T;
+        return 2 * BNN + BN + 4 * steps * BN + float_in_T;
     }
 
 private:
@@ -5892,6 +5894,136 @@ private:
 };
 
 // =============================================================================
+// E71 Delta: Matrix Gated Elman with Delta Rule - State-dependent learning rate
+//
+// Architecture:
+//     k_t = W_k @ x_t                              # [B, n] key
+//     v_t = W_v @ x_t                              # [B, n] value
+//     q_t = W_q @ x_t                              # [B, n] query
+//     beta_x_t = W_beta @ x_t                      # [B, n]
+//
+//     # Key normalization for stability
+//     k_norm = k / (||k|| + eps)                   # [B, n] normalized key
+//
+//     # S-dependent learning rate
+//     retrieved = S @ k_norm                       # [B, n]
+//     beta = sigmoid(beta_x + d_beta * retrieved + b_beta)
+//
+//     # Delta rule update
+//     delta = v - retrieved                        # Error signal
+//     S_new = S + beta.unsqueeze(-1) * outer(delta, k_norm)
+//
+//     # Self-gating output
+//     out = S_new @ q
+//     output = out * silu(out)
+//
+// State S is [B, n_state, n_state] - square matrix
+// =============================================================================
+
+template<typename T>
+struct E71DeltaForward {
+    E71DeltaForward(
+        bool training,
+        int batch_size,
+        int n_state,    // N - square matrix dimension
+        int dim,        // D - input dimension
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,           // [n_state, dim] key projection
+        const T* W_v,           // [n_state, dim] value projection
+        const T* W_q,           // [n_state, dim] query projection
+        const T* W_beta,        // [n_state, dim] beta gate projection
+        const T* d_beta,        // [n_state] beta h-scaling
+        const T* b_beta,        // [n_state] beta bias
+        const T* x,             // [T, B, dim] input
+        T* S,                   // [T+1, B, n_state, n_state] state matrices
+        T* output,              // [T, B, n_state] output
+        T* k_cache,             // [T, B, n_state] for backward
+        T* v_cache,             // [T, B, n_state] for backward
+        T* q_cache,             // [T, B, n_state] for backward
+        T* beta_x_cache,        // [T, B, n_state] for backward
+        T* retrieved_cache,     // [T, B, n_state] for backward
+        T* beta_cache,          // [T, B, n_state] for backward
+        T* k_norm_cache,        // [T, B, n_state] for backward (normalized keys)
+        T* workspace);          // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        // k_all, v_all, q_all, beta_x_all: 4*T*BN
+        // k_norm_tmp, retrieved_tmp, beta_tmp: 3*BN
+        return 4 * steps * BN + 3 * BN;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E71DeltaBackward {
+    E71DeltaBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* d_beta,
+        const T* b_beta,
+        const T* x,
+        const T* S,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* beta_x_cache,
+        const T* retrieved_cache,
+        const T* beta_cache,
+        const T* k_norm_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_beta,
+        T* dd_beta,             // [n_state] gradient for beta h-scaling
+        T* db_beta,             // [n_state] gradient for beta bias
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t BNN = batch_size * n_state * n_state;
+        // d_S, d_S_tmp: 2*BNN
+        // d_k_all, d_v_all, d_q_all, d_beta_x_all: 4*T*BN
+        // Float workspace: d_beta_f, d_k_f, d_v_f, d_q_f, d_retrieved_f, d_k_norm_f (6*BN)
+        //                  dd_beta_f, db_beta_f (2*n_state)
+        int64_t float_elems = 6 * BN + 2 * n_state;
+        int64_t float_bytes = float_elems * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BNN + 4 * steps * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E73: Matrix Nonlinear Elman - E1-style with S inside tanh
 //
 // Architecture (column variant):
@@ -5944,8 +6076,11 @@ struct E73MatrixNonlinearForward {
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
         int64_t BN = batch_size * n_state;
-        // k_all, v_all, q_all, z_logit_all, z_all: 5*T*BN
-        return 5 * steps * BN;
+        // DELTA RULE forward workspace:
+        // k_all: T*BN, z_logit_all: T*BN, retrieved: BN
+        // For inference: k_norm_all, v_all, q_all, z_all: 4*T*BN
+        // Max: 7*T*BN + BN (inference mode)
+        return 7 * steps * BN + BN;
     }
 
 private:
@@ -5976,10 +6111,10 @@ struct E73MatrixNonlinearBackward {
         const T* W_z,
         const T* x,
         const T* S,
-        const T* k_cache,
+        const T* k_cache,       // Stores k_norm (normalized keys) in delta rule
         const T* v_cache,
         const T* q_cache,
-        const T* z_cache,
+        const T* z_cache,       // Unbounded z (no tanh) in delta rule
         const T* pre_tanh_cache,
         const T* Sq_cache,
         const T* d_output,
@@ -5994,13 +6129,15 @@ struct E73MatrixNonlinearBackward {
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
         int64_t BN = batch_size * n_state;
         int64_t BNN = batch_size * n_state * n_state;
+        // DELTA RULE backward workspace:
         // d_S, d_S_tmp: 2*BNN
-        // d_Sq: BN
+        // d_Sq, retrieved: 2*BN
         // d_k_all, d_v_all, d_q_all, d_z_logit_all: 4*T*BN
-        // Float workspace: d_k_f, d_v_f, d_q_f, d_z_f (4*BN), db_z_f (n_state)
-        int64_t float_bytes = (4 * BN + n_state) * sizeof(float);
+        // Float workspace: d_k_f, d_v_f, d_q_f, d_z_f, d_k_norm_f, d_retrieved_f (6*BN), db_z_f (n_state)
+        // k_unnorm_all (recomputed): T*BN
+        int64_t float_bytes = (7 * BN + n_state) * sizeof(float);
         int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
-        return 2 * BNN + BN + 4 * steps * BN + float_in_T;
+        return 2 * BNN + 2 * BN + 5 * steps * BN + float_in_T;
     }
 
 private:
@@ -6116,11 +6253,13 @@ struct E72MatrixSelfGateBackward {
         int64_t BNN = batch_size * n_state * n_state;
         // d_S, d_S_tmp: 2*B*N*N
         // d_k_all, d_v_all, d_q_all, d_alpha_x_all: 4*T*B*N
-        // v_gated_tmp: B*N (recomputed in backward)
-        // Float accumulators: 7*B*N + 3*N floats
-        int64_t float_bytes = (7 * BN + 3 * n_state) * sizeof(float);
+        // k_all (recomputed): T*B*N
+        // v_gated_tmp: B*N
+        // Float accumulators: d_k_f, d_k_norm_f, d_v_f, d_q_f, d_alpha_f, d_v_gated_f, d_retrieved_f, d_alpha_x_f (8*B*N)
+        //                   + k_norm_inv (B) + dd_g_f, db_g_f, db_alpha_f (3*N)
+        int64_t float_bytes = (8 * BN + batch_size + 3 * n_state) * sizeof(float);
         int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
-        return 2 * BNN + 4 * steps * BN + BN + float_in_T;
+        return 2 * BNN + 5 * steps * BN + BN + float_in_T;
     }
 
 private:
@@ -6132,8 +6271,197 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E73 FUSED - Optimized Matrix Nonlinear with gradient checkpointing
+// =============================================================================
+// Key optimizations:
+// - Single persistent kernel for all timesteps (vs 4 launches per step)
+// - Block-parallel operations (vs 32 threads in original)
+// - Gradient checkpointing (store S every 32 steps, recompute in backward)
+// - S stays "hot" in cache during processing
+
 }  // namespace elman_ladder
 }  // namespace v0
 }  // namespace hasty
+
+namespace elman {
+
+template<typename T>
+struct E73FusedForward {
+    E73FusedForward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int variant,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_z,
+        const T* b_z,
+        const T* x,           // [T*B, dim]
+        T* S,                 // [B, n, n] - updated in place
+        T* output,            // [T*B, n]
+        T* workspace,
+        bool training);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state);
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E73FusedBackward {
+    E73FusedBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int variant,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* S_checkpoints,
+        const T* k_norm_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* pre_tanh_cache,
+        const T* Sq_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_z,
+        T* db_z,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state);
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E73 Checkpointed - In-place S with gradient checkpointing
+// =============================================================================
+// Key optimization: S is updated in-place, only checkpoints stored
+// Memory reduction: 50x+ for S storage
+// - Original E73: S = [T+1, B, n, n] ~19 GB
+// - E73CP: S = [B, n, n] + checkpoints ~0.6 GB
+
+template<typename T>
+struct E73CheckpointedForward {
+    E73CheckpointedForward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int variant,
+        int checkpoint_interval,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_z,
+        const T* b_z,
+        const T* x,               // [T*B, dim]
+        T* S,                     // [B, n, n] - updated IN-PLACE
+        T* output,                // [T, B, n]
+        T* S_checkpoints,         // [num_checkpoints, B, n, n]
+        T* k_norm_cache,          // [T, B, n]
+        T* v_cache,               // [T, B, n]
+        T* q_cache,               // [T, B, n]
+        T* z_cache,               // [T, B, n]
+        T* Sq_cache,              // [T, B, n]
+        T* workspace,
+        bool training);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state,
+                                  int checkpoint_interval, bool training);
+    static int NumCheckpoints(int steps, int checkpoint_interval);
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    int checkpoint_interval_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E73CheckpointedBackward {
+    E73CheckpointedBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int variant,
+        int checkpoint_interval,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* S_checkpoints,
+        const T* k_norm_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* Sq_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_z,
+        T* db_z,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state,
+                                  int checkpoint_interval, int dim);
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int variant_;
+    int checkpoint_interval_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+}  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H

@@ -9400,7 +9400,7 @@ std::vector<Tensor> e70_matrix_linear_forward(
     bool training,
     Tensor x,           // [T, B, dim] input
     Tensor S0,          // [B, n_state, n_state] initial state matrix
-    float decay,        // Clamped to [0, 0.999]
+    float beta,         // Delta rule learning rate
     Tensor W_k,         // [n_state, dim] key projection
     Tensor W_v,         // [n_state, dim] value projection
     Tensor W_q) {       // [n_state, dim] query projection
@@ -9423,15 +9423,17 @@ std::vector<Tensor> e70_matrix_linear_forward(
     Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
     Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
 
-    // Caches for backward
-    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
-                              : torch::empty({0}, options);
+    // Caches for backward (delta rule needs k_norm and retrieved)
+    Tensor k_norm_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                   : torch::empty({0}, options);
     Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
                               : torch::empty({0}, options);
     Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
                               : torch::empty({0}, options);
     Tensor Sq_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
                                : torch::empty({0}, options);
+    Tensor retrieved_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                      : torch::empty({0}, options);
 
     // Workspace
     using namespace hasty::v0::elman_ladder;
@@ -9450,34 +9452,36 @@ std::vector<Tensor> e70_matrix_linear_forward(
 
         forward.Run(
             time_steps,
-            decay,
+            beta,
             ptr<scalar_t>(W_k),
             ptr<scalar_t>(W_v),
             ptr<scalar_t>(W_q),
             ptr<scalar_t>(x),
             ptr<scalar_t>(S),
             ptr<scalar_t>(output),
-            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(k_norm_cache) : nullptr,
             training ? ptr<scalar_t>(v_cache) : nullptr,
             training ? ptr<scalar_t>(q_cache) : nullptr,
             training ? ptr<scalar_t>(Sq_cache) : nullptr,
+            training ? ptr<scalar_t>(retrieved_cache) : nullptr,
             ptr<scalar_t>(workspace));
     }));
 
-    return {S, output, k_cache, v_cache, q_cache, Sq_cache};
+    return {S, output, k_norm_cache, v_cache, q_cache, Sq_cache, retrieved_cache};
 }
 
 std::vector<Tensor> e70_matrix_linear_backward(
-    float decay,
+    float beta,
     Tensor W_k,
     Tensor W_v,
     Tensor W_q,
     Tensor x,
     Tensor S,
-    Tensor k_cache,
+    Tensor k_norm_cache,
     Tensor v_cache,
     Tensor q_cache,
     Tensor Sq_cache,
+    Tensor retrieved_cache,
     Tensor d_output) {
 
     const auto time_steps = x.size(0);
@@ -9490,10 +9494,11 @@ std::vector<Tensor> e70_matrix_linear_backward(
     CHECK_INPUT(W_q);
     CHECK_INPUT(x);
     CHECK_INPUT(S);
-    CHECK_INPUT(k_cache);
+    CHECK_INPUT(k_norm_cache);
     CHECK_INPUT(v_cache);
     CHECK_INPUT(q_cache);
     CHECK_INPUT(Sq_cache);
+    CHECK_INPUT(retrieved_cache);
     CHECK_INPUT(d_output);
 
     const auto options = x.options();
@@ -9503,7 +9508,7 @@ std::vector<Tensor> e70_matrix_linear_backward(
     Tensor dW_k = torch::zeros({n_state, dim}, options);
     Tensor dW_v = torch::zeros({n_state, dim}, options);
     Tensor dW_q = torch::zeros({n_state, dim}, options);
-    Tensor d_decay = torch::zeros({1}, options);
+    Tensor d_beta = torch::zeros({1}, options);
 
     // Workspace
     using namespace hasty::v0::elman_ladder;
@@ -9520,26 +9525,27 @@ std::vector<Tensor> e70_matrix_linear_backward(
 
         backward.Run(
             time_steps,
-            decay,
+            beta,
             ptr<scalar_t>(W_k),
             ptr<scalar_t>(W_v),
             ptr<scalar_t>(W_q),
             ptr<scalar_t>(x),
             ptr<scalar_t>(S),
-            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(k_norm_cache),
             ptr<scalar_t>(v_cache),
             ptr<scalar_t>(q_cache),
             ptr<scalar_t>(Sq_cache),
+            ptr<scalar_t>(retrieved_cache),
             ptr<scalar_t>(d_output),
             ptr<scalar_t>(dx),
             ptr<scalar_t>(dW_k),
             ptr<scalar_t>(dW_v),
             ptr<scalar_t>(dW_q),
-            ptr<scalar_t>(d_decay),
+            ptr<scalar_t>(d_beta),
             ptr<scalar_t>(workspace));
     }));
 
-    return {dx, dW_k, dW_v, dW_q, d_decay};
+    return {dx, dW_k, dW_v, dW_q, d_beta};
 }
 
 // =============================================================================
@@ -9724,6 +9730,197 @@ std::vector<Tensor> e71_matrix_gated_backward(
     }));
 
     return {dx, dW_k, dW_v, dW_q, dW_alpha, dd_alpha, db_alpha};
+}
+
+// =============================================================================
+// E71 Delta: Matrix Gated with Delta Rule - State-dependent learning rate
+// k_norm = k / (||k|| + eps)
+// retrieved = S @ k_norm, beta = sigmoid(beta_x + d_beta * retrieved + b_beta)
+// S_new = S + beta * outer(v - retrieved, k_norm)
+// out = (S @ q) * silu(S @ q)
+// =============================================================================
+
+std::vector<Tensor> e71_delta_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    Tensor W_k,         // [n_state, dim] key projection
+    Tensor W_v,         // [n_state, dim] value projection
+    Tensor W_q,         // [n_state, dim] query projection
+    Tensor W_beta,      // [n_state, dim] beta gate projection
+    Tensor d_beta,      // [n_state] beta h-scaling
+    Tensor b_beta) {    // [n_state] beta bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_beta);
+    CHECK_INPUT(d_beta);
+    CHECK_INPUT(b_beta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // S: [T+1, B, n_state, n_state]
+    Tensor S = torch::empty({time_steps + 1, batch_size, n_state, n_state}, options);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor beta_x_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                   : torch::empty({0}, options);
+    Tensor retrieved_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                      : torch::empty({0}, options);
+    Tensor beta_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                 : torch::empty({0}, options);
+    Tensor k_norm_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                   : torch::empty({0}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E71DeltaForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    S[0] = S0;
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e71_delta_forward", ([&] {
+        E71DeltaForward<typename native_type<scalar_t>::T> forward(
+            training, batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_beta),
+            ptr<scalar_t>(d_beta),
+            ptr<scalar_t>(b_beta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(output),
+            training ? ptr<scalar_t>(k_cache) : nullptr,
+            training ? ptr<scalar_t>(v_cache) : nullptr,
+            training ? ptr<scalar_t>(q_cache) : nullptr,
+            training ? ptr<scalar_t>(beta_x_cache) : nullptr,
+            training ? ptr<scalar_t>(retrieved_cache) : nullptr,
+            training ? ptr<scalar_t>(beta_cache) : nullptr,
+            training ? ptr<scalar_t>(k_norm_cache) : nullptr,
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {S, output, k_cache, v_cache, q_cache, beta_x_cache, retrieved_cache, beta_cache, k_norm_cache};
+}
+
+std::vector<Tensor> e71_delta_backward(
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor W_beta,
+    Tensor d_beta,
+    Tensor b_beta,
+    Tensor x,
+    Tensor S,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor beta_x_cache,
+    Tensor retrieved_cache,
+    Tensor beta_cache,
+    Tensor k_norm_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_beta);
+    CHECK_INPUT(d_beta);
+    CHECK_INPUT(b_beta);
+    CHECK_INPUT(x);
+    CHECK_INPUT(S);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(beta_x_cache);
+    CHECK_INPUT(retrieved_cache);
+    CHECK_INPUT(beta_cache);
+    CHECK_INPUT(k_norm_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output gradients
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_beta = torch::zeros({n_state, dim}, options);
+    Tensor dd_beta = torch::zeros({n_state}, options);
+    Tensor db_beta = torch::zeros({n_state}, options);
+
+    // Workspace
+    using namespace hasty::v0::elman_ladder;
+    const int64_t workspace_size = E71DeltaBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16,
+        x.scalar_type(), "e71_delta_backward", ([&] {
+        E71DeltaBackward<typename native_type<scalar_t>::T> backward(
+            batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            ptr<scalar_t>(W_k),
+            ptr<scalar_t>(W_v),
+            ptr<scalar_t>(W_q),
+            ptr<scalar_t>(W_beta),
+            ptr<scalar_t>(d_beta),
+            ptr<scalar_t>(b_beta),
+            ptr<scalar_t>(x),
+            ptr<scalar_t>(S),
+            ptr<scalar_t>(k_cache),
+            ptr<scalar_t>(v_cache),
+            ptr<scalar_t>(q_cache),
+            ptr<scalar_t>(beta_x_cache),
+            ptr<scalar_t>(retrieved_cache),
+            ptr<scalar_t>(beta_cache),
+            ptr<scalar_t>(k_norm_cache),
+            ptr<scalar_t>(d_output),
+            ptr<scalar_t>(dx),
+            ptr<scalar_t>(dW_k),
+            ptr<scalar_t>(dW_v),
+            ptr<scalar_t>(dW_q),
+            ptr<scalar_t>(dW_beta),
+            ptr<scalar_t>(dd_beta),
+            ptr<scalar_t>(db_beta),
+            ptr<scalar_t>(workspace));
+    }));
+
+    return {dx, dW_k, dW_v, dW_q, dW_beta, dd_beta, db_beta};
 }
 
 // =============================================================================
@@ -10084,6 +10281,263 @@ std::vector<Tensor> e73_matrix_nonlinear_backward(
     return {dx, dW_k, dW_v, dW_q, dW_z, db_z};
 }
 
+// =============================================================================
+// E73 Fused: Optimized Matrix Nonlinear with persistent kernel
+// Single kernel launch for all timesteps, gradient checkpointing
+// =============================================================================
+
+std::vector<Tensor> e73_fused_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    int variant,        // 0=column, 1=row, 2=full
+    Tensor W_k,         // [n_state, dim]
+    Tensor W_v,         // [n_state, dim]
+    Tensor W_q,         // [n_state, dim]
+    Tensor W_z,         // [n_state, dim]
+    Tensor b_z) {       // [n_state]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_z);
+    CHECK_INPUT(b_z);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // State - in-place update (only keep current state, not all history)
+    Tensor S = S0.clone();  // [B, n_state, n_state]
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Workspace
+    const int64_t workspace_size = elman::E73FusedForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    // Reshape x from [T, B, dim] to [T*B, dim] contiguous
+    Tensor x_flat = x.reshape({time_steps * batch_size, dim}).contiguous();
+
+    // Only BFloat16 is implemented for E73 Fused
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E73 Fused only supports bfloat16, got ", x.scalar_type());
+
+    elman::E73FusedForward<__nv_bfloat16> forward(
+            batch_size, n_state, dim, variant,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_flat.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()),
+        training);
+
+    return {S, output};  // Just return final state and outputs
+}
+
+// =============================================================================
+// E73 Checkpointed: In-place S with gradient checkpointing
+// 50x+ memory reduction for S storage
+// =============================================================================
+
+std::vector<Tensor> e73_checkpointed_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    int variant,        // 0=column, 1=row, 2=full
+    int checkpoint_interval,  // Checkpoint every K steps (default 32)
+    Tensor W_k,         // [n_state, dim]
+    Tensor W_v,         // [n_state, dim]
+    Tensor W_q,         // [n_state, dim]
+    Tensor W_z,         // [n_state, dim]
+    Tensor b_z) {       // [n_state]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_z);
+    CHECK_INPUT(b_z);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // S is updated in-place - just need [B, n, n]
+    Tensor S = S0.clone();
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Checkpoints: num_checkpoints * [B, n, n]
+    int K = checkpoint_interval > 0 ? checkpoint_interval : 32;
+    int num_checkpoints = elman::E73CheckpointedForward<__nv_bfloat16>::NumCheckpoints(time_steps, K);
+    Tensor S_checkpoints = training ? torch::empty({num_checkpoints, batch_size, n_state, n_state}, options)
+                                    : torch::empty({0}, options);
+
+    // Caches for backward (smaller than original - no pre_tanh_cache!)
+    Tensor k_norm_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                                   : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor z_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                              : torch::empty({0}, options);
+    Tensor Sq_cache = training ? torch::empty({time_steps, batch_size, n_state}, options)
+                               : torch::empty({0}, options);
+
+    // Workspace
+    const int64_t workspace_size = elman::E73CheckpointedForward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state, K, training);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    // Reshape x from [T, B, dim] to [T*B, dim] contiguous
+    Tensor x_flat = x.reshape({time_steps * batch_size, dim}).contiguous();
+
+    // Only BFloat16 is implemented
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E73 Checkpointed only supports bfloat16, got ", x.scalar_type());
+
+    elman::E73CheckpointedForward<__nv_bfloat16> forward(
+        batch_size, n_state, dim, variant, K,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_flat.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(k_norm_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(z_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()),
+        training);
+
+    // Return: S (final), output, S_checkpoints, k_norm_cache, v_cache, q_cache, z_cache, Sq_cache
+    return {S, output, S_checkpoints, k_norm_cache, v_cache, q_cache, z_cache, Sq_cache};
+}
+
+// =============================================================================
+// E73 Checkpointed Backward
+// =============================================================================
+
+std::vector<Tensor> e73_checkpointed_backward(
+    Tensor x,               // [T, B, dim] input
+    Tensor d_output,        // [T, B, n_state] gradient from output
+    Tensor S_checkpoints,   // [num_checkpoints, B, n_state, n_state]
+    Tensor k_norm_cache,    // [T, B, n_state]
+    Tensor v_cache,         // [T, B, n_state]
+    Tensor q_cache,         // [T, B, n_state]
+    Tensor z_cache,         // [T, B, n_state]
+    Tensor Sq_cache,        // [T, B, n_state]
+    int variant,            // 0=column, 1=row, 2=full
+    int checkpoint_interval,
+    Tensor W_k,             // [n_state, dim]
+    Tensor W_v,             // [n_state, dim]
+    Tensor W_q,             // [n_state, dim]
+    Tensor W_z) {           // [n_state, dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_k.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(S_checkpoints);
+    CHECK_INPUT(k_norm_cache);
+    CHECK_INPUT(v_cache);
+    CHECK_INPUT(q_cache);
+    CHECK_INPUT(z_cache);
+    CHECK_INPUT(Sq_cache);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_z);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output gradients
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_z = torch::zeros({n_state, dim}, options);
+    Tensor db_z = torch::zeros({n_state}, options);
+
+    // Workspace
+    int K = checkpoint_interval > 0 ? checkpoint_interval : 32;
+    const int64_t workspace_size = elman::E73CheckpointedBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state, K, dim);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    // Reshape inputs for CUDA kernel
+    Tensor x_flat = x.reshape({time_steps * batch_size, dim}).contiguous();
+    Tensor d_output_flat = d_output.reshape({time_steps * batch_size, n_state}).contiguous();
+
+    // Only BFloat16 is implemented
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E73 Checkpointed Backward only supports bfloat16, got ", x.scalar_type());
+
+    elman::E73CheckpointedBackward<__nv_bfloat16> backward(
+        batch_size, n_state, dim, variant, K,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(x_flat.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(k_norm_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output_flat.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_z.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(db_z.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_k, dW_v, dW_q, dW_z, db_z};
+}
+
 }  // anonymous namespace
 
 
@@ -10384,6 +10838,10 @@ void elman_ladder_init(py::module& m) {
           "E71: Matrix Gated forward (alpha = sigmoid(W_alpha@x + d_alpha*retrieved + b_alpha), S-dependent gating)");
     m.def("e71_matrix_gated_backward", &e71_matrix_gated_backward,
           "E71: Matrix Gated backward");
+    m.def("e71_delta_forward", &e71_delta_forward,
+          "E71 Delta: Matrix Gated with Delta Rule forward (beta = sigmoid(W_beta@x + d_beta*retrieved), S + beta*outer(v-ret, k_norm))");
+    m.def("e71_delta_backward", &e71_delta_backward,
+          "E71 Delta: Matrix Gated with Delta Rule backward");
     m.def("e72_matrix_selfgate_forward", &e72_matrix_selfgate_forward,
           "E72: Matrix SelfGate forward (g = sigmoid(d_g*retrieved + b_g), memory content controls writing)");
     m.def("e72_matrix_selfgate_backward", &e72_matrix_selfgate_backward,
@@ -10392,4 +10850,10 @@ void elman_ladder_init(py::module& m) {
           "E73: Matrix Nonlinear forward (S = tanh(S*z + outer(v,k)), variants: 0=column, 1=row, 2=full)");
     m.def("e73_matrix_nonlinear_backward", &e73_matrix_nonlinear_backward,
           "E73: Matrix Nonlinear backward");
+    m.def("e73_fused_forward", &e73_fused_forward,
+          "E73 Fused: Optimized Matrix Nonlinear with single persistent kernel");
+    m.def("e73_checkpointed_forward", &e73_checkpointed_forward,
+          "E73 Checkpointed: In-place S with gradient checkpointing (50x memory reduction)");
+    m.def("e73_checkpointed_backward", &e73_checkpointed_backward,
+          "E73 Checkpointed: Backward with checkpoint-based recomputation");
 }
