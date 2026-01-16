@@ -6802,6 +6802,113 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E74 Full Matrix: Full matrix state with E74's delta rule (NOT E70's decay!)
+// State S is [B, n_state, n_state] - O(n²) capacity
+// Update: S = tanh(S + outer(v - S@k, k))  -- delta rule, NO DECAY
+// Output: (S @ q) * silu(S @ q)
+// =============================================================================
+
+template<typename T>
+struct E74FullMatrixForward {
+    E74FullMatrixForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,   // 0=tied_kvq, 2=no_z
+        bool use_tanh,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,    // [n_state, dim] for tied_kvq
+        const T* W_k,      // [n_state, dim] for no_z
+        const T* W_v,      // [n_state, dim] for no_z
+        const T* W_q,      // [n_state, dim] for no_z
+        const T* x,        // [T, B, dim]
+        T* S,              // [B, n_state, n_state]
+        T* output,         // [T, B, n_state]
+        T* k_cache,        // [T, B, n_state]
+        T* v_cache,        // [T, B, n_state] (only for no_z)
+        T* q_cache,        // [T, B, n_state] (only for no_z)
+        T* S_cache,        // [T+1, B, n_state, n_state]
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int proj_type) {
+        int64_t size = 0;
+        size += steps * batch_size * n_state * sizeof(T);
+        if (proj_type != 0) {
+            size += 2 * steps * batch_size * n_state * sizeof(T);
+        }
+        size += (steps + 1) * batch_size * n_state * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74FullMatrixBackward {
+    E74FullMatrixBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* x,
+        const T* S_checkpoints,  // [num_checkpoints, B, n_state, n_state]
+        const T* Sq_cache,       // [T, B, n_state]
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_kvq,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // Workspace for d_k accumulation
+        int64_t size = steps * batch_size * n_state * sizeof(T);
+        // For n_state >= 96, add state workspace for global memory kernel
+        // state_workspace: [B, 3, n_state, n_state] in float32
+        if (n_state >= 96) {
+            size += batch_size * 3 * n_state * n_state * sizeof(float);
+        }
+        return size;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H
