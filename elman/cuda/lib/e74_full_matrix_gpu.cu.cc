@@ -30,9 +30,10 @@ namespace elman {
 // ============================================================================
 // Forward Kernel - Full Matrix State with Checkpointing (all projection types)
 // proj_type: 0=tied_kvq (k=v=q), 1=tied_kq (k=q, v separate), 2=no_z (k,v,q separate)
+// USE_TANH: 0=linear (identity), 1=tanh nonlinearity
 // ============================================================================
 
-template<int N_STATE, int PROJ_TYPE>
+template<int N_STATE, int PROJ_TYPE, int USE_TANH>
 __global__ void E74FullMatrixForwardKernel_BF16_General(
     int T,
     int B,
@@ -119,13 +120,17 @@ __global__ void E74FullMatrixForwardKernel_BF16_General(
         }
         __syncthreads();
 
-        // Update state: S = tanh(S + outer(v - retrieved, k))
+        // Update state: S = f(S + outer(v - retrieved, k)) where f = tanh or identity
         for (int i = tid; i < n2; i += blockDim.x) {
             int row = i / N_STATE;
             int col = i % N_STATE;
             float delta_i = v_shared[row] - retrieved[row];
             float update = S_shared[i] + delta_i * k_shared[col];
-            S_shared[i] = tanhf(update);
+            if (USE_TANH) {
+                S_shared[i] = tanhf(update);
+            } else {
+                S_shared[i] = update;  // Linear: identity function
+            }
         }
         __syncthreads();
 
@@ -1272,6 +1277,541 @@ __global__ void E74FullMatrixBackwardKernel_GlobalMem(
 
 
 // ============================================================================
+// Backward Kernel - no_z projection (separate k, v, q)
+// Template: N_STATE, USE_TANH (0=linear, 1=tanh)
+//
+// Forward (no_z): k_norm = k / ||k||, retrieved = S @ k_norm
+//                 delta = v - retrieved (v separate from k!)
+//                 S = f(S + outer(delta, k_norm)) where f = tanh or identity
+//                 Sq = S @ q (q separate from k!)
+//                 out = Sq * silu(Sq)
+// ============================================================================
+
+template<int N_STATE, int USE_TANH>
+__global__ void E74FullMatrixBackwardKernel_NoZ(
+    int T,
+    int B,
+    const __nv_bfloat16* __restrict__ k_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ v_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ q_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ S_checkpoints,// [num_checkpoints, B, N_STATE, N_STATE]
+    const __nv_bfloat16* __restrict__ Sq_cache,     // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ d_output,     // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_k_all,            // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_v_all,            // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_q_all,            // [T, B, N_STATE]
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    extern __shared__ float shared_mem[];
+    float* S_prev = shared_mem;                       // [N_STATE * N_STATE]
+    float* S_curr = S_prev + N_STATE * N_STATE;       // [N_STATE * N_STATE]
+    float* dS = S_curr + N_STATE * N_STATE;           // [N_STATE * N_STATE]
+    float* k_raw = dS + N_STATE * N_STATE;            // [N_STATE]
+    float* v_raw = k_raw + N_STATE;                   // [N_STATE]
+    float* q_raw = v_raw + N_STATE;                   // [N_STATE]
+    float* k_norm = q_raw + N_STATE;                  // [N_STATE]
+    float* delta = k_norm + N_STATE;                  // [N_STATE]
+    float* retrieved = delta + N_STATE;               // [N_STATE]
+    float* d_k_raw = retrieved + N_STATE;             // [N_STATE]
+    float* d_v_raw = d_k_raw + N_STATE;               // [N_STATE]
+    float* d_q_raw = d_v_raw + N_STATE;               // [N_STATE]
+    float* d_Sq_shared = d_q_raw + N_STATE;           // [N_STATE]
+    float* d_delta = d_Sq_shared + N_STATE;           // [N_STATE]
+    float* d_k_norm = d_delta + N_STATE;              // [N_STATE]
+
+    int tid = threadIdx.x;
+    int n2 = N_STATE * N_STATE;
+
+    // Initialize dS to zero
+    for (int i = tid; i < n2; i += blockDim.x) {
+        dS[i] = 0.0f;
+    }
+    __syncthreads();
+
+    int num_segments = (T + checkpoint_interval - 1) / checkpoint_interval;
+
+    for (int seg = num_segments - 1; seg >= 0; seg--) {
+        int t_start = seg * checkpoint_interval;
+        int t_end = min(t_start + checkpoint_interval, T);
+
+        // ====== BACKWARD through segment ======
+        for (int t = t_end - 1; t >= t_start; t--) {
+            // Reload checkpoint and recompute to timestep t
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S_prev[i] = __bfloat162float(S_checkpoints[seg * B * n2 + b * n2 + i]);
+            }
+            __syncthreads();
+
+            // Recompute forward to step t
+            for (int tt = t_start; tt <= t; tt++) {
+                if (tid < N_STATE) {
+                    k_raw[tid] = __bfloat162float(k_all[tt * B * N_STATE + b * N_STATE + tid]);
+                    v_raw[tid] = __bfloat162float(v_all[tt * B * N_STATE + b * N_STATE + tid]);
+                    q_raw[tid] = __bfloat162float(q_all[tt * B * N_STATE + b * N_STATE + tid]);
+                }
+                __syncthreads();
+
+                // Normalize k
+                __shared__ float k_norm_val_fwd;
+                if (tid == 0) {
+                    float sum_sq = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) sum_sq += k_raw[i] * k_raw[i];
+                    k_norm_val_fwd = sqrtf(sum_sq) + 1e-6f;
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    k_norm[tid] = k_raw[tid] / k_norm_val_fwd;
+                }
+                __syncthreads();
+
+                // retrieved = S_prev @ k_norm
+                if (tid < N_STATE) {
+                    float sum = 0.0f;
+                    for (int j = 0; j < N_STATE; j++) {
+                        sum += S_prev[tid * N_STATE + j] * k_norm[j];
+                    }
+                    retrieved[tid] = sum;
+                }
+                __syncthreads();
+
+                // delta = v - retrieved (v, not k!)
+                if (tid < N_STATE) {
+                    delta[tid] = v_raw[tid] - retrieved[tid];
+                }
+                __syncthreads();
+
+                // S_curr = f(S_prev + outer(delta, k_norm))
+                for (int i = tid; i < n2; i += blockDim.x) {
+                    int row = i / N_STATE;
+                    int col = i % N_STATE;
+                    float pre_nonlin = S_prev[i] + delta[row] * k_norm[col];
+                    if (USE_TANH) {
+                        S_curr[i] = tanhf(pre_nonlin);
+                    } else {
+                        S_curr[i] = pre_nonlin;  // Linear: just pass through
+                    }
+                }
+                __syncthreads();
+
+                if (tt < t) {
+                    // Copy S_curr to S_prev for next iteration
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        S_prev[i] = S_curr[i];
+                    }
+                    __syncthreads();
+                }
+            }
+
+            // ====== BACKWARD at timestep t ======
+            __shared__ float k_norm_val_t;
+            if (tid == 0) {
+                float sum_sq = 0.0f;
+                for (int i = 0; i < N_STATE; i++) sum_sq += k_raw[i] * k_raw[i];
+                k_norm_val_t = sqrtf(sum_sq) + 1e-6f;
+            }
+            __syncthreads();
+
+            // Initialize gradients
+            if (tid < N_STATE) {
+                d_k_raw[tid] = 0.0f;
+                d_v_raw[tid] = 0.0f;
+                d_q_raw[tid] = 0.0f;
+            }
+            __syncthreads();
+
+            // Step 1: d_Sq from self-gating output
+            if (tid < N_STATE) {
+                float Sq = __bfloat162float(Sq_cache[t * B * N_STATE + b * N_STATE + tid]);
+                float d_out = __bfloat162float(d_output[t * B * N_STATE + b * N_STATE + tid]);
+                float sig = 1.0f / (1.0f + expf(-Sq));
+                // out = Sq * Sq * sig, d_out/d_Sq = 2*Sq*sig + Sq²*sig*(1-sig)
+                float d_Sq = d_out * (2.0f * Sq * sig + Sq * Sq * sig * (1.0f - sig));
+                d_Sq_shared[tid] = d_Sq;
+            }
+            __syncthreads();
+
+            // Step 2: dS += outer(d_Sq, q) from Sq = S @ q
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                dS[i] += d_Sq_shared[row] * q_raw[col];
+            }
+            __syncthreads();
+
+            // Step 3: d_q = S_curr^T @ d_Sq
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S_curr[i * N_STATE + tid] * d_Sq_shared[i];
+                }
+                d_q_raw[tid] = sum;
+            }
+            __syncthreads();
+
+            // Step 4-6: Nonlinearity gradient and d_delta
+            if (tid < N_STATE) {
+                float d_delta_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float d_pre_nonlin;
+                    if (USE_TANH) {
+                        d_pre_nonlin = dS[tid * N_STATE + j] * (1.0f - S_curr[tid * N_STATE + j] * S_curr[tid * N_STATE + j]);
+                    } else {
+                        d_pre_nonlin = dS[tid * N_STATE + j];  // Linear: gradient passes through
+                    }
+                    d_delta_local += d_pre_nonlin * k_norm[j];
+                }
+                d_delta[tid] = d_delta_local;
+            }
+            __syncthreads();
+
+            // Step 7: d_k_norm = sum over rows of (d_pre_nonlin * delta)
+            if (tid < N_STATE) {
+                float d_k_norm_local = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float d_pre_nonlin;
+                    if (USE_TANH) {
+                        d_pre_nonlin = dS[i * N_STATE + tid] * (1.0f - S_curr[i * N_STATE + tid] * S_curr[i * N_STATE + tid]);
+                    } else {
+                        d_pre_nonlin = dS[i * N_STATE + tid];
+                    }
+                    d_k_norm_local += d_pre_nonlin * delta[i];
+                }
+                d_k_norm[tid] = d_k_norm_local;
+            }
+            __syncthreads();
+
+            // Step 8: d_v = d_delta (from delta = v - retrieved)
+            if (tid < N_STATE) {
+                d_v_raw[tid] = d_delta[tid];
+            }
+            __syncthreads();
+
+            // Step 9-11: d_retrieved = -d_delta, d_k_norm += S_prev^T @ (-d_delta)
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S_prev[i * N_STATE + tid] * (-d_delta[i]);
+                }
+                d_k_norm[tid] += sum;
+            }
+            __syncthreads();
+
+            // Step 12: d_k_from_norm = d_k_norm/||k|| - k*(k·d_k_norm)/||k||³
+            {
+                __shared__ float k_dot_dk;
+                if (tid == 0) {
+                    k_dot_dk = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_dot_dk += k_raw[i] * d_k_norm[i];
+                    }
+                }
+                __syncthreads();
+
+                if (tid < N_STATE) {
+                    float norm = k_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_k_raw[tid] = d_k_norm[tid] / norm - k_raw[tid] * k_dot_dk / norm3;
+                }
+                __syncthreads();
+            }
+
+            // Write gradients
+            if (tid < N_STATE) {
+                d_k_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_k_raw[tid]);
+                d_v_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_v_raw[tid]);
+                d_q_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_q_raw[tid]);
+            }
+            __syncthreads();
+
+            // Update dS for next iteration (going backward)
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre_nonlin;
+                if (USE_TANH) {
+                    d_pre_nonlin = dS[i] * (1.0f - S_curr[i] * S_curr[i]);
+                } else {
+                    d_pre_nonlin = dS[i];
+                }
+                dS[i] = d_pre_nonlin + (-d_delta[row]) * k_norm[col];
+            }
+            __syncthreads();
+        }
+    }
+}
+
+
+// ============================================================================
+// Backward Kernel - no_z projection with Global Memory (for n >= 48)
+// Uses global memory for S_prev, S_curr, dS to support larger n_state values
+// Shared memory only for vectors: 14*N_STATE floats
+// ============================================================================
+
+template<int N_STATE, int USE_TANH>
+__global__ void E74FullMatrixBackwardKernel_NoZ_GlobalMem(
+    int T,
+    int B,
+    const __nv_bfloat16* __restrict__ k_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ v_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ q_all,        // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ S_checkpoints,// [num_checkpoints, B, N_STATE, N_STATE]
+    const __nv_bfloat16* __restrict__ Sq_cache,     // [T, B, N_STATE]
+    const __nv_bfloat16* __restrict__ d_output,     // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_k_all,            // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_v_all,            // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ d_q_all,            // [T, B, N_STATE]
+    float* __restrict__ state_workspace,            // [B, 3, N_STATE, N_STATE] for S_prev, S_curr, dS
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    // Global memory for state matrices (per batch element)
+    int n2 = N_STATE * N_STATE;
+    float* S_prev = state_workspace + b * 3 * n2;
+    float* S_curr = S_prev + n2;
+    float* dS = S_curr + n2;
+
+    // Shared memory only for vectors (14 * N_STATE floats)
+    extern __shared__ float shared_mem[];
+    float* k_raw = shared_mem;                        // [N_STATE]
+    float* v_raw = k_raw + N_STATE;                   // [N_STATE]
+    float* q_raw = v_raw + N_STATE;                   // [N_STATE]
+    float* k_norm = q_raw + N_STATE;                  // [N_STATE]
+    float* delta = k_norm + N_STATE;                  // [N_STATE]
+    float* retrieved = delta + N_STATE;               // [N_STATE]
+    float* d_k_raw = retrieved + N_STATE;             // [N_STATE]
+    float* d_v_raw = d_k_raw + N_STATE;               // [N_STATE]
+    float* d_q_raw = d_v_raw + N_STATE;               // [N_STATE]
+    float* d_Sq_shared = d_q_raw + N_STATE;           // [N_STATE]
+    float* d_delta = d_Sq_shared + N_STATE;           // [N_STATE]
+    float* d_k_norm = d_delta + N_STATE;              // [N_STATE]
+
+    int tid = threadIdx.x;
+
+    // Initialize dS to zero
+    for (int i = tid; i < n2; i += blockDim.x) {
+        dS[i] = 0.0f;
+    }
+    __syncthreads();
+
+    int num_segments = (T + checkpoint_interval - 1) / checkpoint_interval;
+
+    for (int seg = num_segments - 1; seg >= 0; seg--) {
+        int t_start = seg * checkpoint_interval;
+        int t_end = min(t_start + checkpoint_interval, T);
+
+        // ====== BACKWARD through segment ======
+        for (int t = t_end - 1; t >= t_start; t--) {
+            // Reload checkpoint and recompute to timestep t
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S_prev[i] = __bfloat162float(S_checkpoints[seg * B * n2 + b * n2 + i]);
+            }
+            __syncthreads();
+
+            // Recompute forward to step t
+            for (int tt = t_start; tt <= t; tt++) {
+                if (tid < N_STATE) {
+                    k_raw[tid] = __bfloat162float(k_all[tt * B * N_STATE + b * N_STATE + tid]);
+                    v_raw[tid] = __bfloat162float(v_all[tt * B * N_STATE + b * N_STATE + tid]);
+                    q_raw[tid] = __bfloat162float(q_all[tt * B * N_STATE + b * N_STATE + tid]);
+                }
+                __syncthreads();
+
+                // Normalize k
+                __shared__ float k_norm_val_fwd;
+                if (tid == 0) {
+                    float sum_sq = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) sum_sq += k_raw[i] * k_raw[i];
+                    k_norm_val_fwd = sqrtf(sum_sq) + 1e-6f;
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    k_norm[tid] = k_raw[tid] / k_norm_val_fwd;
+                }
+                __syncthreads();
+
+                // retrieved = S_prev @ k_norm
+                if (tid < N_STATE) {
+                    float sum = 0.0f;
+                    for (int j = 0; j < N_STATE; j++) {
+                        sum += S_prev[tid * N_STATE + j] * k_norm[j];
+                    }
+                    retrieved[tid] = sum;
+                }
+                __syncthreads();
+
+                // delta = v - retrieved (v, not k!)
+                if (tid < N_STATE) {
+                    delta[tid] = v_raw[tid] - retrieved[tid];
+                }
+                __syncthreads();
+
+                // S_curr = f(S_prev + outer(delta, k_norm))
+                for (int i = tid; i < n2; i += blockDim.x) {
+                    int row = i / N_STATE;
+                    int col = i % N_STATE;
+                    float pre_nonlin = S_prev[i] + delta[row] * k_norm[col];
+                    if (USE_TANH) {
+                        S_curr[i] = tanhf(pre_nonlin);
+                    } else {
+                        S_curr[i] = pre_nonlin;  // Linear: just pass through
+                    }
+                }
+                __syncthreads();
+
+                if (tt < t) {
+                    // Copy S_curr to S_prev for next iteration
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        S_prev[i] = S_curr[i];
+                    }
+                    __syncthreads();
+                }
+            }
+
+            // ====== BACKWARD at timestep t ======
+            __shared__ float k_norm_val_t;
+            if (tid == 0) {
+                float sum_sq = 0.0f;
+                for (int i = 0; i < N_STATE; i++) sum_sq += k_raw[i] * k_raw[i];
+                k_norm_val_t = sqrtf(sum_sq) + 1e-6f;
+            }
+            __syncthreads();
+
+            // Initialize gradients
+            if (tid < N_STATE) {
+                d_k_raw[tid] = 0.0f;
+                d_v_raw[tid] = 0.0f;
+                d_q_raw[tid] = 0.0f;
+            }
+            __syncthreads();
+
+            // Step 1: d_Sq from self-gating output
+            if (tid < N_STATE) {
+                float Sq = __bfloat162float(Sq_cache[t * B * N_STATE + b * N_STATE + tid]);
+                float d_out = __bfloat162float(d_output[t * B * N_STATE + b * N_STATE + tid]);
+                float sig = 1.0f / (1.0f + expf(-Sq));
+                // out = Sq * Sq * sig, d_out/d_Sq = 2*Sq*sig + Sq²*sig*(1-sig)
+                float d_Sq = d_out * (2.0f * Sq * sig + Sq * Sq * sig * (1.0f - sig));
+                d_Sq_shared[tid] = d_Sq;
+            }
+            __syncthreads();
+
+            // Step 2: dS += outer(d_Sq, q) from Sq = S @ q
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                dS[i] += d_Sq_shared[row] * q_raw[col];
+            }
+            __syncthreads();
+
+            // Step 3: d_q = S_curr^T @ d_Sq
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S_curr[i * N_STATE + tid] * d_Sq_shared[i];
+                }
+                d_q_raw[tid] = sum;
+            }
+            __syncthreads();
+
+            // Step 4-6: Nonlinearity gradient and d_delta
+            if (tid < N_STATE) {
+                float d_delta_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float d_pre_nonlin;
+                    if (USE_TANH) {
+                        d_pre_nonlin = dS[tid * N_STATE + j] * (1.0f - S_curr[tid * N_STATE + j] * S_curr[tid * N_STATE + j]);
+                    } else {
+                        d_pre_nonlin = dS[tid * N_STATE + j];  // Linear: gradient passes through
+                    }
+                    d_delta_local += d_pre_nonlin * k_norm[j];
+                }
+                d_delta[tid] = d_delta_local;
+            }
+            __syncthreads();
+
+            // Step 7: d_k_norm = sum over rows of (d_pre_nonlin * delta)
+            if (tid < N_STATE) {
+                float d_k_norm_local = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float d_pre_nonlin;
+                    if (USE_TANH) {
+                        d_pre_nonlin = dS[i * N_STATE + tid] * (1.0f - S_curr[i * N_STATE + tid] * S_curr[i * N_STATE + tid]);
+                    } else {
+                        d_pre_nonlin = dS[i * N_STATE + tid];
+                    }
+                    d_k_norm_local += d_pre_nonlin * delta[i];
+                }
+                d_k_norm[tid] = d_k_norm_local;
+            }
+            __syncthreads();
+
+            // Step 8: d_v = d_delta (from delta = v - retrieved)
+            if (tid < N_STATE) {
+                d_v_raw[tid] = d_delta[tid];
+            }
+            __syncthreads();
+
+            // Step 9-11: d_retrieved = -d_delta, d_k_norm += S_prev^T @ (-d_delta)
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S_prev[i * N_STATE + tid] * (-d_delta[i]);
+                }
+                d_k_norm[tid] += sum;
+            }
+            __syncthreads();
+
+            // Step 12: d_k_from_norm = d_k_norm/||k|| - k*(k·d_k_norm)/||k||³
+            {
+                __shared__ float k_dot_dk;
+                if (tid == 0) {
+                    k_dot_dk = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_dot_dk += k_raw[i] * d_k_norm[i];
+                    }
+                }
+                __syncthreads();
+
+                if (tid < N_STATE) {
+                    float norm = k_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_k_raw[tid] = d_k_norm[tid] / norm - k_raw[tid] * k_dot_dk / norm3;
+                }
+                __syncthreads();
+            }
+
+            // Write gradients
+            if (tid < N_STATE) {
+                d_k_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_k_raw[tid]);
+                d_v_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_v_raw[tid]);
+                d_q_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_q_raw[tid]);
+            }
+            __syncthreads();
+
+            // Update dS for next iteration (going backward)
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre_nonlin;
+                if (USE_TANH) {
+                    d_pre_nonlin = dS[i] * (1.0f - S_curr[i] * S_curr[i]);
+                } else {
+                    d_pre_nonlin = dS[i];
+                }
+                dS[i] = d_pre_nonlin + (-d_delta[row]) * k_norm[col];
+            }
+            __syncthreads();
+        }
+    }
+}
+
+
+// ============================================================================
 // Host Functions
 // ============================================================================
 
@@ -1379,9 +1919,9 @@ void E74FullMatrixForward<DataT>::Run(
     DataT* s_checkpoints = S_cache;
     DataT* sq_cache = S_cache + num_checkpoints * B * n * n;
 
-    // Dispatch to appropriate kernel based on proj_type and n_state
-    #define DISPATCH_KERNEL(N_STATE, PROJ_TYPE) \
-        E74FullMatrixForwardKernel_BF16_General<N_STATE, PROJ_TYPE><<<B, threads, shared_size, stream_>>>( \
+    // Dispatch to appropriate kernel based on proj_type, n_state, and use_tanh
+    #define DISPATCH_KERNEL(N_STATE, PROJ_TYPE, USE_TANH) \
+        E74FullMatrixForwardKernel_BF16_General<N_STATE, PROJ_TYPE, USE_TANH><<<B, threads, shared_size, stream_>>>( \
             T_steps, B, \
             (const __nv_bfloat16*)k_cache, \
             (const __nv_bfloat16*)v_cache, \
@@ -1390,27 +1930,50 @@ void E74FullMatrixForward<DataT>::Run(
             (__nv_bfloat16*)s_checkpoints, (__nv_bfloat16*)sq_cache, \
             CHECKPOINT_INTERVAL)
 
+    #define DISPATCH_BY_SIZE(PROJ_TYPE) \
+        if (use_tanh_) { \
+            if (n == 1) { DISPATCH_KERNEL(1, PROJ_TYPE, 1); } \
+            else if (n == 2) { DISPATCH_KERNEL(2, PROJ_TYPE, 1); } \
+            else if (n == 4) { DISPATCH_KERNEL(4, PROJ_TYPE, 1); } \
+            else if (n == 8) { DISPATCH_KERNEL(8, PROJ_TYPE, 1); } \
+            else if (n == 16) { DISPATCH_KERNEL(16, PROJ_TYPE, 1); } \
+            else if (n == 24) { DISPATCH_KERNEL(24, PROJ_TYPE, 1); } \
+            else if (n == 32) { DISPATCH_KERNEL(32, PROJ_TYPE, 1); } \
+            else if (n == 48) { DISPATCH_KERNEL(48, PROJ_TYPE, 1); } \
+            else if (n == 64) { DISPATCH_KERNEL(64, PROJ_TYPE, 1); } \
+            else if (n == 96) { DISPATCH_KERNEL(96, PROJ_TYPE, 1); } \
+            else if (n == 128) { DISPATCH_KERNEL(128, PROJ_TYPE, 1); } \
+            else if (n == 192) { DISPATCH_KERNEL(192, PROJ_TYPE, 1); } \
+            else if (n == 256) { DISPATCH_KERNEL(256, PROJ_TYPE, 1); } \
+        } else { \
+            if (n == 1) { DISPATCH_KERNEL(1, PROJ_TYPE, 0); } \
+            else if (n == 2) { DISPATCH_KERNEL(2, PROJ_TYPE, 0); } \
+            else if (n == 4) { DISPATCH_KERNEL(4, PROJ_TYPE, 0); } \
+            else if (n == 8) { DISPATCH_KERNEL(8, PROJ_TYPE, 0); } \
+            else if (n == 16) { DISPATCH_KERNEL(16, PROJ_TYPE, 0); } \
+            else if (n == 24) { DISPATCH_KERNEL(24, PROJ_TYPE, 0); } \
+            else if (n == 32) { DISPATCH_KERNEL(32, PROJ_TYPE, 0); } \
+            else if (n == 48) { DISPATCH_KERNEL(48, PROJ_TYPE, 0); } \
+            else if (n == 64) { DISPATCH_KERNEL(64, PROJ_TYPE, 0); } \
+            else if (n == 96) { DISPATCH_KERNEL(96, PROJ_TYPE, 0); } \
+            else if (n == 128) { DISPATCH_KERNEL(128, PROJ_TYPE, 0); } \
+            else if (n == 192) { DISPATCH_KERNEL(192, PROJ_TYPE, 0); } \
+            else if (n == 256) { DISPATCH_KERNEL(256, PROJ_TYPE, 0); } \
+        }
+
     if (proj_type_ == 0) {
         // tied_kvq
-        if (n == 32) { DISPATCH_KERNEL(32, 0); }
-        else if (n == 48) { DISPATCH_KERNEL(48, 0); }
-        else if (n == 64) { DISPATCH_KERNEL(64, 0); }
-        else if (n == 96) { DISPATCH_KERNEL(96, 0); }
+        DISPATCH_BY_SIZE(0);
     } else if (proj_type_ == 1) {
         // tied_kq
-        if (n == 32) { DISPATCH_KERNEL(32, 1); }
-        else if (n == 48) { DISPATCH_KERNEL(48, 1); }
-        else if (n == 64) { DISPATCH_KERNEL(64, 1); }
-        else if (n == 96) { DISPATCH_KERNEL(96, 1); }
+        DISPATCH_BY_SIZE(1);
     } else {
         // no_z
-        if (n == 32) { DISPATCH_KERNEL(32, 2); }
-        else if (n == 48) { DISPATCH_KERNEL(48, 2); }
-        else if (n == 64) { DISPATCH_KERNEL(64, 2); }
-        else if (n == 96) { DISPATCH_KERNEL(96, 2); }
+        DISPATCH_BY_SIZE(2);
     }
 
     #undef DISPATCH_KERNEL
+    #undef DISPATCH_BY_SIZE
 }
 
 // E74FullMatrixBackward implementation
@@ -1547,8 +2110,139 @@ void E74FullMatrixBackward<T>::Run(
             CUBLAS_GEMM_DEFAULT
         );
 
+    } else if (proj_type_ == 2) {
+        // no_z: separate k, v, q projections
+        // Allocate d_v, d_q after d_k in workspace
+        T* d_v = d_k + T_steps * B * n;
+        T* d_q = d_v + T_steps * B * n;
+
+        // Zero out d_v, d_q
+        cudaMemsetAsync(d_v, 0, T_steps * B * n * sizeof(T), stream_);
+        cudaMemsetAsync(d_q, 0, T_steps * B * n * sizeof(T), stream_);
+
+        int threads_noz = min(256, n * n);
+
+        // For n >= 48, use global memory kernel to avoid shared memory overflow
+        // Shared memory with 3*n*n: n=48 would need 3*48*48*4 + 14*48*4 = 30,336 bytes (OK)
+        // n=64 needs 3*64*64*4 + 14*64*4 = 52,736 bytes (exceeds 48KB limit)
+        // So use global memory kernel for n >= 48 to be safe
+        if (n >= 48) {
+            // Global memory kernel: shared memory only for 14*n vectors
+            int shared_size_noz_global = 14 * n * sizeof(float);
+            // State workspace comes after d_q: [B, 3, n, n] fp32
+            float* state_workspace_noz = reinterpret_cast<float*>(d_q + T_steps * B * n);
+            // Zero out state workspace
+            cudaMemsetAsync(state_workspace_noz, 0, B * 3 * n * n * sizeof(float), stream_);
+
+            #define DISPATCH_NOZ_BACKWARD_GLOBAL(N_STATE) \
+                if (use_tanh_) { \
+                    E74FullMatrixBackwardKernel_NoZ_GlobalMem<N_STATE, 1><<<B, threads_noz, shared_size_noz_global, stream_>>>( \
+                        T_steps, B, \
+                        (const __nv_bfloat16*)k_cache, \
+                        (const __nv_bfloat16*)v_cache, \
+                        (const __nv_bfloat16*)q_cache, \
+                        (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache, \
+                        (const __nv_bfloat16*)d_output, \
+                        (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v, (__nv_bfloat16*)d_q, \
+                        state_workspace_noz, CHECKPOINT_INTERVAL); \
+                } else { \
+                    E74FullMatrixBackwardKernel_NoZ_GlobalMem<N_STATE, 0><<<B, threads_noz, shared_size_noz_global, stream_>>>( \
+                        T_steps, B, \
+                        (const __nv_bfloat16*)k_cache, \
+                        (const __nv_bfloat16*)v_cache, \
+                        (const __nv_bfloat16*)q_cache, \
+                        (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache, \
+                        (const __nv_bfloat16*)d_output, \
+                        (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v, (__nv_bfloat16*)d_q, \
+                        state_workspace_noz, CHECKPOINT_INTERVAL); \
+                }
+
+            if (n == 48) { DISPATCH_NOZ_BACKWARD_GLOBAL(48); }
+            else if (n == 64) { DISPATCH_NOZ_BACKWARD_GLOBAL(64); }
+            else if (n == 96) { DISPATCH_NOZ_BACKWARD_GLOBAL(96); }
+            else if (n == 128) { DISPATCH_NOZ_BACKWARD_GLOBAL(128); }
+            else if (n == 192) { DISPATCH_NOZ_BACKWARD_GLOBAL(192); }
+            else if (n == 256) { DISPATCH_NOZ_BACKWARD_GLOBAL(256); }
+
+            #undef DISPATCH_NOZ_BACKWARD_GLOBAL
+        } else {
+            // n < 48: use shared memory kernel (fits in 48KB)
+            int shared_size_noz = (3 * n * n + 14 * n) * sizeof(float);
+
+            #define DISPATCH_NOZ_BACKWARD(N_STATE) \
+                if (use_tanh_) { \
+                    E74FullMatrixBackwardKernel_NoZ<N_STATE, 1><<<B, threads_noz, shared_size_noz, stream_>>>( \
+                        T_steps, B, \
+                        (const __nv_bfloat16*)k_cache, \
+                        (const __nv_bfloat16*)v_cache, \
+                        (const __nv_bfloat16*)q_cache, \
+                        (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache, \
+                        (const __nv_bfloat16*)d_output, \
+                        (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v, (__nv_bfloat16*)d_q, \
+                        CHECKPOINT_INTERVAL); \
+                } else { \
+                    E74FullMatrixBackwardKernel_NoZ<N_STATE, 0><<<B, threads_noz, shared_size_noz, stream_>>>( \
+                        T_steps, B, \
+                        (const __nv_bfloat16*)k_cache, \
+                        (const __nv_bfloat16*)v_cache, \
+                        (const __nv_bfloat16*)q_cache, \
+                        (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache, \
+                        (const __nv_bfloat16*)d_output, \
+                        (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v, (__nv_bfloat16*)d_q, \
+                        CHECKPOINT_INTERVAL); \
+                }
+
+            if (n == 1) { DISPATCH_NOZ_BACKWARD(1); }
+            else if (n == 2) { DISPATCH_NOZ_BACKWARD(2); }
+            else if (n == 4) { DISPATCH_NOZ_BACKWARD(4); }
+            else if (n == 8) { DISPATCH_NOZ_BACKWARD(8); }
+            else if (n == 16) { DISPATCH_NOZ_BACKWARD(16); }
+            else if (n == 24) { DISPATCH_NOZ_BACKWARD(24); }
+            else if (n == 32) { DISPATCH_NOZ_BACKWARD(32); }
+
+            #undef DISPATCH_NOZ_BACKWARD
+        }
+
+        // Backprop through projections
+        const float alpha = 1.0f, beta = 0.0f, beta_one = 1.0f;
+
+        // dx = W_k^T @ d_k + W_v^T @ d_v + W_q^T @ d_q
+        // First: dx = W_k^T @ d_k
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            d, T_steps * B, n, &alpha,
+            W_k, CUDA_R_16BF, d, d_k, CUDA_R_16BF, n, &beta,
+            dx, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // dx += W_v^T @ d_v
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            d, T_steps * B, n, &alpha,
+            W_v, CUDA_R_16BF, d, d_v, CUDA_R_16BF, n, &beta_one,
+            dx, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // dx += W_q^T @ d_q
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            d, T_steps * B, n, &alpha,
+            W_q, CUDA_R_16BF, d, d_q, CUDA_R_16BF, n, &beta_one,
+            dx, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // dW_k = d_k @ x^T (accumulated)
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            d, n, T_steps * B, &alpha,
+            x, CUDA_R_16BF, d, d_k, CUDA_R_16BF, n, &beta_one,
+            dW_k, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // dW_v = d_v @ x^T (accumulated)
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            d, n, T_steps * B, &alpha,
+            x, CUDA_R_16BF, d, d_v, CUDA_R_16BF, n, &beta_one,
+            dW_v, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+        // dW_q = d_q @ x^T (accumulated)
+        cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            d, n, T_steps * B, &alpha,
+            x, CUDA_R_16BF, d, d_q, CUDA_R_16BF, n, &beta_one,
+            dW_q, CUDA_R_16BF, d, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
-    // TODO: Add no_z variant
 }
 
 // Explicit instantiations
