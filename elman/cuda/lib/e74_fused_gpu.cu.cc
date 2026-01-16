@@ -451,28 +451,32 @@ void E74FusedBackward<__nv_bfloat16>::Run(
     // SINGLE kernel launch for backward through ALL timesteps!
     // =========================================================================
 
+    // BUG FIX: For TIED_KVQ (proj_type_==0), v=k so v_cache was never filled.
+    // Use k_cache as v_cache in this case.
+    const __nv_bfloat16* v_cache_actual = (proj_type_ == 0) ? k_cache : v_cache;
+
     if (is_delta_) {
         if (use_tanh_) {
             E74FusedBackwardKernel_BF16<true, true><<<num_blocks, block_size, 0, stream_>>>(
                 steps, batch_size_, n, decay_,
-                k_cache, v_cache, s, s_cache, pre_nonlin_cache, d_output,
+                k_cache, v_cache_actual, s, s_cache, pre_nonlin_cache, d_output,
                 d_k_all, d_v_all);
         } else {
             E74FusedBackwardKernel_BF16<false, true><<<num_blocks, block_size, 0, stream_>>>(
                 steps, batch_size_, n, decay_,
-                k_cache, v_cache, s, s_cache, pre_nonlin_cache, d_output,
+                k_cache, v_cache_actual, s, s_cache, pre_nonlin_cache, d_output,
                 d_k_all, d_v_all);
         }
     } else {
         if (use_tanh_) {
             E74FusedBackwardKernel_BF16<true, false><<<num_blocks, block_size, 0, stream_>>>(
                 steps, batch_size_, n, decay_,
-                k_cache, v_cache, s, s_cache, pre_nonlin_cache, d_output,
+                k_cache, v_cache_actual, s, s_cache, pre_nonlin_cache, d_output,
                 d_k_all, d_v_all);
         } else {
             E74FusedBackwardKernel_BF16<false, false><<<num_blocks, block_size, 0, stream_>>>(
                 steps, batch_size_, n, decay_,
-                k_cache, v_cache, s, s_cache, pre_nonlin_cache, d_output,
+                k_cache, v_cache_actual, s, s_cache, pre_nonlin_cache, d_output,
                 d_k_all, d_v_all);
         }
     }
@@ -481,20 +485,31 @@ void E74FusedBackward<__nv_bfloat16>::Run(
     // Batched GEMMs for weight gradients and dx
     // =========================================================================
 
-    if (proj_type_ == 0) {  // TIED_KVQ
-        // dx = d_k @ W_kvq (for tied, d_k accumulates all gradients)
+    if (proj_type_ == 0) {  // TIED_KVQ: k=v share the same projection
+        // BUG FIX: Since k=v from W_kvq @ x, gradient must include BOTH d_k and d_v!
+        // dx = (d_k + d_v) @ W_kvq
         blas<__nv_bfloat16>::gemm(
             blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
             dim_, steps * batch_size_, n,
             &alpha_one, W_kvq, dim_, d_k_all, n,
             &beta_zero, dx, dim_);
+        blas<__nv_bfloat16>::gemm(
+            blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+            dim_, steps * batch_size_, n,
+            &alpha_one, W_kvq, dim_, d_v_all, n,
+            &beta_one, dx, dim_);  // ACCUMULATE d_v contribution
 
-        // dW_kvq = x.T @ d_k
+        // dW_kvq = x.T @ (d_k + d_v)
         blas<__nv_bfloat16>::gemm(
             blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
             dim_, n, steps * batch_size_,
             &alpha_one, x, dim_, d_k_all, n,
             &beta_one, dW_kvq, dim_);
+        blas<__nv_bfloat16>::gemm(
+            blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+            dim_, n, steps * batch_size_,
+            &alpha_one, x, dim_, d_v_all, n,
+            &beta_one, dW_kvq, dim_);  // ACCUMULATE d_v contribution
     }
     else if (proj_type_ == 1) {  // TIED_KQ
         // dx = d_k @ W_kq + d_v @ W_v
