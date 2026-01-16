@@ -76,6 +76,7 @@ class GateType(Enum):
 class UpdateType(Enum):
     DELTA = 'delta'         # S = f(S + outer(v - S@k, k)) - erase before write
     SIMPLE = 'simple'       # S = f(α*S + outer(v, k)) - just decay + write
+    EMA = 'ema'             # S = α*S + (1-α)*outer(v,k) - E61-style interpolation
 
 
 # =============================================================================
@@ -136,6 +137,11 @@ class E74DiagonalCell(nn.Module):
         # Simple update: learnable decay (initialized to ~0.9)
         if update_type == UpdateType.SIMPLE:
             self.log_alpha = nn.Parameter(torch.full((n_state,), -0.1))  # sigmoid → ~0.475
+
+        # EMA update: E61-style per-dimension decay with input-dependence
+        if update_type == UpdateType.EMA:
+            self.W_alpha = nn.Parameter(torch.empty(n_state, dim))
+            self.b_alpha = nn.Parameter(torch.full((n_state,), 2.0))  # bias→1 (preserve)
 
         self._init_weights()
 
@@ -221,6 +227,12 @@ class E74DiagonalCell(nn.Module):
                 # Simple: S = f(α*S + v*k) - no delta rule, just decay + write
                 alpha = torch.sigmoid(self.log_alpha)
                 S_raw = alpha * S + v_t * k_norm
+            elif self.update_type == UpdateType.EMA:
+                # EMA: E61-style input-dependent decay with learned bias toward preserve
+                # α = sigmoid(W_α @ x + b_α) where b_α starts positive (preserve default)
+                alpha = torch.sigmoid(x[t] @ self.W_alpha.T + self.b_alpha)  # [B, n]
+                new_val = v_t * k_norm  # What we'd write
+                S_raw = alpha * S + (1.0 - alpha) * new_val
             else:
                 # Delta rule: S = f(S*(1-k²) + v*k)
                 k_sq = k_norm ** 2
@@ -302,6 +314,11 @@ class E74FullMatrixCell(nn.Module):
         if update_type == UpdateType.SIMPLE:
             self.log_alpha = nn.Parameter(torch.tensor(0.0))  # sigmoid → 0.5
 
+        # EMA update: E61-style per-row decay with input-dependence
+        if update_type == UpdateType.EMA:
+            self.W_alpha = nn.Parameter(torch.empty(n_state, dim))
+            self.b_alpha = nn.Parameter(torch.full((n_state,), 2.0))  # bias→1 (preserve)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -363,6 +380,13 @@ class E74FullMatrixCell(nn.Module):
                 alpha = torch.sigmoid(self.log_alpha)
                 outer = torch.einsum('bi,bj->bij', v_t, k_norm)
                 S_raw = alpha * S + outer
+            elif self.update_type == UpdateType.EMA:
+                # EMA: E61-style input-dependent decay with learned bias toward preserve
+                # α = sigmoid(W_α @ x + b_α) where b_α starts positive (preserve default)
+                alpha = torch.sigmoid(x[t] @ self.W_alpha.T + self.b_alpha)  # [B, n]
+                outer = torch.einsum('bi,bj->bij', v_t, k_norm)  # outer(v, k)
+                # Apply per-row decay: S_raw[b,i,j] = α[b,i] * S[b,i,j] + (1-α[b,i]) * outer[b,i,j]
+                S_raw = alpha.unsqueeze(-1) * S + (1.0 - alpha).unsqueeze(-1) * outer
             else:
                 # Delta rule: S = f(S + outer(v - retrieved, k))
                 # Retrieval (with optional z modulation)
@@ -741,6 +765,162 @@ class E74CUDADiagonalCell(nn.Module):
         return output, s_final
 
 
+class E74FullMatrixFunction(torch.autograd.Function):
+    """Autograd function for E74 Full Matrix CUDA kernel."""
+
+    @staticmethod
+    def forward(ctx, x, S0, proj_type_int, use_tanh, W_kvq, W_k, W_v, W_q, training):
+        results = elman_ladder_cuda.e74_full_matrix_forward(
+            training,
+            x,
+            S0,
+            proj_type_int,
+            use_tanh,
+            W_kvq,
+            W_k,
+            W_v,
+            W_q,
+        )
+
+        # results = [S_final, output, k_cache, v_cache, q_cache, S_checkpoints, Sq_cache]
+        S_final = results[0]
+        output = results[1]
+
+        # Save for backward
+        ctx.save_for_backward(
+            W_kvq, W_k, W_v, W_q, x,
+            results[2],  # k_cache
+            results[3],  # v_cache
+            results[4],  # q_cache
+            results[5],  # S_checkpoints
+            results[6],  # Sq_cache
+        )
+        ctx.proj_type_int = proj_type_int
+        ctx.use_tanh = use_tanh
+
+        return output, S_final
+
+    @staticmethod
+    def backward(ctx, d_output, d_S_final):
+        W_kvq, W_k, W_v, W_q, x, k_cache, v_cache, q_cache, S_checkpoints, Sq_cache = ctx.saved_tensors
+        proj_type_int = ctx.proj_type_int
+        use_tanh = ctx.use_tanh
+
+        results = elman_ladder_cuda.e74_full_matrix_backward(
+            proj_type_int,
+            use_tanh,
+            W_kvq,
+            W_k,
+            W_v,
+            W_q,
+            x,
+            S_checkpoints,
+            Sq_cache,
+            k_cache,
+            v_cache,
+            q_cache,
+            d_output.contiguous(),
+        )
+
+        # results = [dx, dW_kvq, dW_k, dW_v, dW_q]
+        dx = results[0]
+        dW_kvq = results[1] if results[1].numel() > 0 else None
+        dW_k = results[2] if results[2].numel() > 0 else None
+        dW_v = results[3] if results[3].numel() > 0 else None
+        dW_q = results[4] if results[4].numel() > 0 else None
+
+        # Return gradients for: x, S0, proj_type_int, use_tanh, W_kvq, W_k, W_v, W_q, training
+        return dx, None, None, None, dW_kvq, dW_k, dW_v, dW_q, None
+
+
+class E74CUDAFullMatrixCell(nn.Module):
+    """
+    CUDA-backed full matrix state cell using optimized E74 full matrix kernels.
+
+    Uses E74's delta rule: S = tanh(S + outer(v - S@k, k))
+    NOT E70's decay approach.
+
+    Supports:
+    - Projection types: tied_kvq (0), no_z (2)
+    - Nonlinearity: tanh only for now
+    - Gradient checkpointing for memory efficiency
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_state: int,
+        proj_type: ProjType = ProjType.TIED_KVQ,
+        nonlin_type: NonlinType = NonlinType.TANH,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.n_state = n_state
+        self.proj_type = proj_type
+        self.nonlin_type = nonlin_type
+
+        # Map proj_type to int for CUDA kernel
+        # 0=tied_kvq (k=v=q), 1=tied_kq (k=q, v separate), 2=no_z (k,v,q separate)
+        self.proj_type_int = {
+            ProjType.TIED_KVQ: 0,
+            ProjType.TIED_KQ: 1,
+            ProjType.NO_Z: 2,
+        }.get(proj_type, 0)
+
+        self.use_tanh = (nonlin_type == NonlinType.TANH)
+
+        # Create weight tensors based on projection type
+        if proj_type == ProjType.TIED_KVQ:
+            self.W_kvq = nn.Parameter(torch.empty(n_state, dim))
+            self.register_buffer('W_k', torch.empty(0))
+            self.register_buffer('W_v', torch.empty(0))
+            self.register_buffer('W_q', torch.empty(0))
+        elif proj_type == ProjType.TIED_KQ:
+            # tied_kq: k = q, v separate
+            self.register_buffer('W_kvq', torch.empty(0))
+            self.W_k = nn.Parameter(torch.empty(n_state, dim))  # Also used as q
+            self.W_v = nn.Parameter(torch.empty(n_state, dim))
+            self.register_buffer('W_q', torch.empty(0))  # q = k
+        else:
+            # no_z: separate k, v, q
+            self.register_buffer('W_kvq', torch.empty(0))
+            self.W_k = nn.Parameter(torch.empty(n_state, dim))
+            self.W_v = nn.Parameter(torch.empty(n_state, dim))
+            self.W_q = nn.Parameter(torch.empty(n_state, dim))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, param in self.named_parameters():
+            if 'W' in name and param.numel() > 0:
+                nn.init.xavier_uniform_(param)
+
+    def forward(self, x: torch.Tensor, S: Optional[torch.Tensor] = None):
+        """
+        Args:
+            x: [T, B, dim] input
+            S: [B, n_state, n_state] initial state matrix
+
+        Returns:
+            output: [T, B, n_state]
+            S: [B, n_state, n_state] final state
+        """
+        T, B, D = x.shape
+        n = self.n_state
+
+        if S is None:
+            S = torch.zeros(B, n, n, device=x.device, dtype=x.dtype)
+
+        # Use autograd function for gradient tracking
+        output, S_final = E74FullMatrixFunction.apply(
+            x, S, self.proj_type_int, self.use_tanh,
+            self.W_kvq, self.W_k, self.W_v, self.W_q,
+            self.training
+        )
+
+        return output, S_final
+
+
 # =============================================================================
 # Main Ablation Module
 # =============================================================================
@@ -778,7 +958,7 @@ class E74AblationCell(nn.Module):
         self.update_type = UpdateType(update_type)
 
         # Try CUDA for diagonal state with supported configs
-        can_use_cuda = (
+        can_use_cuda_diagonal = (
             use_cuda and
             CUDA_AVAILABLE and
             self.state_type == StateType.DIAGONAL and
@@ -786,10 +966,27 @@ class E74AblationCell(nn.Module):
             self.gate_type == GateType.OUTPUT  # CUDA only supports output gate
         )
 
-        if can_use_cuda:
+        # Try CUDA for full matrix state
+        can_use_cuda_full = (
+            use_cuda and
+            CUDA_AVAILABLE and
+            self.state_type == StateType.FULL and
+            self.proj_type in [ProjType.TIED_KVQ, ProjType.TIED_KQ, ProjType.NO_Z] and
+            self.nonlin_type == NonlinType.TANH and
+            self.gate_type == GateType.OUTPUT and
+            self.update_type == UpdateType.DELTA and
+            n_state in [32, 48, 64, 96]  # Supported n_state values
+        )
+
+        if can_use_cuda_diagonal:
             self.cell = E74CUDADiagonalCell(
                 dim, n_state, self.proj_type, self.nonlin_type,
                 self.update_type, decay
+            )
+            self._using_cuda = True
+        elif can_use_cuda_full:
+            self.cell = E74CUDAFullMatrixCell(
+                dim, n_state, self.proj_type, self.nonlin_type
             )
             self._using_cuda = True
         elif self.state_type == StateType.DIAGONAL:
@@ -974,6 +1171,18 @@ def get_ablation_configs():
          'desc': 'Simple: full, tied, linear'},
         {'id': 24, 'state': 'diagonal', 'proj': 'tied_kvq', 'nonlin': 'linear', 'gate': 'output', 'update': 'simple',
          'desc': 'Simple: diag, tied, linear'},
+
+        # Phase 6: EMA update (E61-style learnable decay)
+        # S = α*S + (1-α)*outer(v, k) where α = sigmoid(W_α @ x + b_α) with bias→1
+        # This brings E61's key innovation (learnable decay toward preserve) to matrix state
+        {'id': 25, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ema',
+         'desc': 'EMA: full, tied, tanh (E61-style)'},
+        {'id': 26, 'state': 'diagonal', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ema',
+         'desc': 'EMA: diag, tied, tanh'},
+        {'id': 27, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ema',
+         'desc': 'EMA: full, no_z, tanh'},
+        {'id': 28, 'state': 'diagonal', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ema',
+         'desc': 'EMA: diag, no_z, tanh'},
     ]
     return configs
 
