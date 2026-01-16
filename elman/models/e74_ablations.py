@@ -68,9 +68,10 @@ class NonlinType(Enum):
 
 
 class GateType(Enum):
-    OUTPUT = 'output'       # only output self-gate (G0)
+    OUTPUT = 'output'       # only output self-gate (G0): out = Sq * silu(Sq)
     RETAIN = 'retain'       # retain gate α (G1)
     STATE = 'state'         # state-dependent delta gate (G2)
+    INPUT = 'input'         # E1-style input gate (G3): out = Sq * silu(z) where z = W_z @ x
 
 
 class UpdateType(Enum):
@@ -313,6 +314,11 @@ class E74FullMatrixCell(nn.Module):
             self.d_g = nn.Parameter(torch.full((n_state,), 0.5))
             self.b_g = nn.Parameter(torch.zeros(n_state))
 
+        # E1-style input gating: out = Sq * silu(z) where z comes from input
+        if gate_type == GateType.INPUT:
+            self.W_z_gate = nn.Parameter(torch.empty(n_state, dim))
+            self.b_z_gate = nn.Parameter(torch.zeros(n_state))
+
         # Simple update: learnable scalar decay
         if update_type == UpdateType.SIMPLE:
             self.log_alpha = nn.Parameter(torch.tensor(0.0))  # sigmoid → 0.5
@@ -456,7 +462,9 @@ class E74FullMatrixCell(nn.Module):
                 delta = v_t - retrieved
                 outer = torch.einsum('bi,bj->bij', delta, k_norm)
 
-                if self.gate_type == GateType.OUTPUT:
+                if self.gate_type in [GateType.OUTPUT, GateType.INPUT]:
+                    # OUTPUT and INPUT both use simple delta for state update
+                    # (INPUT only changes output gating, not state update)
                     S_raw = S + outer
                 elif self.gate_type == GateType.RETAIN:
                     S_energy = (S ** 2).mean(dim=-1)
@@ -471,7 +479,16 @@ class E74FullMatrixCell(nn.Module):
 
             # Output
             Sq = torch.einsum('bij,bj->bi', S, q_t)
-            out = Sq * F.silu(Sq)
+
+            # Choose output gating
+            if self.gate_type == GateType.INPUT:
+                # E1-style: gate by input projection, not by output itself
+                z_gate = x[t] @ self.W_z_gate.T + self.b_z_gate
+                out = Sq * F.silu(z_gate)
+            else:
+                # Self-gating (E68-style): out = Sq * silu(Sq)
+                out = Sq * F.silu(Sq)
+
             outputs.append(out)
 
         output = torch.stack(outputs, dim=0)
@@ -1263,6 +1280,16 @@ def get_ablation_configs():
          'desc': 'RetrGate: full, no_z, tanh'},
         {'id': 34, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'retrieved_gate',
          'desc': 'RetrGate: full, tied, tanh'},
+
+        # Phase 10: E1-style input gating
+        # out = Sq * silu(z) where z = W_z @ x (not self-gating)
+        # Key insight: Separate input controls output magnitude (like E1/Mamba2)
+        {'id': 35, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'input', 'update': 'delta',
+         'desc': 'E1-gate: full, no_z, delta'},
+        {'id': 36, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'input', 'update': 'residual',
+         'desc': 'E1-gate: full, no_z, residual'},
+        {'id': 37, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'input', 'update': 'ntm',
+         'desc': 'E1-gate: full, no_z, ntm'},
     ]
     return configs
 
