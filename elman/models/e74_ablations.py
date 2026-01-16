@@ -77,6 +77,9 @@ class UpdateType(Enum):
     DELTA = 'delta'         # S = f(S + outer(v - S@k, k)) - erase before write
     SIMPLE = 'simple'       # S = f(α*S + outer(v, k)) - just decay + write
     EMA = 'ema'             # S = α*S + (1-α)*outer(v,k) - E61-style interpolation
+    RESIDUAL = 'residual'   # S = S + α*tanh(outer(delta, k)) - ResNet-style
+    NTM = 'ntm'             # S = S*(1-outer(e,k)) + outer(w*v,k) - explicit erase/write
+    RETRIEVED_GATE = 'retrieved_gate'  # Gate delta by retrieval similarity
 
 
 # =============================================================================
@@ -319,6 +322,22 @@ class E74FullMatrixCell(nn.Module):
             self.W_alpha = nn.Parameter(torch.empty(n_state, dim))
             self.b_alpha = nn.Parameter(torch.full((n_state,), 2.0))  # bias→1 (preserve)
 
+        # Residual update: S = S + α*tanh(outer(delta, k)) - learnable residual scale
+        if update_type == UpdateType.RESIDUAL:
+            self.residual_scale = nn.Parameter(torch.full((n_state,), 0.1))  # Start small
+
+        # NTM update: explicit erase and write gates
+        if update_type == UpdateType.NTM:
+            self.W_erase = nn.Parameter(torch.empty(n_state, dim))
+            self.b_erase = nn.Parameter(torch.zeros(n_state))  # Start with no erase
+            self.W_write = nn.Parameter(torch.empty(n_state, dim))
+            self.b_write = nn.Parameter(torch.zeros(n_state))  # Start with moderate write
+
+        # Retrieved-gate: gate delta based on retrieval quality
+        if update_type == UpdateType.RETRIEVED_GATE:
+            self.W_gate = nn.Parameter(torch.empty(n_state, dim))
+            self.b_gate = nn.Parameter(torch.zeros(n_state))
+
         self._init_weights()
 
     def _init_weights(self):
@@ -380,6 +399,7 @@ class E74FullMatrixCell(nn.Module):
                 alpha = torch.sigmoid(self.log_alpha)
                 outer = torch.einsum('bi,bj->bij', v_t, k_norm)
                 S_raw = alpha * S + outer
+
             elif self.update_type == UpdateType.EMA:
                 # EMA: E61-style input-dependent decay with learned bias toward preserve
                 # α = sigmoid(W_α @ x + b_α) where b_α starts positive (preserve default)
@@ -387,6 +407,42 @@ class E74FullMatrixCell(nn.Module):
                 outer = torch.einsum('bi,bj->bij', v_t, k_norm)  # outer(v, k)
                 # Apply per-row decay: S_raw[b,i,j] = α[b,i] * S[b,i,j] + (1-α[b,i]) * outer[b,i,j]
                 S_raw = alpha.unsqueeze(-1) * S + (1.0 - alpha).unsqueeze(-1) * outer
+
+            elif self.update_type == UpdateType.RESIDUAL:
+                # Residual: S = S + scale * tanh(outer(delta, k)) - ResNet-style
+                # Compute delta (what we want to write minus what's there)
+                retrieved = torch.einsum('bij,bj->bi', S, k_norm)
+                delta = v_t - retrieved
+                outer = torch.einsum('bi,bj->bij', delta, k_norm)
+                # Bounded update with learnable per-row scale
+                update = torch.tanh(outer)
+                S_raw = S + self.residual_scale.view(1, -1, 1) * update
+
+            elif self.update_type == UpdateType.NTM:
+                # NTM: Explicit erase and write gates (Neural Turing Machine style)
+                # e = sigmoid(W_e @ x) controls what to erase at key location
+                # w = sigmoid(W_w @ x) controls what to write
+                erase = torch.sigmoid(x[t] @ self.W_erase.T + self.b_erase)  # [B, n]
+                write = torch.sigmoid(x[t] @ self.W_write.T + self.b_write)  # [B, n]
+                # Erase: S = S * (1 - outer(erase, k))
+                erase_outer = torch.einsum('bi,bj->bij', erase, k_norm)
+                S_erased = S * (1.0 - erase_outer)
+                # Write: S = S + outer(write * v, k)
+                write_outer = torch.einsum('bi,bj->bij', write * v_t, k_norm)
+                S_raw = S_erased + write_outer
+
+            elif self.update_type == UpdateType.RETRIEVED_GATE:
+                # Retrieved-gate: Gate delta by how "surprising" the retrieval is
+                # If retrieved ≈ v, don't update much. If retrieved ≠ v, update more.
+                retrieved = torch.einsum('bij,bj->bi', S, k_norm)
+                delta = v_t - retrieved
+                # Gate based on input + delta magnitude
+                delta_energy = (delta ** 2).mean(dim=-1, keepdim=True)  # [B, 1]
+                gate = torch.sigmoid(x[t] @ self.W_gate.T + self.b_gate + delta_energy)  # [B, n]
+                # Gated outer product
+                outer = torch.einsum('bi,bj->bij', delta * gate, k_norm)
+                S_raw = S + outer
+
             else:
                 # Delta rule: S = f(S + outer(v - retrieved, k))
                 # Retrieval (with optional z modulation)
@@ -1183,6 +1239,30 @@ def get_ablation_configs():
          'desc': 'EMA: full, no_z, tanh'},
         {'id': 28, 'state': 'diagonal', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ema',
          'desc': 'EMA: diag, no_z, tanh'},
+
+        # Phase 7: Residual update (ResNet-style)
+        # S = S + scale * tanh(outer(delta, k)) - bounded residual addition
+        # Key insight: Like ResNet, learn what to ADD rather than what to REPLACE
+        {'id': 29, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'residual',
+         'desc': 'Residual: full, no_z, tanh'},
+        {'id': 30, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'residual',
+         'desc': 'Residual: full, tied, tanh'},
+
+        # Phase 8: NTM update (explicit erase/write gates)
+        # S = S*(1-outer(e,k)) + outer(w*v,k) - separate control of forgetting and writing
+        # Key insight: Decouple "what to forget" from "what to remember"
+        {'id': 31, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ntm',
+         'desc': 'NTM: full, no_z, tanh'},
+        {'id': 32, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'ntm',
+         'desc': 'NTM: full, tied, tanh'},
+
+        # Phase 9: Retrieved-gate update (surprise-based gating)
+        # Gate delta by retrieval error - write more when retrieval is bad
+        # Key insight: Self-supervised attention to novelty
+        {'id': 33, 'state': 'full', 'proj': 'no_z', 'nonlin': 'tanh', 'gate': 'output', 'update': 'retrieved_gate',
+         'desc': 'RetrGate: full, no_z, tanh'},
+        {'id': 34, 'state': 'full', 'proj': 'tied_kvq', 'nonlin': 'tanh', 'gate': 'output', 'update': 'retrieved_gate',
+         'desc': 'RetrGate: full, tied, tanh'},
     ]
     return configs
 
