@@ -5688,18 +5688,17 @@ struct E70MatrixLinearForward {
 
     void Run(
         int steps,
-        float beta,                 // Delta rule learning rate
+        float decay,                // Decay factor for state retention
         const T* W_k,               // [n_state, dim] key projection
         const T* W_v,               // [n_state, dim] value projection
         const T* W_q,               // [n_state, dim] query projection
         const T* x,                 // [T, B, dim] input
         T* S,                       // [T+1, B, n_state, n_state] state matrices
         T* output,                  // [T, B, n_state] output
-        T* k_norm_cache,            // [T, B, n_state] normalized k for backward
+        T* k_cache,                 // [T, B, n_state] for backward
         T* v_cache,                 // [T, B, n_state] for backward
         T* q_cache,                 // [T, B, n_state] for backward
         T* Sq_cache,                // [T, B, n_state] for backward (S @ q result)
-        T* retrieved_cache,         // [T, B, n_state] S @ k_norm for backward
         T* workspace);              // See WorkspaceSize
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
@@ -5728,23 +5727,22 @@ struct E70MatrixLinearBackward {
 
     void Run(
         int steps,
-        float beta,
+        float decay,
         const T* W_k,
         const T* W_v,
         const T* W_q,
         const T* x,
         const T* S,
-        const T* k_norm_cache,
+        const T* k_cache,
         const T* v_cache,
         const T* q_cache,
         const T* Sq_cache,
-        const T* retrieved_cache,   // [T, B, n_state] S @ k_norm from forward
         const T* d_output,
         T* dx,
         T* dW_k,
         T* dW_v,
         T* dW_q,
-        T* d_beta,                  // [1] gradient for beta parameter
+        T* d_decay_out,             // [1] gradient for decay parameter
         T* workspace);              // See WorkspaceSize
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
@@ -5753,11 +5751,10 @@ struct E70MatrixLinearBackward {
         // d_S, d_S_prev: 2*B*N*N
         // d_Sq: B*N
         // d_k_all, d_v_all, d_q_all: 3*T*B*N
-        // k_all_recompute: T*B*N
-        // Float workspace: k_norms (T*B), d_k_f, d_v_f, d_k_norm_f, d_beta_f (4*B*N + 1)
-        int64_t float_bytes = (steps * batch_size + 4 * BN + 1) * sizeof(float);
+        // Float workspace: d_k_f, d_v_f, d_q_f (3*BN), d_decay_f (1)
+        int64_t float_bytes = (3 * BN + 1) * sizeof(float);
         int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
-        return 2 * BNN + BN + 4 * steps * BN + float_in_T;
+        return 2 * BNN + BN + 3 * steps * BN + float_in_T;
     }
 
 private:
@@ -6279,6 +6276,349 @@ private:
 // - Block-parallel operations (vs 32 threads in original)
 // - Gradient checkpointing (store S every 32 steps, recompute in backward)
 // - S stays "hot" in cache during processing
+
+// =============================================================================
+// E74: Diagonal State Minimal RNN - Optimized ablation architecture
+// =============================================================================
+//
+// Architecture (diagonal state, O(n)):
+//     Projections depend on proj_type:
+//       TIED_KVQ (0): kvq = W_kvq @ x   (k=v=q, single projection)
+//       TIED_KQ (1):  kq = W_kq @ x, v = W_v @ x   (k=q, separate v)
+//       NO_Z (2):     k = W_k @ x, v = W_v @ x, q = W_q @ x   (no gate)
+//       FULL (3):     k, v, q, z all separate projections
+//
+//     Update rule:
+//       DELTA:  s_new = f(s + (v - s*k) * k) = f(s*(1-k²) + v*k)
+//       SIMPLE: s_new = f(α*s + v*k)   where α is learned decay
+//
+//     Nonlinearity f:
+//       use_tanh=true:  f(x) = tanh(x)
+//       use_tanh=false: f(x) = x  (linear/identity)
+//
+//     Output (always with self-gate):
+//       out = s * silu(s)
+//
+// State s is [B, n] diagonal vector.
+
+template<typename T>
+struct E74DeltaForward {
+    E74DeltaForward(
+        bool training,
+        int batch_size,
+        int n_state,     // n - state dimension
+        int dim,         // input dimension
+        int proj_type,   // 0=tied_kvq, 1=tied_kq, 2=no_z, 3=full
+        bool use_tanh,   // Apply tanh nonlinearity
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,          // [n, dim] for TIED_KVQ
+        const T* W_kq,           // [n, dim] for TIED_KQ
+        const T* W_v,            // [n, dim] for TIED_KQ, NO_Z, FULL
+        const T* W_k,            // [n, dim] for NO_Z, FULL
+        const T* W_q,            // [n, dim] for NO_Z, FULL
+        const T* W_z,            // [n, dim] for FULL
+        const T* x,              // [T, B, dim] input
+        T* s,                    // [T+1, B, n] state vectors
+        T* output,               // [T, B, n] output
+        T* k_cache,              // [T, B, n] for backward
+        T* v_cache,              // [T, B, n] for backward
+        T* q_cache,              // [T, B, n] for backward
+        T* z_cache,              // [T, B, n] for backward (FULL only)
+        T* pre_nonlin_cache,     // [T, B, n] for backward
+        T* s_cache,              // [T, B, n] pre-self-gate for backward
+        T* workspace);           // See WorkspaceSize
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_all, v_all, q_all, z_all: 4*T*B*n
+        return 4 * steps * batch_size * n_state;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74DeltaBackward {
+    E74DeltaBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_kq,
+        const T* W_v,
+        const T* W_k,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* s,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* pre_nonlin_cache,
+        const T* s_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_kvq,
+        T* dW_kq,
+        T* dW_v,
+        T* dW_k,
+        T* dW_q,
+        T* dW_z,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        // d_s, d_s_tmp: 2*BN
+        // d_k_all, d_v_all, d_q_all, d_z_all: 4*T*BN
+        // Float workspace: d_k_f, d_v_f, d_z_f: 3*BN
+        int64_t float_bytes = 3 * BN * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BN + 4 * steps * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74SimpleForward {
+    E74SimpleForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        float decay,     // α decay factor for simple update
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_kq,
+        const T* W_v,
+        const T* W_k,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        T* s,
+        T* output,
+        T* k_cache,
+        T* v_cache,
+        T* q_cache,
+        T* z_cache,
+        T* pre_nonlin_cache,
+        T* s_cache,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        return 4 * steps * batch_size * n_state;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    float decay_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74SimpleBackward {
+    E74SimpleBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        float decay,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_kq,
+        const T* W_v,
+        const T* W_k,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* s,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* pre_nonlin_cache,
+        const T* s_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_kvq,
+        T* dW_kq,
+        T* dW_v,
+        T* dW_k,
+        T* dW_q,
+        T* dW_z,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int64_t BN = batch_size * n_state;
+        int64_t float_bytes = 3 * BN * sizeof(float);
+        int64_t float_in_T = (float_bytes + sizeof(T) - 1) / sizeof(T);
+        return 2 * BN + 4 * steps * BN + float_in_T;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    float decay_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E74 Fused: Optimized kernel that processes ALL timesteps in ONE launch
+// =============================================================================
+
+template<typename T>
+struct E74FusedForward {
+    E74FusedForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        bool is_delta,   // true=delta update, false=simple update
+        float decay,     // for simple update
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_kq,
+        const T* W_v,
+        const T* W_k,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        T* s,
+        T* output,
+        T* k_cache,
+        T* v_cache,
+        T* q_cache,
+        T* z_cache,
+        T* pre_nonlin_cache,
+        T* s_cache,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_all, v_all: 2*T*B*n (v may alias k for tied)
+        return 2 * steps * batch_size * n_state;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    bool is_delta_;
+    float decay_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74FusedBackward {
+    E74FusedBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        bool is_delta,
+        float decay,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_kq,
+        const T* W_v,
+        const T* W_k,
+        const T* W_q,
+        const T* W_z,
+        const T* x,
+        const T* s,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* z_cache,
+        const T* pre_nonlin_cache,
+        const T* s_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_kvq,
+        T* dW_kq,
+        T* dW_v,
+        T* dW_k,
+        T* dW_q,
+        T* dW_z,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_k_all, d_v_all: 2*T*B*n
+        return 2 * steps * batch_size * n_state;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    bool is_delta_;
+    float decay_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
 
 }  // namespace elman_ladder
 }  // namespace v0

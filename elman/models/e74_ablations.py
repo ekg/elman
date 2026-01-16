@@ -607,12 +607,151 @@ class E74BlockDiagCell(nn.Module):
 
 
 # =============================================================================
+# CUDA-backed Cell Implementation
+# =============================================================================
+
+# Try to import CUDA kernels
+try:
+    import hasty_pytorch_lib as elman_ladder_cuda
+    CUDA_AVAILABLE = True
+except ImportError:
+    CUDA_AVAILABLE = False
+
+
+class E74CUDADiagonalCell(nn.Module):
+    """
+    CUDA-backed diagonal state cell using optimized E74 kernels.
+
+    Supports:
+    - Delta update: s = f(s*(1-k²) + v*k)
+    - Simple update: s = f(α*s + v*k)
+    - Projection types: tied_kvq (0), tied_kq (1), no_z (2), full (3)
+    - Nonlinearity: tanh or linear
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        n_state: int,
+        proj_type: ProjType = ProjType.NO_Z,
+        nonlin_type: NonlinType = NonlinType.TANH,
+        update_type: UpdateType = UpdateType.DELTA,
+        decay: float = 0.9,  # For simple update
+    ):
+        super().__init__()
+        self.dim = dim
+        self.n_state = n_state
+        self.proj_type = proj_type
+        self.nonlin_type = nonlin_type
+        self.update_type = update_type
+        self.decay = decay
+
+        # Map proj_type to int for CUDA kernel
+        self.proj_type_int = {
+            ProjType.TIED_KVQ: 0,
+            ProjType.TIED_KQ: 1,
+            ProjType.NO_Z: 2,
+            ProjType.FULL: 3,
+        }[proj_type]
+
+        self.use_tanh = (nonlin_type == NonlinType.TANH)
+
+        # Create weight tensors based on projection type
+        if proj_type == ProjType.TIED_KVQ:
+            self.W_kvq = nn.Parameter(torch.empty(n_state, dim))
+            self.register_buffer('W_kq', torch.empty(0))
+            self.register_buffer('W_v', torch.empty(0))
+            self.register_buffer('W_k', torch.empty(0))
+            self.register_buffer('W_q', torch.empty(0))
+            self.register_buffer('W_z', torch.empty(0))
+        elif proj_type == ProjType.TIED_KQ:
+            self.register_buffer('W_kvq', torch.empty(0))
+            self.W_kq = nn.Parameter(torch.empty(n_state, dim))
+            self.W_v = nn.Parameter(torch.empty(n_state, dim))
+            self.register_buffer('W_k', torch.empty(0))
+            self.register_buffer('W_q', torch.empty(0))
+            self.register_buffer('W_z', torch.empty(0))
+        elif proj_type == ProjType.NO_Z:
+            self.register_buffer('W_kvq', torch.empty(0))
+            self.register_buffer('W_kq', torch.empty(0))
+            self.W_k = nn.Parameter(torch.empty(n_state, dim))
+            self.W_v = nn.Parameter(torch.empty(n_state, dim))
+            self.W_q = nn.Parameter(torch.empty(n_state, dim))
+            self.register_buffer('W_z', torch.empty(0))
+        elif proj_type == ProjType.FULL:
+            self.register_buffer('W_kvq', torch.empty(0))
+            self.register_buffer('W_kq', torch.empty(0))
+            self.W_k = nn.Parameter(torch.empty(n_state, dim))
+            self.W_v = nn.Parameter(torch.empty(n_state, dim))
+            self.W_q = nn.Parameter(torch.empty(n_state, dim))
+            self.W_z = nn.Parameter(torch.empty(n_state, dim))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, param in self.named_parameters():
+            if 'W' in name and param.numel() > 0:
+                nn.init.xavier_uniform_(param)
+
+    def forward(self, x: torch.Tensor, s: Optional[torch.Tensor] = None):
+        """
+        Args:
+            x: [T, B, dim] input
+            s: [B, n_state] initial state
+
+        Returns:
+            output: [T, B, n_state]
+            s: [B, n_state] final state
+        """
+        T, B, D = x.shape
+        n = self.n_state
+
+        if s is None:
+            s = torch.zeros(B, n, device=x.device, dtype=x.dtype)
+
+        # Call optimized FUSED CUDA kernel (processes all timesteps in ONE launch)
+        is_delta = (self.update_type == UpdateType.DELTA)
+        results = elman_ladder_cuda.e74_fused_forward(
+            self.training,
+            x,
+            s,
+            self.proj_type_int,
+            self.use_tanh,
+            is_delta,
+            self.decay,
+            self.W_kvq,
+            self.W_kq,
+            self.W_v,
+            self.W_k,
+            self.W_q,
+            self.W_z,
+        )
+
+        # results = [s_all, output, k_cache, v_cache, q_cache, z_cache, pre_nonlin_cache, s_cache]
+        s_all = results[0]
+        output = results[1]
+
+        # Save for backward
+        if self.training:
+            self._saved_results = results
+
+        # Final state is last timestep
+        s_final = s_all[-1]
+
+        return output, s_final
+
+
+# =============================================================================
 # Main Ablation Module
 # =============================================================================
 
 class E74AblationCell(nn.Module):
     """
     Unified ablation cell that dispatches to appropriate implementation.
+
+    Args:
+        use_cuda: If True and CUDA kernels are available, use optimized CUDA implementation
+                  for diagonal state with tanh/linear nonlinearity
     """
 
     def __init__(
@@ -627,6 +766,8 @@ class E74AblationCell(nn.Module):
         rank: int = 8,
         block_size: int = 8,
         spectral_radius: float = 0.999,
+        use_cuda: bool = True,
+        decay: float = 0.9,  # For simple update
     ):
         super().__init__()
 
@@ -636,27 +777,50 @@ class E74AblationCell(nn.Module):
         self.gate_type = GateType(gate_type)
         self.update_type = UpdateType(update_type)
 
-        if self.state_type == StateType.DIAGONAL:
+        # Try CUDA for diagonal state with supported configs
+        can_use_cuda = (
+            use_cuda and
+            CUDA_AVAILABLE and
+            self.state_type == StateType.DIAGONAL and
+            self.nonlin_type in [NonlinType.TANH, NonlinType.LINEAR] and
+            self.gate_type == GateType.OUTPUT  # CUDA only supports output gate
+        )
+
+        if can_use_cuda:
+            self.cell = E74CUDADiagonalCell(
+                dim, n_state, self.proj_type, self.nonlin_type,
+                self.update_type, decay
+            )
+            self._using_cuda = True
+        elif self.state_type == StateType.DIAGONAL:
             self.cell = E74DiagonalCell(
                 dim, n_state, self.proj_type, self.nonlin_type, self.gate_type,
                 self.update_type, spectral_radius
             )
+            self._using_cuda = False
         elif self.state_type == StateType.FULL:
             self.cell = E74FullMatrixCell(
                 dim, n_state, self.proj_type, self.nonlin_type, self.gate_type,
                 self.update_type
             )
+            self._using_cuda = False
         elif self.state_type == StateType.LOWRANK:
             self.cell = E74LowRankCell(
                 dim, n_state, rank, self.proj_type, self.nonlin_type
             )
+            self._using_cuda = False
         elif self.state_type == StateType.BLOCKDIAG:
             self.cell = E74BlockDiagCell(
                 dim, n_state, block_size, self.proj_type, self.nonlin_type
             )
+            self._using_cuda = False
 
     def forward(self, x, state=None):
         return self.cell(x, state)
+
+    @property
+    def using_cuda(self):
+        return getattr(self, '_using_cuda', False)
 
 
 class E74Ablation(nn.Module):
@@ -681,6 +845,8 @@ class E74Ablation(nn.Module):
         dropout: float = 0.0,
         use_conv: bool = False,
         d_conv: int = 4,
+        use_cuda: bool = True,
+        decay: float = 0.9,
         **kwargs
     ):
         super().__init__()
@@ -714,6 +880,8 @@ class E74Ablation(nn.Module):
             update_type=update_type,
             rank=rank,
             block_size=block_size,
+            use_cuda=use_cuda,
+            decay=decay,
         )
 
         self.out_proj = nn.Linear(n_state, dim, bias=False)
