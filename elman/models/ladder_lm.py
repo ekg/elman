@@ -98,6 +98,8 @@ from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73Matrix
 from .e74_v2 import E74v2
 from .e75_gated_delta import E75GatedDelta
 from .e76_logspace_delta import E76LogSpaceDelta
+from .e77_linear_matrix import E77LinearMatrix
+from .e78_projected_matrix import E78ProjectedMatrix
 
 
 def get_ladder_level(level):
@@ -247,6 +249,17 @@ def get_ladder_level(level):
         '74v2-ema': lambda **kw: E74v2(update_type='ema', **kw),
         '74v2-delta-input': lambda **kw: E74v2(update_type='delta', gate_type='input', **kw),
         '74v2-ema-input': lambda **kw: E74v2(update_type='ema', gate_type='input', **kw),
+        # E77: Linear Matrix State (E42's linear recurrence + matrix state + fused projections)
+        77: E77LinearMatrix,
+        '77n32': lambda **kw: E77LinearMatrix(**{**kw, 'n_state': 32}),
+        '77n48': lambda **kw: E77LinearMatrix(**{**kw, 'n_state': 48}),
+        '77n64': lambda **kw: E77LinearMatrix(**{**kw, 'n_state': 64}),
+        '77n96': lambda **kw: E77LinearMatrix(**{**kw, 'n_state': 96}),
+        # E78: Projected Matrix State (E77 + random projection for sparse efficient state)
+        78: E78ProjectedMatrix,
+        '78n64s32': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 64, 'n_small': 32}),
+        '78n128s32': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 128, 'n_small': 32}),
+        '78n256s64': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 256, 'n_small': 64}),
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

@@ -11744,6 +11744,180 @@ std::vector<Tensor> e76_logspace_backward(
     return {dx, dW_k, dW_v, dW_q, dW_gate, dA_log, ddt_bias};
 }
 
+// =============================================================================
+// E77 Linear Matrix State: Linear recurrence + self-gating output
+// Combines E42's insights (no tanh, self-gate at output) with matrix state
+// Uses FUSED W_kvqg projection [4*n_state, dim] for efficiency
+// =============================================================================
+
+std::vector<Tensor> e77_linear_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    Tensor W_kvqg,      // [4*n_state, dim] FUSED projection for k, v, q, gate
+    Tensor b_gate) {    // [n_state] gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_kvqg);
+    CHECK_INPUT(b_gate);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor kvqg_cache = training ? torch::empty({time_steps, batch_size, 4 * n_state}, options) : torch::empty({0}, options);
+    Tensor decay_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+
+    // S_cache holds [S_checkpoints][Sq_cache] contiguously
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_state;
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E77 Linear Forward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E77LinearForward<__nv_bfloat16> forward(
+            training, batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kvqg.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(b_gate.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            training ? reinterpret_cast<__nv_bfloat16*>(kvqg_cache.data_ptr()) : nullptr,
+            training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr,
+            training ? reinterpret_cast<__nv_bfloat16*>(decay_cache.data_ptr()) : nullptr);
+    } else {
+        // FP32
+        E77LinearForward<float> forward(
+            training, batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kvqg.data_ptr()),
+            reinterpret_cast<float*>(b_gate.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(S.data_ptr()),
+            reinterpret_cast<float*>(output.data_ptr()),
+            training ? reinterpret_cast<float*>(kvqg_cache.data_ptr()) : nullptr,
+            training ? reinterpret_cast<float*>(S_cache.data_ptr()) : nullptr,
+            training ? reinterpret_cast<float*>(decay_cache.data_ptr()) : nullptr);
+    }
+
+    // Extract views from S_cache for return
+    Tensor S_checkpoints = training ? S_cache.narrow(0, 0, checkpoints_size).view({num_checkpoints, batch_size, n_state, n_state}) : torch::empty({0}, options);
+    Tensor Sq_cache = training ? S_cache.narrow(0, checkpoints_size, sq_cache_size).view({time_steps, batch_size, n_state}) : torch::empty({0}, options);
+
+    return {S, output, kvqg_cache, decay_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e77_linear_backward(
+    Tensor x,               // [T, B, dim]
+    Tensor S_checkpoints,   // [num_checkpoints, B, n_state, n_state]
+    Tensor Sq_cache,        // [T, B, n_state]
+    Tensor kvqg_cache,      // [T, B, 4*n_state]
+    Tensor decay_cache,     // [T, B, n_state]
+    Tensor d_output,        // [T, B, n_state]
+    Tensor W_kvqg,          // [4*n_state, dim]
+    Tensor b_gate) {        // [n_state]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = kvqg_cache.size(2) / 4;
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_kvqg = torch::zeros({4 * n_state, dim}, options);
+    Tensor db_gate = torch::zeros({n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E77 Linear Backward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        const int64_t workspace_size = E77LinearBackward<__nv_bfloat16>::WorkspaceSize(
+            time_steps, batch_size, n_state);
+        Tensor workspace = torch::empty({workspace_size}, options.dtype(at::kByte));
+
+        E77LinearBackward<__nv_bfloat16> backward(
+            batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kvqg.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(b_gate.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(kvqg_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(decay_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dW_kvqg.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(db_gate.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+    } else {
+        // FP32
+        const int64_t workspace_size = E77LinearBackward<float>::WorkspaceSize(
+            time_steps, batch_size, n_state);
+        Tensor workspace = torch::empty({workspace_size}, options.dtype(at::kByte));
+
+        E77LinearBackward<float> backward(
+            batch_size, n_state, dim,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kvqg.data_ptr()),
+            reinterpret_cast<float*>(b_gate.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(Sq_cache.data_ptr()),
+            reinterpret_cast<float*>(kvqg_cache.data_ptr()),
+            reinterpret_cast<float*>(decay_cache.data_ptr()),
+            reinterpret_cast<float*>(d_output.data_ptr()),
+            reinterpret_cast<float*>(dx.data_ptr()),
+            reinterpret_cast<float*>(dW_kvqg.data_ptr()),
+            reinterpret_cast<float*>(db_gate.data_ptr()),
+            reinterpret_cast<float*>(workspace.data_ptr()));
+    }
+
+    return {dx, dW_kvqg, db_gate};
+}
+
 }  // anonymous namespace
 
 
@@ -12096,4 +12270,10 @@ void elman_ladder_init(py::module& m) {
           "E76 Log-Space: Configurable tanh + Mamba2-style decay parameterization");
     m.def("e76_logspace_backward", &e76_logspace_backward,
           "E76 Log-Space: Backward pass with gradient checkpointing");
+
+    // E77: Linear Matrix State with self-gating output
+    m.def("e77_linear_forward", &e77_linear_forward,
+          "E77 Linear: Linear matrix state (no tanh) + self-gating output + fused W_kvqg projection");
+    m.def("e77_linear_backward", &e77_linear_backward,
+          "E77 Linear: Backward pass with gradient checkpointing");
 }

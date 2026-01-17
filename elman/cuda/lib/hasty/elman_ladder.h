@@ -7310,6 +7310,138 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E77: Linear Matrix State with Self-Gating Output
+// Combines E42's linear recurrence + self-gating with E76's matrix state
+// NO tanh in state update - nonlinearity only at output
+// Uses FUSED W_kvqg projection for efficiency
+// =============================================================================
+
+// Dispatcher functions (implemented in e77_linear_matrix_gpu.cu.cc)
+// Uses FUSED kvqg layout: [4*n_state, T*B] column-major from GEMM
+void dispatch_e77_linear_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqg_all,   // [4*n_state, T*B] fused projection output
+    const __nv_bfloat16* b_gate,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* decay_cache, int checkpoint_interval,
+    cudaStream_t stream
+);
+
+void dispatch_e77_linear_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqg_all,    // [4*n_state, T*B] fused projection output
+    const __nv_bfloat16* b_gate, const __nv_bfloat16* decay_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqg_all,        // [4*n_state, T*B] fused gradients
+    float* d_b_gate_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 dispatchers
+void dispatch_e77_linear_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqg_all,
+    const float* b_gate,
+    float* S, float* output,
+    float* S_checkpoints, float* Sq_cache,
+    float* decay_cache, int checkpoint_interval,
+    cudaStream_t stream
+);
+
+void dispatch_e77_linear_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqg_all,
+    const float* b_gate, const float* decay_cache,
+    const float* S_checkpoints, const float* Sq_cache,
+    const float* d_output,
+    float* d_kvqg_all,
+    float* d_b_gate_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E77LinearForward {
+    E77LinearForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqg,   // [4*n_state, dim] FUSED projection
+        const T* b_gate,   // [n_state]
+        const T* x,        // [T, B, dim]
+        T* S,              // [B, n_state, n_state]
+        T* output,         // [T, B, n_state]
+        T* kvqg_cache,     // [T, B, 4*n_state] for backward
+        T* S_cache,        // Checkpoints + Sq cache
+        T* decay_cache);   // [T, B, n_state]
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // kvqg_cache: T * B * 4 * n_state
+        int64_t size = steps * batch_size * 4 * n_state * sizeof(T);
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_state * sizeof(T);
+        // decay_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E77LinearBackward {
+    E77LinearBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqg,
+        const T* b_gate,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* kvqg_cache,
+        const T* decay_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_kvqg,
+        T* db_gate,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqg_all: T*B*4*n + d_b_gate_accum: n (float)
+        return steps * batch_size * 4 * n_state * sizeof(T) +
+               n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H
