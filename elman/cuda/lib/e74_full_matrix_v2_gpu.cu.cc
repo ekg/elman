@@ -71,12 +71,14 @@ __global__ void ReduceBiasGradKernel_BF16(
     db[i] = __float2bfloat16(sum);
 }
 
-// Reduce d_residual_scale across batches: d_scale[i] = sum over B of d_scale_accum[b*n + i]
+// Reduce d_residual_scale across batches: d_scale[i] = mean over (T*B*n) of d_scale_accum[b*n + i]
+// Note: T is passed to normalize the gradient which was accumulated over T timesteps * n columns
 __global__ void ReduceResidualScaleGradKernel(
     const float* __restrict__ d_scale_accum, // [B, n]
     float* __restrict__ d_scale,              // [n]
     int n,
-    int B
+    int B,
+    int T  // number of timesteps (for normalization)
 ) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -85,7 +87,8 @@ __global__ void ReduceResidualScaleGradKernel(
     for (int b = 0; b < B; b++) {
         sum += d_scale_accum[b * n + i];
     }
-    d_scale[i] = sum;
+    // Normalize by T*B*n to get mean gradient (accumulated over T timesteps, n columns, B batches)
+    d_scale[i] = sum / (float)(T * B * n);
 }
 
 // Apply sigmoid derivative: d_out[i] = d_out[i] * sigmoid_val[i] * (1 - sigmoid_val[i])
@@ -803,10 +806,14 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
             __syncthreads();
 
             // Step 2: dS += outer(d_Sq, q) from Sq = S @ q
+            // CRITICAL: Clamp dS for ALL update types to prevent gradient explosion
+            // The clamping must happen BEFORE dS is used in subsequent gradient computations
+            constexpr float GRAD_CLAMP_DS_EARLY = 1000.0f;
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
-                dS[i] += d_Sq_shared[row] * q_raw[col];
+                float new_dS = dS[i] + d_Sq_shared[row] * q_raw[col];
+                dS[i] = fmaxf(-GRAD_CLAMP_DS_EARLY, fminf(GRAD_CLAMP_DS_EARLY, new_dS));
             }
             __syncthreads();
 
@@ -899,16 +906,21 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                 // d_delta[i] = sum_j(d_outer_val[i,j] * k_norm[j])
                 // d_scale[i] = sum_j(dS[i,j] * tanh_out[i,j])
 
+                // Gradient clamp threshold to prevent overflow in long sequences
+                constexpr float GRAD_CLAMP = 1000.0f;
+
                 if (tid < N_STATE) {
                     float d_delta_local = 0.0f;
                     float d_scale_local = 0.0f;
                     for (int j = 0; j < N_STATE; j++) {
                         float outer_val = delta[tid] * k_norm[j];
                         float tanh_out = tanhf(outer_val);
-                        float d_tanh_out = dS[tid * N_STATE + j] * residual_scale[tid];
+                        // Clamp dS before using to prevent gradient explosion
+                        float dS_clamped = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[tid * N_STATE + j]));
+                        float d_tanh_out = dS_clamped * residual_scale[tid];
                         float d_outer_val = d_tanh_out * (1.0f - tanh_out * tanh_out);
                         d_delta_local += d_outer_val * k_norm[j];
-                        d_scale_local += dS[tid * N_STATE + j] * tanh_out;
+                        d_scale_local += dS_clamped * tanh_out;
                     }
                     d_delta[tid] = d_delta_local;
                     d_res_scale_local[tid] += d_scale_local;  // Accumulate
@@ -920,7 +932,8 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                     for (int i = 0; i < N_STATE; i++) {
                         float outer_val = delta[i] * k_norm[tid];
                         float tanh_out = tanhf(outer_val);
-                        float d_tanh_out = dS[i * N_STATE + tid] * residual_scale[i];
+                        float dS_clamped = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[i * N_STATE + tid]));
+                        float d_tanh_out = dS_clamped * residual_scale[i];
                         float d_outer_val = d_tanh_out * (1.0f - tanh_out * tanh_out);
                         d_k_norm_local += d_outer_val * delta[i];
                     }
@@ -940,15 +953,12 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
 
             } else if constexpr (UPDATE_TYPE == 2) {
                 // NTM: S_curr = tanh(S_prev * (1 - outer(erase, k)) + outer(write * v, k))
-                float erase_val_t = extra_shared[tid < N_STATE ? tid : 0];
-                float write_val_t = tid < N_STATE ?
-                    __bfloat162float(write_all[t * B * N_STATE + b * N_STATE + tid]) : 0.0f;
+                constexpr float GRAD_CLAMP = 1000.0f;  // Clamp computed gradients
 
                 if (tid < N_STATE) {
                     float d_erase_local = 0.0f;
                     float d_write_local = 0.0f;
                     float d_v_local = 0.0f;
-                    float d_k_norm_local = 0.0f;
 
                     for (int j = 0; j < N_STATE; j++) {
                         float erase_val = extra_shared[tid];
@@ -957,7 +967,9 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                         float write_outer = (write_val * v_raw[tid]) * k_norm[j];
                         float pre = S[tid * N_STATE + j] * (1.0f - erase_outer) + write_outer;
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[tid * N_STATE + j] * (1.0f - tanh_out * tanh_out);
+                        // Clamp dS before using
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[tid * N_STATE + j]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
 
                         // d_erase: d_pre * (-S_prev * k_norm)
                         d_erase_local += d_pre * (-S[tid * N_STATE + j] * k_norm[j]);
@@ -966,6 +978,10 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                         // d_v: d_pre * (write * k_norm)
                         d_v_local += d_pre * (write_val * k_norm[j]);
                     }
+                    // Clamp output gradients
+                    d_erase_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_erase_local));
+                    d_write_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_write_local));
+                    d_v_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_v_local));
                     d_erase_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_erase_local);
                     d_write_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_write_local);
                     d_v_raw[tid] = d_v_local;
@@ -982,16 +998,18 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                         float write_outer = (write_val * v_raw[i]) * k_norm[tid];
                         float pre = S[i * N_STATE + tid] * (1.0f - erase_outer) + write_outer;
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[i * N_STATE + tid] * (1.0f - tanh_out * tanh_out);
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[i * N_STATE + tid]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
                         // d_k_norm += d_pre * (-S_prev * erase + write * v)
                         d_k_norm_local += d_pre * (-S[i * N_STATE + tid] * erase_val + write_val * v_raw[i]);
                     }
-                    d_k_norm[tid] = d_k_norm_local;
+                    d_k_norm[tid] = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_k_norm_local));
                 }
                 __syncthreads();
 
             } else if constexpr (UPDATE_TYPE == 3) {
                 // RETRIEVED_GATE: S_curr = tanh(S_prev + outer(delta * gate, k_norm))
+                constexpr float GRAD_CLAMP = 1000.0f;  // Clamp computed gradients
                 if (tid < N_STATE) {
                     float gate_val = extra_shared[tid];
                     float d_delta_local = 0.0f;
@@ -1000,43 +1018,50 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                         float gated_delta = delta[tid] * gate_val;
                         float pre = S[tid * N_STATE + j] + gated_delta * k_norm[j];
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[tid * N_STATE + j] * (1.0f - tanh_out * tanh_out);
+                        // Clamp dS before using
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[tid * N_STATE + j]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
                         // d_gated_delta * k_norm
                         float d_gated_delta = d_pre * k_norm[j];
                         d_delta_local += d_gated_delta * gate_val;
                         d_gate_local += d_gated_delta * delta[tid];
                     }
+                    // Clamp output gradients
+                    d_delta_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_delta_local));
+                    d_gate_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_gate_local));
                     d_delta[tid] = d_delta_local;
                     d_gate_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_gate_local);
                 }
                 __syncthreads();
 
                 if (tid < N_STATE) {
-                    float gate_val = extra_shared[tid];
                     float d_k_norm_local = 0.0f;
                     for (int i = 0; i < N_STATE; i++) {
                         float gated_delta = delta[i] * extra_shared[i];
                         float pre = S[i * N_STATE + tid] + gated_delta * k_norm[tid];
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[i * N_STATE + tid] * (1.0f - tanh_out * tanh_out);
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[i * N_STATE + tid]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
                         d_k_norm_local += d_pre * gated_delta;
                     }
-                    d_k_norm[tid] = d_k_norm_local;
+                    d_k_norm[tid] = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_k_norm_local));
                 }
                 __syncthreads();
 
                 if (tid < N_STATE) {
-                    d_v_raw[tid] = d_delta[tid];
+                    d_v_raw[tid] = d_delta[tid];  // Already clamped above
                     float sum = 0.0f;
                     for (int i = 0; i < N_STATE; i++) {
                         sum += S[i * N_STATE + tid] * (-d_delta[i]);
                     }
                     d_k_norm[tid] += sum;
+                    d_k_norm[tid] = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_k_norm[tid]));
                 }
                 __syncthreads();
 
             } else if constexpr (UPDATE_TYPE == 4) {
                 // EMA: S_curr = tanh(alpha * S_prev + (1 - alpha) * outer(v, k_norm))
+                constexpr float GRAD_CLAMP = 1000.0f;  // Clamp computed gradients
                 if (tid < N_STATE) {
                     float alpha_val = extra_shared[tid];
                     float d_alpha_local = 0.0f;
@@ -1045,28 +1070,33 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                         float outer_val = v_raw[tid] * k_norm[j];
                         float pre = alpha_val * S[tid * N_STATE + j] + (1.0f - alpha_val) * outer_val;
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[tid * N_STATE + j] * (1.0f - tanh_out * tanh_out);
+                        // Clamp dS value before using
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[tid * N_STATE + j]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
                         // d_alpha = d_pre * (S_prev - outer_val)
                         d_alpha_local += d_pre * (S[tid * N_STATE + j] - outer_val);
                         // d_v += d_pre * (1 - alpha) * k_norm
                         d_v_local += d_pre * (1.0f - alpha_val) * k_norm[j];
                     }
+                    // Clamp output gradients as well
+                    d_alpha_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_alpha_local));
+                    d_v_local = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_v_local));
                     d_alpha_all[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(d_alpha_local);
                     d_v_raw[tid] = d_v_local;
                 }
                 __syncthreads();
 
                 if (tid < N_STATE) {
-                    float alpha_val = extra_shared[tid];
                     float d_k_norm_local = 0.0f;
                     for (int i = 0; i < N_STATE; i++) {
                         float outer_val = v_raw[i] * k_norm[tid];
                         float pre = extra_shared[i] * S[i * N_STATE + tid] + (1.0f - extra_shared[i]) * outer_val;
                         float tanh_out = tanhf(pre);
-                        float d_pre = dS[i * N_STATE + tid] * (1.0f - tanh_out * tanh_out);
+                        float dS_val = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, dS[i * N_STATE + tid]));
+                        float d_pre = dS_val * (1.0f - tanh_out * tanh_out);
                         d_k_norm_local += d_pre * (1.0f - extra_shared[i]) * v_raw[i];
                     }
-                    d_k_norm[tid] = d_k_norm_local;
+                    d_k_norm[tid] = fmaxf(-GRAD_CLAMP, fminf(GRAD_CLAMP, d_k_norm_local));
                 }
                 __syncthreads();
             }
@@ -1102,20 +1132,37 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
             // For UPDATE_TYPE==0 (DELTA): dS_prev = d_pre_nonlin (carries through tanh)
             // For UPDATE_TYPE==1 (RESIDUAL): dS_prev = dS (residual connection)
             // For others: similar based on structure
+            //
+            // IMPORTANT: For tanh derivative, we must use S_t (output of tanh), not S (input).
+            // S here is S_{t-1}, so we must recompute S_t = tanh(S_{t-1} + update) on-the-fly.
+            constexpr float GRAD_CLAMP_DS = 1000.0f;  // Clamp to prevent gradient explosion
+
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
 
-                if constexpr (UPDATE_TYPE == 0 || UPDATE_TYPE == 3) {
-                    // DELTA/RETRIEVED_GATE: dS_prev from tanh + outer product contribution
-                    float d_pre = dS[i] * (1.0f - S[i] * S[i]);
-                    float gated_delta = (UPDATE_TYPE == 3) ?
-                        delta[row] * extra_shared[row] : delta[row];
-                    dS[i] = d_pre + (-d_delta[row]) * k_norm[col];
+                if constexpr (UPDATE_TYPE == 0) {
+                    // DELTA: S_t = tanh(S_{t-1} + outer(delta, k_norm))
+                    // Must compute S_t on-the-fly for correct tanh derivative
+                    float S_t = tanhf(S[i] + delta[row] * k_norm[col]);
+                    float d_pre = dS[i] * (1.0f - S_t * S_t);
+                    float new_dS = d_pre + (-d_delta[row]) * k_norm[col];
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
+
+                } else if constexpr (UPDATE_TYPE == 3) {
+                    // RETRIEVED_GATE: S_t = tanh(S_{t-1} + outer(delta * gate, k_norm))
+                    float gate_val = extra_shared[row];
+                    float gated_delta = delta[row] * gate_val;
+                    float S_t = tanhf(S[i] + gated_delta * k_norm[col]);
+                    float d_pre = dS[i] * (1.0f - S_t * S_t);
+                    float new_dS = d_pre + (-d_delta[row]) * k_norm[col];
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
 
                 } else if constexpr (UPDATE_TYPE == 1) {
                     // RESIDUAL: dS_prev = dS (residual connection)
-                    dS[i] = dS[i] + (-d_delta[row]) * k_norm[col];
+                    // Clamp to prevent gradient explosion over long sequences
+                    float new_dS = dS[i] + (-d_delta[row]) * k_norm[col];
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
 
                 } else if constexpr (UPDATE_TYPE == 2) {
                     // NTM: dS_prev = d_pre * (1 - erase_outer)
@@ -1126,7 +1173,8 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                     float pre = S[i] * (1.0f - erase_outer) + write_outer;
                     float tanh_out = tanhf(pre);
                     float d_pre = dS[i] * (1.0f - tanh_out * tanh_out);
-                    dS[i] = d_pre * (1.0f - erase_outer);
+                    float new_dS = d_pre * (1.0f - erase_outer);
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
 
                 } else if constexpr (UPDATE_TYPE == 4) {
                     // EMA: dS_prev = d_pre * alpha
@@ -1135,7 +1183,8 @@ __global__ void E74FullMatrixBackwardV2Kernel_BF16(
                     float pre = alpha_val * S[i] + (1.0f - alpha_val) * outer_val;
                     float tanh_out = tanhf(pre);
                     float d_pre = dS[i] * (1.0f - tanh_out * tanh_out);
-                    dS[i] = d_pre * alpha_val;
+                    float new_dS = d_pre * alpha_val;
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
                 }
             }
             __syncthreads();
@@ -1429,13 +1478,15 @@ __global__ void E74FullMatrixBackwardV2GlobalMemKernel_BF16(
                 __syncthreads();
 
                 // dS_prev = dS * (1 - S_t²) for next iteration
+                constexpr float GRAD_CLAMP_DS = 1000.0f;
                 for (int i = tid; i < n2; i += blockDim.x) {
                     int row = i / N_STATE;
                     int col = i % N_STATE;
                     // Compute S_t on-the-fly
                     float S_t_ij = tanhf(S[i] + delta[row] * k_norm[col]);
                     float d_pre = dS[i] * (1.0f - S_t_ij * S_t_ij);
-                    dS[i] = d_pre;  // This becomes dS_prev for next iteration
+                    float new_dS = d_pre + (-d_delta[row]) * k_norm[col];
+                    dS[i] = fmaxf(-GRAD_CLAMP_DS, fminf(GRAD_CLAMP_DS, new_dS));
                 }
                 __syncthreads();
             }
@@ -1863,12 +1914,12 @@ void E74FullMatrixBackwardV2<DataT>::Run(
             (const __nv_bfloat16*)d_z_gate_all, (__nv_bfloat16*)db_z_gate, n, T * B);
     }
 
-    // Sum d_residual_scale_accum across batches
+    // Sum d_residual_scale_accum across batches (normalized by T*B*n)
     if (update_type_ == 1) {
         int threads_drs = 256;
         int blocks_drs = (n + threads_drs - 1) / threads_drs;
         ReduceResidualScaleGradKernel<<<blocks_drs, threads_drs, 0, stream_>>>(
-            (const float*)d_residual_scale_accum, (float*)d_residual_scale, n, B);
+            (const float*)d_residual_scale_accum, (float*)d_residual_scale, n, B, T);
     }
 }
 

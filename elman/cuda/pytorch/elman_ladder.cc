@@ -11340,7 +11340,9 @@ std::vector<Tensor> e74_full_matrix_backward_v2(
     Tensor dW_q = proj_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
 
     // Extra weight gradients
-    Tensor d_residual_scale = update_type == 1 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    // d_residual_scale must be float32 (kernel accumulates in float, writes float directly)
+    auto float_options = options.dtype(torch::kFloat32);
+    Tensor d_residual_scale = update_type == 1 ? torch::zeros({n_state}, float_options) : torch::empty({0}, float_options);
     Tensor dW_erase = update_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
     Tensor db_erase = update_type == 2 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
     Tensor dW_write = update_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);

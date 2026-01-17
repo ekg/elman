@@ -208,7 +208,8 @@ class E74v2CUDAFunction(torch.autograd.Function):
         dW_k = grads[2] if grads[2].numel() > 0 else None
         dW_v = grads[3] if grads[3].numel() > 0 else None
         dW_q = grads[4] if grads[4].numel() > 0 else None
-        d_residual_scale = grads[5] if grads[5].numel() > 0 else None
+        # d_residual_scale comes as float32 from kernel, convert to match param dtype
+        d_residual_scale = grads[5].to(x.dtype) if grads[5].numel() > 0 else None
         dW_erase = grads[6] if grads[6].numel() > 0 else None
         db_erase = grads[7] if grads[7].numel() > 0 else None
         dW_write = grads[8] if grads[8].numel() > 0 else None
@@ -351,6 +352,7 @@ class E74v2Cell(nn.Module):
 
         # Use v2 CUDA kernel if available and n_state is supported
         # v2 backward kernel uses extended shared memory for n_state >= 64
+        # All update types now supported with gradient clamping for stability
         v2_supported_n = n in {1, 2, 4, 8, 16, 28, 32, 48, 64, 96}
         if (self.use_cuda and x.is_cuda and x.dtype == torch.bfloat16 and
             E74V2_CUDA_AVAILABLE and v2_supported_n and self.proj_type == 'no_z'):

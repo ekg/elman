@@ -95,6 +95,8 @@ from .e70_matrix_linear import E70MatrixLinear
 from .e71_matrix_gated import E71MatrixGated
 from .e72_matrix_selfgate import E72MatrixSelfGate, E72MatrixSelfGateStandard, E72MatrixSelfGateInverse
 from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73MatrixRow, E73MatrixFull
+from .e74_v2 import E74v2
+from .e75_gated_delta import E75GatedDelta
 
 
 def get_ladder_level(level):
@@ -213,6 +215,20 @@ def get_ladder_level(level):
         '73c': E73MatrixColumn,  # Column modulation
         '73r': E73MatrixRow,  # Row modulation
         '73f': E73MatrixFull,  # Full element-wise modulation
+        75: E75GatedDelta,  # E75: Gated Delta (E74 delta rule + E61 forget gate)
+        '75n32': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 32}),
+        '75n48': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 48}),
+        '75n64': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 64}),
+        '75n96': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 96}),
+        # E74v2: Extended delta rule variants (CUDA kernel support)
+        '74v2': E74v2,  # E74v2 base: delta update, output gate
+        '74v2-delta': lambda **kw: E74v2(update_type='delta', **kw),
+        '74v2-residual': lambda **kw: E74v2(update_type='residual', **kw),
+        '74v2-ntm': lambda **kw: E74v2(update_type='ntm', **kw),
+        '74v2-retrieved_gate': lambda **kw: E74v2(update_type='retrieved_gate', **kw),
+        '74v2-ema': lambda **kw: E74v2(update_type='ema', **kw),
+        '74v2-delta-input': lambda **kw: E74v2(update_type='delta', gate_type='input', **kw),
+        '74v2-ema-input': lambda **kw: E74v2(update_type='ema', gate_type='input', **kw),
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

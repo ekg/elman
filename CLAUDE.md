@@ -183,6 +183,35 @@ python run_100m_benchmark.py
 - **Depth**: 20 layers for all models
 - **Seed**: 42
 
+### CRITICAL: Model Dimension Requirements
+
+**All benchmark configurations MUST follow these rules:**
+
+1. **Dimensions must be 128-aligned** - All model dims must be divisible by 128 (e.g., 768, 896, 1024, 1152, 1280, etc.)
+2. **Expansion factor = 2.0** - All models use d_inner = dim × 2 (except where architecture-specific)
+3. **Target ~100M params** - Adjust dim to hit approximately 100M parameters
+4. **Depth = 20 layers** - Standard depth for fair comparison
+
+**Reference configs for ~100M params at depth=20:**
+```
+# E74 with expansion=1.0 (wider dims, no internal expansion)
+E74 Full/Diag:    dim=2048-2176, expansion=1.0, n_state=32-96
+
+# E74 with expansion=2.0 (narrower dims, 2x d_inner)
+E74 Full/Diag:    dim=1408-1536, expansion=2.0, n_state=32-96
+
+# Baselines (all use expansion=2.0)
+E1/E42 style:     dim=640,  expansion=2.0
+Mamba2:           dim=896,  depth=20, expand=2
+FLA-GDN:          dim=768,  expansion=2.0
+CUDA GRU/LSTM:    dim=384,  expansion=2.0
+```
+
+**Testing both expansion factors:** For E74 models, test both expansion=1.0 and expansion=2.0
+to determine which performs better. expansion=2.0 gives wider d_inner at cost of smaller dims.
+
+**Why 128-aligned?** GPU tensor cores and memory access patterns are optimized for multiples of 128. Non-aligned dims waste compute and memory bandwidth.
+
 ### Extracting Results
 
 **If logs are overwritten, get results from checkpoint filenames:**
