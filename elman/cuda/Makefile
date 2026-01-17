@@ -105,6 +105,11 @@ CUDA_OBJS := \
 	lib/e73_matrix_nonlinear_gpu.o \
 	lib/e73_fused_gpu.o \
 	lib/e73_checkpointed_gpu.o \
+	lib/e74_gpu.o \
+	lib/e74_fused_gpu.o \
+	lib/e74_full_matrix_gpu.o \
+	lib/e74_full_matrix_v2_gpu.o \
+	lib/e75_gated_delta_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

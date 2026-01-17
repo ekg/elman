@@ -11021,6 +11021,555 @@ std::vector<Tensor> e74_fused_backward(
     return {dx, dW_kvq, dW_kq, dW_v, dW_k, dW_q, dW_z};
 }
 
+// =============================================================================
+// E74 Full Matrix: Full matrix state with E74's delta rule (NOT E70's decay!)
+// State S is [B, n_state, n_state] - O(n²) capacity
+// Update: S = tanh(S + outer(v - S@k, k))  -- delta rule, NO DECAY
+// =============================================================================
+
+std::vector<Tensor> e74_full_matrix_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    int proj_type,      // 0=tied_kvq, 2=no_z
+    bool use_tanh,
+    Tensor W_kvq,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward (only if training)
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor v_cache = (training && proj_type != 0) ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor q_cache = (training && proj_type != 0) ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+
+    // Checkpoint storage: combined buffer [num_checkpoints * B * n² + T * B * n]
+    // The kernel expects S_cache = [checkpoints][Sq_cache] contiguously
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_state;
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size}, options) : torch::empty({0}, options);
+    // Create views into the combined buffer for return
+    Tensor S_checkpoints = training ? S_cache.narrow(0, 0, checkpoints_size).view({num_checkpoints, batch_size, n_state, n_state}) : torch::empty({0}, options);
+    Tensor Sq_cache = training ? S_cache.narrow(0, checkpoints_size, sq_cache_size).view({time_steps, batch_size, n_state}) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E74 Full Matrix Forward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    const int64_t workspace_size = E74FullMatrixForward<__nv_bfloat16>::WorkspaceSize(time_steps, batch_size, n_state, proj_type);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    E74FullMatrixForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, dim, proj_type, use_tanh,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        W_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_kvq.data_ptr()) : nullptr,
+        W_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()) : nullptr,
+        W_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()) : nullptr,
+        W_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr,  // Combined buffer
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {S, output, k_cache, v_cache, q_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e74_full_matrix_backward(
+    int proj_type,
+    bool use_tanh,
+    Tensor W_kvq,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    Tensor x,
+    Tensor S_checkpoints,
+    Tensor Sq_cache,
+    Tensor k_cache,
+    Tensor v_cache,
+    Tensor q_cache,
+    Tensor d_output) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = k_cache.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S_checkpoints);
+    CHECK_INPUT(Sq_cache);
+    CHECK_INPUT(k_cache);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor dx = torch::empty_like(x);
+    Tensor dW_kvq = (proj_type == 0) ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_k = (proj_type != 0) ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_v = (proj_type != 0) ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_q = (proj_type != 0) ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E74 Full Matrix Backward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    const int64_t workspace_size = E74FullMatrixBackward<__nv_bfloat16>::WorkspaceSize(time_steps, batch_size, n_state, proj_type);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    E74FullMatrixBackward<__nv_bfloat16> backward(
+        batch_size, n_state, dim, proj_type, use_tanh,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        W_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_kvq.data_ptr()) : nullptr,
+        W_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()) : nullptr,
+        W_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()) : nullptr,
+        W_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+        v_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        q_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        dW_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_kvq.data_ptr()) : nullptr,
+        dW_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()) : nullptr,
+        dW_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()) : nullptr,
+        dW_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_kvq, dW_k, dW_v, dW_q};
+}
+
+// =============================================================================
+// E74 Full Matrix V2: Extended with update_type and gate_type
+// update_type: 0=delta, 1=residual, 2=ntm, 3=retrieved_gate, 4=ema
+// gate_type: 0=output (self-gate), 1=input (E1-style)
+// =============================================================================
+
+std::vector<Tensor> e74_full_matrix_forward_v2(
+    bool training,
+    Tensor x,                // [T, B, dim] input
+    Tensor S0,               // [B, n_state, n_state] initial state matrix
+    int proj_type,           // 0=tied_kvq, 1=tied_kq, 2=no_z
+    bool use_tanh,
+    int update_type,         // 0=delta, 1=residual, 2=ntm, 3=retrieved_gate, 4=ema
+    int gate_type,           // 0=output, 1=input
+    Tensor W_kvq,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    // Extra weights for update types:
+    Tensor residual_scale,   // [n_state] for residual update
+    Tensor W_erase,          // [n_state, dim] for NTM
+    Tensor b_erase,          // [n_state] for NTM
+    Tensor W_write,          // [n_state, dim] for NTM
+    Tensor b_write,          // [n_state] for NTM
+    Tensor W_gate,           // [n_state, dim] for retrieved_gate
+    Tensor b_gate,           // [n_state] for retrieved_gate
+    Tensor W_alpha,          // [n_state, dim] for EMA
+    Tensor b_alpha,          // [n_state] for EMA
+    // Extra weights for gate type:
+    Tensor W_z_gate,         // [n_state, dim] for input gate
+    Tensor b_z_gate) {       // [n_state] for input gate
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+
+    // Checkpoint storage
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_state;
+
+    // Extra caches for update types
+    int64_t extra_cache_size = 0;
+    if (update_type == 2) {  // NTM
+        extra_cache_size = 2 * time_steps * batch_size * n_state;
+    } else if (update_type == 3 || update_type == 4) {  // retrieved_gate or EMA
+        extra_cache_size = time_steps * batch_size * n_state;
+    }
+    if (gate_type == 1) {  // INPUT gate
+        extra_cache_size += time_steps * batch_size * n_state;
+    }
+
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size + extra_cache_size}, options) : torch::empty({0}, options);
+    Tensor S_checkpoints = training ? S_cache.narrow(0, 0, checkpoints_size).view({num_checkpoints, batch_size, n_state, n_state}) : torch::empty({0}, options);
+    Tensor Sq_cache = training ? S_cache.narrow(0, checkpoints_size, sq_cache_size).view({time_steps, batch_size, n_state}) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E74 Full Matrix V2 Forward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    const int64_t workspace_size = E74FullMatrixForwardV2<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state, dim, proj_type, update_type, gate_type);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    E74FullMatrixForwardV2<__nv_bfloat16> forward(
+        training, batch_size, n_state, dim, proj_type, use_tanh,
+        update_type, gate_type,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        W_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_kvq.data_ptr()) : nullptr,
+        W_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()) : nullptr,
+        W_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()) : nullptr,
+        W_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr,
+        // Extra weights for update types:
+        residual_scale.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(residual_scale.data_ptr()) : nullptr,
+        W_erase.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_erase.data_ptr()) : nullptr,
+        b_erase.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(b_erase.data_ptr()) : nullptr,
+        W_write.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_write.data_ptr()) : nullptr,
+        b_write.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(b_write.data_ptr()) : nullptr,
+        W_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_gate.data_ptr()) : nullptr,
+        b_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(b_gate.data_ptr()) : nullptr,
+        W_alpha.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_alpha.data_ptr()) : nullptr,
+        b_alpha.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(b_alpha.data_ptr()) : nullptr,
+        W_z_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_z_gate.data_ptr()) : nullptr,
+        b_z_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(b_z_gate.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {S, output, k_cache, v_cache, q_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e74_full_matrix_backward_v2(
+    Tensor x,                // [T, B, dim]
+    Tensor S_checkpoints,    // [num_checkpoints, B, n_state, n_state]
+    Tensor Sq_cache,         // [T, B, n_state]
+    Tensor k_cache,          // [T, B, n_state]
+    Tensor v_cache,          // [T, B, n_state]
+    Tensor q_cache,          // [T, B, n_state]
+    Tensor d_output,         // [T, B, n_state]
+    int proj_type,
+    bool use_tanh,
+    int update_type,
+    int gate_type,
+    Tensor W_kvq,
+    Tensor W_k,
+    Tensor W_v,
+    Tensor W_q,
+    // Extra weights for update types:
+    Tensor residual_scale,   // [n_state] for residual
+    Tensor erase_cache,      // [T, B, n_state] for NTM (already projected)
+    Tensor write_cache,      // [T, B, n_state] for NTM
+    Tensor gate_cache,       // [T, B, n_state] for retrieved_gate
+    Tensor alpha_cache,      // [T, B, n_state] for EMA
+    Tensor W_erase,          // [n_state, dim] for NTM
+    Tensor W_write,          // [n_state, dim] for NTM
+    Tensor W_gate,           // [n_state, dim] for retrieved_gate
+    Tensor W_alpha,          // [n_state, dim] for EMA
+    // Extra for gate type:
+    Tensor z_gate_cache,     // [T, B, n_state] for input gate (already projected)
+    Tensor W_z_gate) {       // [n_state, dim] for input gate
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = k_cache.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_kvq = proj_type == 0 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_k = proj_type >= 1 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_v = proj_type >= 1 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor dW_q = proj_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+
+    // Extra weight gradients
+    Tensor d_residual_scale = update_type == 1 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    Tensor dW_erase = update_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor db_erase = update_type == 2 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    Tensor dW_write = update_type == 2 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor db_write = update_type == 2 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    Tensor dW_gate_out = update_type == 3 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor db_gate = update_type == 3 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    Tensor dW_alpha = update_type == 4 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor db_alpha = update_type == 4 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+    Tensor dW_z_gate = gate_type == 1 ? torch::zeros({n_state, dim}, options) : torch::empty({0}, options);
+    Tensor db_z_gate = gate_type == 1 ? torch::zeros({n_state}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E74 Full Matrix V2 Backward only supports bfloat16");
+
+    using namespace elman;
+
+    const int64_t workspace_size = E74FullMatrixBackwardV2<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state, update_type, gate_type);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    E74FullMatrixBackwardV2<__nv_bfloat16> backward(
+        batch_size, n_state, dim, proj_type, use_tanh,
+        update_type, gate_type,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        W_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_kvq.data_ptr()) : nullptr,
+        W_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()) : nullptr,
+        W_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()) : nullptr,
+        W_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+        // Extra inputs for update types:
+        residual_scale.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(residual_scale.data_ptr()) : nullptr,
+        erase_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(erase_cache.data_ptr()) : nullptr,
+        write_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(write_cache.data_ptr()) : nullptr,
+        gate_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(gate_cache.data_ptr()) : nullptr,
+        alpha_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(alpha_cache.data_ptr()) : nullptr,
+        z_gate_cache.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(z_gate_cache.data_ptr()) : nullptr,
+        // Extra weights for dx contribution:
+        W_erase.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_erase.data_ptr()) : nullptr,
+        W_write.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_write.data_ptr()) : nullptr,
+        W_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_gate.data_ptr()) : nullptr,
+        W_alpha.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_alpha.data_ptr()) : nullptr,
+        W_z_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(W_z_gate.data_ptr()) : nullptr,
+        // Outputs:
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        dW_kvq.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_kvq.data_ptr()) : nullptr,
+        dW_k.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()) : nullptr,
+        dW_v.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()) : nullptr,
+        dW_q.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()) : nullptr,
+        d_residual_scale.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_residual_scale.data_ptr()) : nullptr,
+        dW_erase.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_erase.data_ptr()) : nullptr,
+        db_erase.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(db_erase.data_ptr()) : nullptr,
+        dW_write.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_write.data_ptr()) : nullptr,
+        db_write.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(db_write.data_ptr()) : nullptr,
+        dW_gate_out.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_gate_out.data_ptr()) : nullptr,
+        db_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(db_gate.data_ptr()) : nullptr,
+        dW_alpha.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_alpha.data_ptr()) : nullptr,
+        db_alpha.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(db_alpha.data_ptr()) : nullptr,
+        dW_z_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(dW_z_gate.data_ptr()) : nullptr,
+        db_z_gate.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(db_z_gate.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_kvq, dW_k, dW_v, dW_q, d_residual_scale, dW_erase, db_erase, dW_write, db_write, dW_gate_out, db_gate, dW_alpha, db_alpha, dW_z_gate, db_z_gate};
+}
+
+// =============================================================================
+// E75 Gated Delta: Gated delta rule with forget gate
+// β = sigmoid(W_β @ x + b_β)
+// S = tanh(β * S + outer(v - S@k, k))
+// =============================================================================
+
+std::vector<Tensor> e75_gated_delta_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    Tensor W_k,         // [n_state, dim]
+    Tensor W_v,         // [n_state, dim]
+    Tensor W_q,         // [n_state, dim]
+    Tensor W_beta,      // [n_state, dim] forget gate projection
+    Tensor b_beta) {    // [n_state] forget gate bias
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_beta);
+    CHECK_INPUT(b_beta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor beta_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+
+    // S_cache holds [S_checkpoints][Sq_cache] contiguously
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_state;
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E75 Gated Delta Forward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    E75GatedDeltaForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, dim,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(b_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(beta_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr);
+
+    // Extract views from S_cache for return
+    Tensor S_checkpoints = training ? S_cache.narrow(0, 0, checkpoints_size).view({num_checkpoints, batch_size, n_state, n_state}) : torch::empty({0}, options);
+    Tensor Sq_cache = training ? S_cache.narrow(0, checkpoints_size, sq_cache_size).view({time_steps, batch_size, n_state}) : torch::empty({0}, options);
+
+    return {S, output, k_cache, v_cache, q_cache, beta_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e75_gated_delta_backward(
+    Tensor x,               // [T, B, dim]
+    Tensor S_checkpoints,   // [num_checkpoints, B, n_state, n_state]
+    Tensor Sq_cache,        // [T, B, n_state]
+    Tensor k_cache,         // [T, B, n_state]
+    Tensor v_cache,         // [T, B, n_state]
+    Tensor q_cache,         // [T, B, n_state]
+    Tensor beta_cache,      // [T, B, n_state]
+    Tensor d_output,        // [T, B, n_state]
+    Tensor W_k,             // [n_state, dim]
+    Tensor W_v,             // [n_state, dim]
+    Tensor W_q,             // [n_state, dim]
+    Tensor W_beta) {        // [n_state, dim]
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = k_cache.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_beta = torch::zeros({n_state, dim}, options);
+    Tensor db_beta = torch::zeros({n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E75 Gated Delta Backward only supports bfloat16");
+
+    using namespace elman;
+
+    const int64_t workspace_size = E75GatedDeltaBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    E75GatedDeltaBackward<__nv_bfloat16> backward(
+        batch_size, n_state, dim,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(beta_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(db_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_k, dW_v, dW_q, dW_beta, db_beta};
+}
+
 }  // anonymous namespace
 
 
@@ -11353,4 +11902,18 @@ void elman_ladder_init(py::module& m) {
           "E74 Fused: Optimized kernel that processes ALL timesteps in ONE launch");
     m.def("e74_fused_backward", &e74_fused_backward,
           "E74 Fused: Backward pass with single kernel launch");
+    m.def("e74_full_matrix_forward", &e74_full_matrix_forward,
+          "E74 Full Matrix: Full matrix state [B, n, n] with delta rule (NOT E70's decay!)");
+    m.def("e74_full_matrix_backward", &e74_full_matrix_backward,
+          "E74 Full Matrix: Backward pass with gradient checkpointing");
+    m.def("e74_full_matrix_forward_v2", &e74_full_matrix_forward_v2,
+          "E74 Full Matrix V2: Extended with update_type (0=delta,1=residual,2=ntm,3=retrieved_gate,4=ema) and gate_type (0=output,1=input)");
+    m.def("e74_full_matrix_backward_v2", &e74_full_matrix_backward_v2,
+          "E74 Full Matrix V2: Backward pass for extended variants");
+
+    // E75: Gated Delta Matrix
+    m.def("e75_gated_delta_forward", &e75_gated_delta_forward,
+          "E75 Gated Delta: Full matrix with forget gate - S = tanh(β*S + outer(delta, k))");
+    m.def("e75_gated_delta_backward", &e75_gated_delta_backward,
+          "E75 Gated Delta: Backward pass with gradient checkpointing");
 }

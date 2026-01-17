@@ -6888,12 +6888,16 @@ struct E74FullMatrixBackward {
         T* dW_q,
         T* workspace);
 
-    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
-        // Workspace for d_k accumulation
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int proj_type = 0) {
+        // Workspace for d_k accumulation: [T, B, n_state]
         int64_t size = steps * batch_size * n_state * sizeof(T);
-        // For n_state >= 96, add state workspace for global memory kernel
+        // For no_z projection (proj_type=2), also need d_v and d_q
+        if (proj_type == 2) {
+            size += 2 * steps * batch_size * n_state * sizeof(T);  // d_v + d_q
+        }
+        // For n_state >= 48, add state workspace for global memory kernel
         // state_workspace: [B, 3, n_state, n_state] in float32
-        if (n_state >= 96) {
+        if (n_state >= 48) {
             size += batch_size * 3 * n_state * n_state * sizeof(float);
         }
         return size;
@@ -6905,6 +6909,267 @@ private:
     int dim_;
     int proj_type_;
     bool use_tanh_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E74 Full Matrix V2: Extended with update_type and gate_type
+// update_type: 0=delta, 1=residual, 2=ntm, 3=retrieved_gate, 4=ema
+// gate_type: 0=output (self-gate), 1=input (E1-style)
+// =============================================================================
+
+template<typename T>
+struct E74FullMatrixForwardV2 {
+    E74FullMatrixForwardV2(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,    // 0=tied_kvq, 1=tied_kq, 2=no_z
+        bool use_tanh,
+        int update_type,  // 0=delta, 1=residual, 2=ntm, 3=retrieved_gate, 4=ema
+        int gate_type,    // 0=output (self-gate), 1=input (E1-style)
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,         // [n_state, dim] for tied_kvq
+        const T* W_k,           // [n_state, dim] for no_z/tied_kq
+        const T* W_v,           // [n_state, dim] for no_z/tied_kq
+        const T* W_q,           // [n_state, dim] for no_z
+        const T* x,             // [T, B, dim]
+        T* S,                   // [B, n_state, n_state]
+        T* output,              // [T, B, n_state]
+        T* k_cache,             // [T, B, n_state]
+        T* v_cache,             // [T, B, n_state]
+        T* q_cache,             // [T, B, n_state]
+        T* S_cache,             // checkpoints + Sq_cache
+        // Extra params for update_type variants:
+        const T* residual_scale,  // [n_state] for residual update
+        const T* W_erase,         // [n_state, dim] for NTM
+        const T* b_erase,         // [n_state] for NTM
+        const T* W_write,         // [n_state, dim] for NTM
+        const T* b_write,         // [n_state] for NTM
+        const T* W_gate,          // [n_state, dim] for retrieved_gate
+        const T* b_gate,          // [n_state] for retrieved_gate
+        const T* W_alpha,         // [n_state, dim] for EMA
+        const T* b_alpha,         // [n_state] for EMA (bias toward preserve)
+        // Extra params for gate_type:
+        const T* W_z_gate,        // [n_state, dim] for input gate
+        const T* b_z_gate,        // [n_state] for input gate
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int dim,
+                                  int proj_type, int update_type, int gate_type) {
+        int64_t size = 0;
+        // Base caches: k, v, q
+        size += 3 * steps * batch_size * n_state * sizeof(T);
+        // Checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;  // CHECKPOINT_INTERVAL=16
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_state * sizeof(T);  // Sq_cache
+        // Extra caches for update types
+        if (update_type == 2) {  // NTM: erase_cache, write_cache
+            size += 2 * steps * batch_size * n_state * sizeof(T);
+        } else if (update_type == 3) {  // retrieved_gate: gate_cache
+            size += steps * batch_size * n_state * sizeof(T);
+        } else if (update_type == 4) {  // EMA: alpha_cache
+            size += steps * batch_size * n_state * sizeof(T);
+        }
+        // Extra cache for input gate
+        if (gate_type == 1) {
+            size += steps * batch_size * n_state * sizeof(T);  // z_gate_cache
+        }
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    int update_type_;
+    int gate_type_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74FullMatrixBackwardV2 {
+    E74FullMatrixBackwardV2(
+        int batch_size,
+        int n_state,
+        int dim,
+        int proj_type,
+        bool use_tanh,
+        int update_type,
+        int gate_type,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvq,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* d_output,
+        // Extra inputs for update types:
+        const T* residual_scale,
+        const T* erase_cache,
+        const T* write_cache,
+        const T* gate_cache,
+        const T* alpha_cache,
+        const T* z_gate_cache,
+        // Extra weights for dx contribution (needed for full gradient):
+        const T* W_erase,         // [n_state, dim] for NTM
+        const T* W_write,         // [n_state, dim] for NTM
+        const T* W_gate,          // [n_state, dim] for retrieved_gate
+        const T* W_alpha,         // [n_state, dim] for EMA
+        const T* W_z_gate,        // [n_state, dim] for input gate
+        // Outputs:
+        T* dx,
+        T* dW_kvq,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* d_residual_scale,
+        T* dW_erase,
+        T* db_erase,
+        T* dW_write,
+        T* db_write,
+        T* dW_gate,
+        T* db_gate,
+        T* dW_alpha,
+        T* db_alpha,
+        T* dW_z_gate,
+        T* db_z_gate,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int update_type = 0, int gate_type = 0) {
+        // Base: d_k, d_v, d_q
+        int64_t size = 3 * steps * batch_size * n_state * sizeof(T);
+        // Always allocate space for all gradient types (simplifies workspace layout)
+        // d_erase, d_write, d_gate, d_alpha, d_z_gate
+        size += 5 * steps * batch_size * n_state * sizeof(T);
+        // d_residual_scale_accum: [B, n_state] floats
+        size += batch_size * n_state * sizeof(float);
+        return size;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int proj_type_;
+    bool use_tanh_;
+    int update_type_;
+    int gate_type_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E75 Gated Delta Matrix - E74 + forget gate
+// β = sigmoid(W_β @ x + b_β)
+// S = tanh(β * S + outer(delta, k_norm))
+// =============================================================================
+
+template<typename T>
+struct E75GatedDeltaForward {
+    E75GatedDeltaForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* b_beta,
+        const T* x,
+        T* S,
+        T* output,
+        T* k_cache,
+        T* v_cache,
+        T* q_cache,
+        T* beta_cache,
+        T* S_cache);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_cache, v_cache, q_cache, beta_cache
+        int64_t size = 4 * steps * batch_size * n_state * sizeof(T);
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E75GatedDeltaBackward {
+    E75GatedDeltaBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* beta_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_beta,
+        T* db_beta,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_k_all, d_v_all, d_q_all, d_beta_all
+        return 4 * steps * batch_size * n_state * sizeof(T);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
