@@ -11572,6 +11572,178 @@ std::vector<Tensor> e75_gated_delta_backward(
     return {dx, dW_k, dW_v, dW_q, dW_beta, db_beta};
 }
 
+// =============================================================================
+// E76 Log-Space Gated Delta: Configurable nonlinearity + Mamba2/FLA-GDN params
+// decay = exp(-exp(A_log) * softplus(gate + dt_bias))  [or sigmoid]
+// S = tanh(decay * S + outer(delta, k_norm))  [or linear]
+// =============================================================================
+
+std::vector<Tensor> e76_logspace_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial state matrix
+    Tensor W_k,         // [n_state, dim]
+    Tensor W_v,         // [n_state, dim]
+    Tensor W_q,         // [n_state, dim]
+    Tensor W_gate,      // [n_state, dim]
+    Tensor A_log,       // [n_state] log-space decay (or b_gate for sigmoid mode)
+    Tensor dt_bias,     // [n_state] inverse softplus dt (or unused for sigmoid mode)
+    bool use_tanh,
+    bool log_space_gate) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_gate);
+    CHECK_INPUT(A_log);
+    CHECK_INPUT(dt_bias);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor gate_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor decay_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+
+    // S_cache holds [S_checkpoints][Sq_cache] contiguously
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_state;
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E76 Log-Space Forward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    E76LogSpaceForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, dim, use_tanh, log_space_gate,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_gate.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(A_log.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dt_bias.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(gate_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(decay_cache.data_ptr()) : nullptr);
+
+    // Extract views from S_cache for return
+    Tensor S_checkpoints = training ? S_cache.narrow(0, 0, checkpoints_size).view({num_checkpoints, batch_size, n_state, n_state}) : torch::empty({0}, options);
+    Tensor Sq_cache = training ? S_cache.narrow(0, checkpoints_size, sq_cache_size).view({time_steps, batch_size, n_state}) : torch::empty({0}, options);
+
+    return {S, output, k_cache, v_cache, q_cache, gate_cache, decay_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e76_logspace_backward(
+    Tensor x,               // [T, B, dim]
+    Tensor S_checkpoints,   // [num_checkpoints, B, n_state, n_state]
+    Tensor Sq_cache,        // [T, B, n_state]
+    Tensor k_cache,         // [T, B, n_state]
+    Tensor v_cache,         // [T, B, n_state]
+    Tensor q_cache,         // [T, B, n_state]
+    Tensor gate_cache,      // [T, B, n_state]
+    Tensor decay_cache,     // [T, B, n_state]
+    Tensor d_output,        // [T, B, n_state]
+    Tensor W_k,             // [n_state, dim]
+    Tensor W_v,             // [n_state, dim]
+    Tensor W_q,             // [n_state, dim]
+    Tensor W_gate,          // [n_state, dim]
+    Tensor A_log,           // [n_state]
+    Tensor dt_bias,         // [n_state]
+    bool use_tanh,
+    bool log_space_gate) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = k_cache.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_k = torch::zeros({n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_gate = torch::zeros({n_state, dim}, options);
+    Tensor dA_log = torch::zeros({n_state}, options);
+    Tensor ddt_bias = torch::zeros({n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E76 Log-Space Backward only supports bfloat16");
+
+    using namespace elman;
+
+    const int64_t workspace_size = E76LogSpaceBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state);
+    Tensor workspace = torch::empty({workspace_size}, options.dtype(at::kByte));
+
+    E76LogSpaceBackward<__nv_bfloat16> backward(
+        batch_size, n_state, dim, use_tanh, log_space_gate,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_gate.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(A_log.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dt_bias.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(gate_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(decay_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_gate.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dA_log.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(ddt_bias.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_k, dW_v, dW_q, dW_gate, dA_log, ddt_bias};
+}
+
 }  // anonymous namespace
 
 
@@ -11918,4 +12090,10 @@ void elman_ladder_init(py::module& m) {
           "E75 Gated Delta: Full matrix with forget gate - S = tanh(β*S + outer(delta, k))");
     m.def("e75_gated_delta_backward", &e75_gated_delta_backward,
           "E75 Gated Delta: Backward pass with gradient checkpointing");
+
+    // E76: Log-Space Gated Delta with configurable nonlinearity
+    m.def("e76_logspace_forward", &e76_logspace_forward,
+          "E76 Log-Space: Configurable tanh + Mamba2-style decay parameterization");
+    m.def("e76_logspace_backward", &e76_logspace_backward,
+          "E76 Log-Space: Backward pass with gradient checkpointing");
 }

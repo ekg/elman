@@ -110,6 +110,7 @@ CUDA_OBJS := \
 	lib/e74_full_matrix_gpu.o \
 	lib/e74_full_matrix_v2_gpu.o \
 	lib/e75_gated_delta_gpu.o \
+	lib/e76_logspace_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

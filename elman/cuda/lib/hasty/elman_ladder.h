@@ -7174,6 +7174,142 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E76: Log-Space Gated Delta Matrix with Configurable Nonlinearity
+// Combines E75's nonlinear recurrence with Mamba2/FLA-GDN parameterization
+// =============================================================================
+
+// Dispatcher functions (implemented in e76_logspace_gpu.cu.cc)
+void dispatch_e76_forward(
+    int T, int B, int n_state,
+    bool use_tanh, bool log_space_gate,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* gate_all,
+    const __nv_bfloat16* A_log, const __nv_bfloat16* dt_bias,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* decay_cache, int checkpoint_interval,
+    cudaStream_t stream
+);
+
+void dispatch_e76_backward(
+    int T, int B, int n_state,
+    bool use_tanh, bool log_space_gate,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* gate_all,
+    const __nv_bfloat16* A_log, const __nv_bfloat16* dt_bias,
+    const __nv_bfloat16* decay_cache, const __nv_bfloat16* S_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_gate_all,
+    float* d_A_log_accum, float* d_dt_bias_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E76LogSpaceForward {
+    E76LogSpaceForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        bool use_tanh,
+        bool log_space_gate,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_gate,
+        const T* A_log,
+        const T* dt_bias,
+        const T* x,
+        T* S,
+        T* output,
+        T* k_cache,
+        T* v_cache,
+        T* q_cache,
+        T* gate_cache,
+        T* S_cache,
+        T* decay_cache);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_cache, v_cache, q_cache, gate_cache, decay_cache
+        int64_t size = 5 * steps * batch_size * n_state * sizeof(T);
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    bool use_tanh_;
+    bool log_space_gate_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E76LogSpaceBackward {
+    E76LogSpaceBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        bool use_tanh,
+        bool log_space_gate,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_gate,
+        const T* A_log,
+        const T* dt_bias,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* gate_cache,
+        const T* decay_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_gate,
+        T* dA_log,
+        T* ddt_bias,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_k_all, d_v_all, d_q_all, d_gate_all + accumulator space
+        return 4 * steps * batch_size * n_state * sizeof(T) +
+               2 * batch_size * n_state * sizeof(float);  // For A_log/dt_bias accumulators
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    bool use_tanh_;
+    bool log_space_gate_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H

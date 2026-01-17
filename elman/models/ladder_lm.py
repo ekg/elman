@@ -97,6 +97,7 @@ from .e72_matrix_selfgate import E72MatrixSelfGate, E72MatrixSelfGateStandard, E
 from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73MatrixRow, E73MatrixFull
 from .e74_v2 import E74v2
 from .e75_gated_delta import E75GatedDelta
+from .e76_logspace_delta import E76LogSpaceDelta
 
 
 def get_ladder_level(level):
@@ -220,6 +221,23 @@ def get_ladder_level(level):
         '75n48': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 48}),
         '75n64': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 64}),
         '75n96': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 96}),
+        # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
+        # Default: tanh + log_gate (nonlinear recurrence with stable params)
+        76: E76LogSpaceDelta,
+        '76n32': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 32}),
+        '76n48': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 48}),
+        '76n64': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 64}),
+        '76n96': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 96}),
+        # E76 configuration variants:
+        # -t = tanh (nonlinear), -l = linear, -log = log_gate, -sig = sigmoid_gate
+        '76-t-log': lambda **kw: E76LogSpaceDelta(**{**kw, 'use_tanh': True, 'log_space_gate': True}),
+        '76-t-sig': lambda **kw: E76LogSpaceDelta(**{**kw, 'use_tanh': True, 'log_space_gate': False}),
+        '76-l-log': lambda **kw: E76LogSpaceDelta(**{**kw, 'use_tanh': False, 'log_space_gate': True}),
+        '76-l-sig': lambda **kw: E76LogSpaceDelta(**{**kw, 'use_tanh': False, 'log_space_gate': False}),
+        # With n_state variants
+        '76n32-t-log': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 32, 'use_tanh': True, 'log_space_gate': True}),
+        '76n48-t-log': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 48, 'use_tanh': True, 'log_space_gate': True}),
+        '76n64-t-log': lambda **kw: E76LogSpaceDelta(**{**kw, 'n_state': 64, 'use_tanh': True, 'log_space_gate': True}),
         # E74v2: Extended delta rule variants (CUDA kernel support)
         '74v2': E74v2,  # E74v2 base: delta update, output gate
         '74v2-delta': lambda **kw: E74v2(update_type='delta', **kw),
