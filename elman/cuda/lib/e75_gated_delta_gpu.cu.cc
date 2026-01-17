@@ -227,9 +227,9 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
     if (b >= B) return;
 
     extern __shared__ float shared_mem[];
-    float* S_prev = shared_mem;                       // [N_STATE * N_STATE]
-    float* S_curr = S_prev + N_STATE * N_STATE;       // [N_STATE * N_STATE]
-    float* dS = S_curr + N_STATE * N_STATE;           // [N_STATE * N_STATE]
+    // In-place update: only 2 matrices instead of 3
+    float* S = shared_mem;                            // [N_STATE * N_STATE] - state (updated in-place)
+    float* dS = S + N_STATE * N_STATE;                // [N_STATE * N_STATE] - gradient accumulator
     float* k_raw = dS + N_STATE * N_STATE;            // [N_STATE]
     float* v_raw = k_raw + N_STATE;                   // [N_STATE]
     float* q_raw = v_raw + N_STATE;                   // [N_STATE]
@@ -261,9 +261,9 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
 
         // Backward through segment
         for (int t = t_end - 1; t >= t_start; t--) {
-            // Reload checkpoint and recompute forward to timestep t
+            // Reload checkpoint into S (will be updated in-place during recomputation)
             for (int i = tid; i < n2; i += blockDim.x) {
-                S_prev[i] = __bfloat162float(S_checkpoints[seg * B * n2 + b * n2 + i]);
+                S[i] = __bfloat162float(S_checkpoints[seg * B * n2 + b * n2 + i]);
             }
             __syncthreads();
 
@@ -290,37 +290,33 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
                 }
                 __syncthreads();
 
-                // Compute retrieved = S_prev @ k_norm
+                // Compute retrieved = S @ k_norm (S is current state)
                 if (tid < N_STATE) {
                     float sum = 0.0f;
                     for (int j = 0; j < N_STATE; j++) {
-                        sum += S_prev[tid * N_STATE + j] * k_norm[j];
+                        sum += S[tid * N_STATE + j] * k_norm[j];
                     }
                     retrieved[tid] = sum;
                     delta[tid] = v_raw[tid] - retrieved[tid];
                 }
                 __syncthreads();
 
-                // Compute S_curr = tanh(β * S_prev + outer(delta, k_norm))
-                for (int i = tid; i < n2; i += blockDim.x) {
-                    int row = i / N_STATE;
-                    int col = i % N_STATE;
-                    float update = beta[row] * S_prev[i] + delta[row] * k_norm[col];
-                    S_curr[i] = tanhf(update);
-                }
-                __syncthreads();
-
-                // S_prev becomes S_curr for next iteration (except last)
+                // Update state IN-PLACE only for tt < t (keep S = S_{t-1} for backward)
+                // When tt == t, we keep k, v, q, delta, k_norm, beta for backward but don't update S
                 if (tt < t) {
                     for (int i = tid; i < n2; i += blockDim.x) {
-                        S_prev[i] = S_curr[i];
+                        int row = i / N_STATE;
+                        int col = i % N_STATE;
+                        float update = beta[row] * S[i] + delta[row] * k_norm[col];
+                        S[i] = tanhf(update);
                     }
                     __syncthreads();
                 }
             }
 
-            // Now we have S_prev (state before step t) and S_curr (state after step t)
-            // along with k_norm, v_raw, q_raw, delta, beta for step t
+            // Now S holds S_{t-1} (state before step t)
+            // k_norm, v_raw, q_raw, delta, beta are loaded for step t
+            // We compute S_t on-the-fly when needed
 
             // Backward through output: out = Sq * silu(Sq) = Sq² * sigmoid(Sq)
             if (tid < N_STATE) {
@@ -342,30 +338,35 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
             }
             __syncthreads();
 
-            // d_q = S_curr^T @ d_Sq
+            // d_q = S_t^T @ d_Sq (compute S_t on-the-fly from S = S_{t-1})
             if (tid < N_STATE) {
                 float sum = 0.0f;
                 for (int i = 0; i < N_STATE; i++) {
-                    sum += S_curr[i * N_STATE + tid] * d_Sq_shared[i];
+                    // Compute S_t[i,tid] on-the-fly: S_t = tanh(β * S + outer(delta, k_norm))
+                    float S_t_ij = tanhf(beta[i] * S[i * N_STATE + tid] + delta[i] * k_norm[tid]);
+                    sum += S_t_ij * d_Sq_shared[i];
                 }
                 d_q_raw[tid] = sum;
             }
             __syncthreads();
 
-            // Backward through state update: S_curr = tanh(β * S_prev + outer(delta, k))
-            // d_pre_tanh = dS * (1 - S_curr²)
-            // d_beta[i] = sum_j(d_pre_tanh[i,j] * S_prev[i,j])
+            // Backward through state update: S_t = tanh(β * S + outer(delta, k))
+            // where S = S_{t-1}
+            // d_pre_tanh = dS * (1 - S_t²)
+            // d_beta[i] = sum_j(d_pre_tanh[i,j] * S[i,j])  (uses S = S_{t-1})
             // d_delta[i] = sum_j(d_pre_tanh[i,j] * k_norm[j])
             // d_k_norm[j] = sum_i(d_pre_tanh[i,j] * delta[i])
 
-            // Compute d_delta and d_beta
+            // Compute d_delta and d_beta (compute S_t on-the-fly for tanh derivative)
             if (tid < N_STATE) {
                 float d_delta_local = 0.0f;
                 float d_beta_local = 0.0f;
                 for (int j = 0; j < N_STATE; j++) {
-                    float d_pre = dS[tid * N_STATE + j] * (1.0f - S_curr[tid * N_STATE + j] * S_curr[tid * N_STATE + j]);
+                    // Compute S_t[tid,j] on-the-fly
+                    float S_t_ij = tanhf(beta[tid] * S[tid * N_STATE + j] + delta[tid] * k_norm[j]);
+                    float d_pre = dS[tid * N_STATE + j] * (1.0f - S_t_ij * S_t_ij);
                     d_delta_local += d_pre * k_norm[j];
-                    d_beta_local += d_pre * S_prev[tid * N_STATE + j];
+                    d_beta_local += d_pre * S[tid * N_STATE + j];  // Uses S = S_{t-1}
                 }
                 d_delta[tid] = d_delta_local;
                 // Store d_beta for this timestep
@@ -373,11 +374,13 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Compute d_k_norm
+            // Compute d_k_norm (compute S_t on-the-fly for tanh derivative)
             if (tid < N_STATE) {
                 float d_k_norm_local = 0.0f;
                 for (int i = 0; i < N_STATE; i++) {
-                    float d_pre = dS[i * N_STATE + tid] * (1.0f - S_curr[i * N_STATE + tid] * S_curr[i * N_STATE + tid]);
+                    // Compute S_t[i,tid] on-the-fly
+                    float S_t_ij = tanhf(beta[i] * S[i * N_STATE + tid] + delta[i] * k_norm[tid]);
+                    float d_pre = dS[i * N_STATE + tid] * (1.0f - S_t_ij * S_t_ij);
                     d_k_norm_local += d_pre * delta[i];
                 }
                 d_k_norm[tid] = d_k_norm_local;
@@ -390,11 +393,11 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
                 d_v_raw[tid] = d_delta[tid];
             }
 
-            // d_k_norm += S_prev^T @ (-d_delta) (from retrieved = S_prev @ k_norm)
+            // d_k_norm += S^T @ (-d_delta) (from retrieved = S @ k_norm, where S = S_{t-1})
             if (tid < N_STATE) {
                 float sum = 0.0f;
                 for (int i = 0; i < N_STATE; i++) {
-                    sum += S_prev[i * N_STATE + tid] * (-d_delta[i]);
+                    sum += S[i * N_STATE + tid] * (-d_delta[i]);
                 }
                 d_k_norm[tid] += sum;
             }
@@ -429,14 +432,17 @@ __global__ void E75GatedDeltaBackwardKernel_BF16(
 
             // Update dS for next iteration:
             // dS_prev has two contributions:
-            // 1. From pre_tanh = beta * S_prev + outer(delta, k_norm): d_pre_tanh * beta
-            // 2. From retrieved = S_prev @ k_norm: outer(-d_delta, k_norm)
+            // 1. From pre_tanh = beta * S + outer(delta, k_norm): d_pre_tanh * beta
+            // 2. From retrieved = S @ k_norm: outer(-d_delta, k_norm)
+            // Need to compute S_t on-the-fly for tanh derivative
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
-                float d_pre = dS[i] * (1.0f - S_curr[i] * S_curr[i]);
-                // Contribution 1: gradient through beta * S_prev
-                // Contribution 2: gradient through retrieved = S_prev @ k_norm
+                // Compute S_t on-the-fly
+                float S_t_ij = tanhf(beta[row] * S[i] + delta[row] * k_norm[col]);
+                float d_pre = dS[i] * (1.0f - S_t_ij * S_t_ij);
+                // Contribution 1: gradient through beta * S (where S = S_{t-1})
+                // Contribution 2: gradient through retrieved = S @ k_norm
                 //                 d_retrieved = -d_delta, so dS += outer(-d_delta, k_norm)
                 dS[i] = d_pre * beta[row] + (-d_delta[row]) * k_norm[col];
             }
@@ -543,8 +549,13 @@ void E75GatedDeltaForward<DataT>::Run(
             (__nv_bfloat16*)sq_cache, \
             CHECKPOINT_INTERVAL)
 
-    if (n == 16) { DISPATCH_E75_FORWARD(16); }
+    if (n == 1) { DISPATCH_E75_FORWARD(1); }
+    else if (n == 2) { DISPATCH_E75_FORWARD(2); }
+    else if (n == 4) { DISPATCH_E75_FORWARD(4); }
+    else if (n == 8) { DISPATCH_E75_FORWARD(8); }
+    else if (n == 16) { DISPATCH_E75_FORWARD(16); }
     else if (n == 24) { DISPATCH_E75_FORWARD(24); }
+    else if (n == 28) { DISPATCH_E75_FORWARD(28); }
     else if (n == 32) { DISPATCH_E75_FORWARD(32); }
     else if (n == 48) { DISPATCH_E75_FORWARD(48); }
     else if (n == 64) { DISPATCH_E75_FORWARD(64); }
@@ -610,18 +621,24 @@ void E75GatedDeltaBackward<DataT>::Run(
     DataT* d_q_all = d_v_all + T * B * n;
     DataT* d_beta_all = d_q_all + T * B * n;
 
-    // Shared memory: 3*n² + 16*n floats
-    int shared_size = (3 * n * n + 16 * n) * sizeof(float);
+    // Shared memory: 2*n² + 13*n floats (in-place updates)
+    // n=32: ~10KB, n=48: ~21KB, n=64: ~37KB, n=96: ~78KB
+    int shared_size = (2 * n * n + 13 * n) * sizeof(float);
     int threads = min(256, n * n);
 
-    // For n_state >= 48, need to set extended shared memory (exceeds default 48KB)
+    // For n_state >= 64, need to set extended shared memory (exceeds default 48KB)
     // Use cudaFuncSetAttribute to request more shared memory
+    // Note: n=96 requires 114KB (exceeds Ada 99KB), n=128 requires 200KB (exceeds Ampere 164KB)
     #define SET_SHARED_MEM_AND_DISPATCH_E75_BACKWARD(N) \
-        if (shared_size > 48 * 1024) { \
-            cudaFuncSetAttribute(E75GatedDeltaBackwardKernel_BF16<N>, \
+        { \
+            cudaError_t attr_err = cudaFuncSetAttribute(E75GatedDeltaBackwardKernel_BF16<N>, \
                 cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
-        } \
-        E75GatedDeltaBackwardKernel_BF16<N><<<B, threads, shared_size, stream_>>>( \
+            if (attr_err != cudaSuccess) { \
+                fprintf(stderr, "E75 Backward: n_state=%d requires %d KB shared memory but GPU limit exceeded (error: %s)\n", \
+                    N, shared_size / 1024, cudaGetErrorString(attr_err)); \
+                fprintf(stderr, "Try n_state <= 64 on Ada GPUs, or use Ampere for n_state=%d\n", N); \
+            } else { \
+                E75GatedDeltaBackwardKernel_BF16<N><<<B, threads, shared_size, stream_>>>( \
             T, B, \
             (const __nv_bfloat16*)k_cache, \
             (const __nv_bfloat16*)v_cache, \
@@ -634,7 +651,9 @@ void E75GatedDeltaBackward<DataT>::Run(
             (__nv_bfloat16*)d_v_all, \
             (__nv_bfloat16*)d_q_all, \
             (__nv_bfloat16*)d_beta_all, \
-            CHECKPOINT_INTERVAL)
+            CHECKPOINT_INTERVAL); \
+            } \
+        }
 
     // Run backward kernel
     #define DISPATCH_E75_BACKWARD(N) \
@@ -653,11 +672,17 @@ void E75GatedDeltaBackward<DataT>::Run(
             (__nv_bfloat16*)d_beta_all, \
             CHECKPOINT_INTERVAL)
 
-    // For small n_state, use regular dispatch; for large n_state, set extended shared memory
-    if (n == 16) { DISPATCH_E75_BACKWARD(16); }
+    // For small n_state (<64), use regular dispatch; for n>=64, set extended shared memory (>48KB)
+    if (n == 1) { DISPATCH_E75_BACKWARD(1); }
+    else if (n == 2) { DISPATCH_E75_BACKWARD(2); }
+    else if (n == 4) { DISPATCH_E75_BACKWARD(4); }
+    else if (n == 8) { DISPATCH_E75_BACKWARD(8); }
+    else if (n == 16) { DISPATCH_E75_BACKWARD(16); }
     else if (n == 24) { DISPATCH_E75_BACKWARD(24); }
+    else if (n == 28) { DISPATCH_E75_BACKWARD(28); }
     else if (n == 32) { DISPATCH_E75_BACKWARD(32); }
-    else if (n == 48) { SET_SHARED_MEM_AND_DISPATCH_E75_BACKWARD(48); }
+    else if (n == 48) { DISPATCH_E75_BACKWARD(48); }  // 30KB fits in default 48KB
+    // n >= 64 needs extended shared memory (>48KB default limit)
     else if (n == 64) { SET_SHARED_MEM_AND_DISPATCH_E75_BACKWARD(64); }
     else if (n == 96) { SET_SHARED_MEM_AND_DISPATCH_E75_BACKWARD(96); }
     else if (n == 128) { SET_SHARED_MEM_AND_DISPATCH_E75_BACKWARD(128); }
