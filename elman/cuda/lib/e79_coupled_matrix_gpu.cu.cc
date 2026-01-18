@@ -13,14 +13,14 @@
  *   FUSED projection: kvqm = W_kvqm @ x  (k, v, q, m)
  *
  *   # S update (M-controlled gating)
- *   s_row_decay = sigmoid(M @ k_norm)
- *   s_col_decay = sigmoid(M.T @ k_norm)
+ *   s_row_decay = sigmoid(M @ k_norm + b_s_gate)
+ *   s_col_decay = sigmoid(M.T @ k_norm + b_s_gate)
  *   s_delta = v - S @ k_norm
  *   S = (s_row_decay[:, None] * S * s_col_decay[None, :]) + outer(s_delta, k_norm)
  *
  *   # M update (S-controlled gating)
- *   m_row_decay = sigmoid(S @ m_norm)
- *   m_col_decay = sigmoid(S.T @ m_norm)
+ *   m_row_decay = sigmoid(S @ m_norm + b_m_gate)
+ *   m_col_decay = sigmoid(S.T @ m_norm + b_m_gate)
  *   m_delta = s_delta - M @ m_norm
  *   M = (m_row_decay[:, None] * M * m_col_decay[None, :]) + outer(m_delta, m_norm)
  *
@@ -49,6 +49,8 @@ __global__ void E79CoupledForwardKernel_BF16(
     int T,
     int B,
     const __nv_bfloat16* __restrict__ kvqm_all,   // [4*N_STATE, T*B] column-major
+    const __nv_bfloat16* __restrict__ b_s_gate,   // [N_STATE] S gate bias
+    const __nv_bfloat16* __restrict__ b_m_gate,   // [N_STATE] M gate bias
     __nv_bfloat16* __restrict__ S,                // [B, N_STATE, N_STATE]
     __nv_bfloat16* __restrict__ M,                // [B, N_STATE, N_STATE]
     __nv_bfloat16* __restrict__ output,           // [T, B, N_STATE]
@@ -78,10 +80,19 @@ __global__ void E79CoupledForwardKernel_BF16(
     float* m_col_decay = m_row_decay + N_STATE;           // [N_STATE]
     float* s_retrieved = m_col_decay + N_STATE;           // [N_STATE]
     float* m_retrieved = s_retrieved + N_STATE;           // [N_STATE]
+    float* b_s_gate_shared = m_retrieved + N_STATE;       // [N_STATE]
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;   // [N_STATE]
 
     int tid = threadIdx.x;
     int n2 = N_STATE * N_STATE;
     const int STRIDE = 4 * N_STATE;
+
+    // Load gate biases
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = __bfloat162float(b_s_gate[tid]);
+        b_m_gate_shared[tid] = __bfloat162float(b_m_gate[tid]);
+    }
+    __syncthreads();
 
     // Load initial states
     for (int i = tid; i < n2; i += blockDim.x) {
@@ -129,8 +140,8 @@ __global__ void E79CoupledForwardKernel_BF16(
         __syncthreads();
 
         // --- S update (M-controlled gating) ---
-        // s_row_decay = sigmoid(M @ k_norm)
-        // s_col_decay = sigmoid(M.T @ k_norm)
+        // s_row_decay = sigmoid(M @ k_norm + b_s_gate)
+        // s_col_decay = sigmoid(M.T @ k_norm + b_s_gate)
         if (tid < N_STATE) {
             float row_sum = 0.0f, col_sum = 0.0f;
             #pragma unroll 8
@@ -138,8 +149,8 @@ __global__ void E79CoupledForwardKernel_BF16(
                 row_sum += M_shared[tid * N_STATE + j] * k_shared[j];  // M @ k
                 col_sum += M_shared[j * N_STATE + tid] * k_shared[j];  // M.T @ k
             }
-            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_s_gate_shared[tid])));
+            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_s_gate_shared[tid])));
 
             // Cache for backward
             s_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(s_row_decay[tid]);
@@ -169,8 +180,8 @@ __global__ void E79CoupledForwardKernel_BF16(
         __syncthreads();
 
         // --- M update (S-controlled gating) ---
-        // m_row_decay = sigmoid(S @ m_norm)
-        // m_col_decay = sigmoid(S.T @ m_norm)
+        // m_row_decay = sigmoid(S @ m_norm + b_m_gate)
+        // m_col_decay = sigmoid(S.T @ m_norm + b_m_gate)
         if (tid < N_STATE) {
             float row_sum = 0.0f, col_sum = 0.0f;
             #pragma unroll 8
@@ -178,8 +189,8 @@ __global__ void E79CoupledForwardKernel_BF16(
                 row_sum += S_shared[tid * N_STATE + j] * m_vec_shared[j];  // S @ m (after S update!)
                 col_sum += S_shared[j * N_STATE + tid] * m_vec_shared[j];  // S.T @ m
             }
-            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_m_gate_shared[tid])));
+            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_m_gate_shared[tid])));
 
             // Cache for backward
             m_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(m_row_decay[tid]);
@@ -270,6 +281,8 @@ __global__ void E79CoupledBackwardKernel_BF16(
     int T,
     int B,
     const __nv_bfloat16* __restrict__ kvqm_all,
+    const __nv_bfloat16* __restrict__ b_s_gate,
+    const __nv_bfloat16* __restrict__ b_m_gate,
     const __nv_bfloat16* __restrict__ s_row_decay_cache,
     const __nv_bfloat16* __restrict__ s_col_decay_cache,
     const __nv_bfloat16* __restrict__ m_row_decay_cache,
@@ -279,6 +292,8 @@ __global__ void E79CoupledBackwardKernel_BF16(
     const __nv_bfloat16* __restrict__ Sq_cache,
     const __nv_bfloat16* __restrict__ d_output,
     __nv_bfloat16* __restrict__ d_kvqm_all,
+    float* __restrict__ d_b_s_gate_accum,
+    float* __restrict__ d_b_m_gate_accum,
     int checkpoint_interval
 ) {
     int b = blockIdx.x;
@@ -304,7 +319,9 @@ __global__ void E79CoupledBackwardKernel_BF16(
     float* m_retrieved = s_retrieved + N_STATE;           // [N_STATE]
     float* s_delta = m_retrieved + N_STATE;               // [N_STATE]
     float* m_delta = s_delta + N_STATE;                   // [N_STATE]
-    float* d_k_raw = m_delta + N_STATE;                   // [N_STATE]
+    float* b_s_gate_shared = m_delta + N_STATE;           // [N_STATE]
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;   // [N_STATE]
+    float* d_k_raw = b_m_gate_shared + N_STATE;           // [N_STATE]
     float* d_v_raw = d_k_raw + N_STATE;                   // [N_STATE]
     float* d_q_raw = d_v_raw + N_STATE;                   // [N_STATE]
     float* d_m_raw = d_q_raw + N_STATE;                   // [N_STATE]
@@ -317,10 +334,21 @@ __global__ void E79CoupledBackwardKernel_BF16(
     float* d_s_col_decay = d_s_row_decay + N_STATE;       // [N_STATE]
     float* d_m_row_decay = d_s_col_decay + N_STATE;       // [N_STATE]
     float* d_m_col_decay = d_m_row_decay + N_STATE;       // [N_STATE]
+    float* d_b_s_gate_local = d_m_col_decay + N_STATE;    // [N_STATE]
+    float* d_b_m_gate_local = d_b_s_gate_local + N_STATE; // [N_STATE]
 
     int tid = threadIdx.x;
     int n2 = N_STATE * N_STATE;
     const int STRIDE = 4 * N_STATE;
+
+    // Load gate biases
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = __bfloat162float(b_s_gate[tid]);
+        b_m_gate_shared[tid] = __bfloat162float(b_m_gate[tid]);
+        d_b_s_gate_local[tid] = 0.0f;
+        d_b_m_gate_local[tid] = 0.0f;
+    }
+    __syncthreads();
 
     // Initialize gradient accumulators
     for (int i = tid; i < n2; i += blockDim.x) {
@@ -516,7 +544,7 @@ __global__ void E79CoupledBackwardKernel_BF16(
             __syncthreads();
 
             // Backward through decay computations (sigmoid derivatives)
-            // s_row_decay = sigmoid(M @ k_norm)
+            // s_row_decay = sigmoid(M @ k_norm + b_s_gate)
             // d_b_s_gate += (d_s_row_decay + d_s_col_decay) * decay * (1 - decay)
             float d_s_gate_local = 0.0f, d_m_gate_local = 0.0f;
             if (tid < N_STATE) {
@@ -525,12 +553,14 @@ __global__ void E79CoupledBackwardKernel_BF16(
                 float dec_row = s_row_decay[tid];
                 float dec_col = s_col_decay[tid];
                 d_s_gate_local = d_row * dec_row * (1.0f - dec_row) + d_col * dec_col * (1.0f - dec_col);
+                d_b_s_gate_local[tid] += d_s_gate_local;
 
                 float d_m_row = d_m_row_decay[tid];
                 float d_m_col = d_m_col_decay[tid];
                 float m_dec_row = m_row_decay[tid];
                 float m_dec_col = m_col_decay[tid];
                 d_m_gate_local = d_m_row * m_dec_row * (1.0f - m_dec_row) + d_m_col * m_dec_col * (1.0f - m_dec_col);
+                d_b_m_gate_local[tid] += d_m_gate_local;
             }
             __syncthreads();
 
@@ -629,6 +659,8 @@ __global__ void E79CoupledBackwardKernel_BF16(
 
     // Accumulate bias gradients
     if (tid < N_STATE) {
+        atomicAdd(&d_b_s_gate_accum[tid], d_b_s_gate_local[tid]);
+        atomicAdd(&d_b_m_gate_accum[tid], d_b_m_gate_local[tid]);
     }
 }
 
@@ -643,6 +675,8 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
     int T,
     int B,
     const __nv_bfloat16* __restrict__ kvqm_all,
+    const __nv_bfloat16* __restrict__ b_s_gate,
+    const __nv_bfloat16* __restrict__ b_m_gate,
     __nv_bfloat16* __restrict__ S_out,
     __nv_bfloat16* __restrict__ M_out,
     __nv_bfloat16* __restrict__ output,
@@ -666,7 +700,7 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
     float* S = state_workspace + b * 2 * n2;
     float* M = S + n2;
 
-    // Only vectors in shared memory (12 * N_STATE floats)
+    // Only vectors in shared memory (14 * N_STATE floats)
     extern __shared__ float shared_mem[];
     float* k_shared = shared_mem;
     float* v_shared = k_shared + N_STATE;
@@ -678,10 +712,19 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
     float* m_col_decay = m_row_decay + N_STATE;
     float* s_retrieved = m_col_decay + N_STATE;
     float* m_retrieved = s_retrieved + N_STATE;
-    float* Sq_shared = m_retrieved + N_STATE;
+    float* b_s_gate_shared = m_retrieved + N_STATE;
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;
+    float* Sq_shared = b_m_gate_shared + N_STATE;
     float* s_delta_shared = Sq_shared + N_STATE;
 
     int tid = threadIdx.x;
+
+    // Load gate biases
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = __bfloat162float(b_s_gate[tid]);
+        b_m_gate_shared[tid] = __bfloat162float(b_m_gate[tid]);
+    }
+    __syncthreads();
 
     // Load initial states from input to global memory workspace
     for (int i = tid; i < n2; i += blockDim.x) {
@@ -728,8 +771,8 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
         __syncthreads();
 
         // --- S update (M-controlled gating) ---
-        // s_row_decay = sigmoid(M @ k_norm)
-        // s_col_decay = sigmoid(M.T @ k_norm)
+        // s_row_decay = sigmoid(M @ k_norm + b_s_gate)
+        // s_col_decay = sigmoid(M.T @ k_norm + b_s_gate)
         if (tid < N_STATE) {
             float row_sum = 0.0f, col_sum = 0.0f;
             #pragma unroll 8
@@ -737,8 +780,8 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
                 row_sum += M[tid * N_STATE + j] * k_shared[j];
                 col_sum += M[j * N_STATE + tid] * k_shared[j];
             }
-            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_s_gate_shared[tid])));
+            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_s_gate_shared[tid])));
             s_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(s_row_decay[tid]);
             s_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(s_col_decay[tid]);
         }
@@ -772,8 +815,8 @@ __global__ void E79CoupledForwardGlobalMemKernel_BF16(
                 row_sum += S[tid * N_STATE + j] * m_vec_shared[j];
                 col_sum += S[j * N_STATE + tid] * m_vec_shared[j];
             }
-            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_m_gate_shared[tid])));
+            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_m_gate_shared[tid])));
             m_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(m_row_decay[tid]);
             m_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(m_col_decay[tid]);
         }
@@ -837,6 +880,8 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
     int T,
     int B,
     const __nv_bfloat16* __restrict__ kvqm_all,
+    const __nv_bfloat16* __restrict__ b_s_gate,
+    const __nv_bfloat16* __restrict__ b_m_gate,
     const __nv_bfloat16* __restrict__ s_row_decay_cache,
     const __nv_bfloat16* __restrict__ s_col_decay_cache,
     const __nv_bfloat16* __restrict__ m_row_decay_cache,
@@ -846,6 +891,8 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
     const __nv_bfloat16* __restrict__ Sq_cache,
     const __nv_bfloat16* __restrict__ d_output,
     __nv_bfloat16* __restrict__ d_kvqm_all,
+    float* __restrict__ d_b_s_gate_accum,
+    float* __restrict__ d_b_m_gate_accum,
     float* __restrict__ state_workspace,  // [B, 4, N_STATE, N_STATE] for S, M, dS, dM
     int checkpoint_interval
 ) {
@@ -877,7 +924,9 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
     float* m_retrieved = s_retrieved + N_STATE;
     float* s_delta = m_retrieved + N_STATE;
     float* m_delta = s_delta + N_STATE;
-    float* d_k_raw = m_delta + N_STATE;
+    float* b_s_gate_shared = m_delta + N_STATE;
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;
+    float* d_k_raw = b_m_gate_shared + N_STATE;
     float* d_v_raw = d_k_raw + N_STATE;
     float* d_q_raw = d_v_raw + N_STATE;
     float* d_m_raw = d_q_raw + N_STATE;
@@ -890,10 +939,19 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
     float* d_s_col_decay = d_s_row_decay + N_STATE;
     float* d_m_row_decay = d_s_col_decay + N_STATE;
     float* d_m_col_decay = d_m_row_decay + N_STATE;
+    float* d_b_s_gate_local = d_m_col_decay + N_STATE;
+    float* d_b_m_gate_local = d_b_s_gate_local + N_STATE;
 
     int tid = threadIdx.x;
 
     // Load gate biases
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = __bfloat162float(b_s_gate[tid]);
+        b_m_gate_shared[tid] = __bfloat162float(b_m_gate[tid]);
+        d_b_s_gate_local[tid] = 0.0f;
+        d_b_m_gate_local[tid] = 0.0f;
+    }
+    __syncthreads();
 
     // Initialize gradient accumulators in global memory
     for (int i = tid; i < n2; i += blockDim.x) {
@@ -1063,6 +1121,7 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
                 // Bias gradients from decay gates
                 float m_gate_row = m_row_decay[tid] * (1.0f - m_row_decay[tid]);
                 float m_gate_col = m_col_decay[tid] * (1.0f - m_col_decay[tid]);
+                d_b_m_gate_local[tid] += d_mrd * m_gate_row + d_mcd * m_gate_col;
             }
             __syncthreads();
 
@@ -1096,6 +1155,7 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
                 // Bias gradients from decay gates
                 float s_gate_row = s_row_decay[tid] * (1.0f - s_row_decay[tid]);
                 float s_gate_col = s_col_decay[tid] * (1.0f - s_col_decay[tid]);
+                d_b_s_gate_local[tid] += d_srd * s_gate_row + d_scd * s_gate_col;
             }
             __syncthreads();
 
@@ -1203,6 +1263,8 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
 
     // Accumulate bias gradients
     if (tid < N_STATE) {
+        atomicAdd(&d_b_s_gate_accum[tid], d_b_s_gate_local[tid]);
+        atomicAdd(&d_b_m_gate_accum[tid], d_b_m_gate_local[tid]);
     }
 }
 
@@ -1215,6 +1277,8 @@ __global__ void E79CoupledForwardKernel_FP32(
     int T,
     int B,
     const float* __restrict__ kvqm_all,
+    const float* __restrict__ b_s_gate,
+    const float* __restrict__ b_m_gate,
     float* __restrict__ S,
     float* __restrict__ M,
     float* __restrict__ output,
@@ -1243,9 +1307,18 @@ __global__ void E79CoupledForwardKernel_FP32(
     float* m_col_decay = m_row_decay + N_STATE;
     float* s_retrieved = m_col_decay + N_STATE;
     float* m_retrieved = s_retrieved + N_STATE;
-int tid = threadIdx.x;
+    float* b_s_gate_shared = m_retrieved + N_STATE;
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;
+
+    int tid = threadIdx.x;
     int n2 = N_STATE * N_STATE;
     const int STRIDE = 4 * N_STATE;
+
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = b_s_gate[tid];
+        b_m_gate_shared[tid] = b_m_gate[tid];
+    }
+    __syncthreads();
 
     for (int i = tid; i < n2; i += blockDim.x) {
         S_shared[i] = S[b * n2 + i];
@@ -1293,8 +1366,8 @@ int tid = threadIdx.x;
                 row_sum += M_shared[tid * N_STATE + j] * k_shared[j];
                 col_sum += M_shared[j * N_STATE + tid] * k_shared[j];
             }
-            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_s_gate_shared[tid])));
+            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_s_gate_shared[tid])));
             s_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = s_row_decay[tid];
             s_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = s_col_decay[tid];
         }
@@ -1323,8 +1396,8 @@ int tid = threadIdx.x;
                 row_sum += S_shared[tid * N_STATE + j] * m_vec_shared[j];
                 col_sum += S_shared[j * N_STATE + tid] * m_vec_shared[j];
             }
-            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum )));
-            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum )));
+            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_m_gate_shared[tid])));
+            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_m_gate_shared[tid])));
             m_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = m_row_decay[tid];
             m_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = m_col_decay[tid];
         }
@@ -1381,6 +1454,8 @@ __global__ void E79CoupledBackwardKernel_FP32(
     int T,
     int B,
     const float* __restrict__ kvqm_all,
+    const float* __restrict__ b_s_gate,
+    const float* __restrict__ b_m_gate,
     const float* __restrict__ s_row_decay_cache,
     const float* __restrict__ s_col_decay_cache,
     const float* __restrict__ m_row_decay_cache,
@@ -1390,6 +1465,8 @@ __global__ void E79CoupledBackwardKernel_FP32(
     const float* __restrict__ Sq_cache,
     const float* __restrict__ d_output,
     float* __restrict__ d_kvqm_all,
+    float* __restrict__ d_b_s_gate_accum,
+    float* __restrict__ d_b_m_gate_accum,
     int checkpoint_interval
 ) {
     // FP32 backward - same logic as BF16 but without conversions
@@ -1416,7 +1493,9 @@ __global__ void E79CoupledBackwardKernel_FP32(
     float* m_retrieved = s_retrieved + N_STATE;
     float* s_delta = m_retrieved + N_STATE;
     float* m_delta = s_delta + N_STATE;
-    float* d_k_raw = m_delta + N_STATE;
+    float* b_s_gate_shared = m_delta + N_STATE;
+    float* b_m_gate_shared = b_s_gate_shared + N_STATE;
+    float* d_k_raw = b_m_gate_shared + N_STATE;
     float* d_v_raw = d_k_raw + N_STATE;
     float* d_q_raw = d_v_raw + N_STATE;
     float* d_m_raw = d_q_raw + N_STATE;
@@ -1429,10 +1508,20 @@ __global__ void E79CoupledBackwardKernel_FP32(
     float* d_s_col_decay = d_s_row_decay + N_STATE;
     float* d_m_row_decay = d_s_col_decay + N_STATE;
     float* d_m_col_decay = d_m_row_decay + N_STATE;
+    float* d_b_s_gate_local = d_m_col_decay + N_STATE;
+    float* d_b_m_gate_local = d_b_s_gate_local + N_STATE;
 
     int tid = threadIdx.x;
     int n2 = N_STATE * N_STATE;
     const int STRIDE = 4 * N_STATE;
+
+    if (tid < N_STATE) {
+        b_s_gate_shared[tid] = b_s_gate[tid];
+        b_m_gate_shared[tid] = b_m_gate[tid];
+        d_b_s_gate_local[tid] = 0.0f;
+        d_b_m_gate_local[tid] = 0.0f;
+    }
+    __syncthreads();
 
     for (int i = tid; i < n2; i += blockDim.x) {
         dS[i] = 0.0f;
@@ -1599,11 +1688,13 @@ __global__ void E79CoupledBackwardKernel_FP32(
                 float d_col = d_s_col_decay[tid];
                 float dec_row = s_row_decay[tid];
                 float dec_col = s_col_decay[tid];
+                d_b_s_gate_local[tid] += d_row * dec_row * (1.0f - dec_row) + d_col * dec_col * (1.0f - dec_col);
 
                 float d_m_row = d_m_row_decay[tid];
                 float d_m_col = d_m_col_decay[tid];
                 float m_dec_row = m_row_decay[tid];
                 float m_dec_col = m_col_decay[tid];
+                d_b_m_gate_local[tid] += d_m_row * m_dec_row * (1.0f - m_dec_row) + d_m_col * m_dec_col * (1.0f - m_dec_col);
             }
             __syncthreads();
 
@@ -1689,6 +1780,8 @@ __global__ void E79CoupledBackwardKernel_FP32(
     }
 
     if (tid < N_STATE) {
+        atomicAdd(&d_b_s_gate_accum[tid], d_b_s_gate_local[tid]);
+        atomicAdd(&d_b_m_gate_accum[tid], d_b_m_gate_local[tid]);
     }
 }
 
@@ -1698,37 +1791,37 @@ __global__ void E79CoupledBackwardKernel_FP32(
 
 #define INSTANTIATE_E79_KERNELS_BF16(N) \
     template __global__ void E79CoupledForwardKernel_BF16<N>( \
-        int, int, const __nv_bfloat16*, \
+        int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, \
         __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, int); \
     template __global__ void E79CoupledBackwardKernel_BF16<N>( \
-        int, int, const __nv_bfloat16*, \
+        int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
-        __nv_bfloat16*, int);
+        __nv_bfloat16*, float*, float*, int);
 
 #define INSTANTIATE_E79_KERNELS_FP32(N) \
     template __global__ void E79CoupledForwardKernel_FP32<N>( \
-        int, int, const float*, \
+        int, int, const float*, const float*, const float*, \
         float*, float*, float*, float*, float*, \
         float*, float*, float*, float*, float*, int); \
     template __global__ void E79CoupledBackwardKernel_FP32<N>( \
-        int, int, const float*, \
+        int, int, const float*, const float*, const float*, \
         const float*, const float*, const float*, const float*, \
         const float*, const float*, const float*, const float*, \
-        float*, int);
+        float*, float*, float*, int);
 
 #define INSTANTIATE_E79_GLOBALMEM_BF16(N) \
     template __global__ void E79CoupledForwardGlobalMemKernel_BF16<N>( \
-        int, int, const __nv_bfloat16*, \
+        int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, \
         __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, \
         float*, int); \
     template __global__ void E79CoupledBackwardGlobalMemKernel_BF16<N>( \
-        int, int, const __nv_bfloat16*, \
+        int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
         const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, \
-        __nv_bfloat16*, float*, int);
+        __nv_bfloat16*, float*, float*, float*, int);
 
 // Standard kernels (shared memory)
 INSTANTIATE_E79_KERNELS_BF16(8)
@@ -1758,6 +1851,8 @@ INSTANTIATE_E79_GLOBALMEM_BF16(128)
 void dispatch_e79_coupled_forward(
     int T, int B, int n_state,
     const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* b_s_gate,
+    const __nv_bfloat16* b_m_gate,
     __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
     __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
     __nv_bfloat16* Sq_cache,
@@ -1773,7 +1868,7 @@ void dispatch_e79_coupled_forward(
 
     #define DISPATCH_E79_FWD(N) \
         E79CoupledForwardKernel_BF16<N><<<B, 256, shared_size, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             S, M, output, S_checkpoints, M_checkpoints, Sq_cache, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             checkpoint_interval);
@@ -1793,7 +1888,7 @@ void dispatch_e79_coupled_forward(
 
     #define DISPATCH_E79_FWD_GLOBALMEM(N) \
         E79CoupledForwardGlobalMemKernel_BF16<N><<<B, 256, shared_size_globalmem, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             S, M, output, S_checkpoints, M_checkpoints, Sq_cache, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             state_workspace, checkpoint_interval);
@@ -1817,11 +1912,13 @@ void dispatch_e79_coupled_forward(
 void dispatch_e79_coupled_backward(
     int T, int B, int n_state,
     const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* b_s_gate, const __nv_bfloat16* b_m_gate,
     const __nv_bfloat16* s_row_decay_cache, const __nv_bfloat16* s_col_decay_cache,
     const __nv_bfloat16* m_row_decay_cache, const __nv_bfloat16* m_col_decay_cache,
     const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
     const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
     __nv_bfloat16* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
     float* state_workspace,  // For global memory fallback (n_state >= 96)
     int checkpoint_interval, cudaStream_t stream
 ) {
@@ -1832,10 +1929,10 @@ void dispatch_e79_coupled_backward(
 
     #define DISPATCH_E79_BWD(N) \
         E79CoupledBackwardKernel_BF16<N><<<B, 256, shared_size, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             S_checkpoints, M_checkpoints, Sq_cache, d_output, \
-            d_kvqm_all, checkpoint_interval);
+            d_kvqm_all, d_b_s_gate_accum, d_b_m_gate_accum, checkpoint_interval);
 
     #define DISPATCH_E79_BWD_EXT(N) \
         { \
@@ -1852,10 +1949,10 @@ void dispatch_e79_coupled_backward(
 
     #define DISPATCH_E79_BWD_GLOBALMEM(N) \
         E79CoupledBackwardGlobalMemKernel_BF16<N><<<B, 256, shared_size_globalmem, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             S_checkpoints, M_checkpoints, Sq_cache, d_output, \
-            d_kvqm_all, state_workspace, checkpoint_interval);
+            d_kvqm_all, d_b_s_gate_accum, d_b_m_gate_accum, state_workspace, checkpoint_interval);
 
     switch (n_state) {
         case 8: DISPATCH_E79_BWD(8); break;
@@ -1876,6 +1973,7 @@ void dispatch_e79_coupled_backward(
 void dispatch_e79_coupled_forward_fp32(
     int T, int B, int n_state,
     const float* kvqm_all,
+    const float* b_s_gate, const float* b_m_gate,
     float* S, float* M, float* output,
     float* S_checkpoints, float* M_checkpoints,
     float* Sq_cache,
@@ -1887,7 +1985,7 @@ void dispatch_e79_coupled_forward_fp32(
 
     #define DISPATCH_E79_FWD_FP32(N) \
         E79CoupledForwardKernel_FP32<N><<<B, 256, shared_size, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             S, M, output, S_checkpoints, M_checkpoints, Sq_cache, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             checkpoint_interval);
@@ -1923,21 +2021,23 @@ void dispatch_e79_coupled_forward_fp32(
 void dispatch_e79_coupled_backward_fp32(
     int T, int B, int n_state,
     const float* kvqm_all,
+    const float* b_s_gate, const float* b_m_gate,
     const float* s_row_decay_cache, const float* s_col_decay_cache,
     const float* m_row_decay_cache, const float* m_col_decay_cache,
     const float* S_checkpoints, const float* M_checkpoints,
     const float* Sq_cache, const float* d_output,
     float* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
     int checkpoint_interval, cudaStream_t stream
 ) {
     int shared_size = (4 * n_state * n_state + 34 * n_state) * sizeof(float);
 
     #define DISPATCH_E79_BWD_FP32(N) \
         E79CoupledBackwardKernel_FP32<N><<<B, 256, shared_size, stream>>>( \
-            T, B, kvqm_all, \
+            T, B, kvqm_all, b_s_gate, b_m_gate, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
             S_checkpoints, M_checkpoints, Sq_cache, d_output, \
-            d_kvqm_all, checkpoint_interval);
+            d_kvqm_all, d_b_s_gate_accum, d_b_m_gate_accum, checkpoint_interval);
 
     #define DISPATCH_E79_BWD_FP32_EXT(N) \
         { \
@@ -1982,6 +2082,8 @@ template<typename DataT>
 void E79CoupledForward<DataT>::Run(
     int steps,
     const DataT* W_kvqm,
+    const DataT* b_s_gate,
+    const DataT* b_m_gate,
     const DataT* x,
     DataT* S, DataT* M,
     DataT* output,
@@ -2019,7 +2121,7 @@ void E79CoupledForward<DataT>::Run(
     }
 
     if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
-        dispatch_e79_coupled_forward(T, B, n, kvqm_cache,
+        dispatch_e79_coupled_forward(T, B, n, kvqm_cache, b_s_gate, b_m_gate,
                                      S, M, output, S_checkpoints, M_checkpoints, Sq_cache,
                                      s_row_decay_cache, s_col_decay_cache,
                                      m_row_decay_cache, m_col_decay_cache,
@@ -2027,6 +2129,8 @@ void E79CoupledForward<DataT>::Run(
     } else {
         dispatch_e79_coupled_forward_fp32(T, B, n,
                                           reinterpret_cast<const float*>(kvqm_cache),
+                                          reinterpret_cast<const float*>(b_s_gate),
+                                          reinterpret_cast<const float*>(b_m_gate),
                                           reinterpret_cast<float*>(S),
                                           reinterpret_cast<float*>(M),
                                           reinterpret_cast<float*>(output),
@@ -2057,6 +2161,7 @@ template<typename DataT>
 void E79CoupledBackward<DataT>::Run(
     int steps,
     const DataT* W_kvqm,
+    const DataT* b_s_gate, const DataT* b_m_gate,
     const DataT* x,
     const DataT* kvqm_cache,
     const DataT* S_checkpoints, const DataT* M_checkpoints,
@@ -2066,7 +2171,9 @@ void E79CoupledBackward<DataT>::Run(
     const DataT* d_output,
     DataT* d_x,
     DataT* d_W_kvqm,
-    DataT* d_kvqm_cache
+    DataT* d_b_s_gate, DataT* d_b_m_gate,
+    DataT* d_kvqm_cache,
+    float* d_b_s_gate_accum, float* d_b_m_gate_accum
 ) {
     int T = steps;
     int B = batch_size_;
@@ -2075,6 +2182,10 @@ void E79CoupledBackward<DataT>::Run(
     int checkpoint_interval = E79_CHECKPOINT_INTERVAL;
 
     const float alpha = 1.0f, beta_zero = 0.0f, beta_one = 1.0f;
+
+    // Zero accumulators
+    cudaMemsetAsync(d_b_s_gate_accum, 0, n * sizeof(float), stream_);
+    cudaMemsetAsync(d_b_m_gate_accum, 0, n * sizeof(float), stream_);
 
     // Allocate state workspace for global memory kernels (n >= 96 for backward)
     float* state_workspace = nullptr;
@@ -2085,15 +2196,17 @@ void E79CoupledBackward<DataT>::Run(
     }
 
     if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
-        dispatch_e79_coupled_backward(T, B, n, kvqm_cache,
+        dispatch_e79_coupled_backward(T, B, n, kvqm_cache, b_s_gate, b_m_gate,
                                       s_row_decay_cache, s_col_decay_cache,
                                       m_row_decay_cache, m_col_decay_cache,
                                       S_checkpoints, M_checkpoints, Sq_cache, d_output,
-                                      d_kvqm_cache,
+                                      d_kvqm_cache, d_b_s_gate_accum, d_b_m_gate_accum,
                                       state_workspace, checkpoint_interval, stream_);
     } else {
         dispatch_e79_coupled_backward_fp32(T, B, n,
                                            reinterpret_cast<const float*>(kvqm_cache),
+                                           reinterpret_cast<const float*>(b_s_gate),
+                                           reinterpret_cast<const float*>(b_m_gate),
                                            reinterpret_cast<const float*>(s_row_decay_cache),
                                            reinterpret_cast<const float*>(s_col_decay_cache),
                                            reinterpret_cast<const float*>(m_row_decay_cache),
@@ -2103,6 +2216,7 @@ void E79CoupledBackward<DataT>::Run(
                                            reinterpret_cast<const float*>(Sq_cache),
                                            reinterpret_cast<const float*>(d_output),
                                            reinterpret_cast<float*>(d_kvqm_cache),
+                                           d_b_s_gate_accum, d_b_m_gate_accum,
                                            checkpoint_interval, stream_);
     }
 
@@ -2123,15 +2237,14 @@ void E79CoupledBackward<DataT>::Run(
                  d_x, data_type, d,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
-    // d_W_kvqm = d_kvqm_cache.T @ x (in row-major)
-    // In col-major: d_W_kvqm [D, 4n] = x [D, TB] @ d_kvqm_cache.T [TB, 4n]
+    // d_W_kvqm = d_kvqm_cache @ x^T
     cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-                 d, 4 * n, T * B,
+                 4 * n, d, T * B,
                  &alpha,
-                 x, data_type, d,
                  d_kvqm_cache, data_type, 4 * n,
+                 x, data_type, d,
                  &beta_zero,
-                 d_W_kvqm, data_type, d,
+                 d_W_kvqm, data_type, 4 * n,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 }
 

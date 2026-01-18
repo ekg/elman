@@ -53,13 +53,15 @@ class E79CUDAFunction(torch.autograd.Function):
     """Autograd wrapper for E79 CUDA kernel."""
 
     @staticmethod
-    def forward(ctx, x, S0, M0, W_kvqm, training):
+    def forward(ctx, x, S0, M0, W_kvqm, b_s_gate, b_m_gate, training):
         """
         Args:
             x: [T, B, dim] input
             S0: [B, n_state, n_state] initial content memory
             M0: [B, n_state, n_state] initial modulation memory
             W_kvqm: [4*n_state, dim] fused projection weights
+            b_s_gate: [n_state] S gate bias
+            b_m_gate: [n_state] M gate bias
             training: bool
 
         Returns:
@@ -69,13 +71,13 @@ class E79CUDAFunction(torch.autograd.Function):
         """
         S, M, output, kvqm_cache, S_checkpoints, M_checkpoints, Sq_cache, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache = \
-            hasty_pytorch_lib.e79_coupled_forward(training, x, S0, M0, W_kvqm)
+            hasty_pytorch_lib.e79_coupled_forward(training, x, S0, M0, W_kvqm, b_s_gate, b_m_gate)
 
         if training:
             ctx.save_for_backward(x, S_checkpoints, M_checkpoints, Sq_cache,
                                   kvqm_cache, s_row_decay_cache, s_col_decay_cache,
                                   m_row_decay_cache, m_col_decay_cache,
-                                  W_kvqm)
+                                  W_kvqm, b_s_gate, b_m_gate)
 
         return output, S, M
 
@@ -83,17 +85,17 @@ class E79CUDAFunction(torch.autograd.Function):
     def backward(ctx, d_output, d_S, d_M):
         x, S_checkpoints, M_checkpoints, Sq_cache, kvqm_cache, \
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
-            W_kvqm = ctx.saved_tensors
+            W_kvqm, b_s_gate, b_m_gate = ctx.saved_tensors
 
         d_output = d_output.contiguous()
 
-        dx, dW_kvqm = hasty_pytorch_lib.e79_coupled_backward(
+        dx, dW_kvqm, db_s_gate, db_m_gate = hasty_pytorch_lib.e79_coupled_backward(
             x, S_checkpoints, M_checkpoints, Sq_cache, kvqm_cache,
             s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache,
-            d_output, W_kvqm
+            d_output, W_kvqm, b_s_gate, b_m_gate
         )
 
-        return dx, None, None, dW_kvqm, None
+        return dx, None, None, dW_kvqm, db_s_gate, db_m_gate, None
 
 
 class E79CoupledMatrixCell(nn.Module):
@@ -118,6 +120,10 @@ class E79CoupledMatrixCell(nn.Module):
         # Layout: [k | v | q | m] = [4 * n_state, dim]
         self.W_kvqm = nn.Parameter(torch.empty(4 * n_state, dim))
 
+        # Gate biases for S and M
+        self.b_s_gate = nn.Parameter(torch.zeros(n_state))
+        self.b_m_gate = nn.Parameter(torch.zeros(n_state))
+
         self._init_weights()
 
     def _init_weights(self):
@@ -126,6 +132,9 @@ class E79CoupledMatrixCell(nn.Module):
         nn.init.xavier_uniform_(self.W_kvqm[n:2*n])   # W_v
         nn.init.xavier_uniform_(self.W_kvqm[2*n:3*n]) # W_q
         nn.init.xavier_uniform_(self.W_kvqm[3*n:])    # W_m
+        # Initialize gate biases for moderate decay
+        nn.init.constant_(self.b_s_gate, 2.0)  # sigmoid(2) ≈ 0.88
+        nn.init.constant_(self.b_m_gate, 2.5)  # M slightly slower decay
 
     def forward(
         self,
@@ -158,7 +167,7 @@ class E79CoupledMatrixCell(nn.Module):
             x = x.contiguous()
             S = S.contiguous()
             M = M.contiguous()
-            return E79CUDAFunction.apply(x, S, M, self.W_kvqm, self.training)
+            return E79CUDAFunction.apply(x, S, M, self.W_kvqm, self.b_s_gate, self.b_m_gate, self.training)
 
         # Python fallback
         x_flat = x.reshape(T * B, D)
@@ -181,8 +190,8 @@ class E79CoupledMatrixCell(nn.Module):
 
             # --- S update (M-controlled gating) ---
             # M provides row/col decay for S
-            s_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', M, k_norm))
-            s_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', M, k_norm))
+            s_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', M, k_norm) + self.b_s_gate)
+            s_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', M, k_norm) + self.b_s_gate)
 
             # Delta rule for S
             s_retrieved = torch.einsum('bij,bj->bi', S, k_norm)
@@ -194,8 +203,8 @@ class E79CoupledMatrixCell(nn.Module):
 
             # --- M update (S-controlled gating) ---
             # S provides row/col decay for M
-            m_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', S, m_norm))
-            m_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', S, m_norm))
+            m_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', S, m_norm) + self.b_m_gate)
+            m_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', S, m_norm) + self.b_m_gate)
 
             # M tries to predict S's delta (learns meta-patterns)
             m_retrieved = torch.einsum('bij,bj->bi', M, m_norm)
