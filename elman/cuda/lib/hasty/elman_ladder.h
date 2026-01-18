@@ -7080,6 +7080,94 @@ private:
 };
 
 // =============================================================================
+// E74 Fixed Decay Delta Rule - The simplest autopoietic architecture
+// S' = alpha * S + outer(v - S @ k_norm, k_norm)
+// output = (S' @ q) * silu(S' @ q)
+// Where alpha is a FIXED scalar decay (not learned, or optionally learned)
+// =============================================================================
+
+template<typename T>
+struct E74FixedDecayForward {
+    E74FixedDecayForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float alpha,                  // Fixed decay factor
+        const T* W_kvq,               // [3*n_state, dim] FUSED projection for k, v, q
+        const T* x,                   // [T, B, dim]
+        T* S,                         // [B, n_state, n_state] state matrix
+        T* output,                    // [T, B, n_state]
+        T* kvq_cache,                 // [3*n_state, T*B] for backward
+        T* S_checkpoints,             // [num_cp, B, n_state, n_state]
+        T* Sq_cache                   // [T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvq_cache: 3*n * T*B
+        size += 3 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E74FixedDecayBackward {
+    E74FixedDecayBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float alpha,
+        const T* W_kvq,
+        const T* x,
+        const T* kvq_cache,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvq,
+        T* d_kvq_cache,
+        float* d_alpha_accum           // For learnable alpha gradient
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvq_all: T*B*3*n + d_alpha_accum: 1 (float)
+        return steps * batch_size * 3 * n_state * sizeof(T) +
+               sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E75 Gated Delta Matrix - E74 + forget gate
 // β = sigmoid(W_β @ x + b_β)
 // S = tanh(β * S + outer(delta, k_norm))
@@ -7163,6 +7251,101 @@ struct E75GatedDeltaBackward {
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
         // d_k_all, d_v_all, d_q_all, d_beta_all
+        return 4 * steps * batch_size * n_state * sizeof(T);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E75 Vector Gate: Input-Dependent Per-Row Decay
+// g = sigmoid(W_beta @ x + b_beta)
+// S = diag(g) * S + outer(v - S@k, k)  [NO tanh, row-wise decay]
+// =============================================================================
+
+template<typename T>
+struct E75VectorGateForward {
+    E75VectorGateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* b_beta,
+        const T* x,
+        T* S,
+        T* output,
+        T* k_cache,
+        T* v_cache,
+        T* q_cache,
+        T* g_cache,
+        T* S_cache);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // k_cache, v_cache, q_cache, g_cache
+        int64_t size = 4 * steps * batch_size * n_state * sizeof(T);
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E75VectorGateBackward {
+    E75VectorGateBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* g_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_beta,
+        T* db_beta,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_k_all, d_v_all, d_q_all, d_g_all
         return 4 * steps * batch_size * n_state * sizeof(T);
     }
 
@@ -7438,6 +7621,912 @@ private:
     int batch_size_;
     int n_state_;
     int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E79: Coupled Memory-Modulation Matrix System
+// Two coupled matrix states that mutually control each other's evolution:
+// - S [n_state x n_state]: Content memory
+// - M [n_state x n_state]: Modulation memory (controls S's dynamics)
+// Self-modulation through mutual coupling: M controls S's decay, S controls M's decay
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e79_coupled_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,   // [4*n_state, T*B]
+    const __nv_bfloat16* b_s_gate,
+    const __nv_bfloat16* b_m_gate,
+    __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* s_row_decay_cache, __nv_bfloat16* s_col_decay_cache,
+    __nv_bfloat16* m_row_decay_cache, __nv_bfloat16* m_col_decay_cache,
+    float* state_workspace,  // For global memory fallback (n_state >= 128), can be nullptr
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e79_coupled_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* b_s_gate, const __nv_bfloat16* b_m_gate,
+    const __nv_bfloat16* s_row_decay_cache, const __nv_bfloat16* s_col_decay_cache,
+    const __nv_bfloat16* m_row_decay_cache, const __nv_bfloat16* m_col_decay_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
+    float* state_workspace,  // For global memory fallback (n_state >= 96), can be nullptr
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Dispatcher functions
+void dispatch_e79_coupled_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* b_s_gate, const float* b_m_gate,
+    float* S, float* M, float* output,
+    float* S_checkpoints, float* M_checkpoints,
+    float* Sq_cache,
+    float* s_row_decay_cache, float* s_col_decay_cache,
+    float* m_row_decay_cache, float* m_col_decay_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e79_coupled_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* b_s_gate, const float* b_m_gate,
+    const float* s_row_decay_cache, const float* s_col_decay_cache,
+    const float* m_row_decay_cache, const float* m_col_decay_cache,
+    const float* S_checkpoints, const float* M_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E79CoupledForward {
+    E79CoupledForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        const T* b_s_gate,   // [n_state] S gate bias
+        const T* b_m_gate,   // [n_state] M gate bias
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] content memory
+        T* M,                // [B, n_state, n_state] modulation memory
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* M_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* s_row_decay_cache,// [T, B, n_state]
+        T* s_col_decay_cache,// [T, B, n_state]
+        T* m_row_decay_cache,// [T, B, n_state]
+        T* m_col_decay_cache // [T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints + M_checkpoints
+        size += 2 * num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        // 4 decay caches
+        size += 4 * steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E79CoupledBackward {
+    E79CoupledBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,
+        const T* b_s_gate, const T* b_m_gate,
+        const T* x,
+        const T* kvqm_cache,
+        const T* S_checkpoints, const T* M_checkpoints,
+        const T* Sq_cache,
+        const T* s_row_decay_cache, const T* s_col_decay_cache,
+        const T* m_row_decay_cache, const T* m_col_decay_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm,
+        T* d_b_s_gate, T* d_b_m_gate,
+        T* d_kvqm_cache,
+        float* d_b_s_gate_accum, float* d_b_m_gate_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all + d_b_s_gate_accum + d_b_m_gate_accum
+        return steps * batch_size * 4 * n_state * sizeof(T) +
+               2 * n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E80: Full-Rank Mutual Gating
+// Extends E79 with full n×n gate matrices instead of rank-1 outer products.
+// Two coupled matrix states with full-rank gates:
+// - S [n_state x n_state]: Content memory
+// - M [n_state x n_state]: Modulation memory
+// G_S = sigmoid(M + outer(M @ k, k) + B_S)  # Full n×n gate matrix
+// G_M = sigmoid(S + outer(S @ m, m) + B_M)  # Full n×n gate matrix
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e80_full_rank_gate_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,   // [4*n_state, T*B]
+    const __nv_bfloat16* B_S,        // [n_state, n_state] S gate bias matrix
+    const __nv_bfloat16* B_M,        // [n_state, n_state] M gate bias matrix
+    __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* G_S_cache, __nv_bfloat16* G_M_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e80_full_rank_gate_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* B_S, const __nv_bfloat16* B_M,
+    const __nv_bfloat16* G_S_cache, const __nv_bfloat16* G_M_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    float* d_B_S_accum, float* d_B_M_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Dispatcher functions
+void dispatch_e80_full_rank_gate_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* B_S, const float* B_M,
+    float* S, float* M, float* output,
+    float* S_checkpoints, float* M_checkpoints,
+    float* Sq_cache,
+    float* G_S_cache, float* G_M_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e80_full_rank_gate_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* B_S, const float* B_M,
+    const float* G_S_cache, const float* G_M_cache,
+    const float* S_checkpoints, const float* M_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    float* d_B_S_accum, float* d_B_M_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E80FullRankGateForward {
+    E80FullRankGateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        const T* B_S,        // [n_state, n_state] S gate bias matrix
+        const T* B_M,        // [n_state, n_state] M gate bias matrix
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] content memory
+        T* M,                // [B, n_state, n_state] modulation memory
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* M_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* G_S_cache,        // [T, B, n_state, n_state]
+        T* G_M_cache         // [T, B, n_state, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints + M_checkpoints
+        size += 2 * num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        // G_S_cache + G_M_cache (full n^2 per timestep)
+        size += 2 * steps * batch_size * n_state * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E80FullRankGateBackward {
+    E80FullRankGateBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,
+        const T* B_S, const T* B_M,
+        const T* x,
+        const T* kvqm_cache,
+        const T* S_checkpoints, const T* M_checkpoints,
+        const T* Sq_cache,
+        const T* G_S_cache, const T* G_M_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm,
+        T* d_B_S, T* d_B_M,
+        T* d_kvqm_cache,
+        float* d_B_S_accum, float* d_B_M_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all + d_B_S_accum + d_B_M_accum
+        return steps * batch_size * 4 * n_state * sizeof(T) +
+               2 * n_state * n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E81: Gate Matrix as Hidden State
+// The gate itself (G) is a hidden state that EVOLVES over time.
+// Two coupled matrix states:
+// - S [n_state x n_state]: Content memory - stores key-value associations
+// - G [n_state x n_state]: Gate state - directly provides gates via sigmoid(G)
+//
+// Key insight: Unlike E79 where M computes gates (M @ k), here G IS the gate.
+// G evolves and accumulates information about good gating strategies.
+//
+// Architecture:
+//   gate_S = sigmoid(G + b_s_gate)  # G directly provides gate (no projection!)
+//   s_delta = v - S @ k_norm
+//   S = gate_S * S + outer(s_delta, k_norm)
+//
+//   gate_G = sigmoid(S + b_g_gate)  # S gates G
+//   g_delta = s_delta - G @ m_norm  # G predicts S's changes
+//   G = gate_G * G + outer(g_delta, m_norm)
+//
+//   Sq = S @ q
+//   output = Sq * silu(Sq)
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e81_gate_as_state_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,   // [4*n_state, T*B]
+    const __nv_bfloat16* b_s_gate,
+    const __nv_bfloat16* b_g_gate,
+    __nv_bfloat16* S, __nv_bfloat16* G, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* G_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* gate_S_cache, __nv_bfloat16* gate_G_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e81_gate_as_state_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* b_s_gate, const __nv_bfloat16* b_g_gate,
+    const __nv_bfloat16* gate_S_cache, const __nv_bfloat16* gate_G_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* G_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_g_gate_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Dispatcher functions
+void dispatch_e81_gate_as_state_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* b_s_gate, const float* b_g_gate,
+    float* S, float* G, float* output,
+    float* S_checkpoints, float* G_checkpoints,
+    float* Sq_cache,
+    float* gate_S_cache, float* gate_G_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e81_gate_as_state_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* b_s_gate, const float* b_g_gate,
+    const float* gate_S_cache, const float* gate_G_cache,
+    const float* S_checkpoints, const float* G_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    float* d_b_s_gate_accum, float* d_b_g_gate_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E81GateAsStateForward {
+    E81GateAsStateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        const T* b_s_gate,   // [n_state] S gate bias
+        const T* b_g_gate,   // [n_state] G gate bias
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] content memory
+        T* G,                // [B, n_state, n_state] gate state
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* G_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* gate_S_cache,     // [T, B, n_state, n_state]
+        T* gate_G_cache      // [T, B, n_state, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints + G_checkpoints
+        size += 2 * num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        // gate_S_cache + gate_G_cache
+        size += 2 * steps * batch_size * n_state * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E81GateAsStateBackward {
+    E81GateAsStateBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,
+        const T* b_s_gate, const T* b_g_gate,
+        const T* x,
+        const T* kvqm_cache,
+        const T* S_checkpoints, const T* G_checkpoints,
+        const T* Sq_cache,
+        const T* gate_S_cache, const T* gate_G_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm,
+        T* d_b_s_gate, T* d_b_g_gate,
+        T* d_kvqm_cache,
+        float* d_b_s_gate_accum, float* d_b_g_gate_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all + d_b_s_gate_accum + d_b_g_gate_accum
+        return steps * batch_size * 4 * n_state * sizeof(T) +
+               2 * n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E82: Self-Gating Matrix (Pure Autopoiesis)
+// A single matrix S gates itself - maximum autopoiesis
+// - S [n_state x n_state]: Memory matrix
+// - G = sigmoid(outer(S @ m_norm, k_norm) + alpha * S) + epsilon
+// - S' = G * S + outer(s_delta, k_norm)
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e82_self_gate_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,   // [4*n_state, T*B]
+    float alpha, float epsilon,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* gate_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e82_self_gate_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    float alpha, float epsilon,
+    const __nv_bfloat16* S_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* gate_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    float* d_alpha_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Dispatcher functions
+void dispatch_e82_self_gate_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    float alpha, float epsilon,
+    float* S, float* output,
+    float* S_checkpoints, float* Sq_cache,
+    float* gate_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e82_self_gate_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    float alpha, float epsilon,
+    const float* S_checkpoints,
+    const float* Sq_cache, const float* gate_cache,
+    const float* d_output,
+    float* d_kvqm_all,
+    float* d_alpha_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E82SelfGateForward {
+    E82SelfGateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        float alpha,         // Self-reference blending factor
+        float epsilon,       // Skip connection for gate stability
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] memory
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* gate_cache        // [T, B, n_state, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints
+        size += num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        // gate_cache
+        size += steps * batch_size * n_state * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E82SelfGateBackward {
+    E82SelfGateBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,
+        float alpha, float epsilon,
+        const T* x,
+        const T* kvqm_cache,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* gate_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm,
+        T* d_kvqm_cache,
+        float* d_alpha_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all + d_alpha_accum
+        return steps * batch_size * 4 * n_state * sizeof(T) + sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E84: Neural ODE - Continuous-time self-modulation
+// Two coupled matrix states (S content, G modulation) with ODE dynamics
+// - S [n_state x n_state]: Content memory
+// - G [n_state x n_state]: Modulation memory (controls S evolution)
+// Uses RK4 integration for numerical stability
+// =============================================================================
+
+// Dispatcher functions for BF16
+void dispatch_e84_neural_ode_forward_bf16(
+    int T, int B, int n_state, int n_steps, float dt,
+    const __nv_bfloat16* kvqm_all,
+    __nv_bfloat16* S, __nv_bfloat16* G, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* G_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e84_neural_ode_backward_bf16(
+    int T, int B, int n_state, int n_steps, float dt,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* G_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// Dispatcher functions for FP32
+void dispatch_e84_neural_ode_forward_fp32(
+    int T, int B, int n_state, int n_steps, float dt,
+    const float* kvqm_all,
+    float* S, float* G, float* output,
+    float* S_checkpoints, float* G_checkpoints,
+    float* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e84_neural_ode_backward_fp32(
+    int T, int B, int n_state, int n_steps, float dt,
+    const float* kvqm_all,
+    const float* S_checkpoints, const float* G_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E84NeuralODEForward {
+    E84NeuralODEForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int n_steps,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] content memory
+        T* G,                // [B, n_state, n_state] modulation memory
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* G_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache          // [T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // S_checkpoints + G_checkpoints
+        size += 2 * num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int n_steps_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E84NeuralODEBackward {
+    E84NeuralODEBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int n_steps,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,
+        const T* x,
+        const T* kvqm_cache,
+        const T* S_checkpoints, const T* G_checkpoints,
+        const T* Sq_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm,
+        T* d_kvqm_cache
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all
+        return steps * batch_size * 4 * n_state * sizeof(T);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int n_steps_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E83: Circular K-Tower Memory System
+// K matrices M_0, M_1, ..., M_{K-1}, each n_state x n_state.
+// Each matrix is gated by the NEXT one (modulo K) in a circular pattern.
+// Key insight: No "top" level - circular dependency creates a fully symmetric
+// system where every matrix is both controller and controlled.
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e83_circular_forward(
+    int T, int B, int n_state, int K,
+    const __nv_bfloat16* kv_all,        // [K*2*n_state, T*B]
+    const __nv_bfloat16* q_all,         // [n_state, T*B]
+    const __nv_bfloat16* B_gates,       // [K, n_state]
+    __nv_bfloat16* M_states,            // [K, B, n_state, n_state]
+    __nv_bfloat16* output,              // [T, B, n_state]
+    __nv_bfloat16* M_checkpoints,       // [num_cp, K, B, n_state, n_state]
+    __nv_bfloat16* Sq_cache,            // [T, B, n_state]
+    __nv_bfloat16* row_gate_cache,      // [K, T, B, n_state]
+    __nv_bfloat16* col_gate_cache,      // [K, T, B, n_state]
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e83_circular_backward(
+    int T, int B, int n_state, int K,
+    const __nv_bfloat16* kv_all,
+    const __nv_bfloat16* q_all,
+    const __nv_bfloat16* B_gates,
+    const __nv_bfloat16* row_gate_cache,
+    const __nv_bfloat16* col_gate_cache,
+    const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kv_all,
+    __nv_bfloat16* d_q_all,
+    float* d_B_gates_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Dispatcher functions
+void dispatch_e83_circular_forward_fp32(
+    int T, int B, int n_state, int K,
+    const float* kv_all,
+    const float* q_all,
+    const float* B_gates,
+    float* M_states,
+    float* output,
+    float* M_checkpoints,
+    float* Sq_cache,
+    float* row_gate_cache,
+    float* col_gate_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e83_circular_backward_fp32(
+    int T, int B, int n_state, int K,
+    const float* kv_all,
+    const float* q_all,
+    const float* B_gates,
+    const float* row_gate_cache,
+    const float* col_gate_cache,
+    const float* M_checkpoints,
+    const float* Sq_cache,
+    const float* d_output,
+    float* d_kv_all,
+    float* d_q_all,
+    float* d_B_gates_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E83CircularForward {
+    E83CircularForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int K,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kv,       // [K*2*n_state, dim] k,v projections
+        const T* W_q,        // [n_state, dim] query projection
+        const T* B_gates,    // [K, n_state] gate biases
+        const T* x,          // [T, B, dim]
+        T* M_states,         // [K, B, n_state, n_state]
+        T* output,           // [T, B, n_state]
+        T* kv_cache,         // [K*2*n_state, T*B]
+        T* q_cache,          // [n_state, T*B]
+        T* M_checkpoints,    // [num_cp, K, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* row_gate_cache,   // [K, T, B, n_state]
+        T* col_gate_cache    // [K, T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int K) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kv_cache: K*2*n * T*B
+        size += K * 2 * n_state * steps * batch_size * sizeof(T);
+        // q_cache: n * T*B
+        size += n_state * steps * batch_size * sizeof(T);
+        // M_checkpoints: num_cp * K * B * n * n
+        size += num_checkpoints * K * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache: T * B * n
+        size += steps * batch_size * n_state * sizeof(T);
+        // row_gate_cache + col_gate_cache: 2 * K * T * B * n
+        size += 2 * K * steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int K_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E83CircularBackward {
+    E83CircularBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int K,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kv,
+        const T* W_q,
+        const T* B_gates,
+        const T* x,
+        const T* kv_cache,
+        const T* q_cache,
+        const T* M_checkpoints,
+        const T* Sq_cache,
+        const T* row_gate_cache,
+        const T* col_gate_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kv,
+        T* d_W_q,
+        T* d_B_gates,
+        T* d_kv_cache,
+        T* d_q_cache,
+        float* d_B_gates_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int K) {
+        // d_kv_cache + d_q_cache + d_B_gates_accum
+        return (K * 2 * n_state + n_state) * steps * batch_size * sizeof(T) +
+               K * n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int K_;
     cublasHandle_t blas_handle_;
     cudaStream_t stream_;
 };
