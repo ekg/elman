@@ -103,6 +103,11 @@ class E79CoupledMatrixCell(nn.Module):
     E79 Coupled Memory-Modulation cell.
 
     Two coupled matrix states with mutual gating control.
+
+    Bias modes:
+    - use_bias=True, input_bias=False: Fixed learned bias (default)
+    - use_bias=False: No bias, sigmoid(0)=0.5 default retention
+    - input_bias=True: Input-dependent bias projected from x
     """
 
     def __init__(
@@ -110,19 +115,36 @@ class E79CoupledMatrixCell(nn.Module):
         dim: int,
         n_state: int = 64,
         use_cuda: bool = True,
+        use_bias: bool = True,
+        input_bias: bool = False,
     ):
         super().__init__()
         self.dim = dim
         self.n_state = n_state
         self.use_cuda = use_cuda and E79_CUDA_AVAILABLE
+        self.use_bias = use_bias
+        self.input_bias = input_bias
 
         # FUSED projection: single GEMM for k, v, q, m
         # Layout: [k | v | q | m] = [4 * n_state, dim]
         self.W_kvqm = nn.Parameter(torch.empty(4 * n_state, dim))
 
         # Gate biases for S and M
-        self.b_s_gate = nn.Parameter(torch.zeros(n_state))
-        self.b_m_gate = nn.Parameter(torch.zeros(n_state))
+        if use_bias and not input_bias:
+            # Fixed learned bias
+            self.b_s_gate = nn.Parameter(torch.zeros(n_state))
+            self.b_m_gate = nn.Parameter(torch.zeros(n_state))
+        elif input_bias:
+            # Input-dependent bias: project from input
+            self.W_bs = nn.Parameter(torch.empty(n_state, dim))
+            self.W_bm = nn.Parameter(torch.empty(n_state, dim))
+            # Register zero buffers for CUDA kernel compatibility
+            self.register_buffer('b_s_gate', torch.zeros(n_state))
+            self.register_buffer('b_m_gate', torch.zeros(n_state))
+        else:
+            # No bias - register zero buffers for CUDA kernel
+            self.register_buffer('b_s_gate', torch.zeros(n_state))
+            self.register_buffer('b_m_gate', torch.zeros(n_state))
 
         self._init_weights()
 
@@ -132,9 +154,15 @@ class E79CoupledMatrixCell(nn.Module):
         nn.init.xavier_uniform_(self.W_kvqm[n:2*n])   # W_v
         nn.init.xavier_uniform_(self.W_kvqm[2*n:3*n]) # W_q
         nn.init.xavier_uniform_(self.W_kvqm[3*n:])    # W_m
-        # Initialize gate biases for moderate decay
-        nn.init.constant_(self.b_s_gate, 2.0)  # sigmoid(2) ≈ 0.88
-        nn.init.constant_(self.b_m_gate, 2.5)  # M slightly slower decay
+
+        if self.use_bias and not self.input_bias:
+            # Initialize gate biases for moderate decay
+            nn.init.constant_(self.b_s_gate, 2.0)  # sigmoid(2) ≈ 0.88
+            nn.init.constant_(self.b_m_gate, 2.5)  # M slightly slower decay
+        elif self.input_bias:
+            # Initialize input bias projections
+            nn.init.xavier_uniform_(self.W_bs)
+            nn.init.xavier_uniform_(self.W_bm)
 
     def forward(
         self,
@@ -162,8 +190,8 @@ class E79CoupledMatrixCell(nn.Module):
             # Initialize M with small values so it provides initial gating
             M = torch.zeros(B, n, n, device=x.device, dtype=x.dtype)
 
-        # Use CUDA kernel if available
-        if self.use_cuda and x.is_cuda and x.dtype in (torch.bfloat16, torch.float32):
+        # Use CUDA kernel if available (not for input_bias mode - needs Python fallback)
+        if self.use_cuda and x.is_cuda and x.dtype in (torch.bfloat16, torch.float32) and not self.input_bias:
             x = x.contiguous()
             S = S.contiguous()
             M = M.contiguous()
@@ -177,6 +205,11 @@ class E79CoupledMatrixCell(nn.Module):
         q_all = all_proj[:, :, 2*n:3*n]
         m_all = all_proj[:, :, 3*n:]
 
+        # Pre-compute input-dependent biases if needed
+        if self.input_bias:
+            bs_all = (x_flat @ self.W_bs.T).reshape(T, B, n)  # [T, B, n_state]
+            bm_all = (x_flat @ self.W_bm.T).reshape(T, B, n)
+
         outputs = []
         for t in range(T):
             k = k_all[t]  # [B, n]
@@ -188,10 +221,18 @@ class E79CoupledMatrixCell(nn.Module):
             k_norm = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
             m_norm = m_vec / (m_vec.norm(dim=-1, keepdim=True) + 1e-6)
 
+            # Get bias for this timestep
+            if self.input_bias:
+                b_s = bs_all[t]  # [B, n_state]
+                b_m = bm_all[t]
+            else:
+                b_s = self.b_s_gate  # [n_state] broadcast
+                b_m = self.b_m_gate
+
             # --- S update (M-controlled gating) ---
             # M provides row/col decay for S
-            s_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', M, k_norm) + self.b_s_gate)
-            s_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', M, k_norm) + self.b_s_gate)
+            s_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', M, k_norm) + b_s)
+            s_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', M, k_norm) + b_s)
 
             # Delta rule for S
             s_retrieved = torch.einsum('bij,bj->bi', S, k_norm)
@@ -203,8 +244,8 @@ class E79CoupledMatrixCell(nn.Module):
 
             # --- M update (S-controlled gating) ---
             # S provides row/col decay for M
-            m_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', S, m_norm) + self.b_m_gate)
-            m_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', S, m_norm) + self.b_m_gate)
+            m_row_decay = torch.sigmoid(torch.einsum('bij,bj->bi', S, m_norm) + b_m)
+            m_col_decay = torch.sigmoid(torch.einsum('bji,bj->bi', S, m_norm) + b_m)
 
             # M tries to predict S's delta (learns meta-patterns)
             m_retrieved = torch.einsum('bij,bj->bi', M, m_norm)
@@ -226,6 +267,11 @@ class E79CoupledMatrixCell(nn.Module):
 class E79CoupledMatrix(nn.Module):
     """
     E79: Coupled Memory-Modulation Matrix System - Full layer.
+
+    Bias options (passed to cell):
+    - use_bias=True (default): Fixed learned gate bias
+    - use_bias=False: No bias, sigmoid(0)=0.5 default retention
+    - input_bias=True: Input-dependent bias projected from x
     """
 
     def __init__(
@@ -237,6 +283,8 @@ class E79CoupledMatrix(nn.Module):
         use_conv: bool = False,
         d_conv: int = 4,
         use_cuda: bool = True,
+        use_bias: bool = True,
+        input_bias: bool = False,
         **kwargs
     ):
         super().__init__()
@@ -261,6 +309,8 @@ class E79CoupledMatrix(nn.Module):
             self.d_inner,
             n_state=n_state,
             use_cuda=use_cuda,
+            use_bias=use_bias,
+            input_bias=input_bias,
         )
 
         self.out_proj = nn.Linear(n_state, dim, bias=False)

@@ -268,6 +268,11 @@ def get_ladder_level(level):
         '79n48': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 48}),
         '79n64': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 64}),
         '79n96': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96}),
+        # E79 bias ablations
+        '79nb': lambda **kw: E79CoupledMatrix(**{**kw, 'use_bias': False}),  # No bias
+        '79ib': lambda **kw: E79CoupledMatrix(**{**kw, 'input_bias': True}),  # Input-dependent bias
+        '79n32nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 32, 'use_bias': False}),
+        '79n32ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 32, 'input_bias': True}),
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
