@@ -100,6 +100,7 @@ from .e75_gated_delta import E75GatedDelta
 from .e76_logspace_delta import E76LogSpaceDelta
 from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
+from .e79_coupled_matrix import E79CoupledMatrix
 
 
 def get_ladder_level(level):
@@ -260,6 +261,13 @@ def get_ladder_level(level):
         '78n64s32': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 64, 'n_small': 32}),
         '78n128s32': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 128, 'n_small': 32}),
         '78n256s64': lambda **kw: E78ProjectedMatrix(**{**kw, 'n_effective': 256, 'n_small': 64}),
+        # E79: Coupled Memory-Modulation Matrix System
+        # Two coupled matrices (S content + M modulation) with mutual gating control
+        79: E79CoupledMatrix,
+        '79n32': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 32}),
+        '79n48': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 48}),
+        '79n64': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 64}),
+        '79n96': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96}),
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
