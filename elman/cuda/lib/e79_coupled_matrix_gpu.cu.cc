@@ -2327,4 +2327,1566 @@ template class E79CoupledForward<float>;
 template class E79CoupledBackward<__nv_bfloat16>;
 template class E79CoupledBackward<float>;
 
+// ============================================================================
+// E79 Input-Dependent Bias Variant Kernels
+// Instead of fixed b_s_gate and b_m_gate, biases are projected from input:
+// b_s = W_bs @ x, b_m = W_bm @ x giving [T*B, n_state] per-timestep biases
+// ============================================================================
+
+template<int N_STATE>
+__global__ void E79CoupledInputBiasForwardKernel_BF16(
+    int T,
+    int B,
+    const __nv_bfloat16* __restrict__ kvqm_all,   // [4*N_STATE, T*B] column-major
+    const __nv_bfloat16* __restrict__ bs_all,     // [T*B, N_STATE] input-dependent S bias
+    const __nv_bfloat16* __restrict__ bm_all,     // [T*B, N_STATE] input-dependent M bias
+    __nv_bfloat16* __restrict__ S,                // [B, N_STATE, N_STATE]
+    __nv_bfloat16* __restrict__ M,                // [B, N_STATE, N_STATE]
+    __nv_bfloat16* __restrict__ output,           // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ S_checkpoints,    // [num_checkpoints, B, N_STATE, N_STATE]
+    __nv_bfloat16* __restrict__ M_checkpoints,    // [num_checkpoints, B, N_STATE, N_STATE]
+    __nv_bfloat16* __restrict__ Sq_cache,         // [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ s_row_decay_cache,// [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ s_col_decay_cache,// [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ m_row_decay_cache,// [T, B, N_STATE]
+    __nv_bfloat16* __restrict__ m_col_decay_cache,// [T, B, N_STATE]
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    // Shared memory layout - need space for two matrices plus vectors
+    extern __shared__ float shared_mem[];
+    float* S_shared = shared_mem;                         // [N_STATE * N_STATE]
+    float* M_shared = S_shared + N_STATE * N_STATE;       // [N_STATE * N_STATE]
+    float* k_shared = M_shared + N_STATE * N_STATE;       // [N_STATE]
+    float* v_shared = k_shared + N_STATE;                 // [N_STATE]
+    float* q_shared = v_shared + N_STATE;                 // [N_STATE]
+    float* m_vec_shared = q_shared + N_STATE;             // [N_STATE]
+    float* s_row_decay = m_vec_shared + N_STATE;          // [N_STATE]
+    float* s_col_decay = s_row_decay + N_STATE;           // [N_STATE]
+    float* m_row_decay = s_col_decay + N_STATE;           // [N_STATE]
+    float* m_col_decay = m_row_decay + N_STATE;           // [N_STATE]
+    float* s_retrieved = m_col_decay + N_STATE;           // [N_STATE]
+    float* m_retrieved = s_retrieved + N_STATE;           // [N_STATE]
+    float* b_s_shared = m_retrieved + N_STATE;            // [N_STATE] per-timestep bias
+    float* b_m_shared = b_s_shared + N_STATE;             // [N_STATE] per-timestep bias
+
+    int tid = threadIdx.x;
+    int n2 = N_STATE * N_STATE;
+    const int STRIDE = 4 * N_STATE;
+
+    // Load initial states
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S_shared[i] = __bfloat162float(S[b * n2 + i]);
+        M_shared[i] = __bfloat162float(M[b * n2 + i]);
+    }
+    __syncthreads();
+
+    // Save initial checkpoints (index 0)
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S_checkpoints[b * n2 + i] = __float2bfloat16(S_shared[i]);
+        M_checkpoints[b * n2 + i] = __float2bfloat16(M_shared[i]);
+    }
+    __syncthreads();
+
+    // Process each timestep
+    for (int t = 0; t < T; t++) {
+        int col_idx = (t * B + b) * STRIDE;
+        int bias_idx = t * B * N_STATE + b * N_STATE;
+
+        // Load k, v, q, m for this timestep
+        if (tid < N_STATE) {
+            k_shared[tid] = __bfloat162float(kvqm_all[col_idx + tid]);
+            v_shared[tid] = __bfloat162float(kvqm_all[col_idx + N_STATE + tid]);
+            q_shared[tid] = __bfloat162float(kvqm_all[col_idx + 2 * N_STATE + tid]);
+            m_vec_shared[tid] = __bfloat162float(kvqm_all[col_idx + 3 * N_STATE + tid]);
+            // Load per-timestep biases
+            b_s_shared[tid] = __bfloat162float(bs_all[bias_idx + tid]);
+            b_m_shared[tid] = __bfloat162float(bm_all[bias_idx + tid]);
+        }
+        __syncthreads();
+
+        // Normalize k and m
+        __shared__ float k_norm_val, m_norm_val;
+        if (tid == 0) {
+            float k_sum = 0.0f, m_sum = 0.0f;
+            for (int i = 0; i < N_STATE; i++) {
+                k_sum += k_shared[i] * k_shared[i];
+                m_sum += m_vec_shared[i] * m_vec_shared[i];
+            }
+            k_norm_val = sqrtf(k_sum) + 1e-6f;
+            m_norm_val = sqrtf(m_sum) + 1e-6f;
+        }
+        __syncthreads();
+        if (tid < N_STATE) {
+            k_shared[tid] /= k_norm_val;
+            m_vec_shared[tid] /= m_norm_val;
+        }
+        __syncthreads();
+
+        // --- S update (M-controlled gating) ---
+        // s_row_decay = sigmoid(M @ k_norm + b_s)
+        // s_col_decay = sigmoid(M.T @ k_norm + b_s)
+        if (tid < N_STATE) {
+            float row_sum = 0.0f, col_sum = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < N_STATE; j++) {
+                row_sum += M_shared[tid * N_STATE + j] * k_shared[j];  // M @ k
+                col_sum += M_shared[j * N_STATE + tid] * k_shared[j];  // M.T @ k
+            }
+            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_s_shared[tid])));
+            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_s_shared[tid])));
+
+            // Cache for backward
+            s_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(s_row_decay[tid]);
+            s_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(s_col_decay[tid]);
+        }
+        __syncthreads();
+
+        // s_retrieved = S @ k_norm
+        if (tid < N_STATE) {
+            float sum = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < N_STATE; j++) {
+                sum += S_shared[tid * N_STATE + j] * k_shared[j];
+            }
+            s_retrieved[tid] = sum;
+        }
+        __syncthreads();
+
+        // Update S: S = (s_row_decay * S * s_col_decay) + outer(s_delta, k_norm)
+        for (int i = tid; i < n2; i += blockDim.x) {
+            int row = i / N_STATE;
+            int col = i % N_STATE;
+            float s_delta_row = v_shared[row] - s_retrieved[row];
+            float update = s_row_decay[row] * S_shared[i] * s_col_decay[col] + s_delta_row * k_shared[col];
+            S_shared[i] = update;
+        }
+        __syncthreads();
+
+        // --- M update (S-controlled gating) ---
+        // m_row_decay = sigmoid(S @ m_norm + b_m)
+        // m_col_decay = sigmoid(S.T @ m_norm + b_m)
+        if (tid < N_STATE) {
+            float row_sum = 0.0f, col_sum = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < N_STATE; j++) {
+                row_sum += S_shared[tid * N_STATE + j] * m_vec_shared[j];  // S @ m (after S update!)
+                col_sum += S_shared[j * N_STATE + tid] * m_vec_shared[j];  // S.T @ m
+            }
+            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_m_shared[tid])));
+            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_m_shared[tid])));
+
+            // Cache for backward
+            m_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(m_row_decay[tid]);
+            m_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(m_col_decay[tid]);
+        }
+        __syncthreads();
+
+        // m_retrieved = M @ m_norm
+        if (tid < N_STATE) {
+            float sum = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < N_STATE; j++) {
+                sum += M_shared[tid * N_STATE + j] * m_vec_shared[j];
+            }
+            m_retrieved[tid] = sum;
+        }
+        __syncthreads();
+
+        // Update M: M = (m_row_decay * M * m_col_decay) + outer(m_delta, m_norm)
+        // m_delta = s_delta - m_retrieved
+        if (tid < N_STATE) {
+            float s_delta_row = v_shared[tid] - s_retrieved[tid];
+            float m_delta_row = s_delta_row - m_retrieved[tid];
+
+            for (int col = 0; col < N_STATE; col++) {
+                int idx = tid * N_STATE + col;
+                M_shared[idx] = m_row_decay[tid] * M_shared[idx] * m_col_decay[col] + m_delta_row * m_vec_shared[col];
+            }
+        }
+        __syncthreads();
+
+        // Save checkpoints if at boundary
+        if ((t + 1) % checkpoint_interval == 0) {
+            int cp_idx = (t + 1) / checkpoint_interval;
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S_checkpoints[cp_idx * B * n2 + b * n2 + i] = __float2bfloat16(S_shared[i]);
+                M_checkpoints[cp_idx * B * n2 + b * n2 + i] = __float2bfloat16(M_shared[i]);
+            }
+        }
+        __syncthreads();
+
+        // Output: Sq = S @ q, then self-gate
+        if (tid < N_STATE) {
+            float Sq = 0.0f;
+            #pragma unroll 8
+            for (int j = 0; j < N_STATE; j++) {
+                Sq += S_shared[tid * N_STATE + j] * q_shared[j];
+            }
+            Sq_cache[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(Sq);
+            float sig = 1.0f / (1.0f + expf(-Sq));
+            output[t * B * N_STATE + b * N_STATE + tid] = __float2bfloat16(Sq * Sq * sig);
+        }
+        __syncthreads();
+    }
+
+    // Write final states
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S[b * n2 + i] = __float2bfloat16(S_shared[i]);
+        M[b * n2 + i] = __float2bfloat16(M_shared[i]);
+    }
+}
+
+// E79 Input-Bias Backward Kernel (BF16)
+template<int N_STATE>
+__global__ void E79CoupledInputBiasBackwardKernel_BF16(
+    int T,
+    int B,
+    const __nv_bfloat16* __restrict__ kvqm_all,
+    const __nv_bfloat16* __restrict__ bs_all,     // [T*B, N_STATE] input-dependent S bias
+    const __nv_bfloat16* __restrict__ bm_all,     // [T*B, N_STATE] input-dependent M bias
+    const __nv_bfloat16* __restrict__ s_row_decay_cache,
+    const __nv_bfloat16* __restrict__ s_col_decay_cache,
+    const __nv_bfloat16* __restrict__ m_row_decay_cache,
+    const __nv_bfloat16* __restrict__ m_col_decay_cache,
+    const __nv_bfloat16* __restrict__ S_checkpoints,
+    const __nv_bfloat16* __restrict__ M_checkpoints,
+    const __nv_bfloat16* __restrict__ Sq_cache,
+    const __nv_bfloat16* __restrict__ d_output,
+    __nv_bfloat16* __restrict__ d_kvqm_all,
+    __nv_bfloat16* __restrict__ d_bs_all,         // [T*B, N_STATE] output gradients
+    __nv_bfloat16* __restrict__ d_bm_all,         // [T*B, N_STATE] output gradients
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    extern __shared__ float shared_mem[];
+    // Layout for backward - need space for matrices and vectors
+    float* S = shared_mem;                                // [N_STATE * N_STATE]
+    float* M = S + N_STATE * N_STATE;                     // [N_STATE * N_STATE]
+    float* dS = M + N_STATE * N_STATE;                    // [N_STATE * N_STATE]
+    float* dM = dS + N_STATE * N_STATE;                   // [N_STATE * N_STATE]
+    float* k_raw = dM + N_STATE * N_STATE;                // [N_STATE]
+    float* v_raw = k_raw + N_STATE;                       // [N_STATE]
+    float* q_raw = v_raw + N_STATE;                       // [N_STATE]
+    float* m_vec_raw = q_raw + N_STATE;                   // [N_STATE]
+    float* k_norm = m_vec_raw + N_STATE;                  // [N_STATE]
+    float* m_norm = k_norm + N_STATE;                     // [N_STATE]
+    float* s_row_decay = m_norm + N_STATE;                // [N_STATE]
+    float* s_col_decay = s_row_decay + N_STATE;           // [N_STATE]
+    float* m_row_decay = s_col_decay + N_STATE;           // [N_STATE]
+    float* m_col_decay = m_row_decay + N_STATE;           // [N_STATE]
+    float* s_retrieved = m_col_decay + N_STATE;           // [N_STATE]
+    float* m_retrieved = s_retrieved + N_STATE;           // [N_STATE]
+    float* s_delta = m_retrieved + N_STATE;               // [N_STATE]
+    float* m_delta = s_delta + N_STATE;                   // [N_STATE]
+    float* b_s_shared = m_delta + N_STATE;                // [N_STATE]
+    float* b_m_shared = b_s_shared + N_STATE;             // [N_STATE]
+    float* d_k_raw = b_m_shared + N_STATE;                // [N_STATE]
+    float* d_v_raw = d_k_raw + N_STATE;                   // [N_STATE]
+    float* d_q_raw = d_v_raw + N_STATE;                   // [N_STATE]
+    float* d_m_raw = d_q_raw + N_STATE;                   // [N_STATE]
+    float* d_Sq_shared = d_m_raw + N_STATE;               // [N_STATE]
+    float* d_s_delta = d_Sq_shared + N_STATE;             // [N_STATE]
+    float* d_m_delta = d_s_delta + N_STATE;               // [N_STATE]
+    float* d_k_norm = d_m_delta + N_STATE;                // [N_STATE]
+    float* d_m_norm = d_k_norm + N_STATE;                 // [N_STATE]
+    float* d_s_row_decay = d_m_norm + N_STATE;            // [N_STATE]
+    float* d_s_col_decay = d_s_row_decay + N_STATE;       // [N_STATE]
+    float* d_m_row_decay = d_s_col_decay + N_STATE;       // [N_STATE]
+    float* d_m_col_decay = d_m_row_decay + N_STATE;       // [N_STATE]
+
+    int tid = threadIdx.x;
+    int n2 = N_STATE * N_STATE;
+    const int STRIDE = 4 * N_STATE;
+
+    // Initialize gradient accumulators
+    for (int i = tid; i < n2; i += blockDim.x) {
+        dS[i] = 0.0f;
+        dM[i] = 0.0f;
+    }
+    __syncthreads();
+
+    int num_segments = (T + checkpoint_interval - 1) / checkpoint_interval;
+
+    for (int seg = num_segments - 1; seg >= 0; seg--) {
+        int t_start = seg * checkpoint_interval;
+        int t_end = min(t_start + checkpoint_interval, T);
+
+        for (int t = t_end - 1; t >= t_start; t--) {
+            int bias_idx = t * B * N_STATE + b * N_STATE;
+
+            // Reload checkpoint
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S[i] = __bfloat162float(S_checkpoints[seg * B * n2 + b * n2 + i]);
+                M[i] = __bfloat162float(M_checkpoints[seg * B * n2 + b * n2 + i]);
+            }
+            __syncthreads();
+
+            // Recompute forward to step t
+            __shared__ float k_norm_val_t, m_norm_val_t;
+            for (int tt = t_start; tt <= t; tt++) {
+                int col_idx = (tt * B + b) * STRIDE;
+                int bias_idx_tt = tt * B * N_STATE + b * N_STATE;
+                if (tid < N_STATE) {
+                    k_raw[tid] = __bfloat162float(kvqm_all[col_idx + tid]);
+                    v_raw[tid] = __bfloat162float(kvqm_all[col_idx + N_STATE + tid]);
+                    q_raw[tid] = __bfloat162float(kvqm_all[col_idx + 2 * N_STATE + tid]);
+                    m_vec_raw[tid] = __bfloat162float(kvqm_all[col_idx + 3 * N_STATE + tid]);
+                    s_row_decay[tid] = __bfloat162float(s_row_decay_cache[tt * B * N_STATE + b * N_STATE + tid]);
+                    s_col_decay[tid] = __bfloat162float(s_col_decay_cache[tt * B * N_STATE + b * N_STATE + tid]);
+                    m_row_decay[tid] = __bfloat162float(m_row_decay_cache[tt * B * N_STATE + b * N_STATE + tid]);
+                    m_col_decay[tid] = __bfloat162float(m_col_decay_cache[tt * B * N_STATE + b * N_STATE + tid]);
+                    b_s_shared[tid] = __bfloat162float(bs_all[bias_idx_tt + tid]);
+                    b_m_shared[tid] = __bfloat162float(bm_all[bias_idx_tt + tid]);
+                }
+                __syncthreads();
+
+                // Normalize k and m
+                if (tid == 0) {
+                    float k_sum = 0.0f, m_sum = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_sum += k_raw[i] * k_raw[i];
+                        m_sum += m_vec_raw[i] * m_vec_raw[i];
+                    }
+                    k_norm_val_t = sqrtf(k_sum) + 1e-6f;
+                    m_norm_val_t = sqrtf(m_sum) + 1e-6f;
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    k_norm[tid] = k_raw[tid] / k_norm_val_t;
+                    m_norm[tid] = m_vec_raw[tid] / m_norm_val_t;
+                }
+                __syncthreads();
+
+                // Compute s_retrieved and s_delta BEFORE S update
+                if (tid < N_STATE) {
+                    float sum = 0.0f;
+                    for (int j = 0; j < N_STATE; j++) {
+                        sum += S[tid * N_STATE + j] * k_norm[j];
+                    }
+                    s_retrieved[tid] = sum;
+                    s_delta[tid] = v_raw[tid] - s_retrieved[tid];
+                }
+                __syncthreads();
+
+                // Update S if not at target step
+                if (tt < t) {
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        int row = i / N_STATE;
+                        int col = i % N_STATE;
+                        S[i] = s_row_decay[row] * S[i] * s_col_decay[col] + s_delta[row] * k_norm[col];
+                    }
+                    __syncthreads();
+
+                    // Compute m_retrieved and m_delta
+                    if (tid < N_STATE) {
+                        float sum = 0.0f;
+                        for (int j = 0; j < N_STATE; j++) {
+                            sum += M[tid * N_STATE + j] * m_norm[j];
+                        }
+                        m_retrieved[tid] = sum;
+                        m_delta[tid] = s_delta[tid] - m_retrieved[tid];
+                    }
+                    __syncthreads();
+
+                    // Update M
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        int row = i / N_STATE;
+                        int col = i % N_STATE;
+                        M[i] = m_row_decay[row] * M[i] * m_col_decay[col] + m_delta[row] * m_norm[col];
+                    }
+                    __syncthreads();
+                } else {
+                    // At target step - compute m_retrieved and m_delta for backward
+                    if (tid < N_STATE) {
+                        float sum = 0.0f;
+                        for (int j = 0; j < N_STATE; j++) {
+                            sum += M[tid * N_STATE + j] * m_norm[j];
+                        }
+                        m_retrieved[tid] = sum;
+                        m_delta[tid] = s_delta[tid] - m_retrieved[tid];
+                    }
+                    __syncthreads();
+                }
+            }
+
+            // Now S, M hold states at t-1; s_delta, m_delta are for step t
+
+            // Backward through output
+            if (tid < N_STATE) {
+                float d_out = __bfloat162float(d_output[t * B * N_STATE + b * N_STATE + tid]);
+                float Sq = __bfloat162float(Sq_cache[t * B * N_STATE + b * N_STATE + tid]);
+                float sig = 1.0f / (1.0f + expf(-Sq));
+                float d_Sq = d_out * (2.0f * Sq * sig + Sq * Sq * sig * (1.0f - sig));
+                d_Sq_shared[tid] = d_Sq;
+            }
+            __syncthreads();
+
+            // dS += outer(d_Sq, q)
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                dS[i] += d_Sq_shared[row] * q_raw[col];
+            }
+            __syncthreads();
+
+            // d_q = S_t^T @ d_Sq
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float S_t_ij = s_row_decay[i] * S[i * N_STATE + tid] * s_col_decay[tid] + s_delta[i] * k_norm[tid];
+                    sum += S_t_ij * d_Sq_shared[i];
+                }
+                d_q_raw[tid] = sum;
+            }
+            __syncthreads();
+
+            // Backward through M update: M_new = m_row_decay * M * m_col_decay + outer(m_delta, m_norm)
+            if (tid < N_STATE) {
+                float d_m_delta_local = 0.0f;
+                float d_m_norm_local = 0.0f;
+                float d_m_row_local = 0.0f;
+                float d_m_col_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float dM_ij = dM[tid * N_STATE + j];
+                    d_m_delta_local += dM_ij * m_norm[j];
+                    d_m_row_local += dM_ij * M[tid * N_STATE + j] * m_col_decay[j];
+
+                    float dM_ji = dM[j * N_STATE + tid];
+                    d_m_norm_local += dM_ji * m_delta[j];
+                    d_m_col_local += dM_ji * M[j * N_STATE + tid] * m_row_decay[j];
+                }
+                d_m_delta[tid] = d_m_delta_local;
+                d_m_norm[tid] = d_m_norm_local;
+                d_m_row_decay[tid] = d_m_row_local;
+                d_m_col_decay[tid] = d_m_col_local;
+            }
+            __syncthreads();
+
+            // Backward through S update: S_new = s_row_decay * S * s_col_decay + outer(s_delta, k_norm)
+            if (tid < N_STATE) {
+                float d_s_delta_local = 0.0f;
+                float d_k_norm_local = 0.0f;
+                float d_s_row_local = 0.0f;
+                float d_s_col_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float dS_ij = dS[tid * N_STATE + j];
+                    d_s_delta_local += dS_ij * k_norm[j];
+                    d_s_row_local += dS_ij * S[tid * N_STATE + j] * s_col_decay[j];
+
+                    float dS_ji = dS[j * N_STATE + tid];
+                    d_k_norm_local += dS_ji * s_delta[j];
+                    d_s_col_local += dS_ji * S[j * N_STATE + tid] * s_row_decay[j];
+                }
+                // Add contribution from m_delta = s_delta - m_retrieved
+                d_s_delta_local += d_m_delta[tid];
+
+                d_s_delta[tid] = d_s_delta_local;
+                d_k_norm[tid] = d_k_norm_local;
+                d_s_row_decay[tid] = d_s_row_local;
+                d_s_col_decay[tid] = d_s_col_local;
+            }
+            __syncthreads();
+
+            // Compute bias gradients and write per-timestep
+            // d_b_s = (d_s_row_decay * sigmoid_deriv) + (d_s_col_decay * sigmoid_deriv)
+            // d_b_m = (d_m_row_decay * sigmoid_deriv) + (d_m_col_decay * sigmoid_deriv)
+            if (tid < N_STATE) {
+                float d_s_gate = d_s_row_decay[tid] * s_row_decay[tid] * (1.0f - s_row_decay[tid])
+                               + d_s_col_decay[tid] * s_col_decay[tid] * (1.0f - s_col_decay[tid]);
+                float d_m_gate = d_m_row_decay[tid] * m_row_decay[tid] * (1.0f - m_row_decay[tid])
+                               + d_m_col_decay[tid] * m_col_decay[tid] * (1.0f - m_col_decay[tid]);
+
+                d_bs_all[bias_idx + tid] = __float2bfloat16(d_s_gate);
+                d_bm_all[bias_idx + tid] = __float2bfloat16(d_m_gate);
+            }
+            __syncthreads();
+
+            // d_v = d_s_delta
+            if (tid < N_STATE) {
+                d_v_raw[tid] = d_s_delta[tid];
+            }
+
+            // d_k_norm contribution from retrieved: retrieved = S @ k_norm
+            // d_k_norm += S^T @ (-d_s_delta)
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S[i * N_STATE + tid] * (-d_s_delta[i]);
+                }
+                d_k_norm[tid] += sum;
+
+                // d_k_norm contribution from s_row_decay and s_col_decay gates
+                // s_row_decay = sigmoid(M @ k_norm + b_s)
+                // s_col_decay = sigmoid(M.T @ k_norm + b_s)
+                // d_k_norm += (M.T @ d_pre_s_row) + (M @ d_pre_s_col)
+                float d_k_from_s_row = 0.0f;
+                float d_k_from_s_col = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float d_pre_s_row_i = d_s_row_decay[i] * s_row_decay[i] * (1.0f - s_row_decay[i]);
+                    float d_pre_s_col_i = d_s_col_decay[i] * s_col_decay[i] * (1.0f - s_col_decay[i]);
+                    d_k_from_s_row += d_pre_s_row_i * M[i * N_STATE + tid];  // M.T @ d_pre_s_row
+                    d_k_from_s_col += d_pre_s_col_i * M[tid * N_STATE + i];  // M @ d_pre_s_col
+                }
+                d_k_norm[tid] += d_k_from_s_row + d_k_from_s_col;
+            }
+            __syncthreads();
+
+            // d_m_norm contribution from m_retrieved: m_retrieved = M @ m_norm
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += M[i * N_STATE + tid] * d_m_delta[i];
+                }
+                d_m_norm[tid] += sum;
+            }
+            __syncthreads();
+
+            // Convert d_k_norm to d_k_raw
+            {
+                __shared__ float k_dot_dk;
+                if (tid == 0) {
+                    k_dot_dk = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_dot_dk += k_raw[i] * d_k_norm[i];
+                    }
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    float norm = k_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_k_raw[tid] = d_k_norm[tid] / norm - k_raw[tid] * k_dot_dk / norm3;
+                }
+                __syncthreads();
+            }
+
+            // Convert d_m_norm to d_m_raw
+            {
+                __shared__ float m_dot_dm;
+                if (tid == 0) {
+                    m_dot_dm = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        m_dot_dm += m_vec_raw[i] * d_m_norm[i];
+                    }
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    float norm = m_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_m_raw[tid] = d_m_norm[tid] / norm - m_vec_raw[tid] * m_dot_dm / norm3;
+                }
+                __syncthreads();
+            }
+
+            // Write gradients
+            int col_idx_t = (t * B + b) * STRIDE;
+            if (tid < N_STATE) {
+                d_kvqm_all[col_idx_t + tid] = __float2bfloat16(d_k_raw[tid]);
+                d_kvqm_all[col_idx_t + N_STATE + tid] = __float2bfloat16(d_v_raw[tid]);
+                d_kvqm_all[col_idx_t + 2 * N_STATE + tid] = __float2bfloat16(d_q_raw[tid]);
+                d_kvqm_all[col_idx_t + 3 * N_STATE + tid] = __float2bfloat16(d_m_raw[tid]);
+            }
+            __syncthreads();
+
+            // Update dS for next iteration
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre = dS[i];
+                float dS_new = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+
+                // Add contribution from m_row_decay/m_col_decay gating
+                float d_pre_m_row = d_m_row_decay[row] * m_row_decay[row] * (1.0f - m_row_decay[row]);
+                float d_pre_m_col = d_m_col_decay[col] * m_col_decay[col] * (1.0f - m_col_decay[col]);
+                dS_new += d_pre_m_row * m_norm[col] + d_pre_m_col * m_norm[row];
+
+                dS[i] = dS_new;
+            }
+            __syncthreads();
+
+            // Update dM for next iteration
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre = dM[i];
+                float dM_new = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+
+                // Add contribution from s_row_decay/s_col_decay gating
+                float d_pre_s_row = d_s_row_decay[row] * s_row_decay[row] * (1.0f - s_row_decay[row]);
+                float d_pre_s_col = d_s_col_decay[col] * s_col_decay[col] * (1.0f - s_col_decay[col]);
+                dM_new += d_pre_s_row * k_norm[col] + d_pre_s_col * k_norm[row];
+
+                dM[i] = dM_new;
+            }
+            __syncthreads();
+        }
+    }
+}
+
+// FP32 versions of Input-Bias kernels
+
+template<int N_STATE>
+__global__ void E79CoupledInputBiasForwardKernel_FP32(
+    int T,
+    int B,
+    const float* __restrict__ kvqm_all,
+    const float* __restrict__ bs_all,
+    const float* __restrict__ bm_all,
+    float* __restrict__ S,
+    float* __restrict__ M,
+    float* __restrict__ output,
+    float* __restrict__ S_checkpoints,
+    float* __restrict__ M_checkpoints,
+    float* __restrict__ Sq_cache,
+    float* __restrict__ s_row_decay_cache,
+    float* __restrict__ s_col_decay_cache,
+    float* __restrict__ m_row_decay_cache,
+    float* __restrict__ m_col_decay_cache,
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    extern __shared__ float shared_mem[];
+    float* S_shared = shared_mem;
+    float* M_shared = S_shared + N_STATE * N_STATE;
+    float* k_shared = M_shared + N_STATE * N_STATE;
+    float* v_shared = k_shared + N_STATE;
+    float* q_shared = v_shared + N_STATE;
+    float* m_vec_shared = q_shared + N_STATE;
+    float* s_row_decay = m_vec_shared + N_STATE;
+    float* s_col_decay = s_row_decay + N_STATE;
+    float* m_row_decay = s_col_decay + N_STATE;
+    float* m_col_decay = m_row_decay + N_STATE;
+    float* s_retrieved = m_col_decay + N_STATE;
+    float* m_retrieved = s_retrieved + N_STATE;
+    float* b_s_shared = m_retrieved + N_STATE;
+    float* b_m_shared = b_s_shared + N_STATE;
+
+    int tid = threadIdx.x;
+    int n2 = N_STATE * N_STATE;
+    const int STRIDE = 4 * N_STATE;
+
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S_shared[i] = S[b * n2 + i];
+        M_shared[i] = M[b * n2 + i];
+    }
+    __syncthreads();
+
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S_checkpoints[b * n2 + i] = S_shared[i];
+        M_checkpoints[b * n2 + i] = M_shared[i];
+    }
+    __syncthreads();
+
+    for (int t = 0; t < T; t++) {
+        int col_idx = (t * B + b) * STRIDE;
+        int bias_idx = t * B * N_STATE + b * N_STATE;
+
+        if (tid < N_STATE) {
+            k_shared[tid] = kvqm_all[col_idx + tid];
+            v_shared[tid] = kvqm_all[col_idx + N_STATE + tid];
+            q_shared[tid] = kvqm_all[col_idx + 2 * N_STATE + tid];
+            m_vec_shared[tid] = kvqm_all[col_idx + 3 * N_STATE + tid];
+            b_s_shared[tid] = bs_all[bias_idx + tid];
+            b_m_shared[tid] = bm_all[bias_idx + tid];
+        }
+        __syncthreads();
+
+        __shared__ float k_norm_val, m_norm_val;
+        if (tid == 0) {
+            float k_sum = 0.0f, m_sum = 0.0f;
+            for (int i = 0; i < N_STATE; i++) {
+                k_sum += k_shared[i] * k_shared[i];
+                m_sum += m_vec_shared[i] * m_vec_shared[i];
+            }
+            k_norm_val = sqrtf(k_sum) + 1e-6f;
+            m_norm_val = sqrtf(m_sum) + 1e-6f;
+        }
+        __syncthreads();
+        if (tid < N_STATE) {
+            k_shared[tid] /= k_norm_val;
+            m_vec_shared[tid] /= m_norm_val;
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float row_sum = 0.0f, col_sum = 0.0f;
+            for (int j = 0; j < N_STATE; j++) {
+                row_sum += M_shared[tid * N_STATE + j] * k_shared[j];
+                col_sum += M_shared[j * N_STATE + tid] * k_shared[j];
+            }
+            s_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_s_shared[tid])));
+            s_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_s_shared[tid])));
+            s_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = s_row_decay[tid];
+            s_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = s_col_decay[tid];
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float sum = 0.0f;
+            for (int j = 0; j < N_STATE; j++) {
+                sum += S_shared[tid * N_STATE + j] * k_shared[j];
+            }
+            s_retrieved[tid] = sum;
+        }
+        __syncthreads();
+
+        for (int i = tid; i < n2; i += blockDim.x) {
+            int row = i / N_STATE;
+            int col = i % N_STATE;
+            float s_delta_row = v_shared[row] - s_retrieved[row];
+            S_shared[i] = s_row_decay[row] * S_shared[i] * s_col_decay[col] + s_delta_row * k_shared[col];
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float row_sum = 0.0f, col_sum = 0.0f;
+            for (int j = 0; j < N_STATE; j++) {
+                row_sum += S_shared[tid * N_STATE + j] * m_vec_shared[j];
+                col_sum += S_shared[j * N_STATE + tid] * m_vec_shared[j];
+            }
+            m_row_decay[tid] = 1.0f / (1.0f + expf(-(row_sum + b_m_shared[tid])));
+            m_col_decay[tid] = 1.0f / (1.0f + expf(-(col_sum + b_m_shared[tid])));
+            m_row_decay_cache[t * B * N_STATE + b * N_STATE + tid] = m_row_decay[tid];
+            m_col_decay_cache[t * B * N_STATE + b * N_STATE + tid] = m_col_decay[tid];
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float sum = 0.0f;
+            for (int j = 0; j < N_STATE; j++) {
+                sum += M_shared[tid * N_STATE + j] * m_vec_shared[j];
+            }
+            m_retrieved[tid] = sum;
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float s_delta_row = v_shared[tid] - s_retrieved[tid];
+            float m_delta_row = s_delta_row - m_retrieved[tid];
+            for (int col = 0; col < N_STATE; col++) {
+                int idx = tid * N_STATE + col;
+                M_shared[idx] = m_row_decay[tid] * M_shared[idx] * m_col_decay[col] + m_delta_row * m_vec_shared[col];
+            }
+        }
+        __syncthreads();
+
+        if ((t + 1) % checkpoint_interval == 0) {
+            int cp_idx = (t + 1) / checkpoint_interval;
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S_checkpoints[cp_idx * B * n2 + b * n2 + i] = S_shared[i];
+                M_checkpoints[cp_idx * B * n2 + b * n2 + i] = M_shared[i];
+            }
+        }
+        __syncthreads();
+
+        if (tid < N_STATE) {
+            float Sq = 0.0f;
+            for (int j = 0; j < N_STATE; j++) {
+                Sq += S_shared[tid * N_STATE + j] * q_shared[j];
+            }
+            Sq_cache[t * B * N_STATE + b * N_STATE + tid] = Sq;
+            float sig = 1.0f / (1.0f + expf(-Sq));
+            output[t * B * N_STATE + b * N_STATE + tid] = Sq * Sq * sig;
+        }
+        __syncthreads();
+    }
+
+    for (int i = tid; i < n2; i += blockDim.x) {
+        S[b * n2 + i] = S_shared[i];
+        M[b * n2 + i] = M_shared[i];
+    }
+}
+
+template<int N_STATE>
+__global__ void E79CoupledInputBiasBackwardKernel_FP32(
+    int T,
+    int B,
+    const float* __restrict__ kvqm_all,
+    const float* __restrict__ bs_all,
+    const float* __restrict__ bm_all,
+    const float* __restrict__ s_row_decay_cache,
+    const float* __restrict__ s_col_decay_cache,
+    const float* __restrict__ m_row_decay_cache,
+    const float* __restrict__ m_col_decay_cache,
+    const float* __restrict__ S_checkpoints,
+    const float* __restrict__ M_checkpoints,
+    const float* __restrict__ Sq_cache,
+    const float* __restrict__ d_output,
+    float* __restrict__ d_kvqm_all,
+    float* __restrict__ d_bs_all,
+    float* __restrict__ d_bm_all,
+    int checkpoint_interval
+) {
+    int b = blockIdx.x;
+    if (b >= B) return;
+
+    extern __shared__ float shared_mem[];
+    float* S = shared_mem;
+    float* M = S + N_STATE * N_STATE;
+    float* dS = M + N_STATE * N_STATE;
+    float* dM = dS + N_STATE * N_STATE;
+    float* k_raw = dM + N_STATE * N_STATE;
+    float* v_raw = k_raw + N_STATE;
+    float* q_raw = v_raw + N_STATE;
+    float* m_vec_raw = q_raw + N_STATE;
+    float* k_norm = m_vec_raw + N_STATE;
+    float* m_norm = k_norm + N_STATE;
+    float* s_row_decay = m_norm + N_STATE;
+    float* s_col_decay = s_row_decay + N_STATE;
+    float* m_row_decay = s_col_decay + N_STATE;
+    float* m_col_decay = m_row_decay + N_STATE;
+    float* s_retrieved = m_col_decay + N_STATE;
+    float* m_retrieved = s_retrieved + N_STATE;
+    float* s_delta = m_retrieved + N_STATE;
+    float* m_delta = s_delta + N_STATE;
+    float* b_s_shared = m_delta + N_STATE;
+    float* b_m_shared = b_s_shared + N_STATE;
+    float* d_k_raw = b_m_shared + N_STATE;
+    float* d_v_raw = d_k_raw + N_STATE;
+    float* d_q_raw = d_v_raw + N_STATE;
+    float* d_m_raw = d_q_raw + N_STATE;
+    float* d_Sq_shared = d_m_raw + N_STATE;
+    float* d_s_delta = d_Sq_shared + N_STATE;
+    float* d_m_delta = d_s_delta + N_STATE;
+    float* d_k_norm = d_m_delta + N_STATE;
+    float* d_m_norm = d_k_norm + N_STATE;
+    float* d_s_row_decay = d_m_norm + N_STATE;
+    float* d_s_col_decay = d_s_row_decay + N_STATE;
+    float* d_m_row_decay = d_s_col_decay + N_STATE;
+    float* d_m_col_decay = d_m_row_decay + N_STATE;
+
+    int tid = threadIdx.x;
+    int n2 = N_STATE * N_STATE;
+    const int STRIDE = 4 * N_STATE;
+
+    for (int i = tid; i < n2; i += blockDim.x) {
+        dS[i] = 0.0f;
+        dM[i] = 0.0f;
+    }
+    __syncthreads();
+
+    int num_segments = (T + checkpoint_interval - 1) / checkpoint_interval;
+
+    for (int seg = num_segments - 1; seg >= 0; seg--) {
+        int t_start = seg * checkpoint_interval;
+        int t_end = min(t_start + checkpoint_interval, T);
+
+        for (int t = t_end - 1; t >= t_start; t--) {
+            int bias_idx = t * B * N_STATE + b * N_STATE;
+
+            for (int i = tid; i < n2; i += blockDim.x) {
+                S[i] = S_checkpoints[seg * B * n2 + b * n2 + i];
+                M[i] = M_checkpoints[seg * B * n2 + b * n2 + i];
+            }
+            __syncthreads();
+
+            __shared__ float k_norm_val_t, m_norm_val_t;
+            for (int tt = t_start; tt <= t; tt++) {
+                int col_idx = (tt * B + b) * STRIDE;
+                int bias_idx_tt = tt * B * N_STATE + b * N_STATE;
+                if (tid < N_STATE) {
+                    k_raw[tid] = kvqm_all[col_idx + tid];
+                    v_raw[tid] = kvqm_all[col_idx + N_STATE + tid];
+                    q_raw[tid] = kvqm_all[col_idx + 2 * N_STATE + tid];
+                    m_vec_raw[tid] = kvqm_all[col_idx + 3 * N_STATE + tid];
+                    s_row_decay[tid] = s_row_decay_cache[tt * B * N_STATE + b * N_STATE + tid];
+                    s_col_decay[tid] = s_col_decay_cache[tt * B * N_STATE + b * N_STATE + tid];
+                    m_row_decay[tid] = m_row_decay_cache[tt * B * N_STATE + b * N_STATE + tid];
+                    m_col_decay[tid] = m_col_decay_cache[tt * B * N_STATE + b * N_STATE + tid];
+                    b_s_shared[tid] = bs_all[bias_idx_tt + tid];
+                    b_m_shared[tid] = bm_all[bias_idx_tt + tid];
+                }
+                __syncthreads();
+
+                if (tid == 0) {
+                    float k_sum = 0.0f, m_sum = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_sum += k_raw[i] * k_raw[i];
+                        m_sum += m_vec_raw[i] * m_vec_raw[i];
+                    }
+                    k_norm_val_t = sqrtf(k_sum) + 1e-6f;
+                    m_norm_val_t = sqrtf(m_sum) + 1e-6f;
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    k_norm[tid] = k_raw[tid] / k_norm_val_t;
+                    m_norm[tid] = m_vec_raw[tid] / m_norm_val_t;
+                }
+                __syncthreads();
+
+                if (tid < N_STATE) {
+                    float sum = 0.0f;
+                    for (int j = 0; j < N_STATE; j++) {
+                        sum += S[tid * N_STATE + j] * k_norm[j];
+                    }
+                    s_retrieved[tid] = sum;
+                    s_delta[tid] = v_raw[tid] - sum;
+                }
+                __syncthreads();
+
+                if (tt < t) {
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        int row = i / N_STATE;
+                        int col = i % N_STATE;
+                        S[i] = s_row_decay[row] * S[i] * s_col_decay[col] + s_delta[row] * k_norm[col];
+                    }
+                    __syncthreads();
+
+                    if (tid < N_STATE) {
+                        float sum = 0.0f;
+                        for (int j = 0; j < N_STATE; j++) {
+                            sum += M[tid * N_STATE + j] * m_norm[j];
+                        }
+                        m_retrieved[tid] = sum;
+                        m_delta[tid] = s_delta[tid] - m_retrieved[tid];
+                    }
+                    __syncthreads();
+
+                    for (int i = tid; i < n2; i += blockDim.x) {
+                        int row = i / N_STATE;
+                        int col = i % N_STATE;
+                        M[i] = m_row_decay[row] * M[i] * m_col_decay[col] + m_delta[row] * m_norm[col];
+                    }
+                    __syncthreads();
+                } else {
+                    if (tid < N_STATE) {
+                        float sum = 0.0f;
+                        for (int j = 0; j < N_STATE; j++) {
+                            sum += M[tid * N_STATE + j] * m_norm[j];
+                        }
+                        m_retrieved[tid] = sum;
+                        m_delta[tid] = s_delta[tid] - m_retrieved[tid];
+                    }
+                    __syncthreads();
+                }
+            }
+
+            if (tid < N_STATE) {
+                float d_out = d_output[t * B * N_STATE + b * N_STATE + tid];
+                float Sq = Sq_cache[t * B * N_STATE + b * N_STATE + tid];
+                float sig = 1.0f / (1.0f + expf(-Sq));
+                float d_Sq = d_out * (2.0f * Sq * sig + Sq * Sq * sig * (1.0f - sig));
+                d_Sq_shared[tid] = d_Sq;
+            }
+            __syncthreads();
+
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                dS[i] += d_Sq_shared[row] * q_raw[col];
+            }
+            __syncthreads();
+
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float S_t_ij = s_row_decay[i] * S[i * N_STATE + tid] * s_col_decay[tid] + s_delta[i] * k_norm[tid];
+                    sum += S_t_ij * d_Sq_shared[i];
+                }
+                d_q_raw[tid] = sum;
+            }
+            __syncthreads();
+
+            if (tid < N_STATE) {
+                float d_m_delta_local = 0.0f;
+                float d_m_norm_local = 0.0f;
+                float d_m_row_local = 0.0f;
+                float d_m_col_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float dM_ij = dM[tid * N_STATE + j];
+                    d_m_delta_local += dM_ij * m_norm[j];
+                    d_m_row_local += dM_ij * M[tid * N_STATE + j] * m_col_decay[j];
+                    float dM_ji = dM[j * N_STATE + tid];
+                    d_m_norm_local += dM_ji * m_delta[j];
+                    d_m_col_local += dM_ji * M[j * N_STATE + tid] * m_row_decay[j];
+                }
+                d_m_delta[tid] = d_m_delta_local;
+                d_m_norm[tid] = d_m_norm_local;
+                d_m_row_decay[tid] = d_m_row_local;
+                d_m_col_decay[tid] = d_m_col_local;
+            }
+            __syncthreads();
+
+            if (tid < N_STATE) {
+                float d_s_delta_local = 0.0f;
+                float d_k_norm_local = 0.0f;
+                float d_s_row_local = 0.0f;
+                float d_s_col_local = 0.0f;
+                for (int j = 0; j < N_STATE; j++) {
+                    float dS_ij = dS[tid * N_STATE + j];
+                    d_s_delta_local += dS_ij * k_norm[j];
+                    d_s_row_local += dS_ij * S[tid * N_STATE + j] * s_col_decay[j];
+                    float dS_ji = dS[j * N_STATE + tid];
+                    d_k_norm_local += dS_ji * s_delta[j];
+                    d_s_col_local += dS_ji * S[j * N_STATE + tid] * s_row_decay[j];
+                }
+                d_s_delta_local += d_m_delta[tid];
+                d_s_delta[tid] = d_s_delta_local;
+                d_k_norm[tid] = d_k_norm_local;
+                d_s_row_decay[tid] = d_s_row_local;
+                d_s_col_decay[tid] = d_s_col_local;
+            }
+            __syncthreads();
+
+            if (tid < N_STATE) {
+                float d_s_gate = d_s_row_decay[tid] * s_row_decay[tid] * (1.0f - s_row_decay[tid])
+                               + d_s_col_decay[tid] * s_col_decay[tid] * (1.0f - s_col_decay[tid]);
+                float d_m_gate = d_m_row_decay[tid] * m_row_decay[tid] * (1.0f - m_row_decay[tid])
+                               + d_m_col_decay[tid] * m_col_decay[tid] * (1.0f - m_col_decay[tid]);
+                d_bs_all[bias_idx + tid] = d_s_gate;
+                d_bm_all[bias_idx + tid] = d_m_gate;
+            }
+
+            if (tid < N_STATE) {
+                d_v_raw[tid] = d_s_delta[tid];
+            }
+
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S[i * N_STATE + tid] * (-d_s_delta[i]);
+                }
+                d_k_norm[tid] += sum;
+
+                // d_k_norm contribution from s_row_decay and s_col_decay gates
+                // s_row_decay = sigmoid(M @ k_norm + b_s)
+                // s_col_decay = sigmoid(M.T @ k_norm + b_s)
+                // d_k_norm += (M.T @ d_pre_s_row) + (M @ d_pre_s_col)
+                float d_k_from_s_row = 0.0f;
+                float d_k_from_s_col = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float d_pre_s_row_i = d_s_row_decay[i] * s_row_decay[i] * (1.0f - s_row_decay[i]);
+                    float d_pre_s_col_i = d_s_col_decay[i] * s_col_decay[i] * (1.0f - s_col_decay[i]);
+                    d_k_from_s_row += d_pre_s_row_i * M[i * N_STATE + tid];  // M.T @ d_pre_s_row
+                    d_k_from_s_col += d_pre_s_col_i * M[tid * N_STATE + i];  // M @ d_pre_s_col
+                }
+                d_k_norm[tid] += d_k_from_s_row + d_k_from_s_col;
+            }
+            __syncthreads();
+
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += M[i * N_STATE + tid] * d_m_delta[i];
+                }
+                d_m_norm[tid] += sum;
+            }
+            __syncthreads();
+
+            {
+                __shared__ float k_dot_dk;
+                if (tid == 0) {
+                    k_dot_dk = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        k_dot_dk += k_raw[i] * d_k_norm[i];
+                    }
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    float norm = k_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_k_raw[tid] = d_k_norm[tid] / norm - k_raw[tid] * k_dot_dk / norm3;
+                }
+                __syncthreads();
+            }
+
+            {
+                __shared__ float m_dot_dm;
+                if (tid == 0) {
+                    m_dot_dm = 0.0f;
+                    for (int i = 0; i < N_STATE; i++) {
+                        m_dot_dm += m_vec_raw[i] * d_m_norm[i];
+                    }
+                }
+                __syncthreads();
+                if (tid < N_STATE) {
+                    float norm = m_norm_val_t;
+                    float norm3 = norm * norm * norm;
+                    d_m_raw[tid] = d_m_norm[tid] / norm - m_vec_raw[tid] * m_dot_dm / norm3;
+                }
+                __syncthreads();
+            }
+
+            int col_idx_t = (t * B + b) * STRIDE;
+            if (tid < N_STATE) {
+                d_kvqm_all[col_idx_t + tid] = d_k_raw[tid];
+                d_kvqm_all[col_idx_t + N_STATE + tid] = d_v_raw[tid];
+                d_kvqm_all[col_idx_t + 2 * N_STATE + tid] = d_q_raw[tid];
+                d_kvqm_all[col_idx_t + 3 * N_STATE + tid] = d_m_raw[tid];
+            }
+            __syncthreads();
+
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre = dS[i];
+                float dS_new = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+                float d_pre_m_row = d_m_row_decay[row] * m_row_decay[row] * (1.0f - m_row_decay[row]);
+                float d_pre_m_col = d_m_col_decay[col] * m_col_decay[col] * (1.0f - m_col_decay[col]);
+                dS_new += d_pre_m_row * m_norm[col] + d_pre_m_col * m_norm[row];
+                dS[i] = dS_new;
+            }
+            __syncthreads();
+
+            for (int i = tid; i < n2; i += blockDim.x) {
+                int row = i / N_STATE;
+                int col = i % N_STATE;
+                float d_pre = dM[i];
+                float dM_new = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+                float d_pre_s_row = d_s_row_decay[row] * s_row_decay[row] * (1.0f - s_row_decay[row]);
+                float d_pre_s_col = d_s_col_decay[col] * s_col_decay[col] * (1.0f - s_col_decay[col]);
+                dM_new += d_pre_s_row * k_norm[col] + d_pre_s_col * k_norm[row];
+                dM[i] = dM_new;
+            }
+            __syncthreads();
+        }
+    }
+}
+
+// ============================================================================
+// E79 Input-Bias Dispatcher Functions
+// ============================================================================
+
+void dispatch_e79_coupled_input_bias_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* bs_all,
+    const __nv_bfloat16* bm_all,
+    __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* s_row_decay_cache, __nv_bfloat16* s_col_decay_cache,
+    __nv_bfloat16* m_row_decay_cache, __nv_bfloat16* m_col_decay_cache,
+    float* state_workspace,
+    int checkpoint_interval, cudaStream_t stream
+) {
+    // Shared memory: 2*n^2 (S, M) + 14*n (vectors including per-timestep biases)
+    int shared_size = (2 * n_state * n_state + 14 * n_state) * sizeof(float);
+
+    #define DISPATCH_E79_IB_FWD(N) \
+        E79CoupledInputBiasForwardKernel_BF16<N><<<B, 256, shared_size, stream>>>( \
+            T, B, kvqm_all, bs_all, bm_all, \
+            S, M, output, S_checkpoints, M_checkpoints, Sq_cache, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
+            checkpoint_interval);
+
+    #define DISPATCH_E79_IB_FWD_EXT(N) \
+        { \
+            cudaError_t attr_err = cudaFuncSetAttribute( \
+                E79CoupledInputBiasForwardKernel_BF16<N>, \
+                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
+            if (attr_err != cudaSuccess) { \
+                fprintf(stderr, "E79 Input-Bias Forward: n_state=%d cudaFuncSetAttribute failed: %s\n", \
+                        N, cudaGetErrorString(attr_err)); \
+            } else { \
+                DISPATCH_E79_IB_FWD(N); \
+            } \
+        }
+
+    switch (n_state) {
+        case 8: DISPATCH_E79_IB_FWD(8); break;
+        case 16: DISPATCH_E79_IB_FWD(16); break;
+        case 32: DISPATCH_E79_IB_FWD(32); break;
+        case 48: DISPATCH_E79_IB_FWD(48); break;
+        case 64: DISPATCH_E79_IB_FWD(64); break;
+        case 96: DISPATCH_E79_IB_FWD_EXT(96); break;
+        case 128: DISPATCH_E79_IB_FWD_EXT(128); break;
+        default:
+            fprintf(stderr, "E79 Input-Bias: Unsupported n_state=%d (use 8, 16, 32, 48, 64, 96, or 128)\n", n_state);
+    }
+    #undef DISPATCH_E79_IB_FWD
+    #undef DISPATCH_E79_IB_FWD_EXT
+}
+
+void dispatch_e79_coupled_input_bias_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* bs_all, const __nv_bfloat16* bm_all,
+    const __nv_bfloat16* s_row_decay_cache, const __nv_bfloat16* s_col_decay_cache,
+    const __nv_bfloat16* m_row_decay_cache, const __nv_bfloat16* m_col_decay_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    __nv_bfloat16* d_bs_all, __nv_bfloat16* d_bm_all,
+    float* state_workspace,
+    int checkpoint_interval, cudaStream_t stream
+) {
+    // Shared memory for backward: 4*n^2 + 32*n (no local bias accumulators needed)
+    int shared_size = (4 * n_state * n_state + 32 * n_state) * sizeof(float);
+
+    #define DISPATCH_E79_IB_BWD(N) \
+        E79CoupledInputBiasBackwardKernel_BF16<N><<<B, 256, shared_size, stream>>>( \
+            T, B, kvqm_all, bs_all, bm_all, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
+            S_checkpoints, M_checkpoints, Sq_cache, d_output, \
+            d_kvqm_all, d_bs_all, d_bm_all, checkpoint_interval);
+
+    #define DISPATCH_E79_IB_BWD_EXT(N) \
+        { \
+            cudaError_t attr_err = cudaFuncSetAttribute( \
+                E79CoupledInputBiasBackwardKernel_BF16<N>, \
+                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
+            if (attr_err != cudaSuccess) { \
+                fprintf(stderr, "E79 Input-Bias Backward: n_state=%d cudaFuncSetAttribute failed: %s\n", \
+                        N, cudaGetErrorString(attr_err)); \
+            } else { \
+                DISPATCH_E79_IB_BWD(N); \
+            } \
+        }
+
+    switch (n_state) {
+        case 8: DISPATCH_E79_IB_BWD(8); break;
+        case 16: DISPATCH_E79_IB_BWD(16); break;
+        case 32: DISPATCH_E79_IB_BWD(32); break;
+        case 48: DISPATCH_E79_IB_BWD(48); break;
+        case 64: DISPATCH_E79_IB_BWD_EXT(64); break;
+        case 96: DISPATCH_E79_IB_BWD_EXT(96); break;
+        case 128: DISPATCH_E79_IB_BWD_EXT(128); break;
+        default:
+            fprintf(stderr, "E79 Input-Bias: Unsupported n_state=%d (use 8, 16, 32, 48, 64, 96, or 128)\n", n_state);
+    }
+    #undef DISPATCH_E79_IB_BWD
+    #undef DISPATCH_E79_IB_BWD_EXT
+}
+
+void dispatch_e79_coupled_input_bias_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* bs_all, const float* bm_all,
+    float* S, float* M, float* output,
+    float* S_checkpoints, float* M_checkpoints,
+    float* Sq_cache,
+    float* s_row_decay_cache, float* s_col_decay_cache,
+    float* m_row_decay_cache, float* m_col_decay_cache,
+    int checkpoint_interval, cudaStream_t stream
+) {
+    int shared_size = (2 * n_state * n_state + 14 * n_state) * sizeof(float);
+
+    #define DISPATCH_E79_IB_FWD_FP32(N) \
+        E79CoupledInputBiasForwardKernel_FP32<N><<<B, 256, shared_size, stream>>>( \
+            T, B, kvqm_all, bs_all, bm_all, \
+            S, M, output, S_checkpoints, M_checkpoints, Sq_cache, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
+            checkpoint_interval);
+
+    #define DISPATCH_E79_IB_FWD_FP32_EXT(N) \
+        { \
+            cudaError_t attr_err = cudaFuncSetAttribute( \
+                E79CoupledInputBiasForwardKernel_FP32<N>, \
+                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
+            if (attr_err != cudaSuccess) { \
+                fprintf(stderr, "E79 FP32 Input-Bias Forward: n_state=%d cudaFuncSetAttribute failed: %s\n", \
+                        N, cudaGetErrorString(attr_err)); \
+            } else { \
+                DISPATCH_E79_IB_FWD_FP32(N); \
+            } \
+        }
+
+    switch (n_state) {
+        case 8: DISPATCH_E79_IB_FWD_FP32(8); break;
+        case 16: DISPATCH_E79_IB_FWD_FP32(16); break;
+        case 32: DISPATCH_E79_IB_FWD_FP32(32); break;
+        case 48: DISPATCH_E79_IB_FWD_FP32(48); break;
+        case 64: DISPATCH_E79_IB_FWD_FP32(64); break;
+        case 96: DISPATCH_E79_IB_FWD_FP32_EXT(96); break;
+        case 128: DISPATCH_E79_IB_FWD_FP32_EXT(128); break;
+        default:
+            fprintf(stderr, "E79 Input-Bias FP32: Unsupported n_state=%d (use 8, 16, 32, 48, 64, 96, or 128)\n", n_state);
+    }
+    #undef DISPATCH_E79_IB_FWD_FP32
+    #undef DISPATCH_E79_IB_FWD_FP32_EXT
+}
+
+void dispatch_e79_coupled_input_bias_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* bs_all, const float* bm_all,
+    const float* s_row_decay_cache, const float* s_col_decay_cache,
+    const float* m_row_decay_cache, const float* m_col_decay_cache,
+    const float* S_checkpoints, const float* M_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    float* d_bs_all, float* d_bm_all,
+    int checkpoint_interval, cudaStream_t stream
+) {
+    int shared_size = (4 * n_state * n_state + 32 * n_state) * sizeof(float);
+
+    #define DISPATCH_E79_IB_BWD_FP32(N) \
+        E79CoupledInputBiasBackwardKernel_FP32<N><<<B, 256, shared_size, stream>>>( \
+            T, B, kvqm_all, bs_all, bm_all, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
+            S_checkpoints, M_checkpoints, Sq_cache, d_output, \
+            d_kvqm_all, d_bs_all, d_bm_all, checkpoint_interval);
+
+    #define DISPATCH_E79_IB_BWD_FP32_EXT(N) \
+        { \
+            cudaError_t attr_err = cudaFuncSetAttribute( \
+                E79CoupledInputBiasBackwardKernel_FP32<N>, \
+                cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
+            if (attr_err != cudaSuccess) { \
+                fprintf(stderr, "E79 FP32 Input-Bias Backward: n_state=%d cudaFuncSetAttribute failed: %s\n", \
+                        N, cudaGetErrorString(attr_err)); \
+            } else { \
+                DISPATCH_E79_IB_BWD_FP32(N); \
+            } \
+        }
+
+    switch (n_state) {
+        case 8: DISPATCH_E79_IB_BWD_FP32(8); break;
+        case 16: DISPATCH_E79_IB_BWD_FP32(16); break;
+        case 32: DISPATCH_E79_IB_BWD_FP32(32); break;
+        case 48: DISPATCH_E79_IB_BWD_FP32(48); break;
+        case 64: DISPATCH_E79_IB_BWD_FP32_EXT(64); break;
+        case 96: DISPATCH_E79_IB_BWD_FP32_EXT(96); break;
+        case 128: DISPATCH_E79_IB_BWD_FP32_EXT(128); break;
+        default:
+            fprintf(stderr, "E79 Input-Bias FP32: Unsupported n_state=%d (use 8, 16, 32, 48, 64, 96, or 128)\n", n_state);
+    }
+    #undef DISPATCH_E79_IB_BWD_FP32
+    #undef DISPATCH_E79_IB_BWD_FP32_EXT
+}
+
+// ============================================================================
+// E79CoupledInputBiasForward/Backward Implementation (wrapper classes)
+// ============================================================================
+
+template<typename DataT>
+E79CoupledInputBiasForward<DataT>::E79CoupledInputBiasForward(
+    bool training, int batch_size, int n_state, int dim,
+    const cublasHandle_t& blas_handle, const cudaStream_t& stream)
+    : training_(training), batch_size_(batch_size), n_state_(n_state),
+      dim_(dim), blas_handle_(blas_handle), stream_(stream) {}
+
+template<typename DataT>
+void E79CoupledInputBiasForward<DataT>::Run(
+    int steps,
+    const DataT* W_kvqm,
+    const DataT* W_bs,
+    const DataT* W_bm,
+    const DataT* x,
+    DataT* S,
+    DataT* M,
+    DataT* output,
+    DataT* kvqm_cache,
+    DataT* bs_cache,
+    DataT* bm_cache,
+    DataT* S_checkpoints,
+    DataT* M_checkpoints,
+    DataT* Sq_cache,
+    DataT* s_row_decay_cache,
+    DataT* s_col_decay_cache,
+    DataT* m_row_decay_cache,
+    DataT* m_col_decay_cache
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int d = dim_;
+
+    float alpha = 1.0f;
+    float beta_zero = 0.0f;
+    cudaDataType_t data_type = std::is_same<DataT, __nv_bfloat16>::value ? CUDA_R_16BF : CUDA_R_32F;
+
+    // kvqm_cache = W_kvqm^T @ x  where W_kvqm is [4*n, d] stored row-major
+    // In col-major cuBLAS: W_kvqm is [d, 4*n], CUBLAS_OP_T makes it [4*n, d]
+    // x is [d, T*B] in col-major
+    // Result: [4*n, T*B] stored in kvqm_cache
+    cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+                 4 * n, T * B, d,
+                 &alpha,
+                 W_kvqm, data_type, d,  // lda = d for transposed
+                 x, data_type, d,
+                 &beta_zero,
+                 kvqm_cache, data_type, 4 * n,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // bs_cache = W_bs^T @ x  where W_bs is [n, d] stored row-major
+    // Same pattern as above
+    cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+                 n, T * B, d,
+                 &alpha,
+                 W_bs, data_type, d,  // lda = d for transposed
+                 x, data_type, d,
+                 &beta_zero,
+                 bs_cache, data_type, n,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // bm_cache = W_bm^T @ x  where W_bm is [n, d] stored row-major
+    cublasGemmEx(blas_handle_, CUBLAS_OP_T, CUBLAS_OP_N,
+                 n, T * B, d,
+                 &alpha,
+                 W_bm, data_type, d,  // lda = d for transposed
+                 x, data_type, d,
+                 &beta_zero,
+                 bm_cache, data_type, n,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    int checkpoint_interval = E79_CHECKPOINT_INTERVAL;
+
+    if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
+        dispatch_e79_coupled_input_bias_forward(T, B, n, kvqm_cache, bs_cache, bm_cache,
+                                                S, M, output, S_checkpoints, M_checkpoints, Sq_cache,
+                                                s_row_decay_cache, s_col_decay_cache,
+                                                m_row_decay_cache, m_col_decay_cache,
+                                                nullptr, checkpoint_interval, stream_);
+    } else {
+        dispatch_e79_coupled_input_bias_forward_fp32(T, B, n,
+                                                     reinterpret_cast<const float*>(kvqm_cache),
+                                                     reinterpret_cast<const float*>(bs_cache),
+                                                     reinterpret_cast<const float*>(bm_cache),
+                                                     reinterpret_cast<float*>(S),
+                                                     reinterpret_cast<float*>(M),
+                                                     reinterpret_cast<float*>(output),
+                                                     reinterpret_cast<float*>(S_checkpoints),
+                                                     reinterpret_cast<float*>(M_checkpoints),
+                                                     reinterpret_cast<float*>(Sq_cache),
+                                                     reinterpret_cast<float*>(s_row_decay_cache),
+                                                     reinterpret_cast<float*>(s_col_decay_cache),
+                                                     reinterpret_cast<float*>(m_row_decay_cache),
+                                                     reinterpret_cast<float*>(m_col_decay_cache),
+                                                     checkpoint_interval, stream_);
+    }
+}
+
+template<typename DataT>
+E79CoupledInputBiasBackward<DataT>::E79CoupledInputBiasBackward(
+    int batch_size, int n_state, int dim,
+    const cublasHandle_t& blas_handle, const cudaStream_t& stream)
+    : batch_size_(batch_size), n_state_(n_state), dim_(dim),
+      blas_handle_(blas_handle), stream_(stream) {}
+
+template<typename DataT>
+void E79CoupledInputBiasBackward<DataT>::Run(
+    int steps,
+    const DataT* W_kvqm, const DataT* W_bs, const DataT* W_bm,
+    const DataT* x,
+    const DataT* kvqm_cache, const DataT* bs_cache, const DataT* bm_cache,
+    const DataT* S_checkpoints, const DataT* M_checkpoints,
+    const DataT* Sq_cache,
+    const DataT* s_row_decay_cache, const DataT* s_col_decay_cache,
+    const DataT* m_row_decay_cache, const DataT* m_col_decay_cache,
+    const DataT* d_output,
+    DataT* d_x,
+    DataT* d_W_kvqm, DataT* d_W_bs, DataT* d_W_bm,
+    DataT* d_kvqm_cache, DataT* d_bs_cache, DataT* d_bm_cache
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int d = dim_;
+
+    int checkpoint_interval = E79_CHECKPOINT_INTERVAL;
+
+    float alpha = 1.0f;
+    float beta_zero = 0.0f;
+    float beta_one = 1.0f;
+
+    // Run backward kernel to compute d_kvqm_cache, d_bs_cache, d_bm_cache
+    if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
+        dispatch_e79_coupled_input_bias_backward(T, B, n, kvqm_cache, bs_cache, bm_cache,
+                                                 s_row_decay_cache, s_col_decay_cache,
+                                                 m_row_decay_cache, m_col_decay_cache,
+                                                 S_checkpoints, M_checkpoints, Sq_cache, d_output,
+                                                 d_kvqm_cache, d_bs_cache, d_bm_cache,
+                                                 nullptr, checkpoint_interval, stream_);
+    } else {
+        dispatch_e79_coupled_input_bias_backward_fp32(T, B, n,
+                                                      reinterpret_cast<const float*>(kvqm_cache),
+                                                      reinterpret_cast<const float*>(bs_cache),
+                                                      reinterpret_cast<const float*>(bm_cache),
+                                                      reinterpret_cast<const float*>(s_row_decay_cache),
+                                                      reinterpret_cast<const float*>(s_col_decay_cache),
+                                                      reinterpret_cast<const float*>(m_row_decay_cache),
+                                                      reinterpret_cast<const float*>(m_col_decay_cache),
+                                                      reinterpret_cast<const float*>(S_checkpoints),
+                                                      reinterpret_cast<const float*>(M_checkpoints),
+                                                      reinterpret_cast<const float*>(Sq_cache),
+                                                      reinterpret_cast<const float*>(d_output),
+                                                      reinterpret_cast<float*>(d_kvqm_cache),
+                                                      reinterpret_cast<float*>(d_bs_cache),
+                                                      reinterpret_cast<float*>(d_bm_cache),
+                                                      checkpoint_interval, stream_);
+    }
+
+    cudaDataType_t data_type = std::is_same<DataT, __nv_bfloat16>::value ? CUDA_R_16BF : CUDA_R_32F;
+
+    // d_x contributions from all three projections
+    // PyTorch stores W as [out_features, in_features] row-major = [in_features, out_features] col-major
+    // W_kvqm: [4*n, d] row = [d, 4*n] col, W_bs/W_bm: [n, d] row = [d, n] col
+    // d_x = d_kvqm @ W_kvqm + d_bs @ W_bs + d_bm @ W_bm (row-major)
+    // In col-major: d_x = W_kvqm @ d_kvqm + W_bs @ d_bs + W_bm @ d_bm
+
+    // d_x = W_kvqm @ d_kvqm_cache  [d, 4*n] @ [4*n, T*B] -> [d, T*B]
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+                 d, T * B, 4 * n,
+                 &alpha,
+                 W_kvqm, data_type, d,
+                 d_kvqm_cache, data_type, 4 * n,
+                 &beta_zero,
+                 d_x, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // d_x += W_bs @ d_bs_cache  [d, n] @ [n, T*B] -> [d, T*B]
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+                 d, T * B, n,
+                 &alpha,
+                 W_bs, data_type, d,
+                 d_bs_cache, data_type, n,
+                 &beta_one,
+                 d_x, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // d_x += W_bm @ d_bm_cache  [d, n] @ [n, T*B] -> [d, T*B]
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_N,
+                 d, T * B, n,
+                 &alpha,
+                 W_bm, data_type, d,
+                 d_bm_cache, data_type, n,
+                 &beta_one,
+                 d_x, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // d_W_kvqm = x @ d_kvqm_cache^T  [d, T*B] @ [T*B, 4*n] -> [d, 4*n] col = [4*n, d] row
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+                 d, 4 * n, T * B,
+                 &alpha,
+                 x, data_type, d,
+                 d_kvqm_cache, data_type, 4 * n,
+                 &beta_zero,
+                 d_W_kvqm, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // d_W_bs = x @ d_bs_cache^T  [d, T*B] @ [T*B, n] -> [d, n] col = [n, d] row
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+                 d, n, T * B,
+                 &alpha,
+                 x, data_type, d,
+                 d_bs_cache, data_type, n,
+                 &beta_zero,
+                 d_W_bs, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // d_W_bm = x @ d_bm_cache^T  [d, T*B] @ [T*B, n] -> [d, n] col = [n, d] row
+    cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
+                 d, n, T * B,
+                 &alpha,
+                 x, data_type, d,
+                 d_bm_cache, data_type, n,
+                 &beta_zero,
+                 d_W_bm, data_type, d,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+}
+
+// Explicit template instantiations for input-bias variants
+template class E79CoupledInputBiasForward<__nv_bfloat16>;
+template class E79CoupledInputBiasForward<float>;
+template class E79CoupledInputBiasBackward<__nv_bfloat16>;
+template class E79CoupledInputBiasBackward<float>;
+
 }  // namespace elman
