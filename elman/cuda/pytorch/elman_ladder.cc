@@ -13114,6 +13114,371 @@ std::vector<Tensor> e82_self_gate_backward(
     return {dx, dW_kvqm, d_alpha};
 }
 
+// =============================================================================
+// E83: Circular K-Tower Memory System
+// K matrices M_0, M_1, ..., M_{K-1}, each n_state x n_state.
+// Each matrix is gated by the NEXT one (modulo K) in a circular pattern.
+// =============================================================================
+
+std::vector<Tensor> e83_circular_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor M_init,      // [K, B, n_state, n_state] initial matrices
+    Tensor W_kv,        // [K*2*n_state, dim] k,v projections for all K levels
+    Tensor W_q,         // [n_state, dim] query projection
+    Tensor B_gates,     // [K, n_state] gate biases
+    int64_t K) {        // number of matrices (should match M_init.size(0))
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = M_init.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(M_init);
+    CHECK_INPUT(W_kv);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(B_gates);
+
+    TORCH_CHECK(M_init.size(0) == K, "M_init first dimension must match K");
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor M_states = torch::empty({K, batch_size, n_state, n_state}, options);
+    M_states.copy_(M_init);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward - always allocate to avoid null pointer issues in kernel
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+
+    Tensor kv_cache = torch::empty({time_steps, batch_size, K * 2 * n_state}, options);
+    Tensor q_cache = torch::empty({time_steps, batch_size, n_state}, options);
+    Tensor M_checkpoints = torch::empty({num_checkpoints, K, batch_size, n_state, n_state}, options);
+    Tensor Sq_cache = torch::empty({time_steps, batch_size, n_state}, options);
+    Tensor row_gate_cache = torch::empty({K, time_steps, batch_size, n_state}, options);
+    Tensor col_gate_cache = torch::empty({K, time_steps, batch_size, n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E83 Circular Forward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E83CircularForward<__nv_bfloat16> forward(
+            training, batch_size, n_state, dim, K,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kv.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(B_gates.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_states.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(kv_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(row_gate_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(col_gate_cache.data_ptr()));
+    } else {
+        // FP32
+        E83CircularForward<float> forward(
+            training, batch_size, n_state, dim, K,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kv.data_ptr()),
+            reinterpret_cast<float*>(W_q.data_ptr()),
+            reinterpret_cast<float*>(B_gates.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(M_states.data_ptr()),
+            reinterpret_cast<float*>(output.data_ptr()),
+            reinterpret_cast<float*>(kv_cache.data_ptr()),
+            reinterpret_cast<float*>(q_cache.data_ptr()),
+            reinterpret_cast<float*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(Sq_cache.data_ptr()),
+            reinterpret_cast<float*>(row_gate_cache.data_ptr()),
+            reinterpret_cast<float*>(col_gate_cache.data_ptr()));
+    }
+
+    return {M_states, output, kv_cache, q_cache, M_checkpoints, Sq_cache,
+            row_gate_cache, col_gate_cache};
+}
+
+std::vector<Tensor> e83_circular_backward(
+    Tensor x,                   // [T, B, dim]
+    Tensor M_checkpoints,       // [num_checkpoints, K, B, n_state, n_state]
+    Tensor Sq_cache,            // [T, B, n_state]
+    Tensor kv_cache,            // [T, B, K*2*n_state]
+    Tensor q_cache,             // [T, B, n_state]
+    Tensor row_gate_cache,      // [K, T, B, n_state]
+    Tensor col_gate_cache,      // [K, T, B, n_state]
+    Tensor d_output,            // [T, B, n_state]
+    Tensor W_kv,                // [K*2*n_state, dim]
+    Tensor W_q,                 // [n_state, dim]
+    Tensor B_gates,             // [K, n_state]
+    int64_t K) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = W_q.size(0);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_kv = torch::zeros({K * 2 * n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dB_gates = torch::zeros({K, n_state}, options);
+
+    // Workspace for backward
+    Tensor d_kv_cache = torch::empty({time_steps, batch_size, K * 2 * n_state}, options);
+    Tensor d_q_cache = torch::empty({time_steps, batch_size, n_state}, options);
+    Tensor d_B_gates_accum = torch::zeros({K, n_state}, options.dtype(at::kFloat));
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E83 Circular Backward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E83CircularBackward<__nv_bfloat16> backward(
+            batch_size, n_state, dim, K,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kv.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(B_gates.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(kv_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(row_gate_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(col_gate_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dW_kv.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dB_gates.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_kv_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_q_cache.data_ptr()),
+            reinterpret_cast<float*>(d_B_gates_accum.data_ptr()));
+    } else {
+        // FP32
+        E83CircularBackward<float> backward(
+            batch_size, n_state, dim, K,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kv.data_ptr()),
+            reinterpret_cast<float*>(W_q.data_ptr()),
+            reinterpret_cast<float*>(B_gates.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(kv_cache.data_ptr()),
+            reinterpret_cast<float*>(q_cache.data_ptr()),
+            reinterpret_cast<float*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(Sq_cache.data_ptr()),
+            reinterpret_cast<float*>(row_gate_cache.data_ptr()),
+            reinterpret_cast<float*>(col_gate_cache.data_ptr()),
+            reinterpret_cast<float*>(d_output.data_ptr()),
+            reinterpret_cast<float*>(dx.data_ptr()),
+            reinterpret_cast<float*>(dW_kv.data_ptr()),
+            reinterpret_cast<float*>(dW_q.data_ptr()),
+            reinterpret_cast<float*>(dB_gates.data_ptr()),
+            reinterpret_cast<float*>(d_kv_cache.data_ptr()),
+            reinterpret_cast<float*>(d_q_cache.data_ptr()),
+            reinterpret_cast<float*>(d_B_gates_accum.data_ptr()));
+    }
+
+    // Copy accumulated gate biases from fp32 to output tensor
+    dB_gates.copy_(d_B_gates_accum);
+
+    return {dx, dW_kv, dW_q, dB_gates};
+}
+
+// =============================================================================
+// E84 Neural ODE - Continuous-time self-modulation
+// Two coupled matrix states (S content, G modulation) with ODE dynamics
+// Uses RK4 integration for numerical stability
+// Uses FUSED W_kvqm projection [4*n_state, dim] for k, v, q, m vectors
+// =============================================================================
+
+std::vector<Tensor> e84_neural_ode_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_state, n_state] initial content memory
+    Tensor G0,          // [B, n_state, n_state] initial modulation memory
+    Tensor W_kvqm,      // [4*n_state, dim] FUSED projection for k, v, q, m
+    int n_steps) {      // number of RK4 integration steps
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(1);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(G0);
+    CHECK_INPUT(W_kvqm);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor G = torch::empty({batch_size, n_state, n_state}, options);
+    G.copy_(G0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+
+    Tensor kvqm_cache = torch::empty({time_steps, batch_size, 4 * n_state}, options);
+    Tensor S_checkpoints = torch::empty({num_checkpoints, batch_size, n_state, n_state}, options);
+    Tensor G_checkpoints = torch::empty({num_checkpoints, batch_size, n_state, n_state}, options);
+    Tensor Sq_cache = torch::empty({time_steps, batch_size, n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E84 Neural ODE Forward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E84NeuralODEForward<__nv_bfloat16> forward(
+            training, batch_size, n_state, dim, n_steps,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kvqm.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(G.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(kvqm_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(G_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()));
+    } else {
+        // FP32
+        E84NeuralODEForward<float> forward(
+            training, batch_size, n_state, dim, n_steps,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kvqm.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(S.data_ptr()),
+            reinterpret_cast<float*>(G.data_ptr()),
+            reinterpret_cast<float*>(output.data_ptr()),
+            reinterpret_cast<float*>(kvqm_cache.data_ptr()),
+            reinterpret_cast<float*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(G_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(Sq_cache.data_ptr()));
+    }
+
+    return {S, G, output, kvqm_cache, S_checkpoints, G_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e84_neural_ode_backward(
+    Tensor x,                   // [T, B, dim]
+    Tensor S_checkpoints,       // [num_checkpoints, B, n_state, n_state]
+    Tensor G_checkpoints,       // [num_checkpoints, B, n_state, n_state]
+    Tensor Sq_cache,            // [T, B, n_state]
+    Tensor kvqm_cache,          // [T, B, 4*n_state]
+    Tensor d_output,            // [T, B, n_state]
+    Tensor W_kvqm,              // [4*n_state, dim]
+    int n_steps) {              // number of RK4 integration steps
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = kvqm_cache.size(2) / 4;
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_kvqm = torch::zeros({4 * n_state, dim}, options);
+
+    // Workspace for backward
+    Tensor d_kvqm_cache = torch::empty({time_steps, batch_size, 4 * n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E84 Neural ODE Backward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E84NeuralODEBackward<__nv_bfloat16> backward(
+            batch_size, n_state, dim, n_steps,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<__nv_bfloat16*>(W_kvqm.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(kvqm_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(G_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dW_kvqm.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_kvqm_cache.data_ptr()));
+    } else {
+        // FP32
+        E84NeuralODEBackward<float> backward(
+            batch_size, n_state, dim, n_steps,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            reinterpret_cast<float*>(W_kvqm.data_ptr()),
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(kvqm_cache.data_ptr()),
+            reinterpret_cast<float*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(G_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(Sq_cache.data_ptr()),
+            reinterpret_cast<float*>(d_output.data_ptr()),
+            reinterpret_cast<float*>(dx.data_ptr()),
+            reinterpret_cast<float*>(dW_kvqm.data_ptr()),
+            reinterpret_cast<float*>(d_kvqm_cache.data_ptr()));
+    }
+
+    return {dx, dW_kvqm};
+}
+
 }  // anonymous namespace
 
 
@@ -13514,4 +13879,10 @@ void elman_ladder_init(py::module& m) {
           "E83 Circular: K matrices in circular mutual gating - no top level");
     m.def("e83_circular_backward", &e83_circular_backward,
           "E83 Circular: Backward pass with gradient checkpointing");
+
+    // E84: Neural ODE - Continuous-time self-modulation
+    m.def("e84_neural_ode_forward", &e84_neural_ode_forward,
+          "E84 Neural ODE: Continuous-time self-modulation with RK4 integration");
+    m.def("e84_neural_ode_backward", &e84_neural_ode_backward,
+          "E84 Neural ODE: Backward pass with gradient checkpointing");
 }
