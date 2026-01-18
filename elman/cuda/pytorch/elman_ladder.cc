@@ -12157,9 +12157,7 @@ std::vector<Tensor> e79_coupled_forward(
     Tensor x,           // [T, B, dim] input
     Tensor S0,          // [B, n_state, n_state] initial content memory
     Tensor M0,          // [B, n_state, n_state] initial modulation memory
-    Tensor W_kvqm,      // [4*n_state, dim] FUSED projection for k, v, q, m
-    Tensor b_s_gate,    // [n_state] S gate bias
-    Tensor b_m_gate) {  // [n_state] M gate bias
+    Tensor W_kvqm) {    // [4*n_state, dim] FUSED projection for k, v, q, m
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -12170,8 +12168,6 @@ std::vector<Tensor> e79_coupled_forward(
     CHECK_INPUT(S0);
     CHECK_INPUT(M0);
     CHECK_INPUT(W_kvqm);
-    CHECK_INPUT(b_s_gate);
-    CHECK_INPUT(b_m_gate);
 
     const auto options = x.options();
     const at::cuda::CUDAGuard guard(options.device_index());
@@ -12212,8 +12208,6 @@ std::vector<Tensor> e79_coupled_forward(
         forward.Run(
             time_steps,
             reinterpret_cast<__nv_bfloat16*>(W_kvqm.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(b_s_gate.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(b_m_gate.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(M.data_ptr()),
@@ -12236,8 +12230,6 @@ std::vector<Tensor> e79_coupled_forward(
         forward.Run(
             time_steps,
             reinterpret_cast<float*>(W_kvqm.data_ptr()),
-            reinterpret_cast<float*>(b_s_gate.data_ptr()),
-            reinterpret_cast<float*>(b_m_gate.data_ptr()),
             reinterpret_cast<float*>(x.data_ptr()),
             reinterpret_cast<float*>(S.data_ptr()),
             reinterpret_cast<float*>(M.data_ptr()),
@@ -12267,9 +12259,7 @@ std::vector<Tensor> e79_coupled_backward(
     Tensor m_row_decay_cache,   // [T, B, n_state]
     Tensor m_col_decay_cache,   // [T, B, n_state]
     Tensor d_output,            // [T, B, n_state]
-    Tensor W_kvqm,              // [4*n_state, dim]
-    Tensor b_s_gate,            // [n_state]
-    Tensor b_m_gate) {          // [n_state]
+    Tensor W_kvqm) {            // [4*n_state, dim]
 
     const auto time_steps = x.size(0);
     const auto batch_size = x.size(1);
@@ -12285,13 +12275,9 @@ std::vector<Tensor> e79_coupled_backward(
     // Outputs
     Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
     Tensor dW_kvqm = torch::zeros({4 * n_state, dim}, options);
-    Tensor db_s_gate = torch::zeros({n_state}, options);
-    Tensor db_m_gate = torch::zeros({n_state}, options);
 
     // Workspace for backward
     Tensor d_kvqm_cache = torch::empty({time_steps, batch_size, 4 * n_state}, options);
-    Tensor d_b_s_gate_accum = torch::zeros({n_state}, options.dtype(at::kFloat));
-    Tensor d_b_m_gate_accum = torch::zeros({n_state}, options.dtype(at::kFloat));
 
     TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
                 "E79 Coupled Backward only supports bfloat16 and float32, got ", x.scalar_type());
@@ -12307,8 +12293,6 @@ std::vector<Tensor> e79_coupled_backward(
         backward.Run(
             time_steps,
             reinterpret_cast<__nv_bfloat16*>(W_kvqm.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(b_s_gate.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(b_m_gate.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(kvqm_cache.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
@@ -12321,11 +12305,7 @@ std::vector<Tensor> e79_coupled_backward(
             reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
             reinterpret_cast<__nv_bfloat16*>(dW_kvqm.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(db_s_gate.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(db_m_gate.data_ptr()),
-            reinterpret_cast<__nv_bfloat16*>(d_kvqm_cache.data_ptr()),
-            reinterpret_cast<float*>(d_b_s_gate_accum.data_ptr()),
-            reinterpret_cast<float*>(d_b_m_gate_accum.data_ptr()));
+            reinterpret_cast<__nv_bfloat16*>(d_kvqm_cache.data_ptr()));
     } else {
         // FP32
         E79CoupledBackward<float> backward(
@@ -12336,8 +12316,6 @@ std::vector<Tensor> e79_coupled_backward(
         backward.Run(
             time_steps,
             reinterpret_cast<float*>(W_kvqm.data_ptr()),
-            reinterpret_cast<float*>(b_s_gate.data_ptr()),
-            reinterpret_cast<float*>(b_m_gate.data_ptr()),
             reinterpret_cast<float*>(x.data_ptr()),
             reinterpret_cast<float*>(kvqm_cache.data_ptr()),
             reinterpret_cast<float*>(S_checkpoints.data_ptr()),
@@ -12350,14 +12328,10 @@ std::vector<Tensor> e79_coupled_backward(
             reinterpret_cast<float*>(d_output.data_ptr()),
             reinterpret_cast<float*>(dx.data_ptr()),
             reinterpret_cast<float*>(dW_kvqm.data_ptr()),
-            reinterpret_cast<float*>(db_s_gate.data_ptr()),
-            reinterpret_cast<float*>(db_m_gate.data_ptr()),
-            reinterpret_cast<float*>(d_kvqm_cache.data_ptr()),
-            reinterpret_cast<float*>(d_b_s_gate_accum.data_ptr()),
-            reinterpret_cast<float*>(d_b_m_gate_accum.data_ptr()));
+            reinterpret_cast<float*>(d_kvqm_cache.data_ptr()));
     }
 
-    return {dx, dW_kvqm, db_s_gate, db_m_gate};
+    return {dx, dW_kvqm};
 }
 
 // =============================================================================

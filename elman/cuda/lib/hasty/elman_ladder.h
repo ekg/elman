@@ -7637,8 +7637,6 @@ private:
 void dispatch_e79_coupled_forward(
     int T, int B, int n_state,
     const __nv_bfloat16* kvqm_all,   // [4*n_state, T*B]
-    const __nv_bfloat16* b_s_gate,
-    const __nv_bfloat16* b_m_gate,
     __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
     __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
     __nv_bfloat16* Sq_cache,
@@ -7651,13 +7649,11 @@ void dispatch_e79_coupled_forward(
 void dispatch_e79_coupled_backward(
     int T, int B, int n_state,
     const __nv_bfloat16* kvqm_all,
-    const __nv_bfloat16* b_s_gate, const __nv_bfloat16* b_m_gate,
     const __nv_bfloat16* s_row_decay_cache, const __nv_bfloat16* s_col_decay_cache,
     const __nv_bfloat16* m_row_decay_cache, const __nv_bfloat16* m_col_decay_cache,
     const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
     const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
     __nv_bfloat16* d_kvqm_all,
-    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
     float* state_workspace,  // For global memory fallback (n_state >= 96), can be nullptr
     int checkpoint_interval, cudaStream_t stream
 );
@@ -7666,7 +7662,6 @@ void dispatch_e79_coupled_backward(
 void dispatch_e79_coupled_forward_fp32(
     int T, int B, int n_state,
     const float* kvqm_all,
-    const float* b_s_gate, const float* b_m_gate,
     float* S, float* M, float* output,
     float* S_checkpoints, float* M_checkpoints,
     float* Sq_cache,
@@ -7678,13 +7673,11 @@ void dispatch_e79_coupled_forward_fp32(
 void dispatch_e79_coupled_backward_fp32(
     int T, int B, int n_state,
     const float* kvqm_all,
-    const float* b_s_gate, const float* b_m_gate,
     const float* s_row_decay_cache, const float* s_col_decay_cache,
     const float* m_row_decay_cache, const float* m_col_decay_cache,
     const float* S_checkpoints, const float* M_checkpoints,
     const float* Sq_cache, const float* d_output,
     float* d_kvqm_all,
-    float* d_b_s_gate_accum, float* d_b_m_gate_accum,
     int checkpoint_interval, cudaStream_t stream
 );
 
@@ -7701,8 +7694,6 @@ struct E79CoupledForward {
     void Run(
         int steps,
         const T* W_kvqm,     // [4*n_state, dim] FUSED projection
-        const T* b_s_gate,   // [n_state] S gate bias
-        const T* b_m_gate,   // [n_state] M gate bias
         const T* x,          // [T, B, dim]
         T* S,                // [B, n_state, n_state] content memory
         T* M,                // [B, n_state, n_state] modulation memory
@@ -7752,7 +7743,6 @@ struct E79CoupledBackward {
     void Run(
         int steps,
         const T* W_kvqm,
-        const T* b_s_gate, const T* b_m_gate,
         const T* x,
         const T* kvqm_cache,
         const T* S_checkpoints, const T* M_checkpoints,
@@ -7762,15 +7752,12 @@ struct E79CoupledBackward {
         const T* d_output,
         T* d_x,
         T* d_W_kvqm,
-        T* d_b_s_gate, T* d_b_m_gate,
-        T* d_kvqm_cache,
-        float* d_b_s_gate_accum, float* d_b_m_gate_accum
+        T* d_kvqm_cache
     );
 
     static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
-        // d_kvqm_all + d_b_s_gate_accum + d_b_m_gate_accum
-        return steps * batch_size * 4 * n_state * sizeof(T) +
-               2 * n_state * sizeof(float);
+        // d_kvqm_all only (no bias gradients)
+        return steps * batch_size * 4 * n_state * sizeof(T);
     }
 
 private:
