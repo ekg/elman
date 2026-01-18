@@ -34,6 +34,7 @@
 #include <cublas_v2.h>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 #include "hasty/elman_ladder.h"
 
 #define E79_CHECKPOINT_INTERVAL 16
@@ -638,20 +639,36 @@ __global__ void E79CoupledBackwardKernel_BF16(
             __syncthreads();
 
             // Update dS for next iteration
+            // Also add contribution from m_row_decay = sigmoid(S @ m_norm + b_m_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
                 float d_pre = dS[i];
-                dS[i] = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+                float dS_new = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+
+                // Add contribution from m_row_decay/m_col_decay gating (derivative through sigmoid)
+                float d_pre_m_row = d_m_row_decay[row] * m_row_decay[row] * (1.0f - m_row_decay[row]);
+                float d_pre_m_col = d_m_col_decay[col] * m_col_decay[col] * (1.0f - m_col_decay[col]);
+                dS_new += d_pre_m_row * m_norm[col] + d_pre_m_col * m_norm[row];
+
+                dS[i] = dS_new;
             }
             __syncthreads();
 
             // Update dM for next iteration
+            // Also add contribution from s_row_decay = sigmoid(M @ k_norm + b_s_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
                 float d_pre = dM[i];
-                dM[i] = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+                float dM_new = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+
+                // Add contribution from s_row_decay/s_col_decay gating (derivative through sigmoid)
+                float d_pre_s_row = d_s_row_decay[row] * s_row_decay[row] * (1.0f - s_row_decay[row]);
+                float d_pre_s_col = d_s_col_decay[col] * s_col_decay[col] * (1.0f - s_col_decay[col]);
+                dM_new += d_pre_s_row * k_norm[col] + d_pre_s_col * k_norm[row];
+
+                dM[i] = dM_new;
             }
             __syncthreads();
         }
@@ -1242,20 +1259,36 @@ __global__ void E79CoupledBackwardGlobalMemKernel_BF16(
             __syncthreads();
 
             // Update dS for next iteration
+            // Also add contribution from m_row_decay = sigmoid(S @ m_norm + b_m_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
                 float d_pre = dS[i];
-                dS[i] = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+                float dS_new = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+
+                // Add contribution from m_row_decay/m_col_decay gating (derivative through sigmoid)
+                float d_pre_m_row = d_m_row_decay[row] * m_row_decay[row] * (1.0f - m_row_decay[row]);
+                float d_pre_m_col = d_m_col_decay[col] * m_col_decay[col] * (1.0f - m_col_decay[col]);
+                dS_new += d_pre_m_row * m_norm[col] + d_pre_m_col * m_norm[row];
+
+                dS[i] = dS_new;
             }
             __syncthreads();
 
             // Update dM for next iteration
+            // Also add contribution from s_row_decay = sigmoid(M @ k_norm + b_s_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
                 float d_pre = dM[i];
-                dM[i] = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+                float dM_new = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+
+                // Add contribution from s_row_decay/s_col_decay gating (derivative through sigmoid)
+                float d_pre_s_row = d_s_row_decay[row] * s_row_decay[row] * (1.0f - s_row_decay[row]);
+                float d_pre_s_col = d_s_col_decay[col] * s_col_decay[col] * (1.0f - s_col_decay[col]);
+                dM_new += d_pre_s_row * k_norm[col] + d_pre_s_col * k_norm[row];
+
+                dM[i] = dM_new;
             }
             __syncthreads();
         }
@@ -1763,17 +1796,37 @@ __global__ void E79CoupledBackwardKernel_FP32(
             }
             __syncthreads();
 
+            // Update dS for next iteration
+            // Also add contribution from m_row_decay = sigmoid(S @ m_norm + b_m_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
-                dS[i] = dS[i] * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+                float d_pre = dS[i];
+                float dS_new = d_pre * s_row_decay[row] * s_col_decay[col] + (-d_s_delta[row]) * k_norm[col];
+
+                // Add contribution from m_row_decay/m_col_decay gating (derivative through sigmoid)
+                float d_pre_m_row = d_m_row_decay[row] * m_row_decay[row] * (1.0f - m_row_decay[row]);
+                float d_pre_m_col = d_m_col_decay[col] * m_col_decay[col] * (1.0f - m_col_decay[col]);
+                dS_new += d_pre_m_row * m_norm[col] + d_pre_m_col * m_norm[row];
+
+                dS[i] = dS_new;
             }
             __syncthreads();
 
+            // Update dM for next iteration
+            // Also add contribution from s_row_decay = sigmoid(M @ k_norm + b_s_gate)
             for (int i = tid; i < n2; i += blockDim.x) {
                 int row = i / N_STATE;
                 int col = i % N_STATE;
-                dM[i] = dM[i] * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+                float d_pre = dM[i];
+                float dM_new = d_pre * m_row_decay[row] * m_col_decay[col] + (-d_m_delta[row]) * m_norm[col];
+
+                // Add contribution from s_row_decay/s_col_decay gating (derivative through sigmoid)
+                float d_pre_s_row = d_s_row_decay[row] * s_row_decay[row] * (1.0f - s_row_decay[row]);
+                float d_pre_s_col = d_s_col_decay[col] * s_col_decay[col] * (1.0f - s_col_decay[col]);
+                dM_new += d_pre_s_row * k_norm[col] + d_pre_s_col * k_norm[row];
+
+                dM[i] = dM_new;
             }
             __syncthreads();
         }
@@ -2237,15 +2290,35 @@ void E79CoupledBackward<DataT>::Run(
                  d_x, data_type, d,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
-    // d_W_kvqm = d_kvqm_cache @ x^T
+    // d_W_kvqm = x @ d_kvqm_cache^T  (produces [d, 4*n] column-major = [4*n, d] row-major)
     cublasGemmEx(blas_handle_, CUBLAS_OP_N, CUBLAS_OP_T,
-                 4 * n, d, T * B,
+                 d, 4 * n, T * B,
                  &alpha,
-                 d_kvqm_cache, data_type, 4 * n,
                  x, data_type, d,
+                 d_kvqm_cache, data_type, 4 * n,
                  &beta_zero,
-                 d_W_kvqm, data_type, 4 * n,
+                 d_W_kvqm, data_type, d,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // Convert bias gradient accumulators from float to DataT
+    if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
+        // Copy float accumulators to host, convert, copy back
+        std::vector<float> h_b_s(n), h_b_m(n);
+        cudaMemcpyAsync(h_b_s.data(), d_b_s_gate_accum, n * sizeof(float), cudaMemcpyDeviceToHost, stream_);
+        cudaMemcpyAsync(h_b_m.data(), d_b_m_gate_accum, n * sizeof(float), cudaMemcpyDeviceToHost, stream_);
+        cudaStreamSynchronize(stream_);
+        std::vector<__nv_bfloat16> h_b_s_bf16(n), h_b_m_bf16(n);
+        for (int i = 0; i < n; i++) {
+            h_b_s_bf16[i] = __float2bfloat16(h_b_s[i]);
+            h_b_m_bf16[i] = __float2bfloat16(h_b_m[i]);
+        }
+        cudaMemcpyAsync(d_b_s_gate, h_b_s_bf16.data(), n * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice, stream_);
+        cudaMemcpyAsync(d_b_m_gate, h_b_m_bf16.data(), n * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice, stream_);
+    } else {
+        // FP32: just copy directly
+        cudaMemcpyAsync(d_b_s_gate, d_b_s_gate_accum, n * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
+        cudaMemcpyAsync(d_b_m_gate, d_b_m_gate_accum, n * sizeof(float), cudaMemcpyDeviceToDevice, stream_);
+    }
 }
 
 // Explicit template instantiations
