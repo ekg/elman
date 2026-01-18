@@ -109,11 +109,17 @@ CUDA_OBJS := \
 	lib/e74_fused_gpu.o \
 	lib/e74_full_matrix_gpu.o \
 	lib/e74_full_matrix_v2_gpu.o \
+	lib/e74_fixed_decay_gpu.o \
 	lib/e75_gated_delta_gpu.o \
+	lib/e75_vector_gate_gpu.o \
 	lib/e76_logspace_gpu.o \
 	lib/e77_linear_matrix_gpu.o \
 	lib/e79_coupled_matrix_gpu.o \
+	lib/e80_full_rank_gate_gpu.o \
+	lib/e81_gate_as_state_gpu.o \
 	lib/e82_self_gate_gpu.o \
+	lib/e83_circular_tower_gpu.o \
+	lib/e84_neural_ode_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 
