@@ -112,6 +112,7 @@ CUDA_OBJS := \
 	lib/e74_fixed_decay_gpu.o \
 	lib/e75_gated_delta_gpu.o \
 	lib/e75_vector_gate_gpu.o \
+	lib/e75_multihead_gpu.o \
 	lib/e76_logspace_gpu.o \
 	lib/e77_linear_matrix_gpu.o \
 	lib/e79_coupled_matrix_gpu.o \

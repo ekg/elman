@@ -47,6 +47,27 @@ output = h_t * silu(h_t)            # Self-gating (only nonlinearity)
 
 3. **Wider + shallower wins** - But not too shallow (depth=6 optimal)
 
+## CRITICAL: CUDA-First Development
+
+**EVERYTHING is implemented in CUDA. Python is ONLY for mathematical verification.**
+
+Python implementations are 100-300x slower than optimized CUDA kernels due to:
+- Sequential Python loops over timesteps
+- No GPU parallelization
+- High memory bandwidth from frequent small tensor operations
+
+**The standard workflow is:**
+1. Design the algorithm mathematically
+2. Write the CUDA kernel (copy existing similar kernel, modify incrementally)
+3. Write a minimal Python reference for gradient verification
+4. Cross-check Python and CUDA outputs on the same data
+5. Only benchmark the CUDA version
+
+**When copying kernels for modification:**
+- NEVER rewrite from scratch - copy an existing working kernel
+- Test after every small modification
+- Use the same memory layout patterns as the source kernel
+
 ## Model Implementation Rules
 
 1. **All new models MUST be implemented in CUDA first.** The CUDA kernel is the primary implementation.
@@ -61,6 +82,8 @@ output = h_t * silu(h_t)            # Self-gating (only nonlinearity)
 4. **Python bindings go in** `elman/cuda/pytorch/elman_ladder.cc`
 
 5. **Header declarations go in** `elman/cuda/lib/hasty/elman_ladder.h`
+
+6. **Level naming convention**: Use `E75h2`, `E75h4`, etc. (with the "E" prefix) for all variant names in ladder_lm.py
 
 ## Data Handling Rules
 

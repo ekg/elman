@@ -7263,6 +7263,104 @@ private:
 };
 
 // =============================================================================
+// E75 Multi-Head Gated Delta Matrix
+// H independent n_state x n_state matrix states that can specialize
+// =============================================================================
+
+template<typename T>
+struct E75MultiHeadForward {
+    E75MultiHeadForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int n_heads,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,       // [H * n_state, dim]
+        const T* W_v,       // [H * n_state, dim]
+        const T* W_q,       // [H * n_state, dim]
+        const T* W_beta,    // [H * n_state, dim]
+        const T* b_beta,    // [H, n_state]
+        const T* x,         // [T, B, dim]
+        T* S,               // [B, H, n_state, n_state]
+        T* output,          // [T, B, H * n_state]
+        T* k_cache,         // [T, B, H, n_state]
+        T* v_cache,
+        T* q_cache,
+        T* beta_cache,
+        T* S_cache);        // checkpoints + Sq_cache
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        // k_cache, v_cache, q_cache, beta_cache
+        int64_t size = 4 * steps * batch_size * n_heads * n_state * sizeof(T);
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_heads * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_heads * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E75MultiHeadBackward {
+    E75MultiHeadBackward(
+        int batch_size,
+        int n_state,
+        int n_heads,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* beta_cache,
+        const T* d_output,
+        T* dx,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_beta,
+        T* db_beta,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        // d_k_all, d_v_all, d_q_all, d_beta_all
+        return 4 * steps * batch_size * n_heads * n_state * sizeof(T);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E75 Vector Gate: Input-Dependent Per-Row Decay
 // g = sigmoid(W_beta @ x + b_beta)
 // S = diag(g) * S + outer(v - S@k, k)  [NO tanh, row-wise decay]
