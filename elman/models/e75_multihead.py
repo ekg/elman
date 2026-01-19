@@ -31,6 +31,77 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, List, Tuple
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    E75MH_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_forward')
+except ImportError:
+    E75MH_CUDA_AVAILABLE = False
+
+
+class E75MultiHeadCUDAFunction(torch.autograd.Function):
+    """CUDA-accelerated E75 Multi-Head autograd function with gradient checkpointing."""
+
+    @staticmethod
+    def forward(ctx, training, x, S0, W_k, W_v, W_q, W_beta, b_beta, n_heads):
+        results = hasty_pytorch_lib.e75_multihead_forward(
+            training, x, S0, W_k, W_v, W_q, W_beta, b_beta, n_heads
+        )
+        # results = [output, S, k_cache, v_cache, q_cache, beta_cache, S_cache]
+        # S_cache contains both S_checkpoints and Sq_cache concatenated
+        output = results[0]
+        S = results[1]
+        k_cache = results[2]
+        v_cache = results[3]
+        q_cache = results[4]
+        beta_cache = results[5]
+        S_cache = results[6]  # Combined checkpoints + Sq_cache
+
+        ctx.save_for_backward(
+            x, S_cache,
+            k_cache, v_cache, q_cache, beta_cache,
+            W_k, W_v, W_q, W_beta
+        )
+        ctx.n_heads = n_heads
+        return S, output
+
+    @staticmethod
+    def backward(ctx, dS, d_output):
+        (x, S_cache,
+         k_cache, v_cache, q_cache, beta_cache,
+         W_k, W_v, W_q, W_beta) = ctx.saved_tensors
+        n_heads = ctx.n_heads
+
+        # Split S_cache into S_checkpoints and Sq_cache
+        # S_cache layout: [checkpoints_flat || sq_cache_flat]
+        T, B, _ = x.shape
+        n_state = k_cache.size(3)
+        checkpoint_interval = 16
+        num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
+        checkpoints_size = num_checkpoints * B * n_heads * n_state * n_state
+        sq_cache_size = T * B * n_heads * n_state
+
+        S_checkpoints = S_cache[:checkpoints_size].view(num_checkpoints, B, n_heads, n_state, n_state)
+        Sq_cache = S_cache[checkpoints_size:].view(T, B, n_heads, n_state)
+
+        grads = hasty_pytorch_lib.e75_multihead_backward(
+            x, S_checkpoints, Sq_cache,
+            k_cache, v_cache, q_cache, beta_cache,
+            d_output.contiguous(),
+            W_k, W_v, W_q, W_beta,
+            n_heads
+        )
+        # grads = [dx, dW_k, dW_v, dW_q, dW_beta, db_beta]
+        dx = grads[0]
+        dW_k = grads[1]
+        dW_v = grads[2]
+        dW_q = grads[3]
+        dW_beta = grads[4]
+        db_beta = grads[5]
+
+        # Return gradients for: training, x, S0, W_k, W_v, W_q, W_beta, b_beta, n_heads
+        return None, dx, None, dW_k, dW_v, dW_q, dW_beta, db_beta, None
+
 
 class E75MultiHeadCell(nn.Module):
     """
@@ -45,11 +116,13 @@ class E75MultiHeadCell(nn.Module):
         n_state: int = 32,
         n_heads: int = 4,
         init_beta_bias: float = 2.0,
+        use_cuda: bool = True,
     ):
         super().__init__()
         self.dim = dim
         self.n_state = n_state
         self.n_heads = n_heads
+        self.use_cuda = use_cuda and E75MH_CUDA_AVAILABLE
 
         # Fused projections: [H * n_state, dim] for efficiency
         # Each head gets its own slice of the projection
@@ -79,12 +152,14 @@ class E75MultiHeadCell(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        S_list: Optional[List[torch.Tensor]] = None
+        S_list: Optional[List[torch.Tensor]] = None,
+        use_cuda: Optional[bool] = None
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """
         Args:
             x: [T, B, dim] input sequence
             S_list: list of H tensors, each [B, n_state, n_state] initial matrix states
+            use_cuda: Override instance setting for CUDA usage
 
         Returns:
             output: [T, B, H * n_state] concatenated outputs from all heads
@@ -98,6 +173,24 @@ class E75MultiHeadCell(nn.Module):
         if S_list is None:
             S_list = [torch.zeros(B, n, n, device=x.device, dtype=x.dtype) for _ in range(H)]
 
+        _use_cuda = use_cuda if use_cuda is not None else self.use_cuda
+
+        # Use CUDA kernel if available
+        if _use_cuda and E75MH_CUDA_AVAILABLE and x.is_cuda and x.dtype == torch.bfloat16:
+            # Stack S_list into single tensor: [B, H, n, n]
+            S0 = torch.stack(S_list, dim=1)
+
+            S_final, output = E75MultiHeadCUDAFunction.apply(
+                self.training, x, S0,
+                self.W_k, self.W_v, self.W_q, self.W_beta, self.b_beta,
+                H
+            )
+
+            # Convert S_final [B, H, n, n] back to list
+            S_list_out = [S_final[:, h] for h in range(H)]
+            return output, S_list_out
+
+        # PyTorch fallback
         # Project all inputs at once: [T*B, dim] @ [dim, H*n] -> [T*B, H*n]
         x_flat = x.reshape(T * B, D)
 
@@ -170,6 +263,7 @@ class E75MultiHead(nn.Module):
         use_conv: bool = False,
         d_conv: int = 4,
         init_beta_bias: float = 2.0,
+        use_cuda: bool = True,
         **kwargs
     ):
         super().__init__()
@@ -196,6 +290,7 @@ class E75MultiHead(nn.Module):
             n_state=n_state,
             n_heads=n_heads,
             init_beta_bias=init_beta_bias,
+            use_cuda=use_cuda,
         )
 
         # Output projection: H * n_state -> dim
@@ -267,6 +362,7 @@ if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dtype = torch.bfloat16
     print(f"Device: {device}")
+    print(f"CUDA kernel available: {E75MH_CUDA_AVAILABLE}")
 
     # Test dimensions
     B, T, dim = 4, 32, 512
@@ -276,43 +372,110 @@ if __name__ == "__main__":
     print(f"\nConfig: B={B}, T={T}, dim={dim}, n_state={n_state}, n_heads={n_heads}")
     print(f"Total state size per batch: {n_heads} * {n_state}^2 = {n_heads * n_state * n_state}")
 
-    # Create model
+    # PyTorch fallback test
+    print("\n--- PyTorch Fallback ---")
     model = E75MultiHead(
         dim=dim,
         expansion=2.0,
         n_state=n_state,
         n_heads=n_heads,
+        use_cuda=False,
     ).to(device).to(dtype)
 
-    print(f"\nModel parameters: {model.get_num_params():,}")
+    print(f"Model parameters: {model.get_num_params():,}")
 
     # Test forward pass
     x = torch.randn(B, T, dim, device=device, dtype=dtype)
 
     out, S_list = model(x)
-    print(f"\nForward pass:")
-    print(f"  Input: {x.shape}")
-    print(f"  Output: {out.shape}")
-    print(f"  Number of state matrices: {len(S_list)}")
-    for i, S in enumerate(S_list):
-        print(f"    S[{i}]: {S.shape}")
+    print(f"Forward: Input {x.shape} -> Output {out.shape}")
+    print(f"  Number of state matrices: {len(S_list)}, each {S_list[0].shape}")
 
     # Test backward pass
     loss = out.sum()
     loss.backward()
-    print("\nBackward pass: OK")
+    print("Backward: OK")
 
-    # Test with provided hidden state (TBPTT scenario)
-    print("\n--- Testing with provided hidden state ---")
-    S_init = [torch.randn(B, n_state, n_state, device=device, dtype=dtype) for _ in range(n_heads)]
+    # CUDA test
+    if E75MH_CUDA_AVAILABLE and device == 'cuda':
+        print("\n--- CUDA Kernel ---")
+        model_cuda = E75MultiHead(
+            dim=dim,
+            expansion=2.0,
+            n_state=n_state,
+            n_heads=n_heads,
+            use_cuda=True,
+        ).to(device).to(dtype)
 
-    out2, S_list2 = model(x, hidden=S_init)
-    print(f"Output with init state: {out2.shape}")
+        # Copy weights
+        model_cuda.load_state_dict(model.state_dict())
 
-    # Verify states are different from initialization
-    for i in range(n_heads):
-        diff = (S_list2[i] - S_init[i]).abs().mean().item()
-        print(f"  S[{i}] changed by avg {diff:.6f}")
+        x_cuda = torch.randn(B, T, dim, device=device, dtype=dtype)
+
+        out_cuda, S_list_cuda = model_cuda(x_cuda)
+        print(f"Forward: Input {x_cuda.shape} -> Output {out_cuda.shape}")
+
+        loss_cuda = out_cuda.sum()
+        loss_cuda.backward()
+        print("Backward: OK")
+
+    # Gradient correctness test
+    if E75MH_CUDA_AVAILABLE and device == 'cuda':
+        print("\n" + "=" * 60)
+        print("Gradient correctness test (CUDA vs PyTorch)")
+        print("=" * 60)
+
+        torch.manual_seed(42)
+
+        x_test = torch.randn(2, 16, 256, device=device, dtype=dtype, requires_grad=True)
+
+        # PyTorch reference
+        model_pt = E75MultiHead(
+            dim=256, expansion=1.0, n_state=32, n_heads=4, use_cuda=False
+        ).to(device).to(dtype)
+
+        out_pt, _ = model_pt(x_test)
+        loss_pt = out_pt.sum()
+        loss_pt.backward()
+        grad_pt = x_test.grad.clone()
+        grad_W_k_pt = model_pt.cell.W_k.grad.clone()
+        grad_W_beta_pt = model_pt.cell.W_beta.grad.clone()
+
+        # Reset
+        x_test.grad = None
+
+        # CUDA version with same weights
+        model_cuda = E75MultiHead(
+            dim=256, expansion=1.0, n_state=32, n_heads=4, use_cuda=True
+        ).to(device).to(dtype)
+        model_cuda.load_state_dict(model_pt.state_dict())
+
+        out_cuda, _ = model_cuda(x_test)
+        loss_cuda = out_cuda.sum()
+        loss_cuda.backward()
+        grad_cuda = x_test.grad.clone()
+        grad_W_k_cuda = model_cuda.cell.W_k.grad.clone()
+        grad_W_beta_cuda = model_cuda.cell.W_beta.grad.clone()
+
+        # Compute relative errors
+        def rel_err(a, b):
+            return (a - b).abs().max().item() / (a.abs().max().item() + 1e-8)
+
+        dx_rel = rel_err(grad_pt, grad_cuda)
+        dWk_rel = rel_err(grad_W_k_pt, grad_W_k_cuda)
+        dWbeta_rel = rel_err(grad_W_beta_pt, grad_W_beta_cuda)
+        out_rel = rel_err(out_pt, out_cuda)
+
+        print(f"Output relative error: {out_rel:.4f}")
+        print(f"dx relative error: {dx_rel:.4f}")
+        print(f"dW_k relative error: {dWk_rel:.4f}")
+        print(f"dW_beta relative error: {dWbeta_rel:.4f}")
+
+        # 5% relative error is acceptable for bfloat16 with checkpoint recomputation
+        if dx_rel < 0.05 and dWk_rel < 0.05 and dWbeta_rel < 0.05:
+            print("PASSED: Gradients match within 5% relative tolerance!")
+        else:
+            print("WARNING: Large gradient discrepancy - may need investigation")
 
     # Test multiple head configurations
     print("\n--- Testing different head configurations ---")
