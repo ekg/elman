@@ -120,6 +120,8 @@ CUDA_OBJS := \
 	lib/e82_self_gate_gpu.o \
 	lib/e83_circular_tower_gpu.o \
 	lib/e84_neural_ode_gpu.o \
+	lib/e85_input_as_matrix_gpu.o \
+	lib/e86_input_matrix_delta_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

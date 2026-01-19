@@ -77,6 +77,10 @@ LEVEL_11_AVAILABLE = True
 from .matrix_state_elman import MatrixStateElman, MatrixStateElmanCell, MATRIX_STATE_CUDA_AVAILABLE
 LEVEL_14_AVAILABLE = True
 
+# E85: Input-As-Matrix (dim = n_state^2, input IS the transformation matrix)
+from .e85_input_as_matrix import E85InputAsMatrixLayer, E85InputAsMatrixCell, E85InputAsMatrix, E85_CUDA_AVAILABLE
+LEVEL_85_AVAILABLE = True
+
 # Language model wrapper
 from .ladder_lm import LadderLM, create_ladder_model
 
@@ -155,6 +159,8 @@ __all__ = [
     'SelectiveElman', 'SelectiveElmanCell', 'LEVEL_11_AVAILABLE',
     # E14: Matrix State Elman
     'MatrixStateElman', 'MatrixStateElmanCell', 'LEVEL_14_AVAILABLE', 'MATRIX_STATE_CUDA_AVAILABLE',
+    # E85: Input-As-Matrix
+    'E85InputAsMatrixLayer', 'E85InputAsMatrixCell', 'E85InputAsMatrix', 'LEVEL_85_AVAILABLE', 'E85_CUDA_AVAILABLE',
     # Language model wrapper
     'LadderLM', 'create_ladder_model',
     # Mamba2 baseline

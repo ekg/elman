@@ -102,6 +102,8 @@ from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
 from .e79_coupled_matrix import E79CoupledMatrix
 from .e83_circular_tower import E83CircularTower
+from .e85_input_as_matrix import E85InputAsMatrixLayer
+from .e86_input_matrix_delta import E86InputMatrixDeltaLayer
 
 
 def get_ladder_level(level):
@@ -304,6 +306,31 @@ def get_ladder_level(level):
         '83k8n16': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16}),
         '83k8n16nb': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16, 'use_bias': False}),
         '83k8n16ib': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16, 'input_bias': True}),
+
+        # E85: Input-As-Matrix (dim = n_state^2, input IS the transformation matrix)
+        # Default: n_state=32 -> dim=1024
+        85: E85InputAsMatrixLayer,
+        # n_state variants (dim = n_state^2)
+        '85n16': lambda **kw: E85InputAsMatrixLayer(**{**kw, 'n_state': 16}),  # dim=256
+        '85n24': lambda **kw: E85InputAsMatrixLayer(**{**kw, 'n_state': 24}),  # dim=576
+        '85n32': lambda **kw: E85InputAsMatrixLayer(**{**kw, 'n_state': 32}),  # dim=1024
+        '85n48': lambda **kw: E85InputAsMatrixLayer(**{**kw, 'n_state': 48}),  # dim=2304
+
+        # E86: Input-as-Matrix Delta Rule (E85's input-as-matrix + E75's delta rule)
+        # Default: n_state=32, n_heads=1 -> cell_dim=1024, output=32
+        86: E86InputMatrixDeltaLayer,
+        # n_state variants (single head)
+        '86n16': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 16}),  # cell_dim=256, out=16
+        '86n24': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 24}),  # cell_dim=576, out=24
+        '86n32': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 32}),  # cell_dim=1024, out=32
+        '86n48': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 48}),  # cell_dim=2304, out=48
+        # Multi-head variants for capacity scaling
+        '86h2': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_heads': 2}),  # 2 heads, cell_dim=2048, out=64
+        '86h4': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_heads': 4}),  # 4 heads, cell_dim=4096, out=128
+        '86h2n24': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 24, 'n_heads': 2}),  # cell_dim=1152, out=48
+        '86h4n24': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 24, 'n_heads': 4}),  # cell_dim=2304, out=96
+        '86h4n16': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 16, 'n_heads': 4}),  # cell_dim=1024, out=64
+        '86h8n16': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 16, 'n_heads': 8}),  # cell_dim=2048, out=128
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh

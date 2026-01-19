@@ -8516,6 +8516,239 @@ private:
 };
 
 // =============================================================================
+// E85: Input-as-Matrix Memory System
+// A simpler approach: reshape input directly to matrix form.
+// - n_state typically 32 (so dim = 1024 = 32^2)
+// - Input x reshaped to [B, n_state, n_state] matrix A
+// - State M is [B, n_state, n_state]
+// - Update: M = M + scale * (A @ M)
+// - Normalize: M = M / norm(M)
+// - Output: flatten(M) with LayerNorm
+// Key insight: ALL operations are n_state x n_state matrix ops that fit in shared memory!
+// =============================================================================
+
+// Dispatcher functions for BF16
+void dispatch_e85_input_as_matrix_forward_bf16(
+    int T, int B, int n_state, float scale,
+    const __nv_bfloat16* x,              // [T, B, n_state, n_state]
+    const __nv_bfloat16* ln_gamma,       // [n_state * n_state]
+    const __nv_bfloat16* ln_beta,        // [n_state * n_state]
+    __nv_bfloat16* M,                    // [B, n_state, n_state]
+    __nv_bfloat16* output,               // [T, B, n_state * n_state]
+    __nv_bfloat16* M_checkpoints,        // [num_cp, B, n_state, n_state]
+    __nv_bfloat16* M_pre_norm_cache,     // [T, B, n_state, n_state]
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e85_input_as_matrix_backward_bf16(
+    int T, int B, int n_state, float scale,
+    const __nv_bfloat16* x,
+    const __nv_bfloat16* ln_gamma,
+    const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* M_pre_norm_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_x,
+    float* d_ln_gamma_accum,
+    float* d_ln_beta_accum,
+    float* d_scale_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// Dispatcher functions for FP32
+void dispatch_e85_input_as_matrix_forward_fp32(
+    int T, int B, int n_state, float scale,
+    const float* x,
+    const float* ln_gamma,
+    const float* ln_beta,
+    float* M,
+    float* output,
+    float* M_checkpoints,
+    float* M_pre_norm_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e85_input_as_matrix_backward_fp32(
+    int T, int B, int n_state, float scale,
+    const float* x,
+    const float* ln_gamma,
+    const float* M_checkpoints,
+    const float* M_pre_norm_cache,
+    const float* d_output,
+    float* d_x,
+    float* d_ln_gamma_accum,
+    float* d_ln_beta_accum,
+    float* d_scale_accum,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E85InputAsMatrixForward {
+    E85InputAsMatrixForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float scale,
+        const T* x,          // [T, B, n_state, n_state]
+        const T* ln_gamma,   // [n_state * n_state]
+        const T* ln_beta,    // [n_state * n_state]
+        T* M,                // [B, n_state, n_state]
+        T* output,           // [T, B, n_state * n_state]
+        T* M_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* M_pre_norm_cache  // [T, B, n_state, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int n2 = n_state * n_state;
+        int64_t size = 0;
+        // M_checkpoints
+        size += num_checkpoints * batch_size * n2 * sizeof(T);
+        // M_pre_norm_cache
+        size += steps * batch_size * n2 * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E85InputAsMatrixBackward {
+    E85InputAsMatrixBackward(
+        int batch_size,
+        int n_state,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        float scale,
+        const T* x,
+        const T* ln_gamma,
+        const T* M_checkpoints,
+        const T* M_pre_norm_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_ln_gamma,
+        T* d_ln_beta,
+        T* d_scale,
+        float* d_ln_gamma_accum,
+        float* d_ln_beta_accum,
+        float* d_scale_accum
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int n2 = n_state * n_state;
+        // d_ln_gamma_accum + d_ln_beta_accum (float) + d_scale_accum
+        return 2 * n2 * sizeof(float) + sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
+// E86: Input-as-Matrix Delta Rule (Multi-Head)
+// Combines E85's input-as-matrix (dim = n_heads * n_state^2) with E75's delta rule.
+// Derives k, v, q, beta from input matrix without learned projections.
+// Supports multiple heads for capacity scaling.
+// =============================================================================
+
+template<typename T>
+struct E86InputMatrixDeltaForward {
+    E86InputMatrixDeltaForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        int n_heads,             // Number of parallel heads
+        float scale,
+        float bias,
+        const T* x,              // [T, B, H * n_state * n_state]
+        T* S,                    // [B, H * n_state * n_state]
+        T* output,               // [T, B, H * n_state]
+        T* k_cache,              // [T, B, H * n_state]
+        T* v_cache,              // [T, B, H * n_state]
+        T* beta_cache,           // [T, B, H]
+        T* S_cache               // checkpoints + Sq_cache
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int n2 = n_state * n_state;
+        int H_n2 = n_heads * n2;
+        int H_n = n_heads * n_state;
+        int64_t size = 0;
+        // S_checkpoints
+        size += num_checkpoints * batch_size * H_n2 * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * H_n * sizeof(T);
+        // k_cache, v_cache
+        size += 2 * steps * batch_size * H_n * sizeof(T);
+        // beta_cache
+        size += steps * batch_size * n_heads * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E86InputMatrixDeltaBackward {
+    E86InputMatrixDeltaBackward(
+        int batch_size,
+        int n_state,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        int n_heads,
+        float scale,
+        float bias,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* beta_cache,
+        const T* d_output,
+        T* dx,
+        float* d_scale,
+        float* d_bias,
+        T* workspace
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        // Just need space for gradient accumulators (atomic ops to single floats)
+        return 2 * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E83: Circular K-Tower Memory System
 // K matrices M_0, M_1, ..., M_{K-1}, each n_state x n_state.
 // Each matrix is gated by the NEXT one (modulo K) in a circular pattern.

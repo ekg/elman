@@ -13852,6 +13852,302 @@ std::vector<Tensor> e84_neural_ode_backward(
     return {dx, dW_kvqm};
 }
 
+// =============================================================================
+// E85 Input-as-Matrix - Reshape input directly to matrix form
+// - n_state typically 32 (so dim = 1024 = 32^2)
+// - Input x reshaped to [B, n_state, n_state] matrix A
+// - State M is [B, n_state, n_state]
+// - Update: M = M + scale * (A @ M)
+// - Normalize: M = M / norm(M)
+// - Output: flatten(M) with LayerNorm
+// =============================================================================
+
+std::vector<Tensor> e85_input_as_matrix_forward(
+    bool training,
+    Tensor x,           // [T, B, n_state * n_state] input (will be reshaped)
+    Tensor M0,          // [B, n_state, n_state] initial state
+    Tensor ln_gamma,    // [n_state * n_state] LayerNorm weight
+    Tensor ln_beta,     // [n_state * n_state] LayerNorm bias
+    float scale) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = M0.size(1);
+
+    TORCH_CHECK(dim == n_state * n_state,
+                "E85: dim must equal n_state^2, got dim=", dim, " and n_state=", n_state);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(M0);
+    CHECK_INPUT(ln_gamma);
+    CHECK_INPUT(ln_beta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor M = torch::empty({batch_size, n_state, n_state}, options);
+    M.copy_(M0);
+    Tensor output = torch::empty({time_steps, batch_size, dim}, options);
+
+    // Caches for backward
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+
+    Tensor M_checkpoints = torch::empty({num_checkpoints, batch_size, n_state, n_state}, options);
+    Tensor M_pre_norm_cache = torch::empty({time_steps, batch_size, n_state, n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E85 Input-as-Matrix Forward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E85InputAsMatrixForward<__nv_bfloat16> forward(
+            training, batch_size, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            scale,
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(ln_gamma.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(ln_beta.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_pre_norm_cache.data_ptr()));
+    } else {
+        // FP32
+        E85InputAsMatrixForward<float> forward(
+            training, batch_size, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        forward.Run(
+            time_steps,
+            scale,
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(ln_gamma.data_ptr()),
+            reinterpret_cast<float*>(ln_beta.data_ptr()),
+            reinterpret_cast<float*>(M.data_ptr()),
+            reinterpret_cast<float*>(output.data_ptr()),
+            reinterpret_cast<float*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(M_pre_norm_cache.data_ptr()));
+    }
+
+    return {M, output, M_checkpoints, M_pre_norm_cache};
+}
+
+std::vector<Tensor> e85_input_as_matrix_backward(
+    Tensor x,                   // [T, B, n_state * n_state]
+    Tensor M_checkpoints,       // [num_checkpoints, B, n_state, n_state]
+    Tensor M_pre_norm_cache,    // [T, B, n_state, n_state]
+    Tensor d_output,            // [T, B, n_state * n_state]
+    Tensor ln_gamma,            // [n_state * n_state]
+    float scale) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = M_checkpoints.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(M_checkpoints);
+    CHECK_INPUT(M_pre_norm_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(ln_gamma);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor d_ln_gamma = torch::zeros({dim}, options);
+    Tensor d_ln_beta = torch::zeros({dim}, options);
+    Tensor d_scale = torch::zeros({1}, options);
+
+    // Accumulators (float for numerical stability)
+    Tensor d_ln_gamma_accum = torch::zeros({dim}, options.dtype(at::kFloat));
+    Tensor d_ln_beta_accum = torch::zeros({dim}, options.dtype(at::kFloat));
+    Tensor d_scale_accum = torch::zeros({1}, options.dtype(at::kFloat));
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16 || x.scalar_type() == at::ScalarType::Float,
+                "E85 Input-as-Matrix Backward only supports bfloat16 and float32, got ", x.scalar_type());
+
+    using namespace elman;
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        E85InputAsMatrixBackward<__nv_bfloat16> backward(
+            batch_size, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            scale,
+            reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(ln_gamma.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(M_pre_norm_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_ln_gamma.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_ln_beta.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(d_scale.data_ptr()),
+            reinterpret_cast<float*>(d_ln_gamma_accum.data_ptr()),
+            reinterpret_cast<float*>(d_ln_beta_accum.data_ptr()),
+            reinterpret_cast<float*>(d_scale_accum.data_ptr()));
+    } else {
+        // FP32
+        E85InputAsMatrixBackward<float> backward(
+            batch_size, n_state,
+            at::cuda::getCurrentCUDABlasHandle(),
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            time_steps,
+            scale,
+            reinterpret_cast<float*>(x.data_ptr()),
+            reinterpret_cast<float*>(ln_gamma.data_ptr()),
+            reinterpret_cast<float*>(M_checkpoints.data_ptr()),
+            reinterpret_cast<float*>(M_pre_norm_cache.data_ptr()),
+            reinterpret_cast<float*>(d_output.data_ptr()),
+            reinterpret_cast<float*>(dx.data_ptr()),
+            reinterpret_cast<float*>(d_ln_gamma.data_ptr()),
+            reinterpret_cast<float*>(d_ln_beta.data_ptr()),
+            reinterpret_cast<float*>(d_scale.data_ptr()),
+            reinterpret_cast<float*>(d_ln_gamma_accum.data_ptr()),
+            reinterpret_cast<float*>(d_ln_beta_accum.data_ptr()),
+            reinterpret_cast<float*>(d_scale_accum.data_ptr()));
+    }
+
+    return {dx, d_ln_gamma, d_ln_beta, d_scale};
+}
+
+// =============================================================================
+// E86: Input-as-Matrix Delta Rule (Multi-Head)
+// Combines E85's input-as-matrix with E75's delta rule
+// =============================================================================
+
+std::vector<Tensor> e86_input_matrix_delta_forward(
+    bool training,
+    Tensor x,           // [T, B, H * n_state * n_state] input
+    Tensor S0,          // [B, H * n_state * n_state] initial state (flattened)
+    Tensor scale,       // [] scalar
+    Tensor bias,        // [] scalar
+    int n_heads         // Number of heads
+) {
+    TORCH_CHECK(x.is_cuda(), "x must be CUDA tensor");
+    TORCH_CHECK(S0.is_cuda(), "S0 must be CUDA tensor");
+
+    const int T = x.size(0);
+    const int B = x.size(1);
+    const int dim = x.size(2);
+    const int H = n_heads;
+    const int n2 = dim / H;
+    const int n_state = static_cast<int>(std::sqrt(static_cast<float>(n2)));
+    TORCH_CHECK(n_state * n_state * H == dim, "dim must be n_heads * n_state^2");
+
+    float scale_val = scale.item<float>();
+    float bias_val = bias.item<float>();
+
+    // Allocate outputs
+    auto S = S0.clone();
+    auto output = torch::empty({T, B, H * n_state}, x.options());
+
+    // Allocate caches for backward
+    int num_checkpoints = (T + 15) / 16 + 1;
+    auto k_cache = torch::empty({T, B, H * n_state}, x.options());
+    auto v_cache = torch::empty({T, B, H * n_state}, x.options());
+    auto beta_cache = torch::empty({T, B, H}, x.options());
+    auto S_checkpoints = torch::empty({num_checkpoints, B, H * n_state * n_state}, x.options());
+    auto Sq_cache = torch::empty({T, B, H * n_state}, x.options());
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        elman::E86InputMatrixDeltaForward<__nv_bfloat16> forward(
+            training, B, n_state,
+            at::cuda::getCurrentCUDAStream());
+
+        // Combine caches for S_cache parameter
+        auto S_cache = torch::empty({num_checkpoints * B * H * n_state * n_state + T * B * H * n_state}, x.options());
+
+        forward.Run(
+            T, H, scale_val, bias_val,
+            reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(beta_cache.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr())
+        );
+
+        // Extract checkpoints and Sq_cache from combined buffer
+        S_checkpoints = S_cache.slice(0, 0, num_checkpoints * B * H * n_state * n_state)
+                              .view({num_checkpoints, B, H * n_state * n_state});
+        Sq_cache = S_cache.slice(0, num_checkpoints * B * H * n_state * n_state)
+                         .view({T, B, H * n_state});
+    }
+
+    return {S, output, k_cache, v_cache, beta_cache, S_checkpoints, Sq_cache};
+}
+
+std::vector<Tensor> e86_input_matrix_delta_backward(
+    Tensor x,                   // [T, B, H * n_state * n_state]
+    Tensor S_checkpoints,       // [num_checkpoints, B, H * n_state * n_state]
+    Tensor Sq_cache,            // [T, B, H * n_state]
+    Tensor k_cache,             // [T, B, H * n_state]
+    Tensor v_cache,             // [T, B, H * n_state]
+    Tensor beta_cache,          // [T, B, H]
+    Tensor d_output,            // [T, B, H * n_state]
+    Tensor scale,               // []
+    Tensor bias,                // []
+    int n_heads
+) {
+    const int T = x.size(0);
+    const int B = x.size(1);
+    const int dim = x.size(2);
+    const int H = n_heads;
+    const int n2 = dim / H;
+    const int n_state = static_cast<int>(std::sqrt(static_cast<float>(n2)));
+
+    float scale_val = scale.item<float>();
+    float bias_val = bias.item<float>();
+
+    auto dx = torch::empty_like(x);
+    auto d_scale = torch::zeros({}, x.options().dtype(at::kFloat).device(x.device()));
+    auto d_bias = torch::zeros({}, x.options().dtype(at::kFloat).device(x.device()));
+
+    // Workspace
+    auto workspace = torch::empty({2}, x.options().dtype(at::kFloat));
+
+    if (x.scalar_type() == at::ScalarType::BFloat16) {
+        elman::E86InputMatrixDeltaBackward<__nv_bfloat16> backward(
+            B, n_state,
+            at::cuda::getCurrentCUDAStream());
+
+        backward.Run(
+            T, H, scale_val, bias_val,
+            reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(Sq_cache.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(k_cache.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(v_cache.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(beta_cache.data_ptr()),
+            reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+            reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+            d_scale.data_ptr<float>(),
+            d_bias.data_ptr<float>(),
+            reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr())
+        );
+    }
+
+    return {dx, d_scale, d_bias};
+}
+
 }  // anonymous namespace
 
 
@@ -14266,4 +14562,16 @@ void elman_ladder_init(py::module& m) {
           "E84 Neural ODE: Continuous-time self-modulation with RK4 integration");
     m.def("e84_neural_ode_backward", &e84_neural_ode_backward,
           "E84 Neural ODE: Backward pass with gradient checkpointing");
+
+    // E85: Input-as-Matrix - reshape input directly to matrix form
+    m.def("e85_input_as_matrix_forward", &e85_input_as_matrix_forward,
+          "E85 Input-as-Matrix: Input reshaped to matrix, M = M + scale * (A @ M), normalized");
+    m.def("e85_input_as_matrix_backward", &e85_input_as_matrix_backward,
+          "E85 Input-as-Matrix: Backward pass with gradient checkpointing");
+
+    // E86: Input-as-Matrix Delta Rule - E85's input-as-matrix + E75's delta rule
+    m.def("e86_input_matrix_delta_forward", &e86_input_matrix_delta_forward,
+          "E86 Input-Matrix Delta: Input-as-matrix with delta rule associative memory");
+    m.def("e86_input_matrix_delta_backward", &e86_input_matrix_delta_backward,
+          "E86 Input-Matrix Delta: Backward pass with gradient checkpointing");
 }
