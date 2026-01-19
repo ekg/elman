@@ -97,6 +97,7 @@ from .e72_matrix_selfgate import E72MatrixSelfGate, E72MatrixSelfGateStandard, E
 from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73MatrixRow, E73MatrixFull
 from .e74_v2 import E74v2
 from .e75_gated_delta import E75GatedDelta
+from .e75_multihead import E75MultiHead
 from .e76_logspace_delta import E76LogSpaceDelta
 from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
@@ -104,6 +105,7 @@ from .e79_coupled_matrix import E79CoupledMatrix
 from .e83_circular_tower import E83CircularTower
 from .e85_input_as_matrix import E85InputAsMatrixLayer
 from .e86_input_matrix_delta import E86InputMatrixDeltaLayer
+from .e87_sparse_block import E87SparseBlockLayer
 
 
 def get_ladder_level(level):
@@ -227,6 +229,15 @@ def get_ladder_level(level):
         '75n48': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 48}),
         '75n64': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 64}),
         '75n96': lambda **kw: E75GatedDelta(**{**kw, 'n_state': 96}),
+        # E75 Multi-Head variants (H independent matrix states)
+        '75h2': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 2}),
+        '75h4': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4}),
+        '75h8': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8}),
+        '75h2n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 2, 'n_state': 48}),
+        '75h4n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 24}),
+        '75h8n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 16}),
+        '75h4n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 32}),
+        '75h8n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 24}),
         # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
         # Default: tanh + log_gate (nonlinear recurrence with stable params)
         76: E76LogSpaceDelta,
@@ -331,6 +342,17 @@ def get_ladder_level(level):
         '86h4n24': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 24, 'n_heads': 4}),  # cell_dim=2304, out=96
         '86h4n16': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 16, 'n_heads': 4}),  # cell_dim=1024, out=64
         '86h8n16': lambda **kw: E86InputMatrixDeltaLayer(**{**kw, 'n_state': 16, 'n_heads': 8}),  # cell_dim=2048, out=128
+
+        # E87: Content-Gated Sparse Block Memory
+        # n_blocks blocks of n_state×n_state, top_k updated per step
+        '87': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 4, 'top_k': 2}),
+        '87b4k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 4, 'top_k': 2}),
+        '87b4k1': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 4, 'top_k': 1}),
+        '87b8k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 24, 'n_blocks': 8, 'top_k': 2}),
+        '87b8k4': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 24, 'n_blocks': 8, 'top_k': 4}),
+        '87b4k2n48': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 48, 'n_blocks': 4, 'top_k': 2}),
+        '87b6k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 2}),
+        '87b6k3': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 3}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
