@@ -1,0 +1,69 @@
+Using device: cuda
+Output directory: benchmark_results/e87_highblock_20260119_154311/87b32k16/level87b32k16_100m_20260119_154317
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level 87b32k16, 74,092,800 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 555, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 470, in train
+    result = model(
+             ^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 549, in forward
+    x, residual = rms_norm_fn(
+                  ^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 935, in rms_norm_fn
+    return LayerNormFn.apply(
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/function.py", line 581, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 775, in forward
+    y, y1, mean, rstd, residual_out, seeds, dropout_mask, dropout_mask1 = _layer_norm_fwd(
+                                                                          ^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 369, in _layer_norm_fwd
+    _layer_norm_fwd_1pass_kernel[(M,)](
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/jit.py", line 419, in <lambda>
+    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 238, in run
+    benchmark()
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 227, in benchmark
+    timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 162, in _bench
+    return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/testing.py", line 149, in do_bench
+    fn()
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 148, in kernel_call
+    self.fn.run(
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 452, in run
+    return self.fn.run(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 452, in run
+    return self.fn.run(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 452, in run
+    return self.fn.run(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/jit.py", line 756, in run
+    launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/compiler/compiler.py", line 490, in launch_metadata
+    self._init_handles()
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/compiler/compiler.py", line 473, in _init_handles
+    self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
+                                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Triton Error [CUDA]: an illegal memory access was encountered

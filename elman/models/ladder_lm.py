@@ -354,6 +354,16 @@ def get_ladder_level(level):
         '87b6k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 2}),
         '87b6k3': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 3}),
         '87b8k3': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 24, 'n_blocks': 8, 'top_k': 3}),
+        # 16 blocks variants
+        '87b16k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 16, 'top_k': 2}),
+        '87b16k4': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 16, 'top_k': 4}),
+        '87b16k6': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 16, 'top_k': 6}),
+        '87b16k8': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 16, 'top_k': 8}),
+        # 32 blocks variants (n_state=16 for CUDA compatibility)
+        '87b32k4': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 4}),
+        '87b32k8': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 8}),
+        '87b32k12': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 12}),
+        '87b32k16': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 16}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
