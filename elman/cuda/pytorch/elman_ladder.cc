@@ -14299,6 +14299,192 @@ std::vector<Tensor> e86_input_matrix_delta_backward(
     return {dx, d_scale, d_bias};
 }
 
+// =============================================================================
+// E87: Content-Gated Sparse Block Memory
+// B blocks with content-based routing for sparse updates, dense reads
+// =============================================================================
+
+std::vector<Tensor> e87_sparse_block_forward(
+    bool training,
+    Tensor x,           // [T, B, dim] input
+    Tensor S0,          // [B, n_blocks, n_state, n_state] initial state
+    Tensor W_router,    // [n_blocks, dim]
+    Tensor W_k,         // [n_blocks * n_state, dim]
+    Tensor W_v,         // [n_blocks * n_state, dim]
+    Tensor W_q,         // [n_state, dim] (shared)
+    Tensor W_beta,      // [n_blocks * n_state, dim]
+    Tensor b_beta,      // [n_blocks, n_state]
+    int n_blocks,
+    int top_k,
+    float router_temp) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = S0.size(2);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(W_router);
+    CHECK_INPUT(W_k);
+    CHECK_INPUT(W_v);
+    CHECK_INPUT(W_q);
+    CHECK_INPUT(W_beta);
+    CHECK_INPUT(b_beta);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_blocks, n_state, n_state}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_state}, options);
+
+    // Caches for backward
+    Tensor router_cache = training ? torch::empty({time_steps, batch_size, n_blocks}, options) : torch::empty({0}, options);
+    Tensor k_cache = training ? torch::empty({time_steps, batch_size, n_blocks, n_state}, options) : torch::empty({0}, options);
+    Tensor v_cache = training ? torch::empty({time_steps, batch_size, n_blocks, n_state}, options) : torch::empty({0}, options);
+    Tensor q_cache = training ? torch::empty({time_steps, batch_size, n_state}, options) : torch::empty({0}, options);
+    Tensor beta_cache = training ? torch::empty({time_steps, batch_size, n_blocks, n_state}, options) : torch::empty({0}, options);
+    Tensor update_weights = training ? torch::empty({time_steps, batch_size, n_blocks}, options) : torch::empty({0}, options);
+    Tensor read_weights = training ? torch::empty({time_steps, batch_size, n_blocks}, options) : torch::empty({0}, options);
+
+    // S_cache holds [S_checkpoints][Sq_cache][block_outputs] contiguously
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_blocks * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_blocks * n_state;
+    int64_t block_outputs_size = time_steps * batch_size * n_blocks * n_state;
+    Tensor S_cache = training ? torch::empty({checkpoints_size + sq_cache_size + block_outputs_size}, options) : torch::empty({0}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E87 Sparse Block Forward only supports bfloat16, got ", x.scalar_type());
+
+    using namespace elman;
+
+    E87SparseBlockForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, n_blocks, top_k, dim, router_temp,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_router.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(b_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(router_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(beta_cache.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(update_weights.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(read_weights.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr);
+
+    return {output, S, router_cache, k_cache, v_cache, q_cache, beta_cache, update_weights, read_weights, S_cache};
+}
+
+std::vector<Tensor> e87_sparse_block_backward(
+    Tensor x,               // [T, B, dim]
+    Tensor S_cache,         // [checkpoints + Sq_cache + block_outputs]
+    Tensor router_cache,    // [T, B, n_blocks]
+    Tensor k_cache,         // [T, B, n_blocks, n_state]
+    Tensor v_cache,         // [T, B, n_blocks, n_state]
+    Tensor q_cache,         // [T, B, n_state]
+    Tensor beta_cache,      // [T, B, n_blocks, n_state]
+    Tensor update_weights,  // [T, B, n_blocks]
+    Tensor read_weights,    // [T, B, n_blocks]
+    Tensor d_output,        // [T, B, n_state]
+    Tensor W_router,        // [n_blocks, dim]
+    Tensor W_k,             // [n_blocks * n_state, dim]
+    Tensor W_v,             // [n_blocks * n_state, dim]
+    Tensor W_q,             // [n_state, dim]
+    Tensor W_beta,          // [n_blocks * n_state, dim]
+    int n_blocks,
+    int top_k,
+    float router_temp) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = k_cache.size(3);
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(d_output);
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor dx = torch::empty({time_steps, batch_size, dim}, options);
+    Tensor dW_router = torch::zeros({n_blocks, dim}, options);
+    Tensor dW_k = torch::zeros({n_blocks * n_state, dim}, options);
+    Tensor dW_v = torch::zeros({n_blocks * n_state, dim}, options);
+    Tensor dW_q = torch::zeros({n_state, dim}, options);
+    Tensor dW_beta = torch::zeros({n_blocks * n_state, dim}, options);
+    Tensor db_beta = torch::zeros({n_blocks, n_state}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E87 Sparse Block Backward only supports bfloat16");
+
+    using namespace elman;
+
+    const int64_t workspace_size = E87SparseBlockBackward<__nv_bfloat16>::WorkspaceSize(
+        time_steps, batch_size, n_state, n_blocks);
+    Tensor workspace = torch::empty({workspace_size}, options);
+
+    // Parse S_cache into components
+    int checkpoint_interval = 16;
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    int64_t checkpoints_size = num_checkpoints * batch_size * n_blocks * n_state * n_state;
+    int64_t sq_cache_size = time_steps * batch_size * n_blocks * n_state;
+
+    auto S_checkpoints = S_cache.slice(0, 0, checkpoints_size);
+    auto Sq_cache = S_cache.slice(0, checkpoints_size, checkpoints_size + sq_cache_size);
+    auto block_outputs_cache = S_cache.slice(0, checkpoints_size + sq_cache_size);
+
+    E87SparseBlockBackward<__nv_bfloat16> backward(
+        batch_size, n_state, n_blocks, top_k, dim, router_temp,
+        at::cuda::getCurrentCUDABlasHandle(),
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<__nv_bfloat16*>(W_router.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(W_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(block_outputs_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(router_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(v_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(q_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(beta_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(update_weights.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(read_weights.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dx.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_router.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(dW_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(db_beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(workspace.data_ptr()));
+
+    return {dx, dW_router, dW_k, dW_v, dW_q, dW_beta, db_beta};
+}
+
 }  // anonymous namespace
 
 
@@ -14731,4 +14917,10 @@ void elman_ladder_init(py::module& m) {
           "E86 Input-Matrix Delta: Input-as-matrix with delta rule associative memory");
     m.def("e86_input_matrix_delta_backward", &e86_input_matrix_delta_backward,
           "E86 Input-Matrix Delta: Backward pass with gradient checkpointing");
+
+    // E87: Content-Gated Sparse Block Memory
+    m.def("e87_sparse_block_forward", &e87_sparse_block_forward,
+          "E87 Sparse Block: B blocks with soft top-k routing for sparse updates, dense reads");
+    m.def("e87_sparse_block_backward", &e87_sparse_block_backward,
+          "E87 Sparse Block: Backward pass with gradient checkpointing");
 }

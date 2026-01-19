@@ -43,6 +43,93 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, List
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    E87_CUDA_AVAILABLE = True
+except ImportError:
+    E87_CUDA_AVAILABLE = False
+
+
+class E87SparseBlockCUDAFunction(torch.autograd.Function):
+    """Custom autograd function for E87 CUDA kernel."""
+
+    @staticmethod
+    def forward(ctx, training, x, S0, W_router, W_k, W_v, W_q, W_beta, b_beta, n_blocks, top_k, router_temp):
+        """
+        Args:
+            x: [T, B, dim]
+            S0: [B, n_blocks, n_state, n_state]
+            W_router: [n_blocks, dim]
+            W_k: [n_blocks * n_state, dim]
+            W_v: [n_blocks * n_state, dim]
+            W_q: [n_state, dim]
+            W_beta: [n_blocks * n_state, dim]
+            b_beta: [n_blocks, n_state]
+        """
+        # Call CUDA forward
+        # Returns: [output, S, router_cache, k_cache, v_cache, q_cache, beta_cache, update_weights, read_weights, S_cache]
+        results = hasty_pytorch_lib.e87_sparse_block_forward(
+            training, x, S0, W_router, W_k, W_v, W_q, W_beta, b_beta,
+            n_blocks, top_k, router_temp
+        )
+
+        output = results[0]  # [T, B, n_state]
+        S = results[1]       # [B, n_blocks, n_state, n_state]
+        router_cache = results[2]
+        k_cache = results[3]
+        v_cache = results[4]
+        q_cache = results[5]
+        beta_cache = results[6]
+        update_weights = results[7]
+        read_weights = results[8]
+        S_cache = results[9]
+
+        if training:
+            ctx.save_for_backward(
+                x, S_cache, router_cache, k_cache, v_cache, q_cache,
+                beta_cache, update_weights, read_weights,
+                W_router, W_k, W_v, W_q, W_beta
+            )
+            ctx.n_blocks = n_blocks
+            ctx.top_k = top_k
+            ctx.router_temp = router_temp
+
+        return S, output
+
+    @staticmethod
+    def backward(ctx, dS, d_output):
+        (x, S_cache, router_cache, k_cache, v_cache, q_cache,
+         beta_cache, update_weights, read_weights,
+         W_router, W_k, W_v, W_q, W_beta) = ctx.saved_tensors
+
+        n_blocks = ctx.n_blocks
+        top_k = ctx.top_k
+        router_temp = ctx.router_temp
+
+        # Ensure d_output is contiguous (may be transposed from layer wrapper)
+        d_output = d_output.contiguous()
+
+        # Call CUDA backward
+        results = hasty_pytorch_lib.e87_sparse_block_backward(
+            x, S_cache, router_cache, k_cache, v_cache, q_cache,
+            beta_cache, update_weights, read_weights, d_output,
+            W_router, W_k, W_v, W_q, W_beta,
+            n_blocks, top_k, router_temp
+        )
+
+        dx = results[0]
+        dW_router = results[1]
+        dW_k = results[2]
+        dW_v = results[3]
+        dW_q = results[4]
+        dW_beta = results[5]
+        db_beta = results[6]
+
+        # Return gradients in same order as forward args
+        # (training, x, S0, W_router, W_k, W_v, W_q, W_beta, b_beta, n_blocks, top_k, router_temp)
+        return None, dx, None, dW_router, dW_k, dW_v, dW_q, dW_beta, db_beta, None, None, None
+
 
 class E87SparseBlockCell(nn.Module):
     """
@@ -71,9 +158,9 @@ class E87SparseBlockCell(nn.Module):
         # Router: selects which blocks to update
         self.W_router = nn.Parameter(torch.empty(n_blocks, dim))
 
-        # Per-block projections (fused for efficiency)
-        # Layout: [block_0_k, block_0_v, block_1_k, block_1_v, ...]
-        self.W_kv = nn.Parameter(torch.empty(n_blocks * 2 * n_state, dim))
+        # Per-block projections (separate W_k and W_v for CUDA compatibility)
+        self.W_k = nn.Parameter(torch.empty(n_blocks * n_state, dim))
+        self.W_v = nn.Parameter(torch.empty(n_blocks * n_state, dim))
 
         # Per-block forget gate projections
         self.W_beta = nn.Parameter(torch.empty(n_blocks * n_state, dim))
@@ -86,7 +173,8 @@ class E87SparseBlockCell(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_router)
-        nn.init.xavier_uniform_(self.W_kv)
+        nn.init.xavier_uniform_(self.W_k)
+        nn.init.xavier_uniform_(self.W_v)
         nn.init.xavier_uniform_(self.W_beta)
         nn.init.xavier_uniform_(self.W_q)
 
@@ -122,8 +210,9 @@ class E87SparseBlockCell(nn.Module):
         router_logits = (x_flat @ self.W_router.T) / self.router_temp
         router_logits = router_logits.reshape(T, batch, B)
 
-        # Per-block k, v: [T, batch, n_blocks, 2, n_state]
-        kv_all = (x_flat @ self.W_kv.T).reshape(T, batch, B, 2, n)
+        # Per-block k, v: [T, batch, n_blocks, n_state] each
+        k_all = (x_flat @ self.W_k.T).reshape(T, batch, B, n)
+        v_all = (x_flat @ self.W_v.T).reshape(T, batch, B, n)
 
         # Per-block beta: [T, batch, n_blocks, n_state]
         beta_pre = (x_flat @ self.W_beta.T).reshape(T, batch, B, n)
@@ -153,8 +242,8 @@ class E87SparseBlockCell(nn.Module):
                 for b_item in range(batch):
                     bi = block_idx[b_item].item()
 
-                    k_i = kv_all[t, b_item, bi, 0]  # [n_state]
-                    v_i = kv_all[t, b_item, bi, 1]  # [n_state]
+                    k_i = k_all[t, b_item, bi]  # [n_state]
+                    v_i = v_all[t, b_item, bi]  # [n_state]
                     beta_i = beta_all[t, b_item, bi]  # [n_state]
 
                     # Normalize key
@@ -193,6 +282,7 @@ class E87SparseBlockCellFast(nn.Module):
     E87 with batched operations (faster but uses more memory).
 
     Instead of per-sample block selection, uses soft top-k for differentiable routing.
+    Uses CUDA kernel when available for acceleration.
     """
 
     def __init__(
@@ -214,8 +304,9 @@ class E87SparseBlockCellFast(nn.Module):
         # Router
         self.W_router = nn.Parameter(torch.empty(n_blocks, dim))
 
-        # Per-block projections
-        self.W_kv = nn.Parameter(torch.empty(n_blocks * 2 * n_state, dim))
+        # Per-block projections (separate W_k and W_v for CUDA compatibility)
+        self.W_k = nn.Parameter(torch.empty(n_blocks * n_state, dim))
+        self.W_v = nn.Parameter(torch.empty(n_blocks * n_state, dim))
         self.W_beta = nn.Parameter(torch.empty(n_blocks * n_state, dim))
         self.b_beta = nn.Parameter(torch.full((n_blocks, n_state), init_beta_bias))
         self.W_q = nn.Parameter(torch.empty(n_state, dim))
@@ -224,7 +315,8 @@ class E87SparseBlockCellFast(nn.Module):
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.W_router)
-        nn.init.xavier_uniform_(self.W_kv)
+        nn.init.xavier_uniform_(self.W_k)
+        nn.init.xavier_uniform_(self.W_v)
         nn.init.xavier_uniform_(self.W_beta)
         nn.init.xavier_uniform_(self.W_q)
 
@@ -250,13 +342,32 @@ class E87SparseBlockCellFast(nn.Module):
         if S is None:
             S = torch.zeros(batch, nb, n, n, device=x.device, dtype=x.dtype)
 
+        # Use CUDA kernel if available and on GPU with bf16
+        use_cuda = (
+            E87_CUDA_AVAILABLE
+            and x.is_cuda
+            and x.dtype == torch.bfloat16
+        )
+
+        if use_cuda:
+            training = self.training
+            S_out, output = E87SparseBlockCUDAFunction.apply(
+                training, x, S,
+                self.W_router, self.W_k, self.W_v, self.W_q,
+                self.W_beta, self.b_beta,
+                nb, k, self.router_temp
+            )
+            return output, S_out
+
+        # PyTorch fallback implementation
         x_flat = x.reshape(T * batch, D)
 
         # Router logits
         router_logits = (x_flat @ self.W_router.T).reshape(T, batch, nb) / self.router_temp
 
-        # Per-block projections
-        kv_all = (x_flat @ self.W_kv.T).reshape(T, batch, nb, 2, n)
+        # Per-block projections (using separate W_k and W_v)
+        k_all = (x_flat @ self.W_k.T).reshape(T, batch, nb, n)
+        v_all = (x_flat @ self.W_v.T).reshape(T, batch, nb, n)
         beta_all = torch.sigmoid(
             (x_flat @ self.W_beta.T).reshape(T, batch, nb, n) + self.b_beta
         )
@@ -284,8 +395,8 @@ class E87SparseBlockCellFast(nn.Module):
             for bi in range(nb):
                 w_bi = update_weights[:, bi:bi+1, None]  # [batch, 1, 1]
 
-                k_bi = kv_all[t, :, bi, 0]  # [batch, n_state]
-                v_bi = kv_all[t, :, bi, 1]
+                k_bi = k_all[t, :, bi]  # [batch, n_state]
+                v_bi = v_all[t, :, bi]
                 beta_bi = beta_all[t, :, bi]  # [batch, n_state]
 
                 # Normalize key

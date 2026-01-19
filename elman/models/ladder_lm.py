@@ -353,6 +353,7 @@ def get_ladder_level(level):
         '87b4k2n48': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 48, 'n_blocks': 4, 'top_k': 2}),
         '87b6k2': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 2}),
         '87b6k3': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 32, 'n_blocks': 6, 'top_k': 3}),
+        '87b8k3': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 24, 'n_blocks': 8, 'top_k': 3}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh

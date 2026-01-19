@@ -123,6 +123,7 @@ CUDA_OBJS := \
 	lib/e84_neural_ode_gpu.o \
 	lib/e85_input_as_matrix_gpu.o \
 	lib/e86_input_matrix_delta_gpu.o \
+	lib/e87_sparse_block_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

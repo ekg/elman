@@ -9120,6 +9120,141 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E87: Content-Gated Sparse Block Memory
+// B blocks of n_state x n_state matrices with content-based routing
+// Top-k soft routing for sparse updates, dense reads for output
+// =============================================================================
+
+template<typename T>
+struct E87SparseBlockForward {
+    E87SparseBlockForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int n_blocks,
+        int top_k,
+        int dim,
+        float router_temp,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_router,   // [n_blocks, dim]
+        const T* W_k,        // [n_blocks * n_state, dim]
+        const T* W_v,        // [n_blocks * n_state, dim]
+        const T* W_q,        // [n_state, dim] (shared)
+        const T* W_beta,     // [n_blocks * n_state, dim]
+        const T* b_beta,     // [n_blocks, n_state]
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_blocks, n_state, n_state]
+        T* output,           // [T, B, n_state]
+        T* router_cache,     // [T, B, n_blocks]
+        T* k_cache,          // [T, B, n_blocks, n_state]
+        T* v_cache,
+        T* q_cache,          // [T, B, n_state] (shared)
+        T* beta_cache,
+        T* update_weights,   // [T, B, n_blocks]
+        T* read_weights,     // [T, B, n_blocks]
+        T* S_cache);         // checkpoints + Sq_cache + block_outputs
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_blocks) {
+        // router_cache: T*B*n_blocks
+        int64_t size = steps * batch_size * n_blocks * sizeof(T);
+        // k_cache, v_cache, beta_cache: 3 * T*B*n_blocks*n_state
+        size += 3 * steps * batch_size * n_blocks * n_state * sizeof(T);
+        // q_cache: T*B*n_state (shared)
+        size += steps * batch_size * n_state * sizeof(T);
+        // update_weights, read_weights: 2 * T*B*n_blocks
+        size += 2 * steps * batch_size * n_blocks * sizeof(T);
+        // S_cache: checkpoints + Sq_cache + block_outputs
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        size += num_checkpoints * batch_size * n_blocks * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_blocks * n_state * sizeof(T);  // Sq_cache
+        size += steps * batch_size * n_blocks * n_state * sizeof(T);  // block_outputs
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int n_blocks_;
+    int top_k_;
+    int dim_;
+    float router_temp_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E87SparseBlockBackward {
+    E87SparseBlockBackward(
+        int batch_size,
+        int n_state,
+        int n_blocks,
+        int top_k,
+        int dim,
+        float router_temp,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_router,
+        const T* W_k,
+        const T* W_v,
+        const T* W_q,
+        const T* W_beta,
+        const T* x,
+        const T* S_checkpoints,
+        const T* Sq_cache,
+        const T* block_outputs_cache,
+        const T* router_cache,
+        const T* k_cache,
+        const T* v_cache,
+        const T* q_cache,
+        const T* beta_cache,
+        const T* update_weights,
+        const T* read_weights,
+        const T* d_output,
+        T* dx,
+        T* dW_router,
+        T* dW_k,
+        T* dW_v,
+        T* dW_q,
+        T* dW_beta,
+        T* db_beta,
+        T* workspace);
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_blocks) {
+        // d_k_all, d_v_all, d_beta_all: 3 * T*B*n_blocks*n_state
+        int64_t size = 3 * steps * batch_size * n_blocks * n_state * sizeof(T);
+        // d_q_perblock: T*B*n_blocks*n_state (per-block gradients)
+        size += steps * batch_size * n_blocks * n_state * sizeof(T);
+        // d_q_reduced: T*B*n_state (reduced across blocks)
+        size += steps * batch_size * n_state * sizeof(T);
+        // d_router_all: T*B*n_blocks
+        size += steps * batch_size * n_blocks * sizeof(T);
+        // d_block_outputs: T*B*n_blocks*n_state
+        size += steps * batch_size * n_blocks * n_state * sizeof(T);
+        // d_update_weights, d_read_weights: 2 * T*B*n_blocks
+        size += 2 * steps * batch_size * n_blocks * sizeof(T);
+        return size;
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int n_blocks_;
+    int top_k_;
+    int dim_;
+    float router_temp_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H
