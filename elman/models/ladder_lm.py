@@ -238,6 +238,19 @@ def get_ladder_level(level):
         'E75h8n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 16}),
         'E75h4n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 32}),
         'E75h8n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 24}),
+        # E75 Multi-Head parameter scan variants
+        'E75h3n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 3, 'n_state': 24}),
+        'E75h3n28': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 3, 'n_state': 28}),
+        'E75h3n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 3, 'n_state': 32}),
+        'E75h4n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 16}),
+        'E75h4n20': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 20}),
+        'E75h4n28': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 28}),
+        'E75h5n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 5, 'n_state': 16}),
+        'E75h5n20': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 5, 'n_state': 20}),
+        'E75h5n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 5, 'n_state': 24}),
+        'E75h6n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 16}),
+        'E75h6n20': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 20}),
+        'E75h6n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 24}),
         # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
         # Default: tanh + log_gate (nonlinear recurrence with stable params)
         76: E76LogSpaceDelta,
