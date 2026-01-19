@@ -267,6 +267,14 @@ class E75MultiHead(nn.Module):
         **kwargs
     ):
         super().__init__()
+
+        # Validate n_state is multiple of 8 (required for CUDA kernel stability)
+        if n_state % 8 != 0:
+            raise ValueError(
+                f"n_state must be a multiple of 8 for numerical stability, got {n_state}. "
+                f"Use n_state=16, 24, 32, 40, 48, etc."
+            )
+
         self.dim = dim
         self.d_inner = int(dim * expansion)
         self.n_state = n_state

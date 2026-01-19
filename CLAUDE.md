@@ -102,16 +102,18 @@ Python implementations are 100-300x slower than optimized CUDA kernels due to:
 
 ## Experiment Execution Rules
 
-1. **RUN EXPERIMENTS IN PARALLEL** - When comparing multiple models/configs, launch them simultaneously on separate GPUs. Never run sequentially when parallelism is possible.
-2. Use bash job scheduling pattern:
+1. **USE THE JOB SCHEDULER** - For benchmarks, always use `sched.py` to ensure one job per GPU:
    ```bash
-   CUDA_VISIBLE_DEVICES=0 python train.py --config a 2>&1 | tee /tmp/exp_a.log &
-   CUDA_VISIBLE_DEVICES=1 python train.py --config b 2>&1 | tee /tmp/exp_b.log &
-   CUDA_VISIBLE_DEVICES=2 python train.py --config c 2>&1 | tee /tmp/exp_c.log &
-   wait  # Wait for all to complete
+   python gen_jobs.py e75_100m --minutes 10 > jobs.txt
+   python sched.py jobs.txt
+   python extract_results.py sched_logs/TIMESTAMP/
    ```
-3. Up to 8 parallel jobs on 8 GPUs - assign each experiment to a different CUDA_VISIBLE_DEVICES
-4. Always log outputs to files for later analysis
+
+2. **NEVER launch ad-hoc parallel jobs** - The old bash pattern caused GPU contention issues.
+
+3. Up to 8 parallel jobs on 8 GPUs - scheduler handles assignment automatically
+
+4. Always extract results with `extract_results.py` for consistent last-100 avg loss
 
 ## Benchmarking Rules
 
@@ -122,6 +124,64 @@ Python implementations are 100-300x slower than optimized CUDA kernels due to:
 5. Test at multiple batch sizes to understand scaling behavior
 6. Use Last-100-step averaged loss for fair comparison (not instantaneous)
 7. Use the same random seed for data loading across all models for fair comparison
+
+## GPU Job Scheduler (Preferred Benchmarking Method)
+
+**ALWAYS use the job scheduler for benchmarks.** This ensures one job per GPU, no contention, reproducible results.
+
+### Quick Start
+```bash
+# 1. Generate jobs file
+python gen_jobs.py e75_100m --minutes 10 > jobs.txt
+
+# 2. Run jobs (one per GPU, automatic scheduling)
+python sched.py jobs.txt
+
+# 3. Extract results (computes last-100 avg loss)
+python extract_results.py sched_logs/TIMESTAMP/
+```
+
+### Available Tools
+
+| Tool | Purpose |
+|------|---------|
+| `gen_jobs.py` | Generate benchmark job files |
+| `sched.py` | Run jobs one-per-GPU |
+| `extract_results.py` | Extract last-100 avg loss from logs |
+| `calc_dim.py` | Calculate 128-aligned dims for target params |
+
+### Available Benchmarks
+```bash
+python gen_jobs.py --list
+# e75_100m        - E75 Multi-Head 100M param comparison (7 models)
+# e75_extended    - Extended E75 scan (10 models)
+# baselines       - Baseline models (4 models)
+# quick_test      - Quick 2-model test
+```
+
+### Dimension Calculator
+```bash
+# Show all standard 100M configs
+python calc_dim.py --standard
+
+# Calculate for specific model
+python calc_dim.py --model E75h4n32 --params 100M --depth 20
+```
+
+### Standard 100M Configurations
+| Model | Dim | Depth | Extra | Params |
+|-------|-----|-------|-------|--------|
+| mamba2 | 896 | 20 | expand=2 | 101M |
+| fla-gdn | 768 | 20 | expansion=2.0 | 95M |
+| E75h4n16 | 2048 | 20 | H=4, n=16, exp=1.0 | 98M |
+| E75h4n24 | 2048 | 20 | H=4, n=24, exp=1.0 | 104M |
+| E75h4n32 | 1920 | 20 | H=4, n=32, exp=1.0 | 99M |
+| E75h8n16 | 1920 | 20 | H=8, n=16, exp=1.0 | 99M |
+| E75h8n24 | 1792 | 20 | H=8, n=24, exp=1.0 | 99M |
+
+### CRITICAL: E75 n_state Constraints
+**n_state MUST be a multiple of 8** for numerical stability. Valid values: 16, 24, 32, 40, 48, etc.
+Values like 20, 28 cause NaN during training.
 
 ## CRITICAL: Testing Models with LadderLM
 
