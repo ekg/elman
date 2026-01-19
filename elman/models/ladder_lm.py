@@ -101,6 +101,7 @@ from .e76_logspace_delta import E76LogSpaceDelta
 from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
 from .e79_coupled_matrix import E79CoupledMatrix
+from .e83_circular_tower import E83CircularTower
 
 
 def get_ladder_level(level):
@@ -279,6 +280,31 @@ def get_ladder_level(level):
         '79n64ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 64, 'input_bias': True}),
         '79n96nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96, 'use_bias': False}),
         '79n96ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96, 'input_bias': True}),
+
+        # E83: Circular K-Tower (K matrices in mutual gating circle)
+        # Default: K=3, n_state=32, fixed bias
+        83: E83CircularTower,
+        # K=2 (like E79 but circular)
+        '83k2': lambda **kw: E83CircularTower(**{**kw, 'K': 2, 'n_state': 32}),
+        '83k2nb': lambda **kw: E83CircularTower(**{**kw, 'K': 2, 'n_state': 32, 'use_bias': False}),
+        '83k2ib': lambda **kw: E83CircularTower(**{**kw, 'K': 2, 'n_state': 32, 'input_bias': True}),
+        # K=4, n_state=32 (4 heads, 4K state)
+        '83k4n32': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 32}),
+        '83k4n32nb': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 32, 'use_bias': False}),
+        '83k4n32ib': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 32, 'input_bias': True}),
+        # K=4, n_state=24 (4 heads, 2.3K state)
+        '83k4n24': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 24}),
+        '83k4n24nb': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 24, 'use_bias': False}),
+        '83k4n24ib': lambda **kw: E83CircularTower(**{**kw, 'K': 4, 'n_state': 24, 'input_bias': True}),
+        # K=8, n_state=24 (8 heads, 4.6K state)
+        '83k8n24': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 24}),
+        '83k8n24nb': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 24, 'use_bias': False}),
+        '83k8n24ib': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 24, 'input_bias': True}),
+        # K=8, n_state=16 (8 heads, 2K state)
+        '83k8n16': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16}),
+        '83k8n16nb': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16, 'use_bias': False}),
+        '83k8n16ib': lambda **kw: E83CircularTower(**{**kw, 'K': 8, 'n_state': 16, 'input_bias': True}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

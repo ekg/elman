@@ -7782,6 +7782,160 @@ private:
 };
 
 // =============================================================================
+// E79 Input-Dependent Bias Variant
+// Instead of fixed b_s_gate and b_m_gate, biases are projected from input:
+// b_s = W_bs @ x, b_m = W_bm @ x giving [T, B, n_state] per-timestep biases
+// =============================================================================
+
+// BF16 Input-Bias Dispatcher functions
+void dispatch_e79_coupled_input_bias_forward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,    // [4*n_state, T*B]
+    const __nv_bfloat16* bs_all,      // [T*B, n_state] input-dependent S bias
+    const __nv_bfloat16* bm_all,      // [T*B, n_state] input-dependent M bias
+    __nv_bfloat16* S, __nv_bfloat16* M, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* M_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    __nv_bfloat16* s_row_decay_cache, __nv_bfloat16* s_col_decay_cache,
+    __nv_bfloat16* m_row_decay_cache, __nv_bfloat16* m_col_decay_cache,
+    float* state_workspace,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e79_coupled_input_bias_backward(
+    int T, int B, int n_state,
+    const __nv_bfloat16* kvqm_all,
+    const __nv_bfloat16* bs_all, const __nv_bfloat16* bm_all,
+    const __nv_bfloat16* s_row_decay_cache, const __nv_bfloat16* s_col_decay_cache,
+    const __nv_bfloat16* m_row_decay_cache, const __nv_bfloat16* m_col_decay_cache,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* M_checkpoints,
+    const __nv_bfloat16* Sq_cache, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_kvqm_all,
+    __nv_bfloat16* d_bs_all, __nv_bfloat16* d_bm_all,  // [T*B, n_state] gradients
+    float* state_workspace,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// FP32 Input-Bias Dispatcher functions
+void dispatch_e79_coupled_input_bias_forward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* bs_all, const float* bm_all,
+    float* S, float* M, float* output,
+    float* S_checkpoints, float* M_checkpoints,
+    float* Sq_cache,
+    float* s_row_decay_cache, float* s_col_decay_cache,
+    float* m_row_decay_cache, float* m_col_decay_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e79_coupled_input_bias_backward_fp32(
+    int T, int B, int n_state,
+    const float* kvqm_all,
+    const float* bs_all, const float* bm_all,
+    const float* s_row_decay_cache, const float* s_col_decay_cache,
+    const float* m_row_decay_cache, const float* m_col_decay_cache,
+    const float* S_checkpoints, const float* M_checkpoints,
+    const float* Sq_cache, const float* d_output,
+    float* d_kvqm_all,
+    float* d_bs_all, float* d_bm_all,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E79CoupledInputBiasForward {
+    E79CoupledInputBiasForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm,     // [4*n_state, dim] FUSED projection
+        const T* W_bs,       // [n_state, dim] S bias projection
+        const T* W_bm,       // [n_state, dim] M bias projection
+        const T* x,          // [T, B, dim]
+        T* S,                // [B, n_state, n_state] content memory
+        T* M,                // [B, n_state, n_state] modulation memory
+        T* output,           // [T, B, n_state]
+        T* kvqm_cache,       // [4*n_state, T*B] for backward
+        T* bs_cache,         // [T*B, n_state] computed S biases for backward
+        T* bm_cache,         // [T*B, n_state] computed M biases for backward
+        T* S_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* M_checkpoints,    // [num_cp, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* s_row_decay_cache,// [T, B, n_state]
+        T* s_col_decay_cache,// [T, B, n_state]
+        T* m_row_decay_cache,// [T, B, n_state]
+        T* m_col_decay_cache // [T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kvqm_cache: 4*n * T*B
+        size += 4 * n_state * steps * batch_size * sizeof(T);
+        // bs_cache + bm_cache: 2 * T*B * n_state
+        size += 2 * steps * batch_size * n_state * sizeof(T);
+        // S_checkpoints + M_checkpoints
+        size += 2 * num_checkpoints * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache
+        size += steps * batch_size * n_state * sizeof(T);
+        // 4 decay caches
+        size += 4 * steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E79CoupledInputBiasBackward {
+    E79CoupledInputBiasBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kvqm, const T* W_bs, const T* W_bm,
+        const T* x,
+        const T* kvqm_cache, const T* bs_cache, const T* bm_cache,
+        const T* S_checkpoints, const T* M_checkpoints,
+        const T* Sq_cache,
+        const T* s_row_decay_cache, const T* s_col_decay_cache,
+        const T* m_row_decay_cache, const T* m_col_decay_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kvqm, T* d_W_bs, T* d_W_bm,
+        T* d_kvqm_cache, T* d_bs_cache, T* d_bm_cache
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state) {
+        // d_kvqm_all + d_bs_all + d_bm_all
+        return steps * batch_size * (4 * n_state + 2 * n_state) * sizeof(T);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E80: Full-Rank Mutual Gating
 // Extends E79 with full n×n gate matrices instead of rank-1 outer products.
 // Two coupled matrix states with full-rank gates:
@@ -8520,6 +8674,110 @@ struct E83CircularBackward {
         // d_kv_cache + d_q_cache + d_B_gates_accum
         return (K * 2 * n_state + n_state) * steps * batch_size * sizeof(T) +
                K * n_state * sizeof(float);
+    }
+
+private:
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int K_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+// E83 INPUT-BIAS variant - per-timestep biases computed from input
+template<typename T>
+struct E83CircularInputBiasForward {
+    E83CircularInputBiasForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int dim,
+        int K,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kv,       // [K*2*n_state, dim] k,v projections
+        const T* W_q,        // [n_state, dim] query projection
+        const T* W_b,        // [K*n_state, dim] bias projection
+        const T* x,          // [T, B, dim]
+        T* M_states,         // [K, B, n_state, n_state]
+        T* output,           // [T, B, n_state]
+        T* kv_cache,         // [K*2*n_state, T*B]
+        T* q_cache,          // [n_state, T*B]
+        T* b_cache,          // [T*B, K*n_state]
+        T* M_checkpoints,    // [num_cp, K, B, n_state, n_state]
+        T* Sq_cache,         // [T, B, n_state]
+        T* row_gate_cache,   // [K, T, B, n_state]
+        T* col_gate_cache    // [K, T, B, n_state]
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int K) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = 0;
+        // kv_cache: K*2*n * T*B
+        size += K * 2 * n_state * steps * batch_size * sizeof(T);
+        // q_cache: n * T*B
+        size += n_state * steps * batch_size * sizeof(T);
+        // b_cache: T*B * K*n (per-timestep biases)
+        size += steps * batch_size * K * n_state * sizeof(T);
+        // M_checkpoints: num_cp * K * B * n * n
+        size += num_checkpoints * K * batch_size * n_state * n_state * sizeof(T);
+        // Sq_cache: T * B * n
+        size += steps * batch_size * n_state * sizeof(T);
+        // row_gate_cache + col_gate_cache: 2 * K * T * B * n
+        size += 2 * K * steps * batch_size * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int dim_;
+    int K_;
+    cublasHandle_t blas_handle_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E83CircularInputBiasBackward {
+    E83CircularInputBiasBackward(
+        int batch_size,
+        int n_state,
+        int dim,
+        int K,
+        const cublasHandle_t& blas_handle,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* W_kv,
+        const T* W_q,
+        const T* W_b,
+        const T* x,
+        const T* kv_cache,
+        const T* q_cache,
+        const T* b_cache,
+        const T* M_checkpoints,
+        const T* Sq_cache,
+        const T* row_gate_cache,
+        const T* col_gate_cache,
+        const T* d_output,
+        T* d_x,
+        T* d_W_kv,
+        T* d_W_q,
+        T* d_W_b,
+        T* d_kv_cache,
+        T* d_q_cache,
+        T* d_b_cache
+    );
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int K) {
+        // d_kv_cache + d_q_cache + d_b_cache
+        return (K * 2 * n_state + n_state + K * n_state) * steps * batch_size * sizeof(T);
     }
 
 private:

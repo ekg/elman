@@ -36,12 +36,16 @@ from elman.data.tokenizers import get_tokenizer, ByteTokenizer, TikTokenTokenize
 
 
 def parse_level(value):
-    """Parse level argument - can be int (0-3), string ('log_0', etc.), or 'mamba2'"""
+    """Parse level argument - can be int (0-3), string ('log_0', '83k2ib', etc.), or 'mamba2'"""
     if value == 'mamba2':
         return 'mamba2'
     if value.startswith('log_'):
         return value  # Return string for log-space levels
-    return int(value)
+    # Check if it's a string level key (e.g., '83k2ib', '83k4n32nb', etc.)
+    try:
+        return int(value)
+    except ValueError:
+        return value  # Return string for named variants
 
 
 def get_args():
@@ -457,6 +461,9 @@ def train(args):
             if isinstance(h, tuple):
                 # Log-space layers return (log_h, sign_h) tuple
                 return tuple(reset_hidden(elem, reset_mask) for elem in h)
+            if isinstance(h, list):
+                # E83 returns list of K matrices
+                return [reset_hidden(elem, reset_mask) for elem in h]
             # Expand mask to match hidden state dimensions (handles E2/E3 multi-slot)
             mask = ~reset_mask
             while mask.ndim < h.ndim:
@@ -512,7 +519,9 @@ def train(args):
             if h is None:
                 return None
             if isinstance(h, tuple):
-                return tuple(elem.detach() for elem in h)
+                return tuple(detach_hidden(elem) for elem in h)
+            if isinstance(h, list):
+                return [detach_hidden(elem) for elem in h]
             return h.detach()
 
         if (args.tbptt or use_subword) and next_hidden is not None:

@@ -39,12 +39,75 @@ from typing import Optional, Tuple, List
 
 # Try to import CUDA kernel
 E83_CUDA_AVAILABLE = False
+E83_INPUT_BIAS_CUDA_AVAILABLE = False
 try:
     import hasty_pytorch_lib
     if hasattr(hasty_pytorch_lib, 'e83_circular_forward') and hasattr(hasty_pytorch_lib, 'e83_circular_backward'):
         E83_CUDA_AVAILABLE = True
+    if hasattr(hasty_pytorch_lib, 'e83_circular_input_bias_forward') and hasattr(hasty_pytorch_lib, 'e83_circular_input_bias_backward'):
+        E83_INPUT_BIAS_CUDA_AVAILABLE = True
 except ImportError:
     pass
+
+
+class E83InputBiasCUDAFunction(torch.autograd.Function):
+    """Autograd wrapper for E83 Input-Bias CUDA kernel."""
+
+    @staticmethod
+    def forward(ctx, x, M_init_list, W_kv, W_q, W_b, K, training):
+        """
+        Args:
+            x: [T, B, dim] input
+            M_init_list: list of K tensors, each [B, n_state, n_state] initial matrices
+            W_kv: [K * 2 * n_state, dim] fused projection for all k_i, v_i
+            W_q: [n_state, dim] query projection
+            W_b: [K * n_state, dim] bias projection
+            K: number of matrices
+            training: bool
+
+        Returns:
+            output: [T, B, n_state]
+            M_list: list of K final matrices [B, n_state, n_state]
+        """
+        M_init = torch.stack(M_init_list, dim=0)  # [K, B, n_state, n_state]
+
+        # C++ returns: {M_states, output, kv_cache, q_cache, b_cache, M_checkpoints, Sq_cache, row_gate_cache, col_gate_cache}
+        M_final, output, kv_cache, q_cache, b_cache, M_checkpoints, Sq_cache, row_gate_cache, col_gate_cache = \
+            hasty_pytorch_lib.e83_circular_input_bias_forward(training, x, M_init, W_kv, W_q, W_b, K)
+
+        if training:
+            ctx.save_for_backward(x, M_checkpoints, Sq_cache, kv_cache, q_cache, b_cache,
+                                  W_kv, W_q, W_b, row_gate_cache, col_gate_cache)
+            ctx.K = K
+
+        M_list = [M_final[i] for i in range(K)]
+        return output, M_list
+
+    @staticmethod
+    def backward(ctx, d_output, *d_M_list):
+        saved = ctx.saved_tensors
+        x = saved[0]
+        M_checkpoints = saved[1]
+        Sq_cache = saved[2]
+        kv_cache = saved[3]
+        q_cache = saved[4]
+        b_cache = saved[5]
+        W_kv = saved[6]
+        W_q = saved[7]
+        W_b = saved[8]
+        row_gate_cache = saved[9]
+        col_gate_cache = saved[10]
+        K = ctx.K
+
+        d_output = d_output.contiguous()
+
+        dx, dW_kv, dW_q, dW_b = hasty_pytorch_lib.e83_circular_input_bias_backward(
+            x, M_checkpoints, Sq_cache, kv_cache, q_cache, b_cache,
+            row_gate_cache, col_gate_cache,
+            d_output, W_kv, W_q, W_b, K
+        )
+
+        return dx, None, dW_kv, dW_q, dW_b, None, None
 
 
 class E83CUDAFunction(torch.autograd.Function):
@@ -69,12 +132,13 @@ class E83CUDAFunction(torch.autograd.Function):
         # Concatenate initial states along a new dimension
         M_init = torch.stack(M_init_list, dim=0)  # [K, B, n_state, n_state]
 
-        M_final, output, kv_cache, M_checkpoints, Sq_cache, gate_caches = \
+        # C++ returns: {M_states, output, kv_cache, q_cache, M_checkpoints, Sq_cache, row_gate_cache, col_gate_cache}
+        M_final, output, kv_cache, q_cache, M_checkpoints, Sq_cache, row_gate_cache, col_gate_cache = \
             hasty_pytorch_lib.e83_circular_forward(training, x, M_init, W_kv, W_q, B_gates, K)
 
         if training:
-            ctx.save_for_backward(x, M_checkpoints, Sq_cache, kv_cache,
-                                  W_kv, W_q, B_gates, *gate_caches)
+            ctx.save_for_backward(x, M_checkpoints, Sq_cache, kv_cache, q_cache,
+                                  W_kv, W_q, B_gates, row_gate_cache, col_gate_cache)
             ctx.K = K
 
         # Split M_final back into list
@@ -88,16 +152,19 @@ class E83CUDAFunction(torch.autograd.Function):
         M_checkpoints = saved[1]
         Sq_cache = saved[2]
         kv_cache = saved[3]
-        W_kv = saved[4]
-        W_q = saved[5]
-        B_gates = saved[6]
-        gate_caches = saved[7:]
+        q_cache = saved[4]
+        W_kv = saved[5]
+        W_q = saved[6]
+        B_gates = saved[7]
+        row_gate_cache = saved[8]
+        col_gate_cache = saved[9]
         K = ctx.K
 
         d_output = d_output.contiguous()
 
         dx, dW_kv, dW_q, dB_gates = hasty_pytorch_lib.e83_circular_backward(
-            x, M_checkpoints, Sq_cache, kv_cache, gate_caches,
+            x, M_checkpoints, Sq_cache, kv_cache, q_cache,
+            row_gate_cache, col_gate_cache,
             d_output, W_kv, W_q, B_gates, K
         )
 
@@ -109,6 +176,11 @@ class E83CircularTowerCell(nn.Module):
     E83 Circular K-Tower cell.
 
     K matrices with circular mutual gating control.
+
+    Bias modes:
+    - use_bias=True, input_bias=False: Fixed learned bias B_gates (default)
+    - use_bias=True, input_bias=True: Input-dependent bias projected from x via W_b
+    - use_bias=False: No bias at all
     """
 
     def __init__(
@@ -118,6 +190,8 @@ class E83CircularTowerCell(nn.Module):
         K: int = 3,
         shared_keys: bool = False,
         use_cuda: bool = True,
+        use_bias: bool = True,
+        input_bias: bool = False,
     ):
         super().__init__()
         self.dim = dim
@@ -125,6 +199,8 @@ class E83CircularTowerCell(nn.Module):
         self.K = K
         self.shared_keys = shared_keys
         self.use_cuda = use_cuda and E83_CUDA_AVAILABLE
+        self.use_bias = use_bias
+        self.input_bias = input_bias
 
         if shared_keys:
             # Single k, v projection shared across all levels
@@ -138,8 +214,19 @@ class E83CircularTowerCell(nn.Module):
         # Single query projection for output
         self.W_q = nn.Parameter(torch.empty(n_state, dim))
 
-        # Gate biases for each level
-        self.B_gates = nn.Parameter(torch.zeros(K, n_state))
+        if use_bias and input_bias:
+            # Input-dependent bias projection: [K * n_state, dim]
+            # Layout: [b_0 | b_1 | ... | b_{K-1}]
+            self.W_b = nn.Parameter(torch.empty(K * n_state, dim))
+            self.register_buffer('B_gates', None)  # No fixed bias parameter
+        elif use_bias:
+            # Fixed gate biases for each level
+            self.B_gates = nn.Parameter(torch.zeros(K, n_state))
+            self.register_parameter('W_b', None)
+        else:
+            # No bias - register zero buffer for CUDA compatibility
+            self.register_buffer('B_gates', torch.zeros(K, n_state))
+            self.register_parameter('W_b', None)
 
         self._init_weights()
 
@@ -158,8 +245,13 @@ class E83CircularTowerCell(nn.Module):
 
         nn.init.xavier_uniform_(self.W_q)
 
-        # Initialize gate biases for moderate decay (closer to 1 preserves more)
-        nn.init.constant_(self.B_gates, 2.0)  # sigmoid(2) approx 0.88
+        if self.use_bias and self.input_bias:
+            # Initialize bias projection with small values
+            nn.init.xavier_uniform_(self.W_b)
+        elif self.use_bias:
+            # Initialize fixed gate biases for moderate decay (closer to 1 preserves more)
+            nn.init.constant_(self.B_gates, 2.0)  # sigmoid(2) approx 0.88
+        # No initialization needed for no-bias case
 
     def forward(
         self,
@@ -183,12 +275,21 @@ class E83CircularTowerCell(nn.Module):
             M_list = [torch.zeros(B, n, n, device=x.device, dtype=x.dtype) for _ in range(K)]
 
         # Use CUDA kernel if available
-        if self.use_cuda and x.is_cuda and x.dtype in (torch.bfloat16, torch.float32):
-            x = x.contiguous()
-            M_list = [M.contiguous() for M in M_list]
-            return E83CUDAFunction.apply(
-                x, M_list, self.W_kv, self.W_q, self.B_gates, K, self.training
-            )
+        if self.use_cuda and x.is_cuda:
+            # Input-bias mode: use input-bias CUDA kernel
+            if self.input_bias and E83_INPUT_BIAS_CUDA_AVAILABLE and x.dtype == torch.bfloat16:
+                x = x.contiguous()
+                M_list = [M.contiguous() for M in M_list]
+                return E83InputBiasCUDAFunction.apply(
+                    x, M_list, self.W_kv, self.W_q, self.W_b, K, self.training
+                )
+            # Fixed-bias or no-bias mode: use standard CUDA kernel
+            elif not self.input_bias and self.B_gates is not None and x.dtype in (torch.bfloat16, torch.float32):
+                x = x.contiguous()
+                M_list = [M.contiguous() for M in M_list]
+                return E83CUDAFunction.apply(
+                    x, M_list, self.W_kv, self.W_q, self.B_gates, K, self.training
+                )
 
         # Python fallback
         return self._forward_python(x, M_list)
@@ -225,6 +326,15 @@ class E83CircularTowerCell(nn.Module):
 
         q_all = (x_flat @ self.W_q.T).reshape(T, B, n)
 
+        # Project biases if using input-dependent bias
+        if self.use_bias and self.input_bias:
+            b_proj = (x_flat @ self.W_b.T).reshape(T, B, K * n)  # [T, B, K*n]
+            b_all = []
+            for i in range(K):
+                b_all.append(b_proj[:, :, i*n:(i+1)*n])  # [T, B, n]
+        else:
+            b_all = None
+
         # Clone M_list for in-place updates
         M_list = [M.clone() for M in M_list]
 
@@ -234,6 +344,14 @@ class E83CircularTowerCell(nn.Module):
             k_t = [k_all[i][t] for i in range(K)]  # List of [B, n]
             v_t = [v_all[i][t] for i in range(K)]  # List of [B, n]
             q_t = q_all[t]  # [B, n]
+
+            # Get bias for this timestep
+            if self.use_bias and self.input_bias:
+                b_t = [b_all[i][t] for i in range(K)]  # List of [B, n]
+            elif self.use_bias:
+                b_t = [self.B_gates[i] for i in range(K)]  # List of [n] (broadcast)
+            else:
+                b_t = [0.0 for _ in range(K)]  # No bias
 
             # Normalize keys
             k_norm = []
@@ -247,19 +365,15 @@ class E83CircularTowerCell(nn.Module):
                 gater_idx = (i + 1) % K
                 gater = M_list[gater_idx]  # [B, n, n]
 
-                # Compute gate: G_i = sigmoid(gater @ k_i + outer(gater @ k_i, k_i) + B_i)
+                # Compute gate: G_i = sigmoid(gater @ k_i + B_i)
                 # First term: gater @ k_norm[i] -> [B, n]
                 gater_k = torch.einsum('bij,bj->bi', gater, k_norm[i])  # [B, n]
 
-                # Second term: outer product of gater_k with k_norm[i]
-                # This creates a [B, n, n] tensor
-                outer_term = torch.einsum('bi,bj->bij', gater_k, k_norm[i])  # [B, n, n]
-
                 # Combine: row-wise gating
                 # Row decay from gater_k, col decay from k_norm contribution
-                row_gate = torch.sigmoid(gater_k + self.B_gates[i])  # [B, n]
+                row_gate = torch.sigmoid(gater_k + b_t[i])  # [B, n]
                 col_gate = torch.sigmoid(
-                    torch.einsum('bji,bj->bi', gater, k_norm[i]) + self.B_gates[i]
+                    torch.einsum('bji,bj->bi', gater, k_norm[i]) + b_t[i]
                 )  # [B, n] - transpose for column
 
                 # Delta rule update
@@ -288,6 +402,11 @@ class E83CircularTowerCell(nn.Module):
 class E83CircularTower(nn.Module):
     """
     E83: Circular K-Tower Memory System - Full layer.
+
+    Bias modes:
+    - use_bias=True, input_bias=False: Fixed learned bias (default)
+    - use_bias=True, input_bias=True: Input-dependent bias projected from x
+    - use_bias=False: No bias at all
     """
 
     def __init__(
@@ -301,6 +420,8 @@ class E83CircularTower(nn.Module):
         use_conv: bool = False,
         d_conv: int = 4,
         use_cuda: bool = True,
+        use_bias: bool = True,
+        input_bias: bool = False,
         **kwargs
     ):
         super().__init__()
@@ -309,6 +430,8 @@ class E83CircularTower(nn.Module):
         self.n_state = n_state
         self.K = K
         self.use_conv = use_conv
+        self.use_bias = use_bias
+        self.input_bias = input_bias
 
         self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
@@ -328,6 +451,8 @@ class E83CircularTower(nn.Module):
             K=K,
             shared_keys=shared_keys,
             use_cuda=use_cuda,
+            use_bias=use_bias,
+            input_bias=input_bias,
         )
 
         self.out_proj = nn.Linear(n_state, dim, bias=False)
