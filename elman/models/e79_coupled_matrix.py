@@ -41,10 +41,13 @@ from typing import Optional, Tuple
 
 # Try to import CUDA kernel
 E79_CUDA_AVAILABLE = False
+E79_INPUT_BIAS_CUDA_AVAILABLE = False
 try:
     import hasty_pytorch_lib
     if hasattr(hasty_pytorch_lib, 'e79_coupled_forward') and hasattr(hasty_pytorch_lib, 'e79_coupled_backward'):
         E79_CUDA_AVAILABLE = True
+    if hasattr(hasty_pytorch_lib, 'e79_coupled_input_bias_forward') and hasattr(hasty_pytorch_lib, 'e79_coupled_input_bias_backward'):
+        E79_INPUT_BIAS_CUDA_AVAILABLE = True
 except ImportError:
     pass
 
@@ -98,6 +101,56 @@ class E79CUDAFunction(torch.autograd.Function):
         return dx, None, None, dW_kvqm, db_s_gate, db_m_gate, None
 
 
+class E79CUDAInputBiasFunction(torch.autograd.Function):
+    """Autograd wrapper for E79 CUDA kernel with input-dependent bias."""
+
+    @staticmethod
+    def forward(ctx, x, S0, M0, W_kvqm, W_bs, W_bm, training):
+        """
+        Args:
+            x: [T, B, dim] input
+            S0: [B, n_state, n_state] initial content memory
+            M0: [B, n_state, n_state] initial modulation memory
+            W_kvqm: [4*n_state, dim] fused projection weights
+            W_bs: [n_state, dim] S bias projection weights
+            W_bm: [n_state, dim] M bias projection weights
+            training: bool
+
+        Returns:
+            output: [T, B, n_state]
+            S: [B, n_state, n_state] final content memory
+            M: [B, n_state, n_state] final modulation memory
+        """
+        S, M, output, kvqm_cache, bs_cache, bm_cache, S_checkpoints, M_checkpoints, Sq_cache, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache = \
+            hasty_pytorch_lib.e79_coupled_input_bias_forward(training, x, S0, M0, W_kvqm, W_bs, W_bm)
+
+        if training:
+            ctx.save_for_backward(x, S_checkpoints, M_checkpoints, Sq_cache,
+                                  kvqm_cache, bs_cache, bm_cache,
+                                  s_row_decay_cache, s_col_decay_cache,
+                                  m_row_decay_cache, m_col_decay_cache,
+                                  W_kvqm, W_bs, W_bm)
+
+        return output, S, M
+
+    @staticmethod
+    def backward(ctx, d_output, d_S, d_M):
+        x, S_checkpoints, M_checkpoints, Sq_cache, kvqm_cache, bs_cache, bm_cache, \
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache, \
+            W_kvqm, W_bs, W_bm = ctx.saved_tensors
+
+        d_output = d_output.contiguous()
+
+        dx, dW_kvqm, dW_bs, dW_bm = hasty_pytorch_lib.e79_coupled_input_bias_backward(
+            x, S_checkpoints, M_checkpoints, Sq_cache, kvqm_cache, bs_cache, bm_cache,
+            s_row_decay_cache, s_col_decay_cache, m_row_decay_cache, m_col_decay_cache,
+            d_output, W_kvqm, W_bs, W_bm
+        )
+
+        return dx, None, None, dW_kvqm, dW_bs, dW_bm, None
+
+
 class E79CoupledMatrixCell(nn.Module):
     """
     E79 Coupled Memory-Modulation cell.
@@ -122,6 +175,7 @@ class E79CoupledMatrixCell(nn.Module):
         self.dim = dim
         self.n_state = n_state
         self.use_cuda = use_cuda and E79_CUDA_AVAILABLE
+        self.use_cuda_input_bias = use_cuda and E79_INPUT_BIAS_CUDA_AVAILABLE
         self.use_bias = use_bias
         self.input_bias = input_bias
 
@@ -164,6 +218,33 @@ class E79CoupledMatrixCell(nn.Module):
             nn.init.xavier_uniform_(self.W_bs)
             nn.init.xavier_uniform_(self.W_bm)
 
+    def orthogonality_loss(self, lambda_sep=0.01, lambda_orth=0.001):
+        """
+        Compute orthogonality regularization loss.
+
+        Args:
+            lambda_sep: Weight for k/m separation loss (high priority)
+            lambda_orth: Weight for key orthogonality loss (medium priority)
+
+        Returns:
+            Regularization loss scalar
+        """
+        n = self.n_state
+        W_k = self.W_kvqm[:n]        # [n_state, dim]
+        W_m = self.W_kvqm[3*n:]      # [n_state, dim]
+
+        # Priority 1: Prevent k/m collapse - penalize W_k^T @ W_m
+        # This ensures S and M address different subspaces
+        sep_loss = (W_k @ W_m.T).pow(2).mean()
+
+        # Priority 2: Encourage orthogonal keys - penalize W_k @ W_k^T - I
+        # This reduces interference when storing multiple (v, k) pairs
+        WkWkT = W_k @ W_k.T  # [n_state, n_state]
+        eye = torch.eye(n, device=WkWkT.device, dtype=WkWkT.dtype)
+        orth_loss = (WkWkT - eye).pow(2).mean()
+
+        return lambda_sep * sep_loss + lambda_orth * orth_loss
+
     def forward(
         self,
         x: torch.Tensor,
@@ -190,12 +271,18 @@ class E79CoupledMatrixCell(nn.Module):
             # Initialize M with small values so it provides initial gating
             M = torch.zeros(B, n, n, device=x.device, dtype=x.dtype)
 
-        # Use CUDA kernel if available (not for input_bias mode - needs Python fallback)
-        if self.use_cuda and x.is_cuda and x.dtype in (torch.bfloat16, torch.float32) and not self.input_bias:
+        # Use CUDA kernel if available
+        if x.is_cuda and x.dtype in (torch.bfloat16, torch.float32):
             x = x.contiguous()
             S = S.contiguous()
             M = M.contiguous()
-            return E79CUDAFunction.apply(x, S, M, self.W_kvqm, self.b_s_gate, self.b_m_gate, self.training)
+
+            if self.input_bias and self.use_cuda_input_bias:
+                # Use input-bias CUDA kernel
+                return E79CUDAInputBiasFunction.apply(x, S, M, self.W_kvqm, self.W_bs, self.W_bm, self.training)
+            elif not self.input_bias and self.use_cuda:
+                # Use regular CUDA kernel
+                return E79CUDAFunction.apply(x, S, M, self.W_kvqm, self.b_s_gate, self.b_m_gate, self.training)
 
         # Python fallback
         x_flat = x.reshape(T * B, D)

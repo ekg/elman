@@ -273,6 +273,12 @@ def get_ladder_level(level):
         '79ib': lambda **kw: E79CoupledMatrix(**{**kw, 'input_bias': True}),  # Input-dependent bias
         '79n32nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 32, 'use_bias': False}),
         '79n32ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 32, 'input_bias': True}),
+        '79n48nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 48, 'use_bias': False}),
+        '79n48ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 48, 'input_bias': True}),
+        '79n64nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 64, 'use_bias': False}),
+        '79n64ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 64, 'input_bias': True}),
+        '79n96nb': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96, 'use_bias': False}),
+        '79n96ib': lambda **kw: E79CoupledMatrix(**{**kw, 'n_state': 96, 'input_bias': True}),
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

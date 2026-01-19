@@ -29,6 +29,8 @@ import re
 
 # Add elman package to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add CUDA extension directory for hasty_pytorch_lib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elman', 'cuda'))
 
 from elman.models import LadderLM, create_ladder_model
 from elman.data import DocumentStreamDataset, BatchedStreamDataset, create_dataloader
@@ -112,6 +114,12 @@ def parse_args():
                         help='Resume from checkpoint')
     parser.add_argument('--tbptt', action='store_true',
                         help='Enable TBPTT (carry hidden state across chunks)')
+    parser.add_argument('--orth_reg', type=float, default=0.0,
+                        help='Orthogonality regularization weight for E79 (0=disabled)')
+    parser.add_argument('--orth_sep', type=float, default=0.01,
+                        help='Weight for k/m separation in orthogonality loss')
+    parser.add_argument('--orth_orth', type=float, default=0.001,
+                        help='Weight for key orthogonality in orthogonality loss')
 
     return parser.parse_args()
 
@@ -469,6 +477,17 @@ def train(args):
             else:
                 loss = result
                 next_hidden = None
+
+        # Add orthogonality regularization for E79 if enabled
+        if args.orth_reg > 0:
+            orth_loss = 0.0
+            for module in model.modules():
+                if hasattr(module, 'orthogonality_loss'):
+                    orth_loss = orth_loss + module.orthogonality_loss(
+                        lambda_sep=args.orth_sep,
+                        lambda_orth=args.orth_orth
+                    )
+            loss = loss + args.orth_reg * orth_loss
 
         # Scale for gradient accumulation
         scaled_loss = loss / args.grad_accum
