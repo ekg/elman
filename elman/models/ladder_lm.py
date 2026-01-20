@@ -465,6 +465,18 @@ def get_ladder_level(level):
         # No gate + no norm (test if gating was compensating for norm)
         'E88b_nogate_nonorm': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # E88 round 3 ablations (based on E88b_nonorm - no conv, no output norm)
+        # More heads, smaller state (32 heads x 16x16)
+        'E88c_h32n16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 16, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False}),
+        # Fewer heads, larger state (8 heads x 64x64)
+        'E88c_h8n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False}),
+        # No gate variant of E88b_nonorm
+        'E88c_nogate': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # 24 heads x 24 state (different balance)
+        'E88c_h24n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 24, 'n_state': 24, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False}),
+        # Test if simple_decay works better without norm
+        'E88c_simpledecay': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False, 'simple_decay': True}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
