@@ -455,6 +455,7 @@ void dispatch_e88_fla_hybrid_forward(
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_E88_FWD(64, 128); }
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_FWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_FWD(96, 64); }
+    else if (n_state == 96 && head_v_dim == 96) { DISPATCH_E88_FWD(96, 96); }
     else if (n_state == 96 && head_v_dim == 128) { DISPATCH_E88_FWD(96, 128); }
     else if (n_state == 128 && head_v_dim == 32) { DISPATCH_E88_FWD(128, 32); }
     else if (n_state == 128 && head_v_dim == 64) { DISPATCH_E88_FWD(128, 64); }
@@ -504,6 +505,7 @@ void dispatch_e88_fla_hybrid_backward(
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_E88_BWD(64, 128); }
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_BWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_BWD(96, 64); }
+    else if (n_state == 96 && head_v_dim == 96) { DISPATCH_E88_BWD(96, 96); }  // 75KB shared, within limit
     else if (n_state == 96 && head_v_dim == 128) {
         fprintf(stderr, "E88 Backward: n_state=96, head_v_dim=128 requires 100KB shared mem, exceeds limit\n");
     }

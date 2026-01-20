@@ -419,8 +419,25 @@ def get_ladder_level(level):
         'E88h8n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 24}),
         'E88h8n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32}),
         'E88h8n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 48}),
+        'E88h8n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64}),
+        'E88h8n96': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 96}),
         'E88h16n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 24}),
         'E88h16n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32}),
+        'E88h16n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 64}),
+        # E88 with expansion=1.0 (square state, faster/less memory)
+        'E88s': lambda **kw: E88FLAHybrid(**{**{k: v for k, v in kw.items() if k != 'expansion'}, 'expansion': 1.0}),
+        'E88sh8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'expansion': 1.0}),
+        'E88sh8n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64, 'expansion': 1.0}),
+        'E88sh8n96': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 96, 'expansion': 1.0}),
+        'E88sh16n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0}),
+        'E88sh16n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 64, 'expansion': 1.0}),
+        # E88 with tie_kv=True (skip v projection, v=k, only works with expansion=1.0)
+        'E88t': lambda **kw: E88FLAHybrid(**{**{k: v for k, v in kw.items() if k != 'expansion'}, 'expansion': 1.0, 'tie_kv': True}),
+        'E88th8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'expansion': 1.0, 'tie_kv': True}),
+        'E88th8n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64, 'expansion': 1.0, 'tie_kv': True}),
+        'E88th8n96': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 96, 'expansion': 1.0, 'tie_kv': True}),
+        'E88th16n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'tie_kv': True}),
+        'E88th16n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 64, 'expansion': 1.0, 'tie_kv': True}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh

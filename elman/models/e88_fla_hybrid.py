@@ -435,6 +435,7 @@ class E88FLAHybrid(nn.Module):
         dropout: float = 0.0,
         d_conv: int = 4,
         use_cuda: bool = True,
+        tie_kv: bool = False,  # When True and expansion=1.0, skip v_proj (v=k)
         **kwargs
     ):
         super().__init__()
@@ -447,6 +448,7 @@ class E88FLAHybrid(nn.Module):
         self.n_state = n_state
         self.n_heads = n_heads
         self.d_conv = d_conv
+        self.expansion = expansion
 
         # Key and query dimensions (like FLA-GDN: key_dim = num_heads * head_k_dim)
         self.key_dim = n_heads * n_state
@@ -454,10 +456,20 @@ class E88FLAHybrid(nn.Module):
         self.value_dim = int(n_heads * n_state * expansion)
         self.head_v_dim = self.value_dim // n_heads
 
+        # === Skip v_proj when expansion=1.0 and tie_kv=True ===
+        # When expansion=1.0, k and v have same dimension, so we can tie them
+        self.tie_kv = tie_kv and (expansion == 1.0)
+        if self.tie_kv:
+            assert self.head_v_dim == n_state, "tie_kv requires expansion=1.0"
+
         # === Projections (FLA-GDN style) ===
         self.q_proj = nn.Linear(dim, self.key_dim, bias=False)
         self.k_proj = nn.Linear(dim, self.key_dim, bias=False)
-        self.v_proj = nn.Linear(dim, self.value_dim, bias=False)
+        # Skip v_proj if tied (v will use k_proj output)
+        if not self.tie_kv:
+            self.v_proj = nn.Linear(dim, self.value_dim, bias=False)
+        else:
+            self.v_proj = None  # v = k when tied
 
         # === Mamba2-style decay parameters ===
         # a_proj: input-dependent alpha (maps to num_heads scalars)
@@ -488,10 +500,14 @@ class E88FLAHybrid(nn.Module):
             self.key_dim, self.key_dim, d_conv,
             padding=d_conv - 1, groups=self.key_dim, bias=False
         )
-        self.v_conv = nn.Conv1d(
-            self.value_dim, self.value_dim, d_conv,
-            padding=d_conv - 1, groups=self.value_dim, bias=False
-        )
+        # Skip v_conv if tied (v uses k after conv+silu)
+        if not self.tie_kv:
+            self.v_conv = nn.Conv1d(
+                self.value_dim, self.value_dim, d_conv,
+                padding=d_conv - 1, groups=self.value_dim, bias=False
+            )
+        else:
+            self.v_conv = None
 
         # === Output gating (FLA-GDN style) ===
         self.g_proj = nn.Linear(dim, self.value_dim, bias=False)
@@ -510,7 +526,8 @@ class E88FLAHybrid(nn.Module):
     def _init_weights(self):
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.k_proj.weight)
-        nn.init.xavier_uniform_(self.v_proj.weight)
+        if self.v_proj is not None:
+            nn.init.xavier_uniform_(self.v_proj.weight)
         nn.init.xavier_uniform_(self.g_proj.weight)
         nn.init.xavier_uniform_(self.o_proj.weight)
         nn.init.xavier_uniform_(self.a_proj.weight)
@@ -537,13 +554,19 @@ class E88FLAHybrid(nn.Module):
         # === Projections ===
         q = self.q_proj(x)  # [B, T, key_dim]
         k = self.k_proj(x)  # [B, T, key_dim]
-        v = self.v_proj(x)  # [B, T, value_dim]
 
         # === Short convolutions with SiLU (FLA-GDN style) ===
         # Conv expects [B, C, T]
         q = F.silu(self.q_conv(q.transpose(1, 2))[:, :, :T]).transpose(1, 2)
         k = F.silu(self.k_conv(k.transpose(1, 2))[:, :, :T]).transpose(1, 2)
-        v = F.silu(self.v_conv(v.transpose(1, 2))[:, :, :T]).transpose(1, 2)
+
+        # v projection (or tied to k when expansion=1.0 and tie_kv=True)
+        if self.tie_kv:
+            # Skip v_proj - v shares k after conv+silu (square state)
+            v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
+        else:
+            v = self.v_proj(x)  # [B, T, value_dim]
+            v = F.silu(self.v_conv(v.transpose(1, 2))[:, :, :T]).transpose(1, 2)
 
         # === Compute Mamba2-style decay ===
         # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
@@ -662,7 +685,8 @@ class E88FLAHybrid(nn.Module):
 
     def extra_repr(self):
         return (f'dim={self.dim}, key_dim={self.key_dim}, value_dim={self.value_dim}, '
-                f'n_state={self.n_state}, n_heads={self.n_heads}, LEVEL=88_FLA_HYBRID')
+                f'n_state={self.n_state}, n_heads={self.n_heads}, expansion={self.expansion}, '
+                f'tie_kv={self.tie_kv}, LEVEL=88_FLA_HYBRID')
 
 
 # Alias for backwards compatibility

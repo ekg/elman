@@ -1,0 +1,39 @@
+# E88 Expansion=1.0 Benchmark (Square State vs Rectangular)
+# All configs target ~95M parameters for fair comparison
+# 8 GPUs, 10 minutes each
+#
+# Variants:
+# - E88h*n* expansion=2.0: Rectangular state [n_state x 2*n_state] (baseline)
+# - E88sh*n* expansion=1.0: Square state [n_state x n_state]
+# - E88th*n* tie_kv=True: Square state + skip v_proj (v=k)
+#
+# CUDA supports: n_state in {32, 64, 96}, head_v_dim in {32, 64, 96, 128}
+# Shared memory limits: n_state=96, head_v_dim=96 uses 75KB (within 100KB)
+
+# === BASELINES (~95M params) ===
+python train.py --level mamba2 --dim 896 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/mamba2
+python train.py --level fla-gdn --dim 768 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/fla-gdn
+
+# === E88 EXPANSION=2.0 (rectangular state, previous best) ===
+# E88h8n64 exp=2.0: 95M params, state=[64 x 128]
+python train.py --level E88h8 --dim 1152 --expansion 2.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88h8n64_exp2
+
+# === E88 EXPANSION=1.0 (square state) ===
+# E88sh8n64: 93M params, state=[64 x 64]
+python train.py --level E88sh8n64 --dim 1792 --expansion 1.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88sh8n64
+
+# E88sh8n96: 99M params, state=[96 x 96]
+python train.py --level E88sh8n96 --dim 1280 --expansion 1.0 --n_state 96 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88sh8n96
+
+# E88sh16n32: 93M params, state=[32 x 32], more heads
+python train.py --level E88sh16n32 --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88sh16n32
+
+# === E88 TIE_KV (skip v_proj, v=k) ===
+# E88th8n96: 95M params, state=[96 x 96], fewer params per layer
+python train.py --level E88th8n96 --dim 1536 --expansion 1.0 --n_state 96 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88th8n96
+
+# E88th16n64: 95M params, state=[64 x 64], more heads
+python train.py --level E88th16n64 --dim 1152 --expansion 1.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88th16n64
+
+# E88th8n64: 91M params, larger dim compensates
+python train.py --level E88th8n64 --dim 2176 --expansion 1.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_exp1/E88th8n64
