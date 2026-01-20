@@ -487,11 +487,19 @@ void dispatch_e88_fla_hybrid_backward(
     int threads = min(256, state_size);
     int num_blocks = B * H;
 
-    #define DISPATCH_E88_BWD(N, V) \
-        E88FLAHybridBackwardKernel_BF16<N, V><<<num_blocks, threads, shared_size, stream>>>( \
+    // For configs requiring >48KB shared memory, we need to request extended shared memory
+    // SM89 (Ada) supports up to 100KB per block
+    // Configs exceeding 96KB will fail and need global memory fallback
+    #define DISPATCH_E88_BWD(N, V) do { \
+        auto kernel = E88FLAHybridBackwardKernel_BF16<N, V>; \
+        if (shared_size > 48 * 1024) { \
+            cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
+        } \
+        kernel<<<num_blocks, threads, shared_size, stream>>>( \
             T, B, H, k_all, v_all, q_all, decay_all, \
             S_checkpoints, Sq_cache, d_output, \
-            d_k_all, d_v_all, d_q_all, d_decay_all, checkpoint_interval)
+            d_k_all, d_v_all, d_q_all, d_decay_all, checkpoint_interval); \
+    } while(0)
 
     if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_BWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_BWD(32, 64); }
@@ -501,10 +509,14 @@ void dispatch_e88_fla_hybrid_backward(
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_E88_BWD(64, 128); }
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_BWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_BWD(96, 64); }
-    else if (n_state == 96 && head_v_dim == 128) { DISPATCH_E88_BWD(96, 128); }
+    else if (n_state == 96 && head_v_dim == 128) {
+        fprintf(stderr, "E88 Backward: n_state=96, head_v_dim=128 requires 100KB shared mem, exceeds limit\n");
+    }
     else if (n_state == 128 && head_v_dim == 32) { DISPATCH_E88_BWD(128, 32); }
     else if (n_state == 128 && head_v_dim == 64) { DISPATCH_E88_BWD(128, 64); }
-    else if (n_state == 128 && head_v_dim == 128) { DISPATCH_E88_BWD(128, 128); }
+    else if (n_state == 128 && head_v_dim == 128) {
+        fprintf(stderr, "E88 Backward: n_state=128, head_v_dim=128 requires 132KB shared mem, exceeds limit\n");
+    }
     else {
         fprintf(stderr, "E88 FLA Hybrid Backward: unsupported n_state=%d, head_v_dim=%d\n", n_state, head_v_dim);
     }
