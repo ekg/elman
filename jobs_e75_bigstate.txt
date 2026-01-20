@@ -1,0 +1,17 @@
+# E75 with mamba2-scale state tests
+# Target: ~1B params and ~188K state/layer (like mamba2)
+
+# E75h8n128: 8×128×128 = 131,072 state/layer (70% of mamba2)
+python train.py --level E75h8n128 --dim 1536 --expansion 2.0 --n_state 128 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_bigstate/E75h8n128
+
+# E75h8n160: 8×160×160 = 204,800 state/layer (109% of mamba2)
+python train.py --level E75h8n160 --dim 1280 --expansion 2.0 --n_state 160 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_bigstate/E75h8n160
+
+# E75h12n128: 12×128×128 = 196,608 state/layer (104% of mamba2)
+python train.py --level E75h12n128 --dim 1280 --expansion 2.0 --n_state 128 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_bigstate/E75h12n128
+
+# E75h16n112: 16×112×112 = 200,704 state/layer (107% of mamba2)
+python train.py --level E75h16n112 --dim 1152 --expansion 2.0 --n_state 112 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_bigstate/E75h16n112
+
+# Reference: mamba2 at 1B for comparison
+python train.py --level mamba2 --dim 2944 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_bigstate/mamba2

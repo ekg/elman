@@ -252,6 +252,23 @@ def get_ladder_level(level):
         'E75h6n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 24}),
         'E75h6n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 32}),
         'E75h8n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 32}),
+        'E75h8n64': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 64}),
+        'E75h8n96': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 96}),
+        'E75h8n128': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 128}),
+        'E75h8n160': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 160}),
+        'E75h12n128': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 12, 'n_state': 128}),
+        'E75h16n112': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 16, 'n_state': 112}),
+        # High-head configs to match mamba2 state while staying in shared memory
+        'E75h16n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 16, 'n_state': 32}),
+        'E75h16n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 16, 'n_state': 48}),
+        'E75h16n64': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 16, 'n_state': 64}),
+        'E75h32n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 32, 'n_state': 32}),
+        'E75h32n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 32, 'n_state': 48}),
+        'E75h32n64': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 32, 'n_state': 64}),
+        'E75h48n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 48, 'n_state': 32}),
+        'E75h48n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 48, 'n_state': 48}),
+        'E75h64n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 32}),
+        'E75h64n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 48}),
         # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
         # Default: tanh + log_gate (nonlinear recurrence with stable params)
         76: E76LogSpaceDelta,
