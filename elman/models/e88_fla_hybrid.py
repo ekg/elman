@@ -436,6 +436,14 @@ class E88FLAHybrid(nn.Module):
         d_conv: int = 4,
         use_cuda: bool = True,
         tie_kv: bool = False,  # When True and expansion=1.0, skip v_proj (v=k)
+        # Ablation options
+        use_conv: bool = True,  # Set False to skip short convolutions
+        linear_state: bool = False,  # Set True to use linear state update (no tanh)
+        use_gate: bool = True,  # Set False to skip output gating
+        simple_decay: bool = False,  # Set True to use simple sigmoid decay instead of Mamba2
+        use_silu: bool = True,  # Set False to skip SiLU on projections
+        use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
+        use_output_norm: bool = True,  # Set False to skip RMSNorm on output
         **kwargs
     ):
         super().__init__()
@@ -449,6 +457,15 @@ class E88FLAHybrid(nn.Module):
         self.n_heads = n_heads
         self.d_conv = d_conv
         self.expansion = expansion
+
+        # Ablation flags
+        self.use_conv = use_conv
+        self.linear_state = linear_state
+        self.use_gate = use_gate
+        self.simple_decay = simple_decay
+        self.use_silu = use_silu
+        self.use_l2_norm = use_l2_norm
+        self.use_output_norm = use_output_norm
 
         # Key and query dimensions (like FLA-GDN: key_dim = num_heads * head_k_dim)
         self.key_dim = n_heads * n_state
@@ -471,46 +488,67 @@ class E88FLAHybrid(nn.Module):
         else:
             self.v_proj = None  # v = k when tied
 
-        # === Mamba2-style decay parameters ===
-        # a_proj: input-dependent alpha (maps to num_heads scalars)
-        self.a_proj = nn.Linear(dim, n_heads, bias=False)
+        # === Decay parameters ===
+        if not simple_decay:
+            # Mamba2-style exponential decay
+            # a_proj: input-dependent alpha (maps to num_heads scalars)
+            self.a_proj = nn.Linear(dim, n_heads, bias=False)
 
-        # A_log: learned log eigenvalues (Mamba2 style)
-        A = torch.empty(n_heads, dtype=torch.float32).uniform_(0, 16)
-        self.A_log = nn.Parameter(torch.log(A))
-        self.A_log._no_weight_decay = True
+            # A_log: learned log eigenvalues (Mamba2 style)
+            A = torch.empty(n_heads, dtype=torch.float32).uniform_(0, 16)
+            self.A_log = nn.Parameter(torch.log(A))
+            self.A_log._no_weight_decay = True
 
-        # dt_bias: learned time-step bias (Mamba2 style initialization)
-        dt_min, dt_max = 0.001, 0.1
-        dt_init_floor = 1e-4
-        dt = torch.exp(
-            torch.rand(n_heads) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
-        )
-        dt = torch.clamp(dt, min=dt_init_floor)
-        inv_dt = dt + torch.log(-torch.expm1(-dt))  # Inverse softplus
-        self.dt_bias = nn.Parameter(inv_dt)
-        self.dt_bias._no_weight_decay = True
+            # dt_bias: learned time-step bias (Mamba2 style initialization)
+            dt_min, dt_max = 0.001, 0.1
+            dt_init_floor = 1e-4
+            dt = torch.exp(
+                torch.rand(n_heads) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
+            )
+            dt = torch.clamp(dt, min=dt_init_floor)
+            inv_dt = dt + torch.log(-torch.expm1(-dt))  # Inverse softplus
+            self.dt_bias = nn.Parameter(inv_dt)
+            self.dt_bias._no_weight_decay = True
+        else:
+            # Simple sigmoid decay (ablation)
+            self.a_proj = None
+            self.A_log = None
+            self.dt_bias = None
 
         # === Short convolutions (FLA-GDN style, bias=False) ===
-        self.q_conv = nn.Conv1d(
-            self.key_dim, self.key_dim, d_conv,
-            padding=d_conv - 1, groups=self.key_dim, bias=False
-        )
-        self.k_conv = nn.Conv1d(
-            self.key_dim, self.key_dim, d_conv,
-            padding=d_conv - 1, groups=self.key_dim, bias=False
-        )
-        # Skip v_conv if tied (v uses k after conv+silu)
-        if not self.tie_kv:
-            self.v_conv = nn.Conv1d(
-                self.value_dim, self.value_dim, d_conv,
-                padding=d_conv - 1, groups=self.value_dim, bias=False
+        if use_conv and d_conv > 1:
+            self.q_conv = nn.Conv1d(
+                self.key_dim, self.key_dim, d_conv,
+                padding=d_conv - 1, groups=self.key_dim, bias=False
             )
+            self.k_conv = nn.Conv1d(
+                self.key_dim, self.key_dim, d_conv,
+                padding=d_conv - 1, groups=self.key_dim, bias=False
+            )
+            # Skip v_conv if tied (v uses k after conv+silu)
+            if not self.tie_kv:
+                self.v_conv = nn.Conv1d(
+                    self.value_dim, self.value_dim, d_conv,
+                    padding=d_conv - 1, groups=self.value_dim, bias=False
+                )
+            else:
+                self.v_conv = None
         else:
+            self.q_conv = None
+            self.k_conv = None
             self.v_conv = None
 
         # === Output gating (FLA-GDN style) ===
-        self.g_proj = nn.Linear(dim, self.value_dim, bias=False)
+        if use_gate:
+            self.g_proj = nn.Linear(dim, self.value_dim, bias=False)
+        else:
+            self.g_proj = None
+
+        # === Simple decay option (replaces Mamba2-style) ===
+        if simple_decay:
+            self.beta_proj = nn.Linear(dim, n_heads, bias=False)
+        else:
+            self.beta_proj = None
 
         # === Output projection ===
         self.o_proj = nn.Linear(self.value_dim, dim, bias=False)
@@ -528,9 +566,13 @@ class E88FLAHybrid(nn.Module):
         nn.init.xavier_uniform_(self.k_proj.weight)
         if self.v_proj is not None:
             nn.init.xavier_uniform_(self.v_proj.weight)
-        nn.init.xavier_uniform_(self.g_proj.weight)
+        if self.g_proj is not None:
+            nn.init.xavier_uniform_(self.g_proj.weight)
         nn.init.xavier_uniform_(self.o_proj.weight)
-        nn.init.xavier_uniform_(self.a_proj.weight)
+        if self.a_proj is not None:
+            nn.init.xavier_uniform_(self.a_proj.weight)
+        if self.beta_proj is not None:
+            nn.init.xavier_uniform_(self.beta_proj.weight)
 
     def forward(
         self,
@@ -555,10 +597,16 @@ class E88FLAHybrid(nn.Module):
         q = self.q_proj(x)  # [B, T, key_dim]
         k = self.k_proj(x)  # [B, T, key_dim]
 
-        # === Short convolutions with SiLU (FLA-GDN style) ===
-        # Conv expects [B, C, T]
-        q = F.silu(self.q_conv(q.transpose(1, 2))[:, :, :T]).transpose(1, 2)
-        k = F.silu(self.k_conv(k.transpose(1, 2))[:, :, :T]).transpose(1, 2)
+        # === Short convolutions with optional SiLU (FLA-GDN style) ===
+        # Can be disabled for ablation
+        if self.use_conv and self.q_conv is not None:
+            # Conv expects [B, C, T]
+            q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
+            k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
+        # Apply SiLU if enabled
+        if self.use_silu:
+            q = F.silu(q)
+            k = F.silu(k)
 
         # v projection (or tied to k when expansion=1.0 and tie_kv=True)
         if self.tie_kv:
@@ -566,17 +614,24 @@ class E88FLAHybrid(nn.Module):
             v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
         else:
             v = self.v_proj(x)  # [B, T, value_dim]
-            v = F.silu(self.v_conv(v.transpose(1, 2))[:, :, :T]).transpose(1, 2)
+            if self.use_conv and self.v_conv is not None:
+                v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+            if self.use_silu:
+                v = F.silu(v)
 
-        # === Compute Mamba2-style decay ===
-        # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
-        # Shape: [B, T, H]
-        # Compute in float32 for numerical stability, then cast back
-        g = -self.A_log.float().exp() * F.softplus(
-            self.a_proj(x).float() + self.dt_bias
-        )
-        # Convert to decay factor: decay = exp(g) in [0, 1]
-        decay = g.exp().to(x.dtype)  # [B, T, H], cast back to input dtype
+        # === Compute decay ===
+        if self.simple_decay:
+            # Simple sigmoid decay (ablation: replaces Mamba2-style)
+            decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
+        else:
+            # Mamba2-style exponential decay
+            # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
+            # Compute in float32 for numerical stability, then cast back
+            g = -self.A_log.float().exp() * F.softplus(
+                self.a_proj(x).float() + self.dt_bias
+            )
+            # Convert to decay factor: decay = exp(g) in [0, 1]
+            decay = g.exp().to(x.dtype)  # [B, T, H], cast back to input dtype
 
         # === Reshape for per-head processing ===
         # q, k: [B, T, H, n_state]
@@ -598,11 +653,15 @@ class E88FLAHybrid(nn.Module):
                     x.dtype == torch.bfloat16 and self.training)
 
         if use_cuda:
-            # L2 normalize k and q (CUDA expects normalized inputs)
+            # L2 normalize k and q if enabled (CUDA expects normalized inputs)
             # Autocast may promote norm() to float32, so explicitly cast ALL inputs back
             input_dtype = x.dtype  # Use x.dtype as authoritative (should be bf16)
-            k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
-            q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+            if self.use_l2_norm:
+                k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+            else:
+                k_norm = k.to(input_dtype)
+                q_norm = q.to(input_dtype)
 
             # Transpose for CUDA: [B, T, H, dim] -> [T, B, H, dim]
             # Cast ALL inputs to input_dtype to handle any autocast promotions
@@ -635,9 +694,13 @@ class E88FLAHybrid(nn.Module):
                     v_t = v[:, t, h]  # [B, head_v_dim]
                     decay_t = decay[:, t, h:h+1]  # [B, 1]
 
-                    # L2 normalize k and q (FLA-GDN style)
-                    k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
-                    q_norm = q_t / (q_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
+                    # L2 normalize k and q if enabled (FLA-GDN style)
+                    if self.use_l2_norm:
+                        k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
+                        q_norm = q_t / (q_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
+                    else:
+                        k_norm = k_t
+                        q_norm = q_t
 
                     # Retrieve from memory: S @ k_norm -> [B, head_v_dim]
                     retrieved = torch.einsum('biv,bi->bv', S_list[h], k_norm)
@@ -648,9 +711,12 @@ class E88FLAHybrid(nn.Module):
                     # Outer product: [B, n_state, head_v_dim]
                     outer = torch.einsum('bv,bi->biv', delta, k_norm)
 
-                    # Gated update with NONLINEAR tanh (key differentiator from FLA-GDN)
-                    # S = tanh(decay * S + outer)
-                    S_list[h] = torch.tanh(decay_t.unsqueeze(-1) * S_list[h] + outer)
+                    # Gated update (NONLINEAR tanh vs linear for ablation)
+                    # S = tanh(decay * S + outer) or S = decay * S + outer
+                    if self.linear_state:
+                        S_list[h] = decay_t.unsqueeze(-1) * S_list[h] + outer
+                    else:
+                        S_list[h] = torch.tanh(decay_t.unsqueeze(-1) * S_list[h] + outer)
 
                     # Query the state: S @ q_norm -> [B, head_v_dim]
                     Sq = torch.einsum('biv,bi->bv', S_list[h], q_norm)
@@ -665,11 +731,15 @@ class E88FLAHybrid(nn.Module):
             # Stack time: [B, T, H, head_v_dim]
             output = torch.stack(outputs, dim=1)
 
-        # === Output gating (FLA-GDN style) ===
-        g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
-        # RMSNorm: x / sqrt(mean(x^2) + eps) * weight
-        rms = output.pow(2).mean(dim=-1, keepdim=True).add(self.norm_eps).rsqrt()
-        output = output * rms * self.o_norm_weight * torch.sigmoid(g)
+        # === Output normalization and gating (FLA-GDN style) ===
+        if self.use_output_norm:
+            # RMSNorm: x / sqrt(mean(x^2) + eps) * weight
+            rms = output.pow(2).mean(dim=-1, keepdim=True).add(self.norm_eps).rsqrt()
+            output = output * rms * self.o_norm_weight
+
+        if self.use_gate and self.g_proj is not None:
+            g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
+            output = output * torch.sigmoid(g)
 
         # Reshape: [B, T, value_dim]
         output = output.view(B, T, self.value_dim)
@@ -684,9 +754,25 @@ class E88FLAHybrid(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
     def extra_repr(self):
+        ablation_str = []
+        if not self.use_conv:
+            ablation_str.append('no_conv')
+        if self.linear_state:
+            ablation_str.append('linear_state')
+        if not self.use_gate:
+            ablation_str.append('no_gate')
+        if self.simple_decay:
+            ablation_str.append('simple_decay')
+        if not self.use_silu:
+            ablation_str.append('no_silu')
+        if not self.use_l2_norm:
+            ablation_str.append('no_l2_norm')
+        if not self.use_output_norm:
+            ablation_str.append('no_output_norm')
+        ablation_info = f', ablations=[{",".join(ablation_str)}]' if ablation_str else ''
         return (f'dim={self.dim}, key_dim={self.key_dim}, value_dim={self.value_dim}, '
                 f'n_state={self.n_state}, n_heads={self.n_heads}, expansion={self.expansion}, '
-                f'tie_kv={self.tie_kv}, LEVEL=88_FLA_HYBRID')
+                f'tie_kv={self.tie_kv}{ablation_info}, LEVEL=88_FLA_HYBRID')
 
 
 # Alias for backwards compatibility

@@ -439,6 +439,32 @@ def get_ladder_level(level):
         'E88th16n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'tie_kv': True}),
         'E88th16n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 64, 'expansion': 1.0, 'tie_kv': True}),
 
+        # E88 ablation variants (based on best E88sh16n32)
+        # No convolution ablation
+        'E88a_noconv': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False}),
+        # Linear state ablation (no tanh)
+        'E88a_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'linear_state': True}),
+        # No output gating ablation
+        'E88a_nogate': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_gate': False}),
+        # Simple decay ablation (sigmoid instead of Mamba2-style)
+        'E88a_simpledecay': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'simple_decay': True}),
+        # Combined ablations
+        'E88a_noconv_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'linear_state': True}),
+        'E88a_noconv_nogate': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False}),
+        'E88a_minimal': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'simple_decay': True}),
+
+        # E88 round 2 ablations (based on E88a_noconv as new baseline)
+        # No SiLU on projections
+        'E88b_nosilu': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_silu': False}),
+        # No L2 normalization on k/q
+        'E88b_nol2': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_l2_norm': False}),
+        # No output RMSNorm
+        'E88b_nonorm': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False}),
+        # No SiLU + no L2 norm
+        'E88b_nosilu_nol2': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_silu': False, 'use_l2_norm': False}),
+        # No gate + no norm (test if gating was compensating for norm)
+        'E88b_nogate_nonorm': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

@@ -1,0 +1,28 @@
+# E88 Ablation Study: Which components matter?
+# Based on best config: E88sh16n32 (16 heads, 32x32 state, expansion=1.0)
+# Target: ~95M params, depth=20, 10 min training
+# Reference: E88sh16n32 achieved 1.40 loss
+
+# Baseline: Full E88sh16n32 (all features enabled)
+E88sh16n32:python train.py --level E88sh16n32 --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88sh16n32
+
+# Ablation 1: No short convolutions (skip conv+silu, just silu)
+E88a_noconv:python train.py --level E88a_noconv --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_noconv
+
+# Ablation 2: Linear state (skip tanh nonlinearity)
+E88a_linear:python train.py --level E88a_linear --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_linear
+
+# Ablation 3: No output gating (skip sigmoid gate on output)
+E88a_nogate:python train.py --level E88a_nogate --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_nogate
+
+# Ablation 4: Simple decay (sigmoid instead of Mamba2-style exponential)
+E88a_simpledecay:python train.py --level E88a_simpledecay --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_simpledecay
+
+# Ablation 5: No conv + linear state
+E88a_noconv_linear:python train.py --level E88a_noconv_linear --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_noconv_linear
+
+# Ablation 6: No conv + no gate
+E88a_noconv_nogate:python train.py --level E88a_noconv_nogate --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_noconv_nogate
+
+# Ablation 7: Minimal (no conv, no gate, simple decay) - tests if tanh is key
+E88a_minimal:python train.py --level E88a_minimal --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation/E88a_minimal

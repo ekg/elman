@@ -1,0 +1,21 @@
+# E88 Ablation Round 2: Starting from E88a_noconv (no convolutions)
+# Keeping tanh for computational expressivity
+# Target: ~95M params, depth=20, 10 min training
+
+# Baseline: E88a_noconv (winner from round 1)
+E88a_noconv:python train.py --level E88a_noconv --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88a_noconv
+
+# Ablation: No SiLU on projections (just linear)
+E88b_nosilu:python train.py --level E88b_nosilu --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88b_nosilu
+
+# Ablation: No L2 normalization on k/q
+E88b_nol2:python train.py --level E88b_nol2 --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88b_nol2
+
+# Ablation: No output RMSNorm
+E88b_nonorm:python train.py --level E88b_nonorm --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88b_nonorm
+
+# Ablation: No SiLU + no L2 norm
+E88b_nosilu_nol2:python train.py --level E88b_nosilu_nol2 --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88b_nosilu_nol2
+
+# Ablation: No gate + no output norm
+E88b_nogate_nonorm:python train.py --level E88b_nogate_nonorm --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r2/E88b_nogate_nonorm
