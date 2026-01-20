@@ -704,4 +704,149 @@ void E75MultiHeadBackward<DataT>::Run(
 
 template struct E75MultiHeadBackward<__nv_bfloat16>;
 
+// ============================================================================
+// E75MultiHeadPrecomputedForward Implementation
+// For post-projection convolutions: accepts pre-computed k, v, q, beta
+// ============================================================================
+
+template<typename DataT>
+E75MultiHeadPrecomputedForward<DataT>::E75MultiHeadPrecomputedForward(
+    bool training,
+    int batch_size,
+    int n_state,
+    int n_heads,
+    const cudaStream_t& stream)
+    : training_(training),
+      batch_size_(batch_size),
+      n_state_(n_state),
+      n_heads_(n_heads),
+      stream_(stream) {}
+
+template<typename DataT>
+void E75MultiHeadPrecomputedForward<DataT>::Run(
+    int steps,
+    const DataT* k,         // [T, B, H, n_state] pre-computed
+    const DataT* v,         // [T, B, H, n_state] pre-computed
+    const DataT* q,         // [T, B, H, n_state] pre-computed
+    const DataT* beta,      // [T, B, H, n_state] pre-computed (sigmoid already applied)
+    DataT* S,               // [B, H, n_state, n_state]
+    DataT* output,          // [T, B, H, n_state]
+    DataT* S_cache          // checkpoints + Sq_cache
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int H = n_heads_;
+
+    // Workspace layout
+    int num_checkpoints = (T + CHECKPOINT_INTERVAL - 1) / CHECKPOINT_INTERVAL + 1;
+    DataT* s_checkpoints = S_cache;
+    DataT* sq_cache = S_cache + num_checkpoints * B * H * n * n;
+
+    // Run forward kernel - one block per (batch, head)
+    // Re-use the existing forward kernel since it already accepts k, v, q, beta as inputs
+    int shared_size = (n * n + 6 * n) * sizeof(float);
+    int kernel_threads = min(256, n * n);
+    int num_blocks = B * H;
+
+    #define DISPATCH_E75MH_PRECOMPUTED_FWD(N) \
+        E75MultiHeadForwardKernel_BF16<N><<<num_blocks, kernel_threads, shared_size, stream_>>>( \
+            T, B, H, \
+            (const __nv_bfloat16*)k, \
+            (const __nv_bfloat16*)v, \
+            (const __nv_bfloat16*)q, \
+            (const __nv_bfloat16*)beta, \
+            (__nv_bfloat16*)S, \
+            (__nv_bfloat16*)output, \
+            (__nv_bfloat16*)s_checkpoints, \
+            (__nv_bfloat16*)sq_cache, \
+            CHECKPOINT_INTERVAL)
+
+    if (n == 8) { DISPATCH_E75MH_PRECOMPUTED_FWD(8); }
+    else if (n == 16) { DISPATCH_E75MH_PRECOMPUTED_FWD(16); }
+    else if (n == 24) { DISPATCH_E75MH_PRECOMPUTED_FWD(24); }
+    else if (n == 32) { DISPATCH_E75MH_PRECOMPUTED_FWD(32); }
+    else if (n == 48) { DISPATCH_E75MH_PRECOMPUTED_FWD(48); }
+    else if (n == 64) { DISPATCH_E75MH_PRECOMPUTED_FWD(64); }
+    else {
+        fprintf(stderr, "E75MultiHeadPrecomputed Forward: unsupported n_state=%d\n", n);
+    }
+
+    #undef DISPATCH_E75MH_PRECOMPUTED_FWD
+}
+
+template struct E75MultiHeadPrecomputedForward<__nv_bfloat16>;
+
+// ============================================================================
+// E75MultiHeadPrecomputedBackward Implementation
+// Computes gradients for pre-computed k, v, q, beta
+// ============================================================================
+
+template<typename DataT>
+E75MultiHeadPrecomputedBackward<DataT>::E75MultiHeadPrecomputedBackward(
+    int batch_size,
+    int n_state,
+    int n_heads,
+    const cudaStream_t& stream)
+    : batch_size_(batch_size),
+      n_state_(n_state),
+      n_heads_(n_heads),
+      stream_(stream) {}
+
+template<typename DataT>
+void E75MultiHeadPrecomputedBackward<DataT>::Run(
+    int steps,
+    const DataT* k,
+    const DataT* v,
+    const DataT* q,
+    const DataT* beta,
+    const DataT* S_checkpoints,
+    const DataT* Sq_cache,
+    const DataT* d_output,
+    DataT* d_k,
+    DataT* d_v,
+    DataT* d_q,
+    DataT* d_beta
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int H = n_heads_;
+
+    int shared_size = (2 * n * n + 13 * n) * sizeof(float);
+    int threads = min(256, n * n);
+    int num_blocks = B * H;
+
+    // Re-use the existing backward kernel
+    #define DISPATCH_E75MH_PRECOMPUTED_BWD(N) \
+        E75MultiHeadBackwardKernel_BF16<N><<<num_blocks, threads, shared_size, stream_>>>( \
+            T, B, H, \
+            (const __nv_bfloat16*)k, \
+            (const __nv_bfloat16*)v, \
+            (const __nv_bfloat16*)q, \
+            (const __nv_bfloat16*)beta, \
+            (const __nv_bfloat16*)S_checkpoints, \
+            (const __nv_bfloat16*)Sq_cache, \
+            (const __nv_bfloat16*)d_output, \
+            (__nv_bfloat16*)d_k, \
+            (__nv_bfloat16*)d_v, \
+            (__nv_bfloat16*)d_q, \
+            (__nv_bfloat16*)d_beta, \
+            CHECKPOINT_INTERVAL)
+
+    if (n == 8) { DISPATCH_E75MH_PRECOMPUTED_BWD(8); }
+    else if (n == 16) { DISPATCH_E75MH_PRECOMPUTED_BWD(16); }
+    else if (n == 24) { DISPATCH_E75MH_PRECOMPUTED_BWD(24); }
+    else if (n == 32) { DISPATCH_E75MH_PRECOMPUTED_BWD(32); }
+    else if (n == 48) { DISPATCH_E75MH_PRECOMPUTED_BWD(48); }
+    else if (n == 64) { DISPATCH_E75MH_PRECOMPUTED_BWD(64); }
+    else {
+        fprintf(stderr, "E75MultiHeadPrecomputed Backward: unsupported n_state=%d\n", n);
+    }
+
+    #undef DISPATCH_E75MH_PRECOMPUTED_BWD
+}
+
+template struct E75MultiHeadPrecomputedBackward<__nv_bfloat16>;
+
 }  // namespace elman

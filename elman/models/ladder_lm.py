@@ -269,6 +269,15 @@ def get_ladder_level(level):
         'E75h48n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 48, 'n_state': 48}),
         'E75h64n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 32}),
         'E75h64n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 48}),
+        # E75 Post-Conv variants (FLA-GDN style: separate convs on k,v,q AFTER projections)
+        # This provides per-role local context before the associative memory update
+        'E75pc': lambda **kw: E75MultiHead(**{**kw, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch4': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch4n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 24, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch4n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 32, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch4n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 4, 'n_state': 48, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch8n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 24, 'use_conv': True, 'conv_mode': 'post'}),
+        'E75pch8n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 32, 'use_conv': True, 'conv_mode': 'post'}),
         # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
         # Default: tanh + log_gate (nonlinear recurrence with stable params)
         76: E76LogSpaceDelta,

@@ -7361,6 +7361,81 @@ private:
 };
 
 // =============================================================================
+// E75 Multi-Head Precomputed: Post-Projection Convolution Support
+// Accepts pre-computed k, v, q, beta tensors (after conv+silu/sigmoid)
+// Used for FLA-GDN style post-projection convolutions
+// =============================================================================
+
+template<typename T>
+struct E75MultiHeadPrecomputedForward {
+    E75MultiHeadPrecomputedForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    // Run recurrence with pre-computed k, v, q, beta
+    // k, v, q: already have conv+silu applied
+    // beta: already has sigmoid applied
+    void Run(
+        int steps,
+        const T* k,         // [T, B, H, n_state] pre-computed (with conv+silu)
+        const T* v,         // [T, B, H, n_state] pre-computed (with conv+silu)
+        const T* q,         // [T, B, H, n_state] pre-computed (with conv+silu)
+        const T* beta,      // [T, B, H, n_state] pre-computed (with sigmoid)
+        T* S,               // [B, H, n_state, n_state]
+        T* output,          // [T, B, H, n_state]
+        T* S_cache);        // checkpoints + Sq_cache (for backward)
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = num_checkpoints * batch_size * n_heads * n_state * n_state * sizeof(T);
+        size += steps * batch_size * n_heads * n_state * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E75MultiHeadPrecomputedBackward {
+    E75MultiHeadPrecomputedBackward(
+        int batch_size,
+        int n_state,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    // Backward: computes gradients for pre-computed k, v, q, beta
+    // These gradients then flow back through the conv layers in Python
+    void Run(
+        int steps,
+        const T* k,             // [T, B, H, n_state]
+        const T* v,             // [T, B, H, n_state]
+        const T* q,             // [T, B, H, n_state]
+        const T* beta,          // [T, B, H, n_state]
+        const T* S_checkpoints, // [num_checkpoints, B, H, n_state, n_state]
+        const T* Sq_cache,      // [T, B, H, n_state]
+        const T* d_output,      // [T, B, H, n_state]
+        T* d_k,                 // [T, B, H, n_state]
+        T* d_v,                 // [T, B, H, n_state]
+        T* d_q,                 // [T, B, H, n_state]
+        T* d_beta);             // [T, B, H, n_state]
+
+private:
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
+// =============================================================================
 // E75 Vector Gate: Input-Dependent Per-Row Decay
 // g = sigmoid(W_beta @ x + b_beta)
 // S = diag(g) * S + outer(v - S@k, k)  [NO tanh, row-wise decay]

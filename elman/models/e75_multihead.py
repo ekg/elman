@@ -24,6 +24,11 @@ Benefits:
 - H independent memory systems (like multi-head attention)
 - Each head can specialize for different types of associations
 - Total state: H * n_state^2 (linear in H)
+
+Convolution modes (use_conv=True required):
+- conv_mode='pre': Single conv on input before projections (original)
+- conv_mode='post': Separate convs on k,v,q AFTER projections (FLA-GDN style)
+  This provides per-role local context before the associative memory update.
 """
 
 import torch
@@ -35,8 +40,10 @@ from typing import Optional, List, Tuple
 try:
     import hasty_pytorch_lib
     E75MH_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_forward')
+    E75MH_PRECOMPUTED_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_precomputed_forward')
 except ImportError:
     E75MH_CUDA_AVAILABLE = False
+    E75MH_PRECOMPUTED_CUDA_AVAILABLE = False
 
 
 class E75MultiHeadCUDAFunction(torch.autograd.Function):
@@ -101,6 +108,69 @@ class E75MultiHeadCUDAFunction(torch.autograd.Function):
 
         # Return gradients for: training, x, S0, W_k, W_v, W_q, W_beta, b_beta, n_heads
         return None, dx, None, dW_k, dW_v, dW_q, dW_beta, db_beta, None
+
+
+class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
+    """CUDA-accelerated E75 Multi-Head with pre-computed k, v, q, beta.
+
+    Used for post-projection convolution mode (FLA-GDN style).
+    k, v, q have already had conv+silu applied.
+    beta has already had sigmoid applied.
+    """
+
+    @staticmethod
+    def forward(ctx, training, k, v, q, beta, S0, n_heads):
+        """
+        Args:
+            training: bool
+            k: [T, B, H, n_state] pre-computed (with conv+silu)
+            v: [T, B, H, n_state] pre-computed (with conv+silu)
+            q: [T, B, H, n_state] pre-computed (with conv+silu)
+            beta: [T, B, H, n_state] pre-computed (with sigmoid)
+            S0: [B, H, n_state, n_state] initial state
+            n_heads: int
+        """
+        results = hasty_pytorch_lib.e75_multihead_precomputed_forward(
+            training, k, v, q, beta, S0, n_heads
+        )
+        # results = [output, S, S_cache]
+        output = results[0]  # [T, B, H, n_state]
+        S = results[1]       # [B, H, n_state, n_state]
+        S_cache = results[2] # Combined checkpoints + Sq_cache
+
+        ctx.save_for_backward(k, v, q, beta, S_cache)
+        ctx.n_heads = n_heads
+        return S, output
+
+    @staticmethod
+    def backward(ctx, dS, d_output):
+        k, v, q, beta, S_cache = ctx.saved_tensors
+        n_heads = ctx.n_heads
+
+        # Split S_cache into S_checkpoints and Sq_cache
+        T, B, H, n_state = k.shape
+        checkpoint_interval = 16
+        num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
+        checkpoints_size = num_checkpoints * B * H * n_state * n_state
+        sq_cache_size = T * B * H * n_state
+
+        S_checkpoints = S_cache[:checkpoints_size].view(num_checkpoints, B, H, n_state, n_state)
+        Sq_cache = S_cache[checkpoints_size:].view(T, B, H, n_state)
+
+        grads = hasty_pytorch_lib.e75_multihead_precomputed_backward(
+            k, v, q, beta,
+            S_checkpoints, Sq_cache,
+            d_output.contiguous(),
+            n_heads
+        )
+        # grads = [d_k, d_v, d_q, d_beta]
+        d_k = grads[0]
+        d_v = grads[1]
+        d_q = grads[2]
+        d_beta = grads[3]
+
+        # Return gradients for: training, k, v, q, beta, S0, n_heads
+        return None, d_k, d_v, d_q, d_beta, None, None
 
 
 class E75MultiHeadCell(nn.Module):
@@ -251,6 +321,11 @@ class E75MultiHead(nn.Module):
 
     Each head maintains its own n_state x n_state matrix state.
     Total output dimension: H * n_state
+
+    Convolution modes:
+    - conv_mode='pre': Single conv on input before projections (original E75)
+    - conv_mode='post': Separate depthwise convs on k,v,q AFTER projections
+      This is the FLA-GDN style that provides per-role local context.
     """
 
     def __init__(
@@ -261,6 +336,7 @@ class E75MultiHead(nn.Module):
         n_heads: int = 4,
         dropout: float = 0.0,
         use_conv: bool = False,
+        conv_mode: str = 'pre',  # 'pre' or 'post'
         d_conv: int = 4,
         init_beta_bias: float = 2.0,
         use_cuda: bool = True,
@@ -275,15 +351,24 @@ class E75MultiHead(nn.Module):
                 f"Use n_state=16, 24, 32, 40, 48, etc."
             )
 
+        assert conv_mode in ('pre', 'post'), f"conv_mode must be 'pre' or 'post', got {conv_mode}"
+
         self.dim = dim
         self.d_inner = int(dim * expansion)
         self.n_state = n_state
         self.n_heads = n_heads
         self.use_conv = use_conv
+        self.conv_mode = conv_mode
+        self.d_conv = d_conv
+        self.init_beta_bias = init_beta_bias
 
-        self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
+        # Input projection (only for pre-conv and no-conv modes)
+        # Post-conv mode projects directly from input, like FLA-GDN
+        if not (use_conv and conv_mode == 'post'):
+            self.in_proj = nn.Linear(dim, self.d_inner, bias=False)
 
-        if use_conv:
+        if use_conv and conv_mode == 'pre':
+            # Original: single conv on projected input
             self.conv1d = nn.Conv1d(
                 in_channels=self.d_inner,
                 out_channels=self.d_inner,
@@ -292,14 +377,47 @@ class E75MultiHead(nn.Module):
                 groups=self.d_inner,
                 bias=True,
             )
+            # Use standard cell (computes k,v,q,beta internally)
+            self.cell = E75MultiHeadCell(
+                self.d_inner,
+                n_state=n_state,
+                n_heads=n_heads,
+                init_beta_bias=init_beta_bias,
+                use_cuda=use_cuda,
+            )
+        elif use_conv and conv_mode == 'post':
+            # FLA-GDN style: separate depthwise convs on k, v, q after projections
+            # NO intermediate in_proj - direct projections from input dim
+            kv_dim = n_heads * n_state
 
-        self.cell = E75MultiHeadCell(
-            self.d_inner,
-            n_state=n_state,
-            n_heads=n_heads,
-            init_beta_bias=init_beta_bias,
-            use_cuda=use_cuda,
-        )
+            # Direct projections from input dim (exactly like FLA-GDN)
+            # x -> k_proj -> k_conv(silu) -> k
+            self.W_k = nn.Linear(dim, kv_dim, bias=False)  # Direct from input
+            self.W_v = nn.Linear(dim, kv_dim, bias=False)
+            self.W_q = nn.Linear(dim, kv_dim, bias=False)
+            self.W_beta = nn.Linear(dim, kv_dim, bias=False)
+            self.b_beta = nn.Parameter(torch.full((n_heads, n_state), init_beta_bias))
+
+            # Depthwise convolutions with SiLU fused (like FLA ShortConvolution)
+            self.k_conv = nn.Conv1d(kv_dim, kv_dim, d_conv, padding=d_conv-1, groups=kv_dim, bias=True)
+            self.v_conv = nn.Conv1d(kv_dim, kv_dim, d_conv, padding=d_conv-1, groups=kv_dim, bias=True)
+            self.q_conv = nn.Conv1d(kv_dim, kv_dim, d_conv, padding=d_conv-1, groups=kv_dim, bias=True)
+            # Beta uses sigmoid, no SiLU conv (following FLA pattern)
+
+            # No cell needed - we do the recurrence directly with pre-computed k,v,q,beta
+            self.cell = None
+            self._use_cuda_post = use_cuda and E75MH_PRECOMPUTED_CUDA_AVAILABLE
+            # Mark that we don't use in_proj in post-conv mode
+            self._post_conv_no_in_proj = True
+        else:
+            # No conv: standard cell
+            self.cell = E75MultiHeadCell(
+                self.d_inner,
+                n_state=n_state,
+                n_heads=n_heads,
+                init_beta_bias=init_beta_bias,
+                use_cuda=use_cuda,
+            )
 
         # Output projection: H * n_state -> dim
         self.out_proj = nn.Linear(n_heads * n_state, dim, bias=False)
@@ -308,8 +426,122 @@ class E75MultiHead(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.in_proj.weight)
+        if hasattr(self, 'in_proj'):
+            nn.init.xavier_uniform_(self.in_proj.weight)
         nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.use_conv and self.conv_mode == 'post':
+            nn.init.xavier_uniform_(self.W_k.weight)
+            nn.init.xavier_uniform_(self.W_v.weight)
+            nn.init.xavier_uniform_(self.W_q.weight)
+            nn.init.xavier_uniform_(self.W_beta.weight)
+
+    def _forward_post_conv(
+        self,
+        x: torch.Tensor,
+        hidden: Optional[List[torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        """Forward pass with post-projection convolutions (FLA-GDN style).
+
+        Exactly matches FLA-GDN pattern:
+        - x -> k_proj -> k_conv(silu) -> k
+        - x -> v_proj -> v_conv(silu) -> v
+        - x -> q_proj -> q_conv(silu) -> q
+        - x -> beta_proj -> sigmoid -> beta (no conv)
+        """
+        B, T, D = x.shape
+        n = self.n_state
+        H = self.n_heads
+
+        # Direct projections (NO in_proj, exactly like FLA-GDN)
+        k_proj = self.W_k(x)  # [B, T, H*n]
+        v_proj = self.W_v(x)
+        q_proj = self.W_q(x)
+        beta_proj = self.W_beta(x)
+
+        # Apply post-projection convolutions with SiLU (causal, depthwise)
+        # Conv expects [B, C, T], output [B, C, T]
+        k = F.silu(self.k_conv(k_proj.transpose(1, 2))[:, :, :T]).transpose(1, 2)  # [B, T, H*n]
+        v = F.silu(self.v_conv(v_proj.transpose(1, 2))[:, :, :T]).transpose(1, 2)
+        q = F.silu(self.q_conv(q_proj.transpose(1, 2))[:, :, :T]).transpose(1, 2)
+
+        # Beta: sigmoid, no conv (following FLA pattern for gates)
+        beta = torch.sigmoid(beta_proj + self.b_beta.view(1, 1, H * n))  # [B, T, H*n]
+
+        # Reshape for per-head processing: [B, T, H, n]
+        k = k.view(B, T, H, n)
+        v = v.view(B, T, H, n)
+        q = q.view(B, T, H, n)
+        beta = beta.view(B, T, H, n)
+
+        # Initialize states
+        if hidden is None:
+            S_list = [torch.zeros(B, n, n, device=x.device, dtype=x.dtype) for _ in range(H)]
+        else:
+            S_list = [S.clone() for S in hidden]
+
+        # Use CUDA kernel for precomputed tensors when available
+        use_cuda = (
+            self._use_cuda_post and
+            E75MH_PRECOMPUTED_CUDA_AVAILABLE and
+            x.is_cuda and
+            x.dtype == torch.bfloat16
+        )
+
+        if use_cuda:
+            # Stack S_list into single tensor: [B, H, n, n]
+            S0 = torch.stack(S_list, dim=1)
+
+            # Transpose to [T, B, H, n] for CUDA kernel (time-major)
+            k_cuda = k.transpose(0, 1).contiguous()
+            v_cuda = v.transpose(0, 1).contiguous()
+            q_cuda = q.transpose(0, 1).contiguous()
+            beta_cuda = beta.transpose(0, 1).contiguous()
+
+            S_final, cell_out_t = E75MultiHeadPrecomputedCUDAFunction.apply(
+                self.training, k_cuda, v_cuda, q_cuda, beta_cuda, S0, H
+            )
+
+            # cell_out_t is [T, B, H, n], transpose to [B, T, H*n]
+            cell_out = cell_out_t.transpose(0, 1).reshape(B, T, H * n)
+
+            # Convert S_final [B, H, n, n] back to list
+            S_list = [S_final[:, h] for h in range(H)]
+        else:
+            # PyTorch fallback recurrence
+            outputs = []
+            for t in range(T):
+                head_outputs = []
+                for h in range(H):
+                    k_t = k[:, t, h]  # [B, n]
+                    v_t = v[:, t, h]
+                    q_t = q[:, t, h]
+                    beta_t = beta[:, t, h]  # [B, n]
+
+                    # Normalize k
+                    k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)
+
+                    # Retrieve and update
+                    retrieved = torch.einsum('bij,bj->bi', S_list[h], k_norm)
+                    delta = v_t - retrieved
+                    outer = torch.einsum('bi,bj->bij', delta, k_norm)
+
+                    # Gated update
+                    S_list[h] = torch.tanh(beta_t.unsqueeze(-1) * S_list[h] + outer)
+
+                    # Self-gating output
+                    Sq = torch.einsum('bij,bj->bi', S_list[h], q_t)
+                    out_h = Sq * F.silu(Sq)
+                    head_outputs.append(out_h)
+
+                outputs.append(torch.cat(head_outputs, dim=-1))
+
+            cell_out = torch.stack(outputs, dim=1)  # [B, T, H*n]
+
+        # Output projection
+        output = self.out_proj(cell_out)
+        output = self.dropout(output)
+
+        return output, S_list
 
     def forward(
         self,
@@ -326,13 +558,17 @@ class E75MultiHead(nn.Module):
             output: [B, T, dim] output sequence
             hidden: list of H final matrix states [B, n_state, n_state]
         """
+        # Post-projection conv mode uses separate path
+        if self.use_conv and self.conv_mode == 'post':
+            return self._forward_post_conv(x, hidden)
+
         B, T, D = x.shape
 
         # Input projection
         x_proj = self.in_proj(x)
 
-        # Optional conv
-        if self.use_conv:
+        # Optional pre-conv
+        if self.use_conv and self.conv_mode == 'pre':
             x_proj = x_proj.transpose(1, 2)
             x_proj = self.conv1d(x_proj)[:, :, :T]
             x_proj = x_proj.transpose(1, 2)
