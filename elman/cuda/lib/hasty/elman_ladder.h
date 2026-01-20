@@ -9330,6 +9330,111 @@ private:
     cudaStream_t stream_;
 };
 
+// =============================================================================
+// E88: FLA Hybrid - Mamba2-style exponential decay + rectangular matrix state
+// Combines:
+// 1. Mamba2-style exponential decay (passed as decay tensor)
+// 2. Nonlinear matrix state: S = tanh(decay * S + outer(delta, k_norm))
+// 3. L2-normalized k and q (expected to be normalized externally)
+// 4. Rectangular state [n_state x head_v_dim] for value expansion
+//
+// Per head h:
+//   retrieved = S_h @ k_h           [head_v_dim]
+//   delta = v_h - retrieved         [head_v_dim]
+//   S_h = tanh(decay_h * S_h + outer(delta, k_h))  [n_state x head_v_dim]
+//   out_h = S_h^T @ q_h             [head_v_dim]
+//   out_h = out_h * silu(out_h)     [head_v_dim]
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e88_fla_hybrid_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e88_fla_hybrid_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+template<typename T>
+struct E88FLAHybridForward {
+    E88FLAHybridForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int head_v_dim,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* k,         // [T, B, H, n_state] L2 normalized keys
+        const T* v,         // [T, B, H, head_v_dim] values
+        const T* q,         // [T, B, H, n_state] L2 normalized queries
+        const T* decay,     // [T, B, H] exponential decay factors
+        T* S,               // [B, H, n_state, head_v_dim]
+        T* output,          // [T, B, H, head_v_dim]
+        T* S_cache);        // checkpoints + Sq_cache
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int head_v_dim, int n_heads) {
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim * sizeof(T);
+        size += steps * batch_size * n_heads * head_v_dim * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int head_v_dim_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E88FLAHybridBackward {
+    E88FLAHybridBackward(
+        int batch_size,
+        int n_state,
+        int head_v_dim,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* k,             // [T, B, H, n_state]
+        const T* v,             // [T, B, H, head_v_dim]
+        const T* q,             // [T, B, H, n_state]
+        const T* decay,         // [T, B, H]
+        const T* S_checkpoints, // [num_checkpoints, B, H, n_state, head_v_dim]
+        const T* Sq_cache,      // [T, B, H, head_v_dim]
+        const T* d_output,      // [T, B, H, head_v_dim]
+        T* d_k,                 // [T, B, H, n_state]
+        T* d_v,                 // [T, B, H, head_v_dim]
+        T* d_q,                 // [T, B, H, n_state]
+        T* d_decay);            // [T, B, H]
+
+private:
+    int batch_size_;
+    int n_state_;
+    int head_v_dim_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H

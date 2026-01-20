@@ -1,0 +1,29 @@
+# E88 FLA Hybrid vs baselines at ~100M params
+# E88 combines FLA-GDN design (Mamba2 decay, output gating, short conv)
+# with E75's nonlinear matrix state: S = tanh(decay * S + outer(delta, k_norm))
+#
+# CUDA kernel supports n_state in {32, 64, 96, 128}
+# with head_v_dim in {32, 64, 128}
+
+# === BASELINES ===
+python train.py --level mamba2 --dim 896 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/mamba2
+python train.py --level fla-gdn --dim 768 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/fla-gdn
+
+# === E88 VARIANTS (CUDA-supported configs) ===
+# E88h8n32 with expansion=2.0 (head_v_dim=64)
+python train.py --level E88h8n32 --dim 768 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E88h8n32
+
+# E88h4n32 - fewer heads (head_v_dim=64)
+python train.py --level E88h4n32 --dim 1024 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E88h4n32
+
+# E88h8n64 - larger state (head_v_dim=128)
+python train.py --level E88h8 --dim 512 --expansion 2.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E88h8n64
+
+# E88h16n32 - more heads (head_v_dim=64)
+python train.py --level E88h16n32 --dim 512 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E88h16n32
+
+# E88h4n64 - fewer heads, larger state (head_v_dim=128)
+python train.py --level E88h4 --dim 768 --expansion 2.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E88h4n64
+
+# === COMPARISON: E75pc (original design without Mamba2 decay) ===
+python train.py --level E75pch8n32 --dim 4480 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_v2/E75pch8n32

@@ -98,6 +98,7 @@ from .e73_matrix_nonlinear import E73MatrixNonlinear, E73MatrixColumn, E73Matrix
 from .e74_v2 import E74v2
 from .e75_gated_delta import E75GatedDelta
 from .e75_multihead import E75MultiHead
+from .e88_fla_hybrid import E88FLAHybrid
 from .e76_logspace_delta import E76LogSpaceDelta
 from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
@@ -406,6 +407,20 @@ def get_ladder_level(level):
         '87b32k8': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 8}),
         '87b32k12': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 12}),
         '87b32k16': lambda **kw: E87SparseBlockLayer(**{**kw, 'n_state': 16, 'n_blocks': 32, 'top_k': 16}),
+        # E88: FLA-GDN Hybrid with Nonlinear Matrix State
+        # Combines FLA-GDN's proven design (Mamba2 decay, output gating, short conv)
+        # with E75's nonlinear matrix state: S = tanh(decay * S + outer(delta, k_norm))
+        88: E88FLAHybrid,
+        'E88': E88FLAHybrid,
+        'E88h4': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4}),
+        'E88h8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8}),
+        'E88h16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16}),
+        'E88h4n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 32}),
+        'E88h8n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 24}),
+        'E88h8n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32}),
+        'E88h8n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 48}),
+        'E88h16n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 24}),
+        'E88h16n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
