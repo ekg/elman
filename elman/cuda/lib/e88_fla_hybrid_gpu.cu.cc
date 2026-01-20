@@ -17,7 +17,7 @@
  *   delta = v_h - retrieved         [head_v_dim]
  *   S_h = tanh(decay_h * S_h + outer(delta, k_h))  [n_state x head_v_dim]
  *   out_h = S_h^T @ q_h             [head_v_dim]
- *   out_h = out_h * silu(out_h)     [head_v_dim]
+ *   (gating applied externally via g_proj in Python layer)
  *
  * Output: concat(out_0, out_1, ..., out_{H-1})  [T, B, H * head_v_dim]
  */
@@ -146,7 +146,7 @@ __global__ void E88FLAHybridForwardKernel_BF16(
         }
         __syncthreads();
 
-        // Compute output: Sq = S^T @ q, self-gate
+        // Compute output: Sq = S^T @ q (FLA-GDN style - no self-gating)
         // Sq[j] = sum_i S[i,j] * q[i]
         if (tid < HEAD_V_DIM) {
             float Sq = 0.0f;
@@ -156,10 +156,8 @@ __global__ void E88FLAHybridForwardKernel_BF16(
             }
             Sq_cache[v_offset + tid] = __float2bfloat16(Sq);
 
-            // Self-gating: out = Sq * silu(Sq)
-            float sig = 1.0f / (1.0f + expf(-Sq));
-            float out_val = Sq * Sq * sig;
-            output[v_offset + tid] = __float2bfloat16(out_val);
+            // Output directly (gating done in Python layer via g_proj)
+            output[v_offset + tid] = __float2bfloat16(Sq);
         }
         __syncthreads();
     }
@@ -302,16 +300,13 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Backward through output (self-gating)
+            // Backward through output (no self-gating - FLA-GDN style)
             int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
             if (tid < HEAD_V_DIM) {
                 float d_out = __bfloat162float(d_output[v_offset + tid]);
-                float Sq = __bfloat162float(Sq_cache[v_offset + tid]);
-                float sig = 1.0f / (1.0f + expf(-Sq));
-                // output = Sq * Sq * sig = Sq^2 * sig
-                // d_Sq = d_out * (2 * Sq * sig + Sq^2 * sig * (1 - sig))
-                float d_Sq_val = d_out * (2.0f * Sq * sig + Sq * Sq * sig * (1.0f - sig));
-                d_Sq[tid] = d_Sq_val;
+                // output = Sq directly (no self-gating)
+                // d_Sq = d_output directly
+                d_Sq[tid] = d_out;
             }
             __syncthreads();
 

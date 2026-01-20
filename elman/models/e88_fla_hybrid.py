@@ -141,7 +141,7 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
     - Rectangular state [n_state x head_v_dim]
     - Mamba2-style scalar exponential decay per head
     - L2-normalized k and q (done externally before calling this)
-    - Self-gating output: out = Sq * silu(Sq)
+    - Output: Sq directly (FLA-GDN style gating applied in Python layer)
     """
 
     @staticmethod
@@ -632,9 +632,8 @@ class E88FLAHybrid(nn.Module):
                     # Query the state: S @ q_norm -> [B, head_v_dim]
                     Sq = torch.einsum('biv,bi->bv', S_list[h], q_norm)
 
-                    # Self-gating: out = Sq * silu(Sq) (matches CUDA kernel)
-                    out_h = Sq * F.silu(Sq)
-                    head_outputs.append(out_h)
+                    # Output directly (FLA-GDN style - gating applied below)
+                    head_outputs.append(Sq)
 
                 # Stack head outputs: [B, H, head_v_dim]
                 out_t = torch.stack(head_outputs, dim=1)
