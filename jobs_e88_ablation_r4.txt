@@ -1,0 +1,21 @@
+# E88 Ablation Round 4: Starting from E88c_nogate (no conv, no gate, no norm)
+# Testing tie_kv, linear state, head counts
+# Target: ~95M params, depth=20, 10 min training
+
+# Baseline: E88c_nogate (winner from round 3)
+E88c_nogate:python train.py --level E88c_nogate --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88c_nogate
+
+# tie_kv: v=k (reduce parameters)
+E88d_tiekv:python train.py --level E88d_tiekv --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88d_tiekv
+
+# Linear state (no tanh) with winning config
+E88d_linear:python train.py --level E88d_linear --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88d_linear
+
+# 12 heads (fewer)
+E88d_h12:python train.py --level E88d_h12 --dim 1536 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88d_h12
+
+# 20 heads (more)
+E88d_h20:python train.py --level E88d_h20 --dim 1920 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88d_h20
+
+# Simple decay with winning config
+E88d_simpledecay:python train.py --level E88d_simpledecay --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r4/E88d_simpledecay

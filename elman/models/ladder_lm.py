@@ -477,6 +477,32 @@ def get_ladder_level(level):
         # Test if simple_decay works better without norm
         'E88c_simpledecay': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_output_norm': False, 'simple_decay': True}),
 
+        # E88 round 4 ablations (based on E88c_nogate - no conv, no gate, no norm)
+        # tie_kv: v=k (reduce parameters)
+        'E88d_tiekv': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'tie_kv': True}),
+        # Linear state (re-test without other components)
+        'E88d_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'linear_state': True}),
+        # 12 heads (fewer than 16)
+        'E88d_h12': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 12, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # 20 heads (more than 16)
+        'E88d_h20': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 20, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Simple decay with winning config
+        'E88d_simpledecay': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'simple_decay': True}),
+        # tie_kv + linear (most minimal with params savings)
+        'E88d_tiekv_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'tie_kv': True, 'linear_state': True}),
+
+        # E88 round 5: Equal-param comparisons (~75M target)
+        # h12 scaled up to ~75M (dim 1920)
+        'E88e_h12_75m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 12, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # h16 scaled down to ~48M (dim 1408)
+        'E88e_h16_48m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # h8 at ~75M (dim ~2176)
+        'E88e_h8_75m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # h10 at ~75M
+        'E88e_h10_75m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 10, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Linear state version of h12 (to confirm tanh doesn't matter)
+        'E88e_h12_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 12, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'linear_state': True}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

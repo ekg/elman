@@ -446,17 +446,33 @@ void dispatch_e88_fla_hybrid_forward(
             T, B, H, k_all, v_all, q_all, decay_all, S, output, \
             S_checkpoints, Sq_cache, checkpoint_interval)
 
-    // Common configurations
-    if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_FWD(32, 32); }
+    // Common configurations - ordered by n_state for clarity
+    // n_state=16 (small state, low shared memory)
+    if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_FWD(16, 16); }
+    else if (n_state == 16 && head_v_dim == 32) { DISPATCH_E88_FWD(16, 32); }
+    else if (n_state == 16 && head_v_dim == 64) { DISPATCH_E88_FWD(16, 64); }
+    else if (n_state == 16 && head_v_dim == 128) { DISPATCH_E88_FWD(16, 128); }
+    // n_state=24
+    else if (n_state == 24 && head_v_dim == 24) { DISPATCH_E88_FWD(24, 24); }
+    else if (n_state == 24 && head_v_dim == 32) { DISPATCH_E88_FWD(24, 32); }
+    else if (n_state == 24 && head_v_dim == 48) { DISPATCH_E88_FWD(24, 48); }
+    else if (n_state == 24 && head_v_dim == 64) { DISPATCH_E88_FWD(24, 64); }
+    else if (n_state == 24 && head_v_dim == 96) { DISPATCH_E88_FWD(24, 96); }
+    else if (n_state == 24 && head_v_dim == 128) { DISPATCH_E88_FWD(24, 128); }
+    // n_state=32
+    else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_FWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_FWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_FWD(32, 128); }
+    // n_state=64
     else if (n_state == 64 && head_v_dim == 32) { DISPATCH_E88_FWD(64, 32); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_E88_FWD(64, 64); }
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_E88_FWD(64, 128); }
+    // n_state=96
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_FWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_FWD(96, 64); }
     else if (n_state == 96 && head_v_dim == 96) { DISPATCH_E88_FWD(96, 96); }
     else if (n_state == 96 && head_v_dim == 128) { DISPATCH_E88_FWD(96, 128); }
+    // n_state=128
     else if (n_state == 128 && head_v_dim == 32) { DISPATCH_E88_FWD(128, 32); }
     else if (n_state == 128 && head_v_dim == 64) { DISPATCH_E88_FWD(128, 64); }
     else if (n_state == 128 && head_v_dim == 128) { DISPATCH_E88_FWD(128, 128); }
@@ -497,18 +513,34 @@ void dispatch_e88_fla_hybrid_backward(
             d_k_all, d_v_all, d_q_all, d_decay_all, checkpoint_interval); \
     } while(0)
 
-    if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_BWD(32, 32); }
+    // n_state=16 (small state, low shared memory)
+    if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_BWD(16, 16); }
+    else if (n_state == 16 && head_v_dim == 32) { DISPATCH_E88_BWD(16, 32); }
+    else if (n_state == 16 && head_v_dim == 64) { DISPATCH_E88_BWD(16, 64); }
+    else if (n_state == 16 && head_v_dim == 128) { DISPATCH_E88_BWD(16, 128); }
+    // n_state=24
+    else if (n_state == 24 && head_v_dim == 24) { DISPATCH_E88_BWD(24, 24); }
+    else if (n_state == 24 && head_v_dim == 32) { DISPATCH_E88_BWD(24, 32); }
+    else if (n_state == 24 && head_v_dim == 48) { DISPATCH_E88_BWD(24, 48); }
+    else if (n_state == 24 && head_v_dim == 64) { DISPATCH_E88_BWD(24, 64); }
+    else if (n_state == 24 && head_v_dim == 96) { DISPATCH_E88_BWD(24, 96); }
+    else if (n_state == 24 && head_v_dim == 128) { DISPATCH_E88_BWD(24, 128); }
+    // n_state=32
+    else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_BWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_BWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_BWD(32, 128); }
+    // n_state=64
     else if (n_state == 64 && head_v_dim == 32) { DISPATCH_E88_BWD(64, 32); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_E88_BWD(64, 64); }
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_E88_BWD(64, 128); }
+    // n_state=96
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_BWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_BWD(96, 64); }
     else if (n_state == 96 && head_v_dim == 96) { DISPATCH_E88_BWD(96, 96); }  // 75KB shared, within limit
     else if (n_state == 96 && head_v_dim == 128) {
         fprintf(stderr, "E88 Backward: n_state=96, head_v_dim=128 requires 100KB shared mem, exceeds limit\n");
     }
+    // n_state=128
     else if (n_state == 128 && head_v_dim == 32) { DISPATCH_E88_BWD(128, 32); }
     else if (n_state == 128 && head_v_dim == 64) { DISPATCH_E88_BWD(128, 64); }
     else if (n_state == 128 && head_v_dim == 128) {

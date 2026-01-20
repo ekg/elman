@@ -1,0 +1,21 @@
+# E88 Ablation Round 5: Equal-param head count comparison
+# Question: Is h12 better because fewer params, or is 12 heads optimal?
+# Testing different head counts at ~75M and ~48M params
+
+# Reference: h12 at 48M (winner from r4)
+E88e_h12_48m:python train.py --level E88d_h12 --dim 1536 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h12_48m
+
+# h12 scaled to ~75M params
+E88e_h12_75m:python train.py --level E88e_h12_75m --dim 1920 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h12_75m
+
+# h16 scaled down to ~48M params
+E88e_h16_48m:python train.py --level E88e_h16_48m --dim 1408 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h16_48m
+
+# h8 at ~75M params
+E88e_h8_75m:python train.py --level E88e_h8_75m --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h8_75m
+
+# h10 at ~75M params
+E88e_h10_75m:python train.py --level E88e_h10_75m --dim 2048 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h10_75m
+
+# h12 with linear state (confirm tanh not needed)
+E88e_h12_linear:python train.py --level E88e_h12_linear --dim 1536 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r5/E88e_h12_linear
