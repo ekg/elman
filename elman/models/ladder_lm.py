@@ -269,6 +269,8 @@ def get_ladder_level(level):
         'E75h48n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 48, 'n_state': 48}),
         'E75h64n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 32}),
         'E75h64n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 64, 'n_state': 48}),
+        'E75h128n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 128, 'n_state': 32}),
+        'E75h128n48': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 128, 'n_state': 48}),
         # E75 Post-Conv variants (FLA-GDN style: separate convs on k,v,q AFTER projections)
         # This provides per-role local context before the associative memory update
         'E75pc': lambda **kw: E75MultiHead(**{**kw, 'use_conv': True, 'conv_mode': 'post'}),

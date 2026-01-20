@@ -1,0 +1,16 @@
+# E75pc (with FLA-GDN style conv) vs E75 (no conv) comparison
+# All at ~1B params, depth=20, expansion=2.0
+
+# === BASELINES ===
+python train.py --level mamba2 --dim 2944 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/mamba2
+python train.py --level fla-gdn --dim 2560 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/fla-gdn
+
+# === E75 WITHOUT CONV (original) ===
+python train.py --level E75h8n32 --dim 4352 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75h8n32
+python train.py --level E75h8n24 --dim 4480 --expansion 2.0 --n_state 24 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75h8n24
+
+# === E75pc WITH CONV (FLA-GDN style) ===
+python train.py --level E75pch8n32 --dim 4352 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75pch8n32
+python train.py --level E75pch8n24 --dim 4480 --expansion 2.0 --n_state 24 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75pch8n24
+python train.py --level E75pch4n32 --dim 4352 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75pch4n32
+python train.py --level E75pch4n48 --dim 3840 --expansion 2.0 --n_state 48 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_test/E75pch4n48
