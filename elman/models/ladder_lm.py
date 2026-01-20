@@ -251,6 +251,7 @@ def get_ladder_level(level):
         'E75h6n16': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 16}),
         'E75h6n24': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 24}),
         'E75h6n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 6, 'n_state': 32}),
+        'E75h8n32': lambda **kw: E75MultiHead(**{**kw, 'n_heads': 8, 'n_state': 32}),
         # E76: Log-Space Gated Delta (E75 + Mamba2/FLA-GDN stability techniques)
         # Default: tanh + log_gate (nonlinear recurrence with stable params)
         76: E76LogSpaceDelta,
