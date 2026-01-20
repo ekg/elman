@@ -24,50 +24,48 @@ COMMON = (
 )
 
 # Models with their 1B-param dims at depth=20, expansion=2.0
-# Dims calculated by scaling from 100M benchmark dims
+# Dims recalibrated based on actual param counts from test run
 # Format: (level, dim, extra_args)
 MODELS = [
     # === BASELINES ===
-    # mamba2: 100M@dim=896 -> 1B@dim=2816 (scale ~3.14x)
-    ('mamba2', 2816, ''),
-    # fla-gdn: 100M@dim=768 -> 1B@dim=2432 (scale ~3.16x)
-    ('fla-gdn', 2432, '--expansion 2.0'),
-    # llama: 100M@dim=640 -> 1B@dim=2048 (scale ~3.2x, includes attention overhead)
+    # mamba2: 973M@dim=2816 -> 1B needs slight increase
+    ('mamba2', 2944, ''),
+    # fla-gdn: 950M@dim=2432 -> 1B needs slight increase
+    ('fla-gdn', 2560, '--expansion 2.0'),
+    # llama: 1028M@dim=2048 -> already at 1B
     ('llama', 2048, '--expansion 2.0'),
 
-    # === RNN BASELINES (GRU/LSTM have ~4x params per dim due to 4 gates) ===
-    # GRU: ~4*dim^2 per layer, so scale dim by sqrt(10)/2 ≈ 1.58x from 100M
-    ('gru', 1280, '--expansion 2.0'),
-    ('lstm', 1152, '--expansion 2.0'),  # LSTM has even more params
-    ('mingru', 1280, '--expansion 2.0'),
-    ('minlstm', 1152, '--expansion 2.0'),
-    ('cudagru', 1280, '--expansion 2.0'),
-    ('cudalstm', 1152, '--expansion 2.0'),
+    # === RNN BASELINES ===
+    # GRU/LSTM: 918M@dim=1280 -> close to 1B, keep same
+    # NOTE: Standard GRU/LSTM fail to learn at 1B scale, using minGRU/minLSTM
+    ('mingru', 2816, '--expansion 2.0'),   # 197M@1280 -> need ~5x params -> dim*2.2
+    ('minlstm', 2560, '--expansion 2.0'),  # 213M@1152 -> need ~4.7x params -> dim*2.2
 
     # === BEST ELMAN VARIANTS ===
-    # E0: Stock Elman - 100M@dim=640 -> 1B@dim=1792
+    # E0: 1028M@dim=1792 -> at target
     (0, 1792, '--expansion 2.0'),
-    # E1: Mamba-gated - 100M@dim=640 -> 1B@dim=1920
+    # E1: 1033M@dim=1920 -> at target
     (1, 1920, '--expansion 2.0'),
-    # E32: No pre-silu - same as E1
+    # E32: 1033M@dim=1920 -> at target
     (32, 1920, '--expansion 2.0'),
-    # E36: Linear recurrence - fewer params, 100M@dim=640 -> 1B@dim=2048
+    # E36: 1007M@dim=2048 -> at target
     (36, 2048, '--expansion 2.0'),
-    # E38: No W_x - fewer params
-    (38, 2304, '--expansion 2.0'),
-    # E42: Linear + tied - 100M@dim=768 -> 1B@dim=2432
-    (42, 2432, '--expansion 2.0'),
-    # E52: Quadratic gate
-    (52, 2304, '--expansion 2.0'),
-    # E61: Decay-gated - 100M@dim=640 -> 1B@dim=2048
+    # E38: 850M@dim=2304 -> need increase
+    (38, 2560, '--expansion 2.0'),
+    # E42: 947M@dim=2432 -> slight increase
+    (42, 2560, '--expansion 2.0'),
+    # E52: failed at 850M, try larger
+    (52, 2560, '--expansion 2.0'),
+    # E61: 1007M@dim=2048 -> at target
     (61, 2048, '--expansion 2.0'),
-    # E68: Self-gating h-dep
+    # E68: 1008M@dim=2048 -> at target
     (68, 2048, '--expansion 2.0'),
 
     # === E75 MULTI-HEAD ===
-    # E75 needs larger dims due to smaller n_state overhead
-    ('E75h8n32', 3200, '--expansion 2.0 --n_state 32'),
-    ('E75h8n24', 3456, '--expansion 2.0 --n_state 24'),
+    # E75h8n32: 558M@dim=3200 -> need ~1.8x params -> dim*1.34
+    ('E75h8n32', 4352, '--expansion 2.0 --n_state 32'),
+    # E75h8n24: 598M@dim=3456 -> need ~1.67x params -> dim*1.29
+    ('E75h8n24', 4480, '--expansion 2.0 --n_state 24'),
 ]
 
 def main():
