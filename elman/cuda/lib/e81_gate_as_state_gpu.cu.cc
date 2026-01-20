@@ -37,6 +37,18 @@
 
 namespace elman {
 
+// Utility kernel for converting float accumulators to bfloat16
+__global__ void ConvertFloatToBF16Kernel_E81(
+    const float* __restrict__ src,
+    __nv_bfloat16* __restrict__ dst,
+    int n
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        dst[i] = __float2bfloat16(src[i]);
+    }
+}
+
 // ============================================================================
 // E81 Forward Kernel - Gate As State
 // ============================================================================
@@ -1491,6 +1503,21 @@ void E81GateAsStateBackward<DataT>::Run(
                  &beta_zero,
                  d_W_kvqm, data_type, 4 * n,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    // Convert accumulated bias gradients (float) to output dtype
+    if constexpr (std::is_same<DataT, __nv_bfloat16>::value) {
+        int threads = 256;
+        int blocks = (n + threads - 1) / threads;
+        ConvertFloatToBF16Kernel_E81<<<blocks, threads, 0, stream_>>>(
+            d_b_s_gate_accum, d_b_s_gate, n);
+        ConvertFloatToBF16Kernel_E81<<<blocks, threads, 0, stream_>>>(
+            d_b_g_gate_accum, d_b_g_gate, n);
+    } else {
+        cudaMemcpyAsync(d_b_s_gate, d_b_s_gate_accum, n * sizeof(float),
+                        cudaMemcpyDeviceToDevice, stream_);
+        cudaMemcpyAsync(d_b_g_gate, d_b_g_gate_accum, n * sizeof(float),
+                        cudaMemcpyDeviceToDevice, stream_);
+    }
 }
 
 // Explicit template instantiations
