@@ -57,13 +57,19 @@ try:
     import hasty_pytorch_lib
     # E88 native CUDA kernel
     E88_NATIVE_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fla_hybrid_forward')
+    # E88 cuBLAS tensor core backward kernel
+    E88_CUBLAS_BACKWARD_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fla_hybrid_backward_cublas')
     # Legacy E75 kernels for backwards compatibility
     E88_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_forward')
     E88_PRECOMPUTED_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_precomputed_forward')
 except ImportError:
     E88_NATIVE_CUDA_AVAILABLE = False
+    E88_CUBLAS_BACKWARD_AVAILABLE = False
     E88_CUDA_AVAILABLE = False
     E88_PRECOMPUTED_CUDA_AVAILABLE = False
+
+# Global flag to enable cuBLAS backward kernel (can be toggled at runtime)
+USE_CUBLAS_BACKWARD = False
 
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE
@@ -188,12 +194,22 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
         S_checkpoints = S_cache[:checkpoints_size].view(num_checkpoints, B, H, n_state, head_v_dim)
         Sq_cache = S_cache[checkpoints_size:checkpoints_size + sq_cache_size].view(T, B, H, head_v_dim)
 
-        grads = hasty_pytorch_lib.e88_fla_hybrid_backward(
-            k, v, q, decay,
-            S_checkpoints, Sq_cache,
-            d_output.contiguous(),
-            n_heads
-        )
+        # Use cuBLAS tensor core backward if enabled
+        if USE_CUBLAS_BACKWARD and E88_CUBLAS_BACKWARD_AVAILABLE:
+            grads = hasty_pytorch_lib.e88_fla_hybrid_backward_cublas(
+                k, v, q, decay,
+                S_checkpoints.view(-1),  # Flatten for cuBLAS kernel
+                d_output.contiguous(),
+                n_heads,
+                checkpoint_interval
+            )
+        else:
+            grads = hasty_pytorch_lib.e88_fla_hybrid_backward(
+                k, v, q, decay,
+                S_checkpoints, Sq_cache,
+                d_output.contiguous(),
+                n_heads
+            )
         # grads = [d_k, d_v, d_q, d_decay]
         d_k = grads[0]
         d_v = grads[1]

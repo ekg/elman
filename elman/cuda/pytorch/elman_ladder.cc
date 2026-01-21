@@ -11756,7 +11756,7 @@ std::vector<Tensor> e75_multihead_precomputed_forward(
     Tensor output = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
 
     // S_cache for checkpoints + Sq_cache
-    const int checkpoint_interval = 16;
+    const int checkpoint_interval = 32;  // Must match E88_CHECKPOINT_INTERVAL
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * n_state;
     const int64_t sq_cache_size = time_steps * batch_size * n_heads * n_state;
@@ -14636,7 +14636,7 @@ std::vector<Tensor> e88_fla_hybrid_forward(
     Tensor output = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
 
     // S_cache for checkpoints + Sq_cache
-    const int checkpoint_interval = 16;
+    const int checkpoint_interval = 32;  // Must match E88_CHECKPOINT_INTERVAL
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
     const int64_t sq_cache_size = time_steps * batch_size * n_heads * head_v_dim;
@@ -14718,6 +14718,71 @@ std::vector<Tensor> e88_fla_hybrid_backward(
         reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()));
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
+std::vector<Tensor> e88_fla_hybrid_backward_cublas(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor S_checkpoints,   // [num_checkpoints * B * H * n_state * head_v_dim]
+    Tensor d_output,        // [T, B, H, head_v_dim]
+    int n_heads,
+    int checkpoint_interval) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(d_output);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: gradients for k, v, q, decay
+    Tensor d_k = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_v = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor d_q = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_decay = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 FLA Hybrid cuBLAS Backward only supports bfloat16");
+
+    using namespace elman;
+
+    // Allocate workspace for fp32 intermediates
+    size_t workspace_bytes = e88_cublas_backward_workspace_size(
+        batch_size, n_heads, n_state, head_v_dim);
+    auto workspace_options = options.dtype(at::ScalarType::Float);
+    Tensor workspace = torch::empty({(int64_t)(workspace_bytes / sizeof(float))}, workspace_options);
+
+    // Allocate segment state cache: [checkpoint_interval, B*H, n_state, head_v_dim]
+    int64_t cache_size = checkpoint_interval * batch_size * n_heads * n_state * head_v_dim;
+    Tensor segment_cache = torch::empty({cache_size}, options);
+
+    dispatch_e88_cublas_backward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        workspace.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        at::cuda::getCurrentCUDAStream());
 
     return {d_k, d_v, d_q, d_decay};
 }
@@ -15172,4 +15237,6 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: Mamba2-style exponential decay with rectangular matrix state [n_state x head_v_dim]");
     m.def("e88_fla_hybrid_backward", &e88_fla_hybrid_backward,
           "E88 FLA Hybrid: Backward pass with gradient checkpointing");
+    m.def("e88_fla_hybrid_backward_cublas", &e88_fla_hybrid_backward_cublas,
+          "E88 FLA Hybrid: cuBLAS tensor core backward pass");
 }

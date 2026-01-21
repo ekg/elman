@@ -497,6 +497,364 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
 }
 
 // ============================================================================
+// E88 FLA Hybrid Backward Kernel - Cached Version (k, v, decay cached)
+//
+// Optimization over base kernel: caches k, v, decay during forward replay
+// to avoid re-reading them from global memory during backward phase.
+//
+// Cache layout per (batch, head):
+//   [0..checkpoint_interval-1]: S_{t-1} states [N_STATE * HEAD_V_DIM each]
+//   [checkpoint_interval * N_STATE * HEAD_V_DIM + local_t * N_STATE]: k vectors
+//   [checkpoint_interval * N_STATE * HEAD_V_DIM + checkpoint_interval * N_STATE + local_t * HEAD_V_DIM]: v vectors
+//   [checkpoint_interval * N_STATE * HEAD_V_DIM + checkpoint_interval * N_STATE + checkpoint_interval * HEAD_V_DIM + local_t]: decay values
+// ============================================================================
+
+template<int N_STATE, int HEAD_V_DIM>
+__global__ void E88FLAHybridBackwardKernel_Cached_BF16(
+    int T,
+    int B,
+    int H,
+    const __nv_bfloat16* __restrict__ k_all,
+    const __nv_bfloat16* __restrict__ v_all,
+    const __nv_bfloat16* __restrict__ q_all,
+    const __nv_bfloat16* __restrict__ decay_all,
+    const __nv_bfloat16* __restrict__ S_checkpoints,
+    const __nv_bfloat16* __restrict__ Sq_cache,
+    const __nv_bfloat16* __restrict__ d_output,
+    __nv_bfloat16* __restrict__ d_k_all,
+    __nv_bfloat16* __restrict__ d_v_all,
+    __nv_bfloat16* __restrict__ d_q_all,
+    __nv_bfloat16* __restrict__ d_decay_all,
+    __nv_bfloat16* __restrict__ segment_cache,  // Extended: [B*H, checkpoint_interval, N_STATE*HEAD_V_DIM + N_STATE + HEAD_V_DIM + 1]
+    int checkpoint_interval
+) {
+    int block_idx = blockIdx.x;
+    int b = block_idx / H;
+    int h = block_idx % H;
+    if (b >= B) return;
+
+    extern __shared__ float shared_mem[];
+    // Memory layout:
+    // S: N_STATE * HEAD_V_DIM (S_{t-1})
+    // dS: N_STATE * HEAD_V_DIM
+    // S_t: N_STATE * HEAD_V_DIM (cached tanh result)
+    // dtanh: N_STATE * HEAD_V_DIM (cached 1 - S_t^2)
+    // k: N_STATE
+    // v: HEAD_V_DIM
+    // q: N_STATE
+    // delta: HEAD_V_DIM
+    // retrieved: HEAD_V_DIM
+    // d_k: N_STATE
+    // d_v: HEAD_V_DIM
+    // d_q: N_STATE
+    // d_Sq: HEAD_V_DIM
+    // d_delta: HEAD_V_DIM
+    float* S = shared_mem;
+    float* dS = S + N_STATE * HEAD_V_DIM;
+    float* S_t = dS + N_STATE * HEAD_V_DIM;
+    float* dtanh = S_t + N_STATE * HEAD_V_DIM;
+    float* k = dtanh + N_STATE * HEAD_V_DIM;
+    float* v = k + N_STATE;
+    float* q = v + HEAD_V_DIM;
+    float* delta = q + N_STATE;
+    float* retrieved = delta + HEAD_V_DIM;
+    float* d_k = retrieved + HEAD_V_DIM;
+    float* d_v = d_k + N_STATE;
+    float* d_q = d_v + HEAD_V_DIM;
+    float* d_Sq = d_q + N_STATE;
+    float* d_delta = d_Sq + HEAD_V_DIM;
+    float* warp_results = d_delta + HEAD_V_DIM;  // [8 floats for up to 256 threads / 32]
+
+    int tid = threadIdx.x;
+    int state_size = N_STATE * HEAD_V_DIM;
+
+    // Segment cache offsets for this (batch, head) pair
+    // Extended layout: [S_states, k_vectors, v_vectors, decay_values]
+    int cache_entry_size = state_size + N_STATE + HEAD_V_DIM + 1;
+    __nv_bfloat16* seg_cache_base = segment_cache + (size_t)block_idx * checkpoint_interval * cache_entry_size;
+
+    // Sub-cache offsets within each segment
+    // Per-timestep: S at offset 0, then k, v, decay packed after all S entries
+    // Actually: for each local_t, we have [S_{t-1}] contiguous, then [k, v, decay] after
+    // Layout: [S_0, S_1, ..., S_{ci-1}] [k_0, k_1, ..., k_{ci-1}] [v_0, ...] [decay_0, ...]
+    __nv_bfloat16* S_cache_base = seg_cache_base;  // [checkpoint_interval * state_size]
+    __nv_bfloat16* k_cache_base = seg_cache_base + (size_t)checkpoint_interval * state_size;  // [checkpoint_interval * N_STATE]
+    __nv_bfloat16* v_cache_base = k_cache_base + (size_t)checkpoint_interval * N_STATE;  // [checkpoint_interval * HEAD_V_DIM]
+    __nv_bfloat16* decay_cache_base = v_cache_base + (size_t)checkpoint_interval * HEAD_V_DIM;  // [checkpoint_interval * 1]
+
+    // Initialize dS to zero
+    for (int i = tid; i < state_size; i += blockDim.x) {
+        dS[i] = 0.0f;
+    }
+    __syncthreads();
+
+    int num_segments = (T + checkpoint_interval - 1) / checkpoint_interval;
+
+    for (int seg = num_segments - 1; seg >= 0; seg--) {
+        int t_start = seg * checkpoint_interval;
+        int t_end = min(t_start + checkpoint_interval, T);
+        int seg_len = t_end - t_start;
+
+        // ================================================================
+        // PHASE 1: Forward replay through segment, caching S_{t-1}, k, v, decay
+        // ================================================================
+
+        // Load checkpoint for this segment
+        int cp_offset = (seg * B * H + b * H + h) * state_size;
+        for (int i = tid; i < state_size; i += blockDim.x) {
+            S[i] = __bfloat162float(S_checkpoints[cp_offset + i]);
+        }
+        __syncthreads();
+
+        // Replay forward through entire segment, saving S_{t-1}, k, v, decay for each t
+        __shared__ float decay_val_replay;
+        for (int local_t = 0; local_t < seg_len; local_t++) {
+            int t = t_start + local_t;
+
+            // Save S_{t-1} to segment cache BEFORE the update
+            __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
+            for (int i = tid; i < state_size; i += blockDim.x) {
+                S_cache_slot[i] = __float2bfloat16(S[i]);
+            }
+
+            // Load inputs for timestep t from global memory
+            int k_offset = ((t * B + b) * H + h) * N_STATE;
+            int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
+            int decay_offset = (t * B + b) * H + h;
+
+            if (tid < N_STATE) {
+                k[tid] = __bfloat162float(k_all[k_offset + tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v[tid] = __bfloat162float(v_all[v_offset + tid]);
+            }
+            __syncthreads();
+
+            if (tid == 0) {
+                decay_val_replay = __bfloat162float(decay_all[decay_offset]);
+            }
+            __syncthreads();
+
+            // Cache k, v, decay for backward phase
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            if (tid < N_STATE) {
+                k_cache_slot[tid] = __float2bfloat16(k[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v_cache_slot[tid] = __float2bfloat16(v[tid]);
+            }
+            if (tid == 0) {
+                decay_cache_base[local_t] = __float2bfloat16(decay_val_replay);
+            }
+            __syncthreads();
+
+            // Compute retrieved = S @ k
+            if (tid < HEAD_V_DIM) {
+                float sum = 0.0f;
+                #pragma unroll 8
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S[i * HEAD_V_DIM + tid] * k[i];
+                }
+                retrieved[tid] = sum;
+                delta[tid] = v[tid] - retrieved[tid];
+            }
+            __syncthreads();
+
+            // Update S: S_t = tanh(decay * S_{t-1} + outer(delta, k))
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                float update = decay_val_replay * S[idx] + delta[j] * k[i];
+                S[idx] = tanhf(update);
+            }
+            __syncthreads();
+        }
+
+        // ================================================================
+        // PHASE 2: Backward pass through segment using cached states and inputs
+        // ================================================================
+
+        for (int local_t = seg_len - 1; local_t >= 0; local_t--) {
+            int t = t_start + local_t;
+
+            // Load cached S_{t-1} from segment cache
+            __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
+            for (int i = tid; i < state_size; i += blockDim.x) {
+                S[i] = __bfloat162float(S_cache_slot[i]);
+            }
+
+            // Load cached k, v from segment cache (NOT from global memory)
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            if (tid < N_STATE) {
+                k[tid] = __bfloat162float(k_cache_slot[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v[tid] = __bfloat162float(v_cache_slot[tid]);
+            }
+            __syncthreads();
+
+            // Load q from global memory (still needed, not cached)
+            int k_offset = ((t * B + b) * H + h) * N_STATE;
+            int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
+            int decay_offset = (t * B + b) * H + h;
+
+            if (tid < N_STATE) {
+                q[tid] = __bfloat162float(q_all[k_offset + tid]);
+            }
+            __syncthreads();
+
+            // Compute retrieved and delta for this timestep
+            if (tid < HEAD_V_DIM) {
+                float sum = 0.0f;
+                #pragma unroll 8
+                for (int i = 0; i < N_STATE; i++) {
+                    sum += S[i * HEAD_V_DIM + tid] * k[i];
+                }
+                retrieved[tid] = sum;
+                delta[tid] = v[tid] - retrieved[tid];
+            }
+            __syncthreads();
+
+            // Load cached decay (NOT from global memory)
+            __shared__ float decay_val;
+            if (tid == 0) {
+                decay_val = __bfloat162float(decay_cache_base[local_t]);
+            }
+            __syncthreads();
+
+            // *** KEY OPTIMIZATION: Compute S_t = tanh(...) and dtanh = 1 - S_t^2 ONCE ***
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                float pre_tanh = decay_val * S[idx] + delta[j] * k[i];
+                float tanh_val = tanhf(pre_tanh);
+                S_t[idx] = tanh_val;
+                dtanh[idx] = 1.0f - tanh_val * tanh_val;
+            }
+            __syncthreads();
+
+            // Backward through output (no self-gating - FLA-GDN style)
+            if (tid < HEAD_V_DIM) {
+                float d_out = __bfloat162float(d_output[v_offset + tid]);
+                d_Sq[tid] = d_out;
+            }
+            __syncthreads();
+
+            // d_q from output: Sq[j] = sum_i S_t[i,j] * q[i]
+            // d_q[i] = sum_j S_t[i,j] * d_Sq[j]
+            if (tid < N_STATE) {
+                float sum = 0.0f;
+                for (int j = 0; j < HEAD_V_DIM; j++) {
+                    sum += S_t[tid * HEAD_V_DIM + j] * d_Sq[j];
+                }
+                d_q[tid] = sum;
+            }
+            __syncthreads();
+
+            // dS += outer(q, d_Sq) for the output computation
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                dS[idx] += q[i] * d_Sq[j];
+            }
+            __syncthreads();
+
+            // Backward through state update using cached dtanh
+
+            // Compute d_delta using cached dtanh
+            if (tid < HEAD_V_DIM) {
+                float d_delta_local = 0.0f;
+                for (int i = 0; i < N_STATE; i++) {
+                    float d_pre = dS[i * HEAD_V_DIM + tid] * dtanh[i * HEAD_V_DIM + tid];
+                    d_delta_local += d_pre * k[i];
+                }
+                d_delta[tid] = d_delta_local;
+            }
+            __syncthreads();
+
+            // Compute d_k using cached dtanh
+            if (tid < N_STATE) {
+                float d_k_local = 0.0f;
+                for (int j = 0; j < HEAD_V_DIM; j++) {
+                    float d_pre = dS[tid * HEAD_V_DIM + j] * dtanh[tid * HEAD_V_DIM + j];
+                    d_k_local += d_pre * delta[j];
+                }
+                d_k[tid] = d_k_local;
+            }
+            __syncthreads();
+
+            // Compute d_decay using cached dtanh with WARP REDUCTION (faster than atomicAdd)
+            float d_decay_local = 0.0f;
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                float d_pre = dS[idx] * dtanh[idx];
+                d_decay_local += d_pre * S[idx];
+            }
+
+            // Warp reduction using shuffle intrinsics
+            #pragma unroll
+            for (int offset = 16; offset >= 1; offset /= 2) {
+                d_decay_local += __shfl_xor_sync(0xFFFFFFFF, d_decay_local, offset);
+            }
+
+            // Lane 0 of each warp writes partial sum to shared memory
+            const int warp_id = tid / 32;
+            const int lane_id = tid % 32;
+            const int num_warps = (blockDim.x + 31) / 32;
+            if (lane_id == 0) {
+                warp_results[warp_id] = d_decay_local;
+            }
+            __syncthreads();
+
+            // First warp reduces across all warp results
+            float d_decay_accum = 0.0f;
+            if (warp_id == 0) {
+                float load_val = (tid < num_warps) ? warp_results[tid] : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset >= 1; offset /= 2) {
+                    load_val += __shfl_xor_sync(0xFFFFFFFF, load_val, offset);
+                }
+                d_decay_accum = load_val;
+            }
+            __syncthreads();
+
+            // d_k contribution from retrieved gradient
+            if (tid < N_STATE) {
+                float d_k_from_retrieved = 0.0f;
+                for (int j = 0; j < HEAD_V_DIM; j++) {
+                    d_k_from_retrieved += S[tid * HEAD_V_DIM + j] * (-d_delta[j]);
+                }
+                d_k[tid] += d_k_from_retrieved;
+            }
+            __syncthreads();
+
+            // Write gradients for this timestep
+            if (tid < N_STATE) {
+                d_k_all[k_offset + tid] = __float2bfloat16(d_k[tid]);
+                d_q_all[k_offset + tid] = __float2bfloat16(d_q[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                d_v_all[v_offset + tid] = __float2bfloat16(d_delta[tid]);
+            }
+            if (tid == 0) {
+                d_decay_all[decay_offset] = __float2bfloat16(d_decay_accum);
+            }
+            __syncthreads();
+
+            // Update dS for next iteration using cached dtanh
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                float d_pre = dS[idx] * dtanh[idx];
+                dS[idx] = d_pre * decay_val + (-d_delta[j]) * k[i];
+            }
+            __syncthreads();
+        }
+    }
+}
+
+// ============================================================================
 // E88 FLA Hybrid Backward Kernel - Global Memory Version (Optimized)
 // For large configurations (n_state=96/128, head_v_dim=128) that exceed shared memory limits
 // S and dS are stored in per-block global memory instead of shared memory
@@ -521,7 +879,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
     __nv_bfloat16* __restrict__ d_decay_all,
     float* __restrict__ S_global,   // [B*H, N_STATE, HEAD_V_DIM] per-block state
     float* __restrict__ dS_global,  // [B*H, N_STATE, HEAD_V_DIM] per-block gradient
-    __nv_bfloat16* __restrict__ segment_state_cache,  // [B*H, checkpoint_interval, N_STATE, HEAD_V_DIM]
+    __nv_bfloat16* __restrict__ segment_cache,  // Extended: [B*H, checkpoint_interval, N_STATE*HEAD_V_DIM + N_STATE + HEAD_V_DIM + 1]
     int checkpoint_interval
 ) {
     int block_idx = blockIdx.x;
@@ -534,8 +892,16 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
     float* S = S_global + block_idx * state_size;
     float* dS = dS_global + block_idx * state_size;
 
-    // Segment cache offset for this (batch, head) pair
-    __nv_bfloat16* seg_cache_base = segment_state_cache + (size_t)block_idx * checkpoint_interval * state_size;
+    // Segment cache offsets for this (batch, head) pair
+    // Extended layout: [S_states, k_vectors, v_vectors, decay_values]
+    int cache_entry_size = state_size + N_STATE + HEAD_V_DIM + 1;
+    __nv_bfloat16* seg_cache_base = segment_cache + (size_t)block_idx * checkpoint_interval * cache_entry_size;
+
+    // Sub-cache offsets within each segment
+    __nv_bfloat16* S_cache_base = seg_cache_base;  // [checkpoint_interval * state_size]
+    __nv_bfloat16* k_cache_base = seg_cache_base + (size_t)checkpoint_interval * state_size;  // [checkpoint_interval * N_STATE]
+    __nv_bfloat16* v_cache_base = k_cache_base + (size_t)checkpoint_interval * N_STATE;  // [checkpoint_interval * HEAD_V_DIM]
+    __nv_bfloat16* decay_cache_base = v_cache_base + (size_t)checkpoint_interval * HEAD_V_DIM;  // [checkpoint_interval * 1]
 
     // Shared memory for small buffers only
     extern __shared__ float shared_mem[];
@@ -567,7 +933,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
         int seg_len = t_end - t_start;
 
         // ================================================================
-        // PHASE 1: Forward replay through segment, caching all S_{t-1} states
+        // PHASE 1: Forward replay through segment, caching S_{t-1}, k, v, decay
         // ================================================================
 
         // Load checkpoint for this segment
@@ -577,19 +943,18 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
         }
         __syncthreads();
 
-        // Replay forward through entire segment, saving S_{t-1} for each t
+        // Replay forward through entire segment, saving S_{t-1}, k, v, decay for each t
         __shared__ float decay_val_replay;
         for (int local_t = 0; local_t < seg_len; local_t++) {
             int t = t_start + local_t;
 
             // Save S_{t-1} to segment cache BEFORE the update
-            __nv_bfloat16* cache_slot = seg_cache_base + (size_t)local_t * state_size;
+            __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
             for (int i = tid; i < state_size; i += blockDim.x) {
-                cache_slot[i] = __float2bfloat16(S[i]);
+                S_cache_slot[i] = __float2bfloat16(S[i]);
             }
-            __syncthreads();
 
-            // Load inputs for timestep t
+            // Load inputs for timestep t from global memory
             int k_offset = ((t * B + b) * H + h) * N_STATE;
             int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
             int decay_offset = (t * B + b) * H + h;
@@ -604,6 +969,20 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
 
             if (tid == 0) {
                 decay_val_replay = __bfloat162float(decay_all[decay_offset]);
+            }
+            __syncthreads();
+
+            // Cache k, v, decay for backward phase
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            if (tid < N_STATE) {
+                k_cache_slot[tid] = __float2bfloat16(k[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v_cache_slot[tid] = __float2bfloat16(v[tid]);
+            }
+            if (tid == 0) {
+                decay_cache_base[local_t] = __float2bfloat16(decay_val_replay);
             }
             __syncthreads();
 
@@ -629,30 +1008,36 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
         }
 
         // ================================================================
-        // PHASE 2: Backward pass through segment using cached states
+        // PHASE 2: Backward pass through segment using cached states and inputs
         // ================================================================
 
         for (int local_t = seg_len - 1; local_t >= 0; local_t--) {
             int t = t_start + local_t;
 
             // Load cached S_{t-1} from segment cache
-            __nv_bfloat16* cache_slot = seg_cache_base + (size_t)local_t * state_size;
+            __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
             for (int i = tid; i < state_size; i += blockDim.x) {
-                S[i] = __bfloat162float(cache_slot[i]);
+                S[i] = __bfloat162float(S_cache_slot[i]);
+            }
+
+            // Load cached k, v from segment cache (NOT from global memory)
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            if (tid < N_STATE) {
+                k[tid] = __bfloat162float(k_cache_slot[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v[tid] = __bfloat162float(v_cache_slot[tid]);
             }
             __syncthreads();
 
-            // Load k, v, q for timestep t
+            // Load q from global memory (still needed, not cached)
             int k_offset = ((t * B + b) * H + h) * N_STATE;
             int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
             int decay_offset = (t * B + b) * H + h;
 
             if (tid < N_STATE) {
-                k[tid] = __bfloat162float(k_all[k_offset + tid]);
                 q[tid] = __bfloat162float(q_all[k_offset + tid]);
-            }
-            if (tid < HEAD_V_DIM) {
-                v[tid] = __bfloat162float(v_all[v_offset + tid]);
             }
             __syncthreads();
 
@@ -667,10 +1052,10 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             }
             __syncthreads();
 
-            // Load decay for timestep t
+            // Load cached decay (NOT from global memory)
             __shared__ float decay_val;
             if (tid == 0) {
-                decay_val = __bfloat162float(decay_all[decay_offset]);
+                decay_val = __bfloat162float(decay_cache_base[local_t]);
             }
             __syncthreads();
 
@@ -913,8 +1298,9 @@ void dispatch_e88_fla_hybrid_backward(
     // For configs requiring >48KB shared memory, we need to request extended shared memory
     // SM89 (Ada) supports up to 100KB per block
     // Configs exceeding 96KB use global memory fallback
+    // Use cached kernel variant which caches k, v, decay during forward replay
     #define DISPATCH_E88_BWD(N, V) do { \
-        auto kernel = E88FLAHybridBackwardKernel_BF16<N, V>; \
+        auto kernel = E88FLAHybridBackwardKernel_Cached_BF16<N, V>; \
         if (shared_size > 48 * 1024) { \
             cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size); \
         } \
@@ -1078,9 +1464,16 @@ E88FLAHybridBackward<DataT>::E88FLAHybridBackward(
         cudaMalloc(&dS_global_, state_size);
     }
 
-    // Allocate segment state cache: [B*H, checkpoint_interval, n_state, head_v_dim]
+    // Allocate extended segment cache: [B*H, checkpoint_interval * (n_state*head_v_dim + n_state + head_v_dim + 1)]
     // This enables O(T) backward instead of O(T * checkpoint_interval)
-    size_t seg_cache_size = (size_t)batch_size * n_heads * E88_CHECKPOINT_INTERVAL * n_state * head_v_dim * sizeof(DataT);
+    // Extended layout per (batch, head):
+    //   [0..checkpoint_interval-1]: S_{t-1} states [n_state * head_v_dim each]
+    //   [checkpoint_interval * state_size..]: k vectors [n_state each]
+    //   [...]: v vectors [head_v_dim each]
+    //   [...]: decay values [1 each]
+    size_t state_size_elem = (size_t)n_state * head_v_dim;
+    size_t cache_entry_size = state_size_elem + n_state + head_v_dim + 1;  // S + k + v + decay
+    size_t seg_cache_size = (size_t)batch_size * n_heads * E88_CHECKPOINT_INTERVAL * cache_entry_size * sizeof(DataT);
     cudaMalloc(&segment_state_cache_, seg_cache_size);
 }
 
