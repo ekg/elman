@@ -447,8 +447,13 @@ void dispatch_e88_fla_hybrid_forward(
             S_checkpoints, Sq_cache, checkpoint_interval)
 
     // Common configurations - ordered by n_state for clarity
+    // n_state=8 (tiny state for many-head experiments)
+    if (n_state == 8 && head_v_dim == 8) { DISPATCH_E88_FWD(8, 8); }
+    else if (n_state == 8 && head_v_dim == 16) { DISPATCH_E88_FWD(8, 16); }
+    else if (n_state == 8 && head_v_dim == 32) { DISPATCH_E88_FWD(8, 32); }
+    else if (n_state == 8 && head_v_dim == 64) { DISPATCH_E88_FWD(8, 64); }
     // n_state=16 (small state, low shared memory)
-    if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_FWD(16, 16); }
+    else if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_FWD(16, 16); }
     else if (n_state == 16 && head_v_dim == 32) { DISPATCH_E88_FWD(16, 32); }
     else if (n_state == 16 && head_v_dim == 64) { DISPATCH_E88_FWD(16, 64); }
     else if (n_state == 16 && head_v_dim == 128) { DISPATCH_E88_FWD(16, 128); }
@@ -513,8 +518,13 @@ void dispatch_e88_fla_hybrid_backward(
             d_k_all, d_v_all, d_q_all, d_decay_all, checkpoint_interval); \
     } while(0)
 
+    // n_state=8 (tiny state for many-head experiments)
+    if (n_state == 8 && head_v_dim == 8) { DISPATCH_E88_BWD(8, 8); }
+    else if (n_state == 8 && head_v_dim == 16) { DISPATCH_E88_BWD(8, 16); }
+    else if (n_state == 8 && head_v_dim == 32) { DISPATCH_E88_BWD(8, 32); }
+    else if (n_state == 8 && head_v_dim == 64) { DISPATCH_E88_BWD(8, 64); }
     // n_state=16 (small state, low shared memory)
-    if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_BWD(16, 16); }
+    else if (n_state == 16 && head_v_dim == 16) { DISPATCH_E88_BWD(16, 16); }
     else if (n_state == 16 && head_v_dim == 32) { DISPATCH_E88_BWD(16, 32); }
     else if (n_state == 16 && head_v_dim == 64) { DISPATCH_E88_BWD(16, 64); }
     else if (n_state == 16 && head_v_dim == 128) { DISPATCH_E88_BWD(16, 128); }

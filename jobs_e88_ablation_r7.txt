@@ -1,0 +1,25 @@
+# E88 Ablation Round 7: Many heads with tiny matrices (n_state=8)
+# Testing if extreme head count helps - each head has 8x8 matrix
+# Also testing head combination alternatives
+
+# Reference: h8 winner from round 6 (~1.63 loss)
+E88g_h8_ref:python train.py --level E88f_h8_75m --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h8_ref
+
+# Many heads with tiny 8x8 matrices
+# h64n8: 64 heads × 8×8 = 4096 total state elements
+E88g_h64n8:python train.py --level E88g_h64n8 --dim 2048 --expansion 1.0 --n_state 8 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h64n8
+
+# h128n8: 128 heads × 8×8 = 8192 total state elements
+E88g_h128n8:python train.py --level E88g_h128n8 --dim 1792 --expansion 1.0 --n_state 8 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h128n8
+
+# h256n8: 256 heads × 8×8 = 16384 total state elements
+E88g_h256n8:python train.py --level E88g_h256n8 --dim 1408 --expansion 1.0 --n_state 8 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h256n8
+
+# Comparison: fewer heads with larger matrices (same total state size comparison)
+# h4n128: 4 heads × 128×128 = 65536 total state elements (much bigger!)
+E88g_h4n128:python train.py --level E88g_h4n128 --dim 2304 --expansion 1.0 --n_state 128 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h4n128
+
+# Middle ground: moderate heads with medium matrices
+# h16n16: 16 heads × 16×16 = 4096 total state elements (same as h64n8)
+E88g_h16n16:python train.py --level E88g_h16n16 --dim 2176 --expansion 1.0 --n_state 16 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h16n16
+

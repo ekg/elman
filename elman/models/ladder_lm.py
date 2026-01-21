@@ -513,6 +513,16 @@ def get_ladder_level(level):
         # Larger state with fewer heads
         'E88f_h4n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # E88 round 7: Many heads with tiny matrices (n_state=8)
+        # Testing if extreme head count helps - each head has 8x8 matrix
+        'E88g_h64n8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 8, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88g_h128n8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 128, 'n_state': 8, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88g_h256n8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 256, 'n_state': 8, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Medium: 16 heads with 16x16 matrices (4096 total state = same as h64n8)
+        'E88g_h16n16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 16, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Compare: fewer heads with larger matrices (same total state size as h256n8: 256*64 = h4n128: 4*4096)
+        'E88g_h4n128': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 128, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
