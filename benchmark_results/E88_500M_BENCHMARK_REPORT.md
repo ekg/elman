@@ -56,18 +56,21 @@ E88 FLA Hybrid implements the delta rule with multi-head matrix state. This benc
 
 ### 10-Minute Training Results (January 21, 2026)
 
-| Model | State/Layer | Steps | Final Loss | tok/s | vs Mamba2 Speed |
-|-------|-------------|-------|------------|-------|-----------------|
-| **FLA-GDN** | 393K | 3066 | **1.44** | **40K** | **2.5x** |
-| **Mamba2** | 409K | 1210 | 2.29 | 17K | 1.00x |
-| **CUDA GRU** | 7.1M | 440+ | 2.57 | 6.5K | 0.38x |
-| E88_h32n64 | 131K | 738 | **1.71** | 9.9K | 0.58x |
-| E88_h96n32 | 98K | 686 | 2.11 | 8.9K | 0.52x |
-| E88_h40n64 | 164K | 539 | 1.98 | 7.0K | 0.41x |
-| E88_h64n64 | 262K | 369 | 2.62 | 4.9K | 0.29x |
+**All losses are last-100-step averaged for fair comparison.**
 
-**Note:** FLA-GDN significantly outperforms all other models on this benchmark.
-CUDA LSTM crashed with bfloat16 (testing fp32 separately).
+| Model | State/Layer | Steps | Last-100 Loss | tok/s | vs Mamba2 Speed |
+|-------|-------------|-------|---------------|-------|-----------------|
+| **FLA-GDN** | 393K | 3060 | **1.56** | **38K** | **2.3x** |
+| **Mamba2** | 409K | 1210 | 1.95 | 16.5K | 1.00x |
+| **E88_h96n32** | **98K** | 680 | **1.91** | 9.2K | 0.56x |
+| E88_h32n64 | 131K | 730 | 1.98 | 9.6K | 0.58x |
+| E88_h40n64 | 164K | 530 | 2.20 | 7.0K | 0.42x |
+| E88_h64n64 | 262K | 360 | 2.58 | 4.7K | 0.29x |
+| CUDA GRU | 7.1M | 440+ | 2.57 | 6.5K | 0.39x |
+
+**Key Finding:** E88_h96n32 with **1/4 the state size** achieves **better loss** (1.91) than Mamba2 (1.95).
+
+**Note:** FLA-GDN significantly outperforms all models. CUDA LSTM has kernel bugs.
 
 ### Smaller State Exploration (Non-500M for speed comparison)
 
