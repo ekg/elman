@@ -541,6 +541,42 @@ def get_ladder_level(level):
         # Also test h32n32 (32 heads × 32 state)
         'E88h_h32n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # State-matched configs for fair comparison with Mamba2/FLA-GDN
+        # Using 32×32 matrices (well-optimized) with many heads
+
+        # Mamba2 state: ~163,840/layer - use h160n32 = 160 × 32² = 163,840
+        'E88_h160n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 160, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Alternative: h128n32 = 128 × 32² = 131,072 (slightly less state)
+        'E88_h128n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 128, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
+        # FLA-GDN state: ~524,288/layer - use h512n32 = 512 × 32² = 524,288
+        'E88_h512n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 512, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Alternative: h256n32 = 256 × 32² = 262,144 (half state)
+        'E88_h256n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 256, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
+        # Keep old configs for reference
+        'E88_h32n72': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 72, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h16n96': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16, 'n_state': 96, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h24n80': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 24, 'n_state': 80, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h32n128': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 128, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h64n96': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 96, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
+        # Many-head configs with smaller n_state (faster)
+        # Mamba2 state: ~163,840/layer - h40n64 = 40 × 64² = 163,840 (exact match)
+        'E88_h40n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 40, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h64n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h72n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 72, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h96n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 96, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Smaller state configs (1/2 and 1/4 of Mamba2's 163,840)
+        'E88_h80n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 80, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 81,920 state (1/2 Mamba2)
+        'E88_h40n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 40, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 40,960 state (1/4 Mamba2)
+        'E88_h20n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 20, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 20,480 state (1/8 Mamba2)
+        # Additional configs for head/state scaling study
+        'E88_h128n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 128, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 131,072 state
+        'E88_h64n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 147,456 state
+        'E88_h32n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 131,072 state
+        'E88_h24n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 24, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 98,304 state
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

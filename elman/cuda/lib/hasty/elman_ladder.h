@@ -9438,6 +9438,7 @@ private:
     bool use_global_mem_;       // True if using global memory fallback
     float* S_global_;           // [B*H, n_state, head_v_dim] for large configs
     float* dS_global_;          // [B*H, n_state, head_v_dim] for large configs
+    void* segment_state_cache_; // [B*H, checkpoint_interval, n_state, head_v_dim] for O(T) backward
 };
 
 }  // namespace elman
