@@ -107,7 +107,7 @@ class E75MultiHeadCUDAFunction(torch.autograd.Function):
         # S_cache layout: [checkpoints_flat || sq_cache_flat]
         T, B, _ = x.shape
         n_state = k_cache.size(3)
-        checkpoint_interval = 16
+        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         checkpoints_size = num_checkpoints * B * n_heads * n_state * n_state
         sq_cache_size = T * B * n_heads * n_state
@@ -178,7 +178,7 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
         head_v_dim = ctx.head_v_dim
 
         T, B, H, _ = k.shape
-        checkpoint_interval = 16
+        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
 
         # Split S_cache into S_checkpoints and Sq_cache
@@ -243,7 +243,7 @@ class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
 
         # Split S_cache into S_checkpoints and Sq_cache
         T, B, H, n_state = k.shape
-        checkpoint_interval = 16
+        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         checkpoints_size = num_checkpoints * B * H * n_state * n_state
         sq_cache_size = T * B * H * n_state
@@ -482,13 +482,23 @@ class E88FLAHybrid(nn.Module):
             assert self.head_v_dim == n_state, "tie_kv requires expansion=1.0"
 
         # === Projections (FLA-GDN style) ===
-        self.q_proj = nn.Linear(dim, self.key_dim, bias=False)
-        self.k_proj = nn.Linear(dim, self.key_dim, bias=False)
-        # Skip v_proj if tied (v will use k_proj output)
-        if not self.tie_kv:
-            self.v_proj = nn.Linear(dim, self.value_dim, bias=False)
+        # Fused QKV projection for better GEMM efficiency
+        # Output layout: [q (key_dim), k (key_dim), v (value_dim)]
+        self.fuse_qkv = True  # Enable fused projection
+        if self.fuse_qkv and not self.tie_kv:
+            self.qkv_proj = nn.Linear(dim, 2 * self.key_dim + self.value_dim, bias=False)
+            self.q_proj = None
+            self.k_proj = None
+            self.v_proj = None
         else:
-            self.v_proj = None  # v = k when tied
+            self.qkv_proj = None
+            self.q_proj = nn.Linear(dim, self.key_dim, bias=False)
+            self.k_proj = nn.Linear(dim, self.key_dim, bias=False)
+            # Skip v_proj if tied (v will use k_proj output)
+            if not self.tie_kv:
+                self.v_proj = nn.Linear(dim, self.value_dim, bias=False)
+            else:
+                self.v_proj = None  # v = k when tied
 
         # === Decay parameters ===
         if not simple_decay:
@@ -585,10 +595,13 @@ class E88FLAHybrid(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.q_proj.weight)
-        nn.init.xavier_uniform_(self.k_proj.weight)
-        if self.v_proj is not None:
-            nn.init.xavier_uniform_(self.v_proj.weight)
+        if self.qkv_proj is not None:
+            nn.init.xavier_uniform_(self.qkv_proj.weight)
+        else:
+            nn.init.xavier_uniform_(self.q_proj.weight)
+            nn.init.xavier_uniform_(self.k_proj.weight)
+            if self.v_proj is not None:
+                nn.init.xavier_uniform_(self.v_proj.weight)
         if self.g_proj is not None:
             nn.init.xavier_uniform_(self.g_proj.weight)
         if self.o_proj is not None:
@@ -622,9 +635,17 @@ class E88FLAHybrid(nn.Module):
         n = self.n_state
         H = self.n_heads
 
-        # === Projections ===
-        q = self.q_proj(x)  # [B, T, key_dim]
-        k = self.k_proj(x)  # [B, T, key_dim]
+        # === Projections (fused QKV for GEMM efficiency) ===
+        if self.qkv_proj is not None:
+            # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
+            qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
+            q = qkv[..., :self.key_dim]
+            k = qkv[..., self.key_dim:2*self.key_dim]
+            v = qkv[..., 2*self.key_dim:]
+        else:
+            q = self.q_proj(x)  # [B, T, key_dim]
+            k = self.k_proj(x)  # [B, T, key_dim]
+            v = None  # Set below
 
         # === Short convolutions with optional SiLU (FLA-GDN style) ===
         # Can be disabled for ablation
@@ -641,8 +662,18 @@ class E88FLAHybrid(nn.Module):
         if self.tie_kv:
             # Skip v_proj - v shares k after conv+silu (square state)
             v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
-        else:
+        elif v is None:
+            # Non-fused path: separate v projection
             v = self.v_proj(x)  # [B, T, value_dim]
+
+        # Apply conv and SiLU to v if not using fused projection (fused already did q,k,v together)
+        if not self.tie_kv and self.qkv_proj is None:
+            if self.use_conv and self.v_conv is not None:
+                v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+            if self.use_silu:
+                v = F.silu(v)
+        elif not self.tie_kv:
+            # Fused path: apply conv and SiLU to v
             if self.use_conv and self.v_conv is not None:
                 v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
             if self.use_silu:

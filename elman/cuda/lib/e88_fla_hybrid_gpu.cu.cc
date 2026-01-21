@@ -29,7 +29,7 @@
 #include <cstdio>
 #include "hasty/elman_ladder.h"
 
-#define E88_CHECKPOINT_INTERVAL 32  // Checkpoint every 32 steps for faster backward
+#define E88_CHECKPOINT_INTERVAL 32  // Checkpoint every 32 steps
 
 namespace elman {
 
@@ -205,8 +205,10 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
 
     extern __shared__ float shared_mem[];
     // Memory layout:
-    // S: N_STATE * HEAD_V_DIM
+    // S: N_STATE * HEAD_V_DIM (S_{t-1})
     // dS: N_STATE * HEAD_V_DIM
+    // S_t: N_STATE * HEAD_V_DIM (cached tanh result)
+    // dtanh: N_STATE * HEAD_V_DIM (cached 1 - S_t^2)
     // k: N_STATE
     // v: HEAD_V_DIM
     // q: N_STATE
@@ -219,7 +221,9 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
     // d_delta: HEAD_V_DIM
     float* S = shared_mem;
     float* dS = S + N_STATE * HEAD_V_DIM;
-    float* k = dS + N_STATE * HEAD_V_DIM;
+    float* S_t = dS + N_STATE * HEAD_V_DIM;
+    float* dtanh = S_t + N_STATE * HEAD_V_DIM;
+    float* k = dtanh + N_STATE * HEAD_V_DIM;
     float* v = k + N_STATE;
     float* q = v + HEAD_V_DIM;
     float* delta = q + N_STATE;
@@ -229,6 +233,7 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
     float* d_q = d_v + HEAD_V_DIM;
     float* d_Sq = d_q + N_STATE;
     float* d_delta = d_Sq + HEAD_V_DIM;
+    float* warp_results = d_delta + HEAD_V_DIM;  // [8 floats for up to 256 threads / 32]
 
     int tid = threadIdx.x;
     int state_size = N_STATE * HEAD_V_DIM;
@@ -361,6 +366,17 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
             }
             __syncthreads();
 
+            // *** KEY OPTIMIZATION: Compute S_t = tanh(...) and dtanh = 1 - S_t^2 ONCE ***
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                float pre_tanh = decay_val * S[idx] + delta[j] * k[i];
+                float tanh_val = tanhf(pre_tanh);
+                S_t[idx] = tanh_val;
+                dtanh[idx] = 1.0f - tanh_val * tanh_val;
+            }
+            __syncthreads();
+
             // Backward through output (no self-gating - FLA-GDN style)
             if (tid < HEAD_V_DIM) {
                 float d_out = __bfloat162float(d_output[v_offset + tid]);
@@ -373,9 +389,7 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
             if (tid < N_STATE) {
                 float sum = 0.0f;
                 for (int j = 0; j < HEAD_V_DIM; j++) {
-                    // S_t[i,j] after tanh update
-                    float S_t_ij = tanhf(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
-                    sum += S_t_ij * d_Sq[j];
+                    sum += S_t[tid * HEAD_V_DIM + j] * d_Sq[j];
                 }
                 d_q[tid] = sum;
             }
@@ -389,49 +403,64 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Backward through state update: S_t = tanh(decay * S_{t-1} + outer(delta, k))
-            __shared__ float d_decay_accum;
-            if (tid == 0) d_decay_accum = 0.0f;
-            __syncthreads();
+            // Backward through state update using cached dtanh
 
-            // Compute d_delta and d_k contributions
+            // Compute d_delta using cached dtanh
             if (tid < HEAD_V_DIM) {
                 float d_delta_local = 0.0f;
                 for (int i = 0; i < N_STATE; i++) {
-                    float S_t_ij = tanhf(decay_val * S[i * HEAD_V_DIM + tid] + delta[tid] * k[i]);
-                    float d_pre = dS[i * HEAD_V_DIM + tid] * (1.0f - S_t_ij * S_t_ij);
+                    float d_pre = dS[i * HEAD_V_DIM + tid] * dtanh[i * HEAD_V_DIM + tid];
                     d_delta_local += d_pre * k[i];
                 }
                 d_delta[tid] = d_delta_local;
             }
             __syncthreads();
 
+            // Compute d_k using cached dtanh
             if (tid < N_STATE) {
                 float d_k_local = 0.0f;
                 for (int j = 0; j < HEAD_V_DIM; j++) {
-                    float S_t_ij = tanhf(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
-                    float d_pre = dS[tid * HEAD_V_DIM + j] * (1.0f - S_t_ij * S_t_ij);
+                    float d_pre = dS[tid * HEAD_V_DIM + j] * dtanh[tid * HEAD_V_DIM + j];
                     d_k_local += d_pre * delta[j];
                 }
                 d_k[tid] = d_k_local;
             }
             __syncthreads();
 
-            // Compute d_decay (sum over all elements)
-            {
-                float d_decay_local = 0.0f;
-                for (int idx = tid; idx < state_size; idx += blockDim.x) {
-                    int i = idx / HEAD_V_DIM;
-                    int j = idx % HEAD_V_DIM;
-                    float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
-                    float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
-                    d_decay_local += d_pre * S[idx];
-                }
-                atomicAdd(&d_decay_accum, d_decay_local);
+            // Compute d_decay using cached dtanh with WARP REDUCTION (faster than atomicAdd)
+            float d_decay_local = 0.0f;
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                float d_pre = dS[idx] * dtanh[idx];
+                d_decay_local += d_pre * S[idx];
+            }
+
+            // Warp reduction using shuffle intrinsics
+            #pragma unroll
+            for (int offset = 16; offset >= 1; offset /= 2) {
+                d_decay_local += __shfl_xor_sync(0xFFFFFFFF, d_decay_local, offset);
+            }
+
+            // Lane 0 of each warp writes partial sum to shared memory
+            const int warp_id = tid / 32;
+            const int lane_id = tid % 32;
+            const int num_warps = (blockDim.x + 31) / 32;
+            if (lane_id == 0) {
+                warp_results[warp_id] = d_decay_local;
             }
             __syncthreads();
 
-            // d_v = d_delta (since delta = v - retrieved)
+            // First warp reduces across all warp results
+            float d_decay_accum = 0.0f;
+            if (warp_id == 0) {
+                float load_val = (tid < num_warps) ? warp_results[tid] : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset >= 1; offset /= 2) {
+                    load_val += __shfl_xor_sync(0xFFFFFFFF, load_val, offset);
+                }
+                d_decay_accum = load_val;
+            }
+            __syncthreads();
+
             // d_k contribution from retrieved gradient
             if (tid < N_STATE) {
                 float d_k_from_retrieved = 0.0f;
@@ -455,12 +484,11 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Update dS for next iteration (propagate through decay)
+            // Update dS for next iteration using cached dtanh
             for (int idx = tid; idx < state_size; idx += blockDim.x) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
-                float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
+                float d_pre = dS[idx] * dtanh[idx];
                 dS[idx] = d_pre * decay_val + (-d_delta[j]) * k[i];
             }
             __syncthreads();
@@ -521,6 +549,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
     float* d_q = d_v + HEAD_V_DIM;
     float* d_Sq = d_q + N_STATE;
     float* d_delta = d_Sq + HEAD_V_DIM;
+    float* warp_results = d_delta + HEAD_V_DIM;  // [8 floats for warp reduction]
 
     int tid = threadIdx.x;
 
@@ -672,9 +701,6 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             __syncthreads();
 
             // Backward through state update
-            __shared__ float d_decay_accum;
-            if (tid == 0) d_decay_accum = 0.0f;
-            __syncthreads();
 
             // Compute d_delta and d_k contributions
             if (tid < HEAD_V_DIM) {
@@ -699,17 +725,40 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             }
             __syncthreads();
 
-            // Compute d_decay
-            {
-                float d_decay_local = 0.0f;
-                for (int idx = tid; idx < state_size; idx += blockDim.x) {
-                    int i = idx / HEAD_V_DIM;
-                    int j = idx % HEAD_V_DIM;
-                    float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
-                    float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
-                    d_decay_local += d_pre * S[idx];
+            // Compute d_decay with WARP REDUCTION (faster than atomicAdd)
+            float d_decay_local = 0.0f;
+            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+                int i = idx / HEAD_V_DIM;
+                int j = idx % HEAD_V_DIM;
+                float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
+                float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
+                d_decay_local += d_pre * S[idx];
+            }
+
+            // Warp reduction using shuffle intrinsics
+            #pragma unroll
+            for (int offset = 16; offset >= 1; offset /= 2) {
+                d_decay_local += __shfl_xor_sync(0xFFFFFFFF, d_decay_local, offset);
+            }
+
+            // Lane 0 of each warp writes partial sum to shared memory
+            const int warp_id = tid / 32;
+            const int lane_id = tid % 32;
+            const int num_warps = (blockDim.x + 31) / 32;
+            if (lane_id == 0) {
+                warp_results[warp_id] = d_decay_local;
+            }
+            __syncthreads();
+
+            // First warp reduces across all warp results
+            float d_decay_accum = 0.0f;
+            if (warp_id == 0) {
+                float load_val = (tid < num_warps) ? warp_results[tid] : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset >= 1; offset /= 2) {
+                    load_val += __shfl_xor_sync(0xFFFFFFFF, load_val, offset);
                 }
-                atomicAdd(&d_decay_accum, d_decay_local);
+                d_decay_accum = load_val;
             }
             __syncthreads();
 
@@ -838,7 +887,8 @@ void dispatch_e88_fla_hybrid_forward(
 // Returns true if shared memory requirement exceeds ~96KB limit
 inline bool e88_needs_global_mem_backward(int n_state, int head_v_dim) {
     int state_size = n_state * head_v_dim;
-    int shared_size = (2 * state_size + 3 * n_state + 5 * head_v_dim) * sizeof(float);
+    // Shared mem: S, dS, S_t, dtanh (4*state_size) + k,q,d_k,d_q (4*n_state) + v,delta,retrieved,d_v,d_Sq,d_delta (6*head_v_dim) + warp_results (8)
+    int shared_size = (4 * state_size + 4 * n_state + 6 * head_v_dim + 8) * sizeof(float);
     return shared_size > 96 * 1024;  // 96KB limit for safety margin
 }
 
@@ -855,8 +905,8 @@ void dispatch_e88_fla_hybrid_backward(
     int checkpoint_interval, cudaStream_t stream
 ) {
     int state_size = n_state * head_v_dim;
-    // Shared memory: 2*state_size + 2*n_state + 4*head_v_dim + n_state + head_v_dim + n_state + head_v_dim
-    int shared_size = (2 * state_size + 3 * n_state + 5 * head_v_dim) * sizeof(float);
+    // Shared memory: S, dS, S_t, dtanh (4*state_size) + k,q,d_k,d_q (4*n_state) + v,delta,retrieved,d_v,d_Sq,d_delta (6*head_v_dim) + warp_results (8)
+    int shared_size = (4 * state_size + 4 * n_state + 6 * head_v_dim + 8) * sizeof(float);
     int threads = min(256, state_size);
     int num_blocks = B * H;
 
@@ -876,9 +926,9 @@ void dispatch_e88_fla_hybrid_backward(
     } while(0)
 
     // Global memory kernel dispatch - uses small buffers only in shared memory
-    // Shared mem for global version: 3*n_state + 5*head_v_dim floats
+    // Shared mem for global version: k,q,d_k,d_q (4*n_state) + v,delta,retrieved,d_v,d_Sq,d_delta (6*head_v_dim) + warp_results (8)
     #define DISPATCH_E88_BWD_GLOBAL(N, V) do { \
-        int global_shared_size = (3 * N + 5 * V) * sizeof(float); \
+        int global_shared_size = (4 * N + 6 * V + 8) * sizeof(float); \
         E88FLAHybridBackwardKernel_GlobalMem_BF16<N, V><<<num_blocks, threads, global_shared_size, stream>>>( \
             T, B, H, k_all, v_all, q_all, decay_all, \
             S_checkpoints, Sq_cache, d_output, \
