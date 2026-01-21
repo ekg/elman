@@ -503,6 +503,16 @@ def get_ladder_level(level):
         # Linear state version of h12 (to confirm tanh doesn't matter)
         'E88e_h12_linear': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 12, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'linear_state': True}),
 
+        # E88 round 6: Small states (now fixed) + fewer heads exploration
+        # Small states with winning config (no conv/gate/norm)
+        'E88f_h32n16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 16, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88f_h24n24': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 24, 'n_state': 24, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Even fewer heads (continuing the trend)
+        'E88f_h6': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 6, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88f_h4': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Larger state with fewer heads
+        'E88f_h4n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

@@ -1,0 +1,19 @@
+# E88 Ablation Round 6: Small states (now fixed) + fewer heads exploration
+# Testing if trend continues: fewer heads = better?
+# Also testing small states now that CUDA dispatch is fixed
+
+# Reference: h8 winner from round 5
+E88f_h8_ref:python train.py --level E88e_h8_75m --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h8_ref
+
+# Even fewer heads
+E88f_h6:python train.py --level E88f_h6 --dim 2304 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h6
+
+E88f_h4:python train.py --level E88f_h4 --dim 2560 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h4
+
+# Small states (CUDA now fixed)
+E88f_h32n16:python train.py --level E88f_h32n16 --dim 1792 --expansion 1.0 --n_state 16 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h32n16
+
+E88f_h24n24:python train.py --level E88f_h24n24 --dim 1728 --expansion 1.0 --n_state 24 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h24n24
+
+# Larger state with fewer heads
+E88f_h4n64:python train.py --level E88f_h4n64 --dim 2560 --expansion 1.0 --n_state 64 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r6/E88f_h4n64
