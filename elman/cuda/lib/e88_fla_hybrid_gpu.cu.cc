@@ -734,6 +734,13 @@ void dispatch_e88_fla_hybrid_forward(
     else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_FWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_FWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_FWD(32, 128); }
+    // n_state=48 (for proper scaling at 500M)
+    else if (n_state == 48 && head_v_dim == 48) { DISPATCH_E88_FWD(48, 48); }
+    else if (n_state == 48 && head_v_dim == 64) { DISPATCH_E88_FWD(48, 64); }
+    else if (n_state == 48 && head_v_dim == 96) { DISPATCH_E88_FWD(48, 96); }
+    // n_state=56 (for proper scaling at 500M)
+    else if (n_state == 56 && head_v_dim == 56) { DISPATCH_E88_FWD(56, 56); }
+    else if (n_state == 56 && head_v_dim == 64) { DISPATCH_E88_FWD(56, 64); }
     // n_state=64
     else if (n_state == 64 && head_v_dim == 32) { DISPATCH_E88_FWD(64, 32); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_E88_FWD(64, 64); }
@@ -825,6 +832,13 @@ void dispatch_e88_fla_hybrid_backward(
     else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_BWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_BWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_BWD(32, 128); }
+    // n_state=48 (for proper scaling at 500M)
+    else if (n_state == 48 && head_v_dim == 48) { DISPATCH_E88_BWD(48, 48); }
+    else if (n_state == 48 && head_v_dim == 64) { DISPATCH_E88_BWD(48, 64); }
+    else if (n_state == 48 && head_v_dim == 96) { DISPATCH_E88_BWD(48, 96); }
+    // n_state=56 (for proper scaling at 500M)
+    else if (n_state == 56 && head_v_dim == 56) { DISPATCH_E88_BWD(56, 56); }
+    else if (n_state == 56 && head_v_dim == 64) { DISPATCH_E88_BWD(56, 64); }
     // n_state=64
     else if (n_state == 64 && head_v_dim == 32) { DISPATCH_E88_BWD(64, 32); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_E88_BWD(64, 64); }

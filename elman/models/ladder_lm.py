@@ -527,6 +527,9 @@ def get_ladder_level(level):
         # Best config (h8n32) needs very wide dims for 500M, so also test h8n64
         'E88_h8n32_500m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
         'E88_h8n64_500m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        # Properly scaled E88 (state/dim ratio ≈ 3.76 like 75M config)
+        'E88_h8n48_scaled': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h8n56_scaled': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 56, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
         # E88 round 8: Head mixing ablation (based on best h8n32 config)
         # Testing different ways to combine head outputs
