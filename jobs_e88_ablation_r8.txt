@@ -1,0 +1,22 @@
+# E88 Ablation Round 8: Head mixing strategies
+# Testing different ways to combine multi-head outputs
+# Base config: h8n32, no conv/gate/norm (winner from rounds 5-7)
+
+# Reference: concat (standard MHA approach) - same as h8 winner
+E88h_concat:python train.py --level E88h_concat --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_concat
+
+# weighted_sum: learnable scalar per head, then smaller o_proj
+E88h_wsum:python train.py --level E88h_wsum --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_wsum
+
+# per_head: each head projects independently to dim, then sum
+E88h_perhead:python train.py --level E88h_perhead --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_perhead
+
+# input_weighted: input-dependent head weighting (attention over heads)
+E88h_inputw:python train.py --level E88h_inputw --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_inputw
+
+# sum: direct sum of heads (no cross-head mixing)
+E88h_sum:python train.py --level E88h_sum --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_sum
+
+# Also test h32n32 (32 heads × 32 state) - we never tried this
+E88h_h32n32:python train.py --level E88h_h32n32 --dim 1792 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r8/E88h_h32n32
+

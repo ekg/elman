@@ -444,6 +444,7 @@ class E88FLAHybrid(nn.Module):
         use_silu: bool = True,  # Set False to skip SiLU on projections
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
         use_output_norm: bool = True,  # Set False to skip RMSNorm on output
+        head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
         **kwargs
     ):
         super().__init__()
@@ -466,6 +467,7 @@ class E88FLAHybrid(nn.Module):
         self.use_silu = use_silu
         self.use_l2_norm = use_l2_norm
         self.use_output_norm = use_output_norm
+        self.head_mix = head_mix
 
         # Key and query dimensions (like FLA-GDN: key_dim = num_heads * head_k_dim)
         self.key_dim = n_heads * n_state
@@ -550,8 +552,29 @@ class E88FLAHybrid(nn.Module):
         else:
             self.beta_proj = None
 
-        # === Output projection ===
-        self.o_proj = nn.Linear(self.value_dim, dim, bias=False)
+        # === Output projection (depends on head_mix strategy) ===
+        if head_mix == 'concat':
+            # Standard: concat all heads, project to dim
+            self.o_proj = nn.Linear(self.value_dim, dim, bias=False)
+        elif head_mix == 'weighted_sum':
+            # Learnable scalar per head, then project from head_v_dim to dim
+            self.head_weights = nn.Parameter(torch.ones(n_heads) / n_heads)
+            self.o_proj = nn.Linear(self.head_v_dim, dim, bias=False)
+        elif head_mix == 'per_head':
+            # Each head has its own projection to dim, then sum
+            self.head_projs = nn.ModuleList([
+                nn.Linear(self.head_v_dim, dim, bias=False) for _ in range(n_heads)
+            ])
+            self.o_proj = None  # Not used
+        elif head_mix == 'input_weighted':
+            # Input-dependent head weighting
+            self.head_attn = nn.Linear(dim, n_heads, bias=False)
+            self.o_proj = nn.Linear(self.head_v_dim, dim, bias=False)
+        elif head_mix == 'sum':
+            # Direct sum of heads (requires head_v_dim projectable to dim)
+            self.o_proj = nn.Linear(self.head_v_dim, dim, bias=False)
+        else:
+            raise ValueError(f"Unknown head_mix: {head_mix}")
 
         # === Output normalization (RMSNorm like FLA, works with bfloat16) ===
         self.o_norm_weight = nn.Parameter(torch.ones(self.head_v_dim))
@@ -568,7 +591,13 @@ class E88FLAHybrid(nn.Module):
             nn.init.xavier_uniform_(self.v_proj.weight)
         if self.g_proj is not None:
             nn.init.xavier_uniform_(self.g_proj.weight)
-        nn.init.xavier_uniform_(self.o_proj.weight)
+        if self.o_proj is not None:
+            nn.init.xavier_uniform_(self.o_proj.weight)
+        if hasattr(self, 'head_projs'):
+            for proj in self.head_projs:
+                nn.init.xavier_uniform_(proj.weight)
+        if hasattr(self, 'head_attn'):
+            nn.init.xavier_uniform_(self.head_attn.weight)
         if self.a_proj is not None:
             nn.init.xavier_uniform_(self.a_proj.weight)
         if self.beta_proj is not None:
@@ -741,11 +770,29 @@ class E88FLAHybrid(nn.Module):
             g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
             output = output * torch.sigmoid(g)
 
-        # Reshape: [B, T, value_dim]
-        output = output.view(B, T, self.value_dim)
+        # Head mixing (output is [B, T, H, head_v_dim])
+        if self.head_mix == 'concat':
+            # Standard: concat all heads, project to dim
+            output = output.view(B, T, self.value_dim)
+            output = self.o_proj(output)
+        elif self.head_mix == 'weighted_sum':
+            # Learnable scalar per head, then project
+            weights = self.head_weights.softmax(dim=0).view(1, 1, self.n_heads, 1)
+            output = (output * weights).sum(dim=2)  # [B, T, head_v_dim]
+            output = self.o_proj(output)
+        elif self.head_mix == 'per_head':
+            # Each head projects independently, then sum
+            output = sum(self.head_projs[h](output[:, :, h]) for h in range(self.n_heads))
+        elif self.head_mix == 'input_weighted':
+            # Input-dependent head weighting
+            weights = self.head_attn(x).softmax(dim=-1).unsqueeze(-1)  # [B, T, H, 1]
+            output = (output * weights).sum(dim=2)  # [B, T, head_v_dim]
+            output = self.o_proj(output)
+        elif self.head_mix == 'sum':
+            # Direct sum of heads
+            output = output.sum(dim=2)  # [B, T, head_v_dim]
+            output = self.o_proj(output)
 
-        # Output projection
-        output = self.o_proj(output)
         output = self.dropout(output)
 
         return output, S_list
@@ -769,6 +816,8 @@ class E88FLAHybrid(nn.Module):
             ablation_str.append('no_l2_norm')
         if not self.use_output_norm:
             ablation_str.append('no_output_norm')
+        if self.head_mix != 'concat':
+            ablation_str.append(f'head_mix={self.head_mix}')
         ablation_info = f', ablations=[{",".join(ablation_str)}]' if ablation_str else ''
         return (f'dim={self.dim}, key_dim={self.key_dim}, value_dim={self.value_dim}, '
                 f'n_state={self.n_state}, n_heads={self.n_heads}, expansion={self.expansion}, '

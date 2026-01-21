@@ -523,6 +523,16 @@ def get_ladder_level(level):
         # Compare: fewer heads with larger matrices (same total state size as h256n8: 256*64 = h4n128: 4*4096)
         'E88g_h4n128': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 128, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # E88 round 8: Head mixing ablation (based on best h8n32 config)
+        # Testing different ways to combine head outputs
+        'E88h_concat': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'concat'}),
+        'E88h_wsum': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'weighted_sum'}),
+        'E88h_perhead': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'per_head'}),
+        'E88h_inputw': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'input_weighted'}),
+        'E88h_sum': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'sum'}),
+        # Also test h32n32 (32 heads × 32 state)
+        'E88h_h32n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
