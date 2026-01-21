@@ -523,6 +523,11 @@ def get_ladder_level(level):
         # Compare: fewer heads with larger matrices (same total state size as h256n8: 256*64 = h4n128: 4*4096)
         'E88g_h4n128': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4, 'n_state': 128, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # E88 500M scaling variants
+        # Best config (h8n32) needs very wide dims for 500M, so also test h8n64
+        'E88_h8n32_500m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+        'E88_h8n64_500m': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
         # E88 round 8: Head mixing ablation (based on best h8n32 config)
         # Testing different ways to combine head outputs
         'E88h_concat': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False, 'head_mix': 'concat'}),
