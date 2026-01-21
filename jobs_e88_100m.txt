@@ -1,0 +1,29 @@
+# E88 FLA Hybrid vs baselines at ~100M params
+# E88 combines FLA-GDN design (Mamba2 decay, output gating, short conv)
+# with E75's nonlinear matrix state: S = tanh(decay * S + outer(delta, k_norm))
+
+# === BASELINES ===
+python train.py --level mamba2 --dim 896 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/mamba2
+python train.py --level fla-gdn --dim 768 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/fla-gdn
+
+# === E88 VARIANTS ===
+# E88h8n32 with expansion=2.0 (default)
+python train.py --level E88h8n32 --dim 768 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h8n32
+
+# E88h8n48 - larger state
+python train.py --level E88h8n48 --dim 640 --expansion 2.0 --n_state 48 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h8n48
+
+# E88h16n24 - more heads, smaller state
+python train.py --level E88h16n24 --dim 640 --expansion 2.0 --n_state 24 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h16n24
+
+# E88h16n32 - more heads
+python train.py --level E88h16n32 --dim 512 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h16n32
+
+# E88h4n32 - fewer heads, same state
+python train.py --level E88h4n32 --dim 1024 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h4n32
+
+# === COMPARISON: E75pc (no Mamba2 decay) ===
+python train.py --level E75pch8n32 --dim 4480 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E75pch8n32
+
+# === COMPARISON: Simple Elman baseline ===
+python train.py --level 32 --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E32
