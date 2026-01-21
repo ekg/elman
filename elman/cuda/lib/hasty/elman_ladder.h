@@ -9413,6 +9413,8 @@ struct E88FLAHybridBackward {
         int n_heads,
         const cudaStream_t& stream);
 
+    ~E88FLAHybridBackward();
+
     void Run(
         int steps,
         const T* k,             // [T, B, H, n_state]
@@ -9433,6 +9435,9 @@ private:
     int head_v_dim_;
     int n_heads_;
     cudaStream_t stream_;
+    bool use_global_mem_;       // True if using global memory fallback
+    float* S_global_;           // [B*H, n_state, head_v_dim] for large configs
+    float* dS_global_;          // [B*H, n_state, head_v_dim] for large configs
 };
 
 }  // namespace elman
