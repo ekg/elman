@@ -14940,6 +14940,90 @@ std::vector<Tensor> e88_fla_hybrid_backward_only(
     return {d_k, d_v, d_q, d_decay};
 }
 
+
+// E88 Fused Projection: Combines GEMM + conv + silu + L2 norm + decay computation
+std::vector<Tensor> e88_fused_projection(
+    Tensor x,               // [T, B, dim]
+    Tensor W_qkva,          // [2*key_dim + value_dim + n_heads, dim]
+    Tensor conv_q,          // [key_dim, d_conv] or empty
+    Tensor conv_k,          // [key_dim, d_conv] or empty
+    Tensor conv_v,          // [value_dim, d_conv] or empty
+    Tensor A_log,           // [n_heads] float32
+    Tensor dt_bias,         // [n_heads] float32
+    int n_heads,
+    int key_dim,
+    int value_dim,
+    int d_conv,
+    bool use_conv,
+    bool use_silu,
+    bool use_l2_norm) {
+
+    const auto time_steps = x.size(0);
+    const auto batch_size = x.size(1);
+    const auto dim = x.size(2);
+    const auto n_state = key_dim / n_heads;
+    const auto head_v_dim = value_dim / n_heads;
+
+    CHECK_INPUT(x);
+    CHECK_INPUT(W_qkva);
+    CHECK_INPUT(A_log);
+    CHECK_INPUT(dt_bias);
+
+    // Conv tensors are optional (when use_conv=false)
+    if (use_conv) {
+        CHECK_INPUT(conv_q);
+        CHECK_INPUT(conv_k);
+        CHECK_INPUT(conv_v);
+    }
+
+    const auto options = x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: q, k, v, decay
+    Tensor q_out = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor k_out = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor v_out = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor decay_out = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    // Workspace for intermediate qkva projection
+    int qkva_dim = 2 * key_dim + value_dim + n_heads;
+    Tensor qkva_workspace = torch::empty({time_steps, batch_size, qkva_dim}, options);
+
+    TORCH_CHECK(x.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Fused Projection only supports bfloat16");
+    TORCH_CHECK(A_log.scalar_type() == at::ScalarType::Float,
+                "A_log must be float32");
+    TORCH_CHECK(dt_bias.scalar_type() == at::ScalarType::Float,
+                "dt_bias must be float32");
+
+    // Get cuBLAS handle
+    cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    elman::e88_fused_projection(
+        handle,
+        time_steps, batch_size, dim,
+        n_heads, key_dim, value_dim,
+        n_state, head_v_dim,
+        d_conv,
+        use_conv, use_silu, use_l2_norm,
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_qkva.data_ptr()),
+        use_conv ? reinterpret_cast<const __nv_bfloat16*>(conv_q.data_ptr()) : nullptr,
+        use_conv ? reinterpret_cast<const __nv_bfloat16*>(conv_k.data_ptr()) : nullptr,
+        use_conv ? reinterpret_cast<const __nv_bfloat16*>(conv_v.data_ptr()) : nullptr,
+        A_log.data_ptr<float>(),
+        dt_bias.data_ptr<float>(),
+        reinterpret_cast<__nv_bfloat16*>(qkva_workspace.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(q_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(k_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(v_out.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(decay_out.data_ptr()),
+        stream);
+
+    return {q_out, k_out, v_out, decay_out};
+}
+
 }  // anonymous namespace
 
 
@@ -15398,4 +15482,6 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: Parallel forward replay for all segments (stores all S states)");
     m.def("e88_fla_hybrid_backward_only", &e88_fla_hybrid_backward_only,
           "E88 FLA Hybrid: Backward pass using pre-computed states (no forward replay)");
+    m.def("e88_fused_projection", &e88_fused_projection,
+          "E88 Fused Projection: Combined GEMM + conv + silu + L2 norm + decay computation");
 }

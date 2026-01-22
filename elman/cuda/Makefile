@@ -128,6 +128,7 @@ CUDA_OBJS := \
 	lib/e88_cublas_backward_gpu.o \
 	lib/e88_reduced_sync_backward.o \
 	lib/e88_parallel_segment_gpu.o \
+	lib/e88_fused_projection_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

@@ -9414,6 +9414,48 @@ void dispatch_e88_backward_only(
     cudaStream_t stream
 );
 
+// E88 Fused Projection - combines GEMM and post-processing
+void dispatch_e88_post_projection(
+    int T, int B, int H,
+    int key_dim, int value_dim,
+    int n_state, int head_v_dim,
+    int d_conv,
+    bool use_conv, bool use_silu, bool use_l2_norm,
+    const __nv_bfloat16* qkva_all,
+    const __nv_bfloat16* conv_q,
+    const __nv_bfloat16* conv_k,
+    const __nv_bfloat16* conv_v,
+    const float* A_log,
+    const float* dt_bias,
+    __nv_bfloat16* q_out,
+    __nv_bfloat16* k_out,
+    __nv_bfloat16* v_out,
+    __nv_bfloat16* decay_out,
+    cudaStream_t stream
+);
+
+void e88_fused_projection(
+    cublasHandle_t handle,
+    int T, int B, int dim,
+    int H, int key_dim, int value_dim,
+    int n_state, int head_v_dim,
+    int d_conv,
+    bool use_conv, bool use_silu, bool use_l2_norm,
+    const __nv_bfloat16* x,
+    const __nv_bfloat16* W_qkva,
+    const __nv_bfloat16* conv_q,
+    const __nv_bfloat16* conv_k,
+    const __nv_bfloat16* conv_v,
+    const float* A_log,
+    const float* dt_bias,
+    __nv_bfloat16* qkva_workspace,
+    __nv_bfloat16* q_out,
+    __nv_bfloat16* k_out,
+    __nv_bfloat16* v_out,
+    __nv_bfloat16* decay_out,
+    cudaStream_t stream
+);
+
 template<typename T>
 struct E88FLAHybridForward {
     E88FLAHybridForward(
