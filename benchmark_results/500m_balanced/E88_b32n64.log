@@ -1,0 +1,37 @@
+Using device: cuda
+Output directory: benchmark_results/500m_balanced/E88_b32n64/levelE88_b32n64_100m_20260122_201619
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88_b32n64, 505,841,536 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.0627 | lr 3.00e-04 | grad 11.88 | tok/s 5474
+step     20 | loss 4.0976 | lr 3.00e-04 | grad 19.88 | tok/s 6378
+step     30 | loss 4.1862 | lr 3.00e-04 | grad 9.06 | tok/s 6739
+step     40 | loss 3.2127 | lr 3.00e-04 | grad 5.62 | tok/s 6727
+step     50 | loss 2.6662 | lr 3.00e-04 | grad 4.56 | tok/s 6726
+step     60 | loss 2.9219 | lr 3.00e-04 | grad 4.53 | tok/s 6592
+step     70 | loss 2.6982 | lr 3.00e-04 | grad 2.89 | tok/s 6374
+step     80 | loss 2.4724 | lr 3.00e-04 | grad 4.53 | tok/s 6633
+step     90 | loss 2.5826 | lr 3.00e-04 | grad 10.31 | tok/s 6412
+step    100 | loss 2.2825 | lr 3.00e-04 | grad 3.73 | tok/s 6479
+step    110 | loss 2.2464 | lr 3.00e-04 | grad 2.66 | tok/s 6390
+step    120 | loss 2.2714 | lr 3.00e-04 | grad 2.80 | tok/s 6305
+step    130 | loss 2.2757 | lr 3.00e-04 | grad 2.06 | tok/s 6455
+step    140 | loss 2.0823 | lr 3.00e-04 | grad 1.74 | tok/s 6466
+step    150 | loss 1.9600 | lr 3.00e-04 | grad 2.58 | tok/s 6166
+step    160 | loss 1.9055 | lr 3.00e-04 | grad 1.76 | tok/s 6218
+step    170 | loss 2.0636 | lr 3.00e-04 | grad 11.06 | tok/s 6440
+step    180 | loss 1.9730 | lr 3.00e-04 | grad 1.16 | tok/s 6459
+step    190 | loss 1.7213 | lr 3.00e-04 | grad 1.80 | tok/s 6559
+step    200 | loss 1.3665 | lr 3.00e-04 | grad 1.55 | tok/s 6713
+step    210 | loss 1.9279 | lr 3.00e-04 | grad 1.88 | tok/s 6420
+step    220 | loss 1.7796 | lr 3.00e-04 | grad 1.77 | tok/s 6641
+step    230 | loss 1.7686 | lr 3.00e-04 | grad 2.64 | tok/s 6381
+step    240 | loss 1.7239 | lr 3.00e-04 | grad 2.11 | tok/s 6538
+
+Training complete! Final step: 245

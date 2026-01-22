@@ -603,6 +603,16 @@ def get_ladder_level(level):
         'E88_h144n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 144, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 331,776 state (1/4x FLA)
         'E88_h178n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 178, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 410,112 state (~Mamba2)
 
+        # Balanced configs: n_heads × n_state ≈ dim (ratio ~1.0 for efficient projection)
+        # These avoid the projection bottleneck that causes slowdowns with high head counts
+        'E88_b56n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 57K state, ratio=0.82
+        'E88_b60n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 60, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 61K state, ratio=0.94
+        'E88_b64n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 65K state, ratio=1.07
+        'E88_b40n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 40, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 92K state, ratio=0.94
+        'E88_b44n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 44, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 101K state, ratio=1.18
+        'E88_b28n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 28, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 115K state, ratio=0.82
+        'E88_b32n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 131K state, ratio=1.07
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)

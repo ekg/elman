@@ -1,0 +1,36 @@
+# 500M Balanced E88 Benchmark
+# Key principle: n_heads × n_state ≈ dim (projection ratio ~1.0)
+# This avoids the projection bottleneck that caused slowdowns in previous benchmarks
+#
+# See E88_BALANCED_CONFIG_GUIDE.md for details on the balancing principle.
+
+# Baselines (for comparison)
+python train.py --level mamba2 --dim 1600 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/mamba2
+python train.py --level fla-gdn --dim 2304 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/fla-gdn
+
+# E88 Balanced configs (all ~500M params, depth=32, ratio ≈ 1.0)
+# Format: E88_b{n_heads}n{n_state} with dim chosen for ratio balance
+
+# n_state=32 variants (smaller state per head, more heads)
+# E88_b56n32: dim=2176, 56 heads, n_state=32, 504M params, 57K state/layer, ratio=0.82
+python train.py --level E88_b56n32 --dim 2176 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b56n32
+
+# E88_b60n32: dim=2048, 60 heads, n_state=32, 508M params, 61K state/layer, ratio=0.94
+python train.py --level E88_b60n32 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b60n32
+
+# E88_b64n32: dim=1920, 64 heads, n_state=32, 508M params, 65K state/layer, ratio=1.07
+python train.py --level E88_b64n32 --dim 1920 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b64n32
+
+# n_state=48 variants (medium state per head)
+# E88_b40n48: dim=2048, 40 heads, n_state=48, 507M params, 92K state/layer, ratio=0.94
+python train.py --level E88_b40n48 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b40n48
+
+# E88_b44n48: dim=1792, 44 heads, n_state=48, 488M params, 101K state/layer, ratio=1.18
+python train.py --level E88_b44n48 --dim 1792 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b44n48
+
+# n_state=64 variants (larger state per head, fewer heads)
+# E88_b28n64: dim=2176, 28 heads, n_state=64, 502M params, 115K state/layer, ratio=0.82
+python train.py --level E88_b28n64 --dim 2176 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b28n64
+
+# E88_b32n64: dim=1920, 32 heads, n_state=64, 506M params, 131K state/layer, ratio=1.07
+python train.py --level E88_b32n64 --dim 1920 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_balanced/E88_b32n64
