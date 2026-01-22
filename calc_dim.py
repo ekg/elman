@@ -74,9 +74,40 @@ def calc_fla_gdn_params(dim, depth, expansion=2.0, vocab_size=256):
     return layers_total + embed
 
 
+def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256):
+    """Calculate E88 FLA Hybrid parameters.
+
+    Best E88 config uses expansion=1.0, no conv, no gate, no output norm.
+    """
+    # Key dimensions
+    key_dim = n_heads * n_state
+    value_dim = int(n_heads * n_state * expansion)
+
+    # Per layer (for best config: expansion=1.0, no conv, no gate):
+    # qkv_proj: dim → 2*key_dim + value_dim = 3*H*n (when expansion=1.0)
+    # a_proj: dim → n_heads (decay)
+    # A_log: n_heads
+    # dt_bias: n_heads
+    # o_proj: value_dim → dim
+    # o_norm_weight: n_state (always created)
+    qkv_proj = dim * (2 * key_dim + value_dim)
+    decay_params = dim * n_heads + n_heads + n_heads  # a_proj + A_log + dt_bias
+    out_proj = value_dim * dim
+    norm_weight = n_state  # head_v_dim
+
+    per_layer = qkv_proj + decay_params + out_proj + norm_weight
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    norms = dim * (depth + 1)  # RMSNorm
+
+    return layers_total + embed + norms
+
+
 def find_dim_for_params(calc_func, target_params, **kwargs):
     """Binary search for 128-aligned dim that hits target params."""
-    for dim in range(128, 4096, 128):
+    max_dim = 8192  # Extended for 500M+ models
+    for dim in range(128, max_dim + 1, 128):
         params = calc_func(dim=dim, **kwargs)
         if params >= target_params:
             # Check if previous was closer
@@ -86,7 +117,7 @@ def find_dim_for_params(calc_func, target_params, **kwargs):
                 if abs(prev_params - target_params) < abs(params - target_params):
                     return prev_dim, prev_params
             return dim, params
-    return 3968, calc_func(dim=3968, **kwargs)
+    return max_dim, calc_func(dim=max_dim, **kwargs)
 
 
 def parse_params(s):
@@ -131,6 +162,23 @@ def print_standard_configs():
             n_heads=n_heads, n_state=n_state, depth=20, expansion=1.0
         )
         name = f"E75h{n_heads}n{n_state}"
+        extra = f"H={n_heads}, n={n_state}"
+        print(f"{name:<12} {dim:<6} {20:<6} {extra:<20} {params/1e6:.1f}M")
+
+    # E88 variants (best config: expansion=1.0, no conv, no gate)
+    print()
+    print("E88 FLA Hybrid (expansion=1.0, ablated):")
+    e88_configs = [
+        (4, 32), (6, 32), (8, 32), (12, 32), (16, 32), (20, 32),
+        (24, 24), (32, 16),
+        (8, 48), (8, 64),
+    ]
+    for n_heads, n_state in e88_configs:
+        dim, params = find_dim_for_params(
+            calc_e88_params, target,
+            n_heads=n_heads, n_state=n_state, depth=20, expansion=1.0
+        )
+        name = f"E88h{n_heads}n{n_state}"
         extra = f"H={n_heads}, n={n_state}"
         print(f"{name:<12} {dim:<6} {20:<6} {extra:<20} {params/1e6:.1f}M")
 
@@ -189,6 +237,31 @@ def main():
             'model': f'E75h{n_heads}n{n_state}',
             'dim': dim, 'depth': args.depth, 'n_heads': n_heads, 'n_state': n_state,
             'expansion': args.expansion, 'params': params
+        }
+
+    elif model.startswith('e88'):
+        # Parse E88h8n32 format
+        import re
+        match = re.match(r'e88h(\d+)n(\d+)', model)
+        if not match:
+            print(f"Invalid E88 format: {model}. Use E88h8n32 style.")
+            return
+        n_heads = int(match.group(1))
+        n_state = int(match.group(2))
+
+        if n_state % 8 != 0:
+            print(f"ERROR: n_state must be multiple of 8, got {n_state}")
+            return
+
+        dim, params = find_dim_for_params(
+            calc_e88_params, target,
+            n_heads=n_heads, n_state=n_state, depth=args.depth, expansion=args.expansion
+        )
+        config = {
+            'model': f'E88h{n_heads}n{n_state}',
+            'dim': dim, 'depth': args.depth, 'n_heads': n_heads, 'n_state': n_state,
+            'expansion': args.expansion, 'params': params,
+            'state_per_layer': n_heads * n_state * n_state  # H × n² state
         }
     else:
         print(f"Unknown model type: {model}")

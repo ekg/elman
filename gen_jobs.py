@@ -116,6 +116,77 @@ BENCHMARKS = {
             ('E88_h32n16', '--level E88f_h32n16 --dim 1536 --depth 20'),
         ],
     },
+
+    # ============================================================
+    # MEGA BENCHMARKS - Comprehensive param-matched comparisons
+    # All configs verified with actual LadderLM instantiation
+    # ============================================================
+
+    'mega_100m': {
+        'desc': 'Comprehensive 100M param benchmark (verified configs)',
+        'models': [
+            # Baselines (~100M)
+            ('mamba2', '--level mamba2 --dim 896 --depth 20'),  # 101.4M (auto-config)
+            ('fla-gdn', '--level fla-gdn --dim 1024 --depth 20'),  # 105.7M
+
+            # E88 n_state=32 variants (fully ablated: no conv, no gate, no norm)
+            ('E88_d12h32', '--level E88d_h12 --dim 3200 --depth 20'),  # 100.0M (12 heads)
+            ('E88_d20h32', '--level E88d_h20 --dim 1920 --depth 20'),  # 99.6M (20 heads)
+
+            # E88 smaller n_state (faster throughput)
+            ('E88_h32n16', '--level E88f_h32n16 --dim 2432 --depth 20'),  # 101.8M
+            ('E88_h24n24', '--level E88f_h24n24 --dim 2176 --depth 20'),  # 101.9M
+
+            # E88 larger n_state (more state capacity)
+            ('E88_h8n64', '--level E88c_h8n64 --dim 2432 --depth 20'),  # ~100M
+
+            # E75 MultiHead for comparison
+            ('E75h4n32', '--level E75h4n32 --dim 1920 --depth 20 --n_state 32 --expansion 1.0'),  # 98.8M
+        ],
+    },
+
+    'mega_500m': {
+        'desc': 'Comprehensive 500M param benchmark (verified configs)',
+        'models': [
+            # Baselines (~500M)
+            ('mamba2', '--level mamba2 --dim 1600 --depth 32'),  # ~508M (auto depth)
+            ('fla-gdn', '--level fla-gdn --dim 2304 --depth 20'),  # 533.7M
+
+            # E88 many-heads n_state=32 (fully ablated)
+            ('E88_h48n32', '--level E88_h48n32 --dim 3968 --depth 20'),  # 492.5M
+            ('E88_h64n32', '--level E88_h64n32 --dim 3072 --depth 20'),  # 508.1M
+            ('E88_h96n32', '--level E88_h96n32 --dim 2048 --depth 20'),  # 507.8M
+            ('E88_h128n32', '--level E88_h128n32 --dim 1536 --depth 20'),  # 507.7M
+
+            # E88 larger state variants
+            ('E88_h32n64', '--level E88_h32n64 --dim 3072 --depth 20'),  # 506.1M
+            ('E88_h24n64', '--level E88_h24n64 --dim 4096 --depth 20'),  # 506.4M
+        ],
+    },
+
+    # Extended benchmarks for specific comparisons
+    'e88_heads_100m': {
+        'desc': 'E88 head count scaling at 100M params',
+        'models': [
+            ('fla-gdn', '--level fla-gdn --dim 1024 --depth 20'),
+            ('E88_h8n32', '--level E88e_h8_75m --dim 3840 --depth 20'),  # 8 heads, ~100M
+            ('E88_h12n32', '--level E88d_h12 --dim 3200 --depth 20'),  # 12 heads
+            ('E88_h16n32', '--level E88c_nogate --dim 2560 --depth 20'),  # 16 heads
+            ('E88_h20n32', '--level E88d_h20 --dim 1920 --depth 20'),  # 20 heads
+        ],
+    },
+
+    'e88_state_100m': {
+        'desc': 'E88 state size scaling at 100M params',
+        'models': [
+            ('fla-gdn', '--level fla-gdn --dim 1024 --depth 20'),
+            ('E88_h32n16', '--level E88f_h32n16 --dim 2432 --depth 20'),  # n=16
+            ('E88_h24n24', '--level E88f_h24n24 --dim 2176 --depth 20'),  # n=24
+            ('E88_h16n32', '--level E88c_nogate --dim 2560 --depth 20'),  # n=32
+            ('E88_h8n48', '--level E88h8n48 --dim 3200 --depth 20'),  # n=48
+            ('E88_h8n64', '--level E88c_h8n64 --dim 2432 --depth 20'),  # n=64
+        ],
+    },
 }
 
 
