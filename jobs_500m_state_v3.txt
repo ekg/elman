@@ -1,0 +1,23 @@
+# 500M State-Matched v3 - Using n_state=32/48 (working values)
+# n_state=64+ is numerically unstable!
+
+# Baselines
+python train.py --level mamba2 --dim 1600 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/mamba2
+python train.py --level fla-gdn --dim 2304 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/fla-gdn
+
+# E88 with n_state=48, depth=32
+# 1/16x FLA state (82,944): 36 heads
+python train.py --level E88_h36n48 --dim 2304 --depth 32 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h36n48
+
+# 1/8x FLA state (165,888): 72 heads
+python train.py --level E88_h72n48 --dim 1152 --depth 32 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h72n48
+
+# ~Mamba2 state (410,112): 178 heads
+python train.py --level E88_h178n48 --dim 512 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h178n48
+
+# E88 with n_state=32, depth=32 (more heads for comparison)
+# 1/16x FLA state (82,944): 81 heads
+python train.py --level E88_h81n32 --dim 1536 --depth 32 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h81n32
+
+# 1/8x FLA state (165,888): 162 heads
+python train.py --level E88_h162n32 --dim 768 --depth 32 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h162n32

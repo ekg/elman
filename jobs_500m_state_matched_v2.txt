@@ -1,0 +1,25 @@
+# 500M State-Matched Benchmark v2 (batch_size=8 with grad_accum=4)
+# Reduced batch size to avoid OOM with large state matrices
+
+# Baselines (keep original batch size)
+python train.py --level mamba2 --dim 1600 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/mamba2
+python train.py --level fla-gdn --dim 2304 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/fla-gdn
+
+# E88 with reduced batch size and gradient accumulation
+# 1/16x FLA state: h5n128 (81,920 state/layer)
+python train.py --level E88_h5n128 --dim 6144 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h5n128
+
+# 1/8x FLA state: h10n128 (163,840 state/layer)
+python train.py --level E88_h10n128 --dim 3072 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h10n128
+
+# 1/4x FLA state: h20n128 (327,680 state/layer)
+python train.py --level E88_h20n128 --dim 1536 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h20n128
+
+# ~Mamba2 state with n_state=64: h100n64 (409,600 state/layer)
+python train.py --level E88_h100n64 --dim 640 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h100n64
+
+# 1/2x FLA state: h40n128 (655,360 state/layer)
+python train.py --level E88_h40n128 --dim 768 --depth 32 --data data/pile.txt --batch_size 4 --grad_accum 8 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h40n128
+
+# 1x FLA state: h81n128 (1,327,104 state/layer)
+python train.py --level E88_h81n128 --dim 384 --depth 32 --data data/pile.txt --batch_size 4 --grad_accum 8 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h81n128

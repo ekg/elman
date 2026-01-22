@@ -597,6 +597,12 @@ def get_ladder_level(level):
         'E88_h162n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 162, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 165,888 state
         'E88_h100n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 100, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 409,600 state (~Mamba2)
 
+        # State-matched with n_state=48 (more numerically stable than n_state=64+)
+        'E88_h36n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 36, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 82,944 state (1/16x FLA)
+        'E88_h72n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 72, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 165,888 state (1/8x FLA)
+        'E88_h144n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 144, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 331,776 state (1/4x FLA)
+        'E88_h178n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 178, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 410,112 state (~Mamba2)
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
