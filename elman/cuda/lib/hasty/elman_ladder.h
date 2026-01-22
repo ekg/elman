@@ -9395,6 +9395,25 @@ void dispatch_e88_reduced_sync_backward(
     int checkpoint_interval, cudaStream_t stream
 );
 
+// E88 Parallel Segment Processing - separates forward replay from backward
+void dispatch_e88_forward_replay_all(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* decay_all, const __nv_bfloat16* S_checkpoints,
+    __nv_bfloat16* S_all,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e88_backward_only(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* S_all, const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    cudaStream_t stream
+);
+
 template<typename T>
 struct E88FLAHybridForward {
     E88FLAHybridForward(

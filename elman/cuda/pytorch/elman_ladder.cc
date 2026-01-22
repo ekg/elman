@@ -14844,6 +14844,102 @@ std::vector<Tensor> e88_fla_hybrid_backward_reduced_sync(
     return {d_k, d_v, d_q, d_decay};
 }
 
+// E88 Parallel Segment Processing: Forward Replay All
+Tensor e88_fla_hybrid_forward_replay_all(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor decay,           // [T, B, H]
+    Tensor S_checkpoints,   // [num_checkpoints, B, H, n_state, head_v_dim]
+    int n_heads,
+    int checkpoint_interval) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_checkpoints);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output: all S_{t-1} states
+    Tensor S_all = torch::empty({time_steps, batch_size, n_heads, n_state, head_v_dim}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Forward Replay All only supports bfloat16");
+
+    using namespace elman;
+
+    dispatch_e88_forward_replay_all(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_all.data_ptr()),
+        checkpoint_interval,
+        at::cuda::getCurrentCUDAStream());
+
+    return S_all;
+}
+
+// E88 Parallel Segment Processing: Backward Only (uses pre-computed states)
+std::vector<Tensor> e88_fla_hybrid_backward_only(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor S_all,           // [T, B, H, n_state, head_v_dim] pre-computed states
+    Tensor d_output,        // [T, B, H, head_v_dim]
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_all);
+    CHECK_INPUT(d_output);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: gradients for k, v, q, decay
+    Tensor d_k = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_v = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor d_q = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_decay = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Backward Only supports bfloat16");
+
+    using namespace elman;
+
+    dispatch_e88_backward_only(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_all.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
 }  // anonymous namespace
 
 
@@ -15298,4 +15394,8 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: cuBLAS tensor core backward pass");
     m.def("e88_fla_hybrid_backward_reduced_sync", &e88_fla_hybrid_backward_reduced_sync,
           "E88 FLA Hybrid: Reduced sync backward pass (optimized sync barriers)");
+    m.def("e88_fla_hybrid_forward_replay_all", &e88_fla_hybrid_forward_replay_all,
+          "E88 FLA Hybrid: Parallel forward replay for all segments (stores all S states)");
+    m.def("e88_fla_hybrid_backward_only", &e88_fla_hybrid_backward_only,
+          "E88 FLA Hybrid: Backward pass using pre-computed states (no forward replay)");
 }
