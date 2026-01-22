@@ -59,17 +59,23 @@ try:
     E88_NATIVE_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fla_hybrid_forward')
     # E88 cuBLAS tensor core backward kernel
     E88_CUBLAS_BACKWARD_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fla_hybrid_backward_cublas')
+    # E88 fused projection kernel (GEMM + conv + silu + L2 norm + decay)
+    E88_FUSED_PROJECTION_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fused_projection')
     # Legacy E75 kernels for backwards compatibility
     E88_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_forward')
     E88_PRECOMPUTED_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_precomputed_forward')
 except ImportError:
     E88_NATIVE_CUDA_AVAILABLE = False
     E88_CUBLAS_BACKWARD_AVAILABLE = False
+    E88_FUSED_PROJECTION_AVAILABLE = False
     E88_CUDA_AVAILABLE = False
     E88_PRECOMPUTED_CUDA_AVAILABLE = False
 
 # Global flag to enable cuBLAS backward kernel (can be toggled at runtime)
 USE_CUBLAS_BACKWARD = False
+
+# Global flag to enable fused projection kernel (can be toggled at runtime)
+USE_FUSED_PROJECTION = True
 
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE
@@ -608,6 +614,17 @@ class E88FLAHybrid(nn.Module):
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
+        # === Fused projection support ===
+        # Check if we can use the fused projection kernel
+        # Requires: qkv_proj (not separate), conv enabled, not simple_decay
+        self._use_fused_projection = (
+            E88_FUSED_PROJECTION_AVAILABLE and
+            self.qkv_proj is not None and
+            use_conv and
+            not simple_decay and
+            not tie_kv
+        )
+
         self._init_weights()
 
     def _init_weights(self):
@@ -632,6 +649,31 @@ class E88FLAHybrid(nn.Module):
         if self.beta_proj is not None:
             nn.init.xavier_uniform_(self.beta_proj.weight)
 
+    def _get_fused_projection_weights(self):
+        """Construct combined W_qkva weight and conv weights for fused kernel.
+
+        Returns:
+            W_qkva: [2*key_dim + value_dim + n_heads, dim] combined projection weight
+            conv_q: [key_dim, d_conv] query conv weights
+            conv_k: [key_dim, d_conv] key conv weights
+            conv_v: [value_dim, d_conv] value conv weights
+        """
+        # Combine qkv_proj with a_proj to get W_qkva
+        # Layout: [q (key_dim), k (key_dim), v (value_dim), alpha (n_heads)]
+        W_qkva = torch.cat([
+            self.qkv_proj.weight,  # [2*key_dim + value_dim, dim]
+            self.a_proj.weight,    # [n_heads, dim]
+        ], dim=0)
+
+        # Extract conv weights from Conv1d layers
+        # Conv1d with groups=channels has weight shape [channels, 1, d_conv]
+        # Kernel expects [channels, d_conv]
+        conv_q = self.q_conv.weight.squeeze(1)  # [key_dim, d_conv]
+        conv_k = self.k_conv.weight.squeeze(1)  # [key_dim, d_conv]
+        conv_v = self.v_conv.weight.squeeze(1)  # [value_dim, d_conv]
+
+        return W_qkva, conv_q, conv_k, conv_v
+
     def forward(
         self,
         x: torch.Tensor,
@@ -651,70 +693,109 @@ class E88FLAHybrid(nn.Module):
         n = self.n_state
         H = self.n_heads
 
-        # === Projections (fused QKV for GEMM efficiency) ===
-        if self.qkv_proj is not None:
-            # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
-            qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
-            q = qkv[..., :self.key_dim]
-            k = qkv[..., self.key_dim:2*self.key_dim]
-            v = qkv[..., 2*self.key_dim:]
-        else:
-            q = self.q_proj(x)  # [B, T, key_dim]
-            k = self.k_proj(x)  # [B, T, key_dim]
-            v = None  # Set below
+        # === Check if we can use fused projection CUDA kernel ===
+        # Note: Fused projection is forward-only, use only for inference
+        use_fused_proj = (
+            USE_FUSED_PROJECTION and
+            self._use_fused_projection and
+            x.is_cuda and
+            x.dtype == torch.bfloat16 and
+            not self.training  # Only use for inference - no gradients
+        )
 
-        # === Short convolutions with optional SiLU (FLA-GDN style) ===
-        # Can be disabled for ablation
-        if self.use_conv and self.q_conv is not None:
-            # Conv expects [B, C, T]
-            q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
-            k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
-        # Apply SiLU if enabled
-        if self.use_silu:
-            q = F.silu(q)
-            k = F.silu(k)
+        if use_fused_proj:
+            # === Use fused projection kernel ===
+            # Combines GEMM + conv + silu + L2 norm + decay in one kernel
+            W_qkva, conv_q, conv_k, conv_v = self._get_fused_projection_weights()
 
-        # v projection (or tied to k when expansion=1.0 and tie_kv=True)
-        if self.tie_kv:
-            # Skip v_proj - v shares k after conv+silu (square state)
-            v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
-        elif v is None:
-            # Non-fused path: separate v projection
-            v = self.v_proj(x)  # [B, T, value_dim]
+            # Transpose input for CUDA: [B, T, dim] -> [T, B, dim]
+            x_cuda = x.transpose(0, 1).contiguous()
 
-        # Apply conv and SiLU to v if not using fused projection (fused already did q,k,v together)
-        if not self.tie_kv and self.qkv_proj is None:
-            if self.use_conv and self.v_conv is not None:
-                v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-            if self.use_silu:
-                v = F.silu(v)
-        elif not self.tie_kv:
-            # Fused path: apply conv and SiLU to v
-            if self.use_conv and self.v_conv is not None:
-                v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-            if self.use_silu:
-                v = F.silu(v)
-
-        # === Compute decay ===
-        if self.simple_decay:
-            # Simple sigmoid decay (ablation: replaces Mamba2-style)
-            decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
-        else:
-            # Mamba2-style exponential decay
-            # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
-            # Compute in float32 for numerical stability, then cast back
-            g = -self.A_log.float().exp() * F.softplus(
-                self.a_proj(x).float() + self.dt_bias
+            # Call fused projection kernel
+            # Returns: q [T, B, H, n_state], k [T, B, H, n_state], v [T, B, H, head_v_dim], decay [T, B, H]
+            # Note: A_log and dt_bias must be float32 for numerical stability
+            q, k, v, decay = hasty_pytorch_lib.e88_fused_projection(
+                x_cuda, W_qkva,
+                conv_q, conv_k, conv_v,
+                self.A_log.float(), self.dt_bias.float(),
+                H, self.key_dim, self.value_dim, self.d_conv,
+                self.use_conv, self.use_silu, self.use_l2_norm
             )
-            # Convert to decay factor: decay = exp(g) in [0, 1]
-            decay = g.exp().to(x.dtype)  # [B, T, H], cast back to input dtype
 
-        # === Reshape for per-head processing ===
-        # q, k: [B, T, H, n_state]
-        q = q.view(B, T, H, n)
-        k = k.view(B, T, H, n)
-        # v: [B, T, H, head_v_dim]
-        v = v.view(B, T, H, self.head_v_dim)
+            # Transpose back: [T, B, H, dim] -> [B, T, H, dim]
+            q = q.transpose(0, 1)
+            k = k.transpose(0, 1)
+            v = v.transpose(0, 1)
+            decay = decay.transpose(0, 1)
+
+            # Note: q, k are already L2 normalized by the fused kernel if use_l2_norm=True
+
+        else:
+            # === Original code path: separate projections ===
+            # Projections (fused QKV for GEMM efficiency)
+            if self.qkv_proj is not None:
+                # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
+                qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
+                q = qkv[..., :self.key_dim]
+                k = qkv[..., self.key_dim:2*self.key_dim]
+                v = qkv[..., 2*self.key_dim:]
+            else:
+                q = self.q_proj(x)  # [B, T, key_dim]
+                k = self.k_proj(x)  # [B, T, key_dim]
+                v = None  # Set below
+
+            # Short convolutions with optional SiLU (FLA-GDN style)
+            # Can be disabled for ablation
+            if self.use_conv and self.q_conv is not None:
+                # Conv expects [B, C, T]
+                q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
+            # Apply SiLU if enabled
+            if self.use_silu:
+                q = F.silu(q)
+                k = F.silu(k)
+
+            # v projection (or tied to k when expansion=1.0 and tie_kv=True)
+            if self.tie_kv:
+                # Skip v_proj - v shares k after conv+silu (square state)
+                v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
+            elif v is None:
+                # Non-fused path: separate v projection
+                v = self.v_proj(x)  # [B, T, value_dim]
+
+            # Apply conv and SiLU to v if not using fused projection (fused already did q,k,v together)
+            if not self.tie_kv and self.qkv_proj is None:
+                if self.use_conv and self.v_conv is not None:
+                    v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                if self.use_silu:
+                    v = F.silu(v)
+            elif not self.tie_kv:
+                # Fused path: apply conv and SiLU to v
+                if self.use_conv and self.v_conv is not None:
+                    v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                if self.use_silu:
+                    v = F.silu(v)
+
+            # Compute decay
+            if self.simple_decay:
+                # Simple sigmoid decay (ablation: replaces Mamba2-style)
+                decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
+            else:
+                # Mamba2-style exponential decay
+                # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
+                # Compute in float32 for numerical stability, then cast back
+                g = -self.A_log.float().exp() * F.softplus(
+                    self.a_proj(x).float() + self.dt_bias
+                )
+                # Convert to decay factor: decay = exp(g) in [0, 1]
+                decay = g.exp().to(x.dtype)  # [B, T, H], cast back to input dtype
+
+            # Reshape for per-head processing
+            # q, k: [B, T, H, n_state]
+            q = q.view(B, T, H, n)
+            k = k.view(B, T, H, n)
+            # v: [B, T, H, head_v_dim]
+            v = v.view(B, T, H, self.head_v_dim)
 
         # === Initialize states ===
         # State shape: [B, H, n_state, head_v_dim] stacked (for CUDA kernel)
@@ -729,13 +810,15 @@ class E88FLAHybrid(nn.Module):
                     x.dtype == torch.bfloat16 and self.training)
 
         if use_cuda:
-            # L2 normalize k and q if enabled (CUDA expects normalized inputs)
-            # Autocast may promote norm() to float32, so explicitly cast ALL inputs back
             input_dtype = x.dtype  # Use x.dtype as authoritative (should be bf16)
-            if self.use_l2_norm:
+
+            # L2 normalize k and q if enabled and not already done by fused projection
+            # Fused projection already does L2 norm, so skip if used
+            if self.use_l2_norm and not use_fused_proj:
                 k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
                 q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
             else:
+                # Either L2 norm disabled, or already done by fused projection
                 k_norm = k.to(input_dtype)
                 q_norm = q.to(input_dtype)
 

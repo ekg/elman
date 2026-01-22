@@ -337,9 +337,18 @@ void dispatch_e88_forward_replay_all(
             S_all, checkpoint_interval); \
     } while(0)
 
-    if (n_state == 32 && head_v_dim == 64) { DISPATCH_FWD_REPLAY(32, 64); }
-    else if (n_state == 32 && head_v_dim == 128) { DISPATCH_FWD_REPLAY(32, 128); }
+    // Symmetric configurations (n_state == head_v_dim)
+    if (n_state == 4 && head_v_dim == 4) { DISPATCH_FWD_REPLAY(4, 4); }
+    else if (n_state == 8 && head_v_dim == 8) { DISPATCH_FWD_REPLAY(8, 8); }
+    else if (n_state == 16 && head_v_dim == 16) { DISPATCH_FWD_REPLAY(16, 16); }
+    else if (n_state == 32 && head_v_dim == 32) { DISPATCH_FWD_REPLAY(32, 32); }
+    else if (n_state == 48 && head_v_dim == 48) { DISPATCH_FWD_REPLAY(48, 48); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_FWD_REPLAY(64, 64); }
+    else if (n_state == 96 && head_v_dim == 96) { DISPATCH_FWD_REPLAY(96, 96); }
+    else if (n_state == 128 && head_v_dim == 128) { DISPATCH_FWD_REPLAY(128, 128); }
+    // Asymmetric configurations
+    else if (n_state == 32 && head_v_dim == 64) { DISPATCH_FWD_REPLAY(32, 64); }
+    else if (n_state == 32 && head_v_dim == 128) { DISPATCH_FWD_REPLAY(32, 128); }
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_FWD_REPLAY(64, 128); }
     else if (n_state == 48 && head_v_dim == 96) { DISPATCH_FWD_REPLAY(48, 96); }
     else {
@@ -374,9 +383,18 @@ void dispatch_e88_backward_only(
             d_k_all, d_v_all, d_q_all, d_decay_all); \
     } while(0)
 
-    if (n_state == 32 && head_v_dim == 64) { DISPATCH_BWD_ONLY(32, 64); }
-    else if (n_state == 32 && head_v_dim == 128) { DISPATCH_BWD_ONLY(32, 128); }
+    // Symmetric configurations (n_state == head_v_dim)
+    if (n_state == 4 && head_v_dim == 4) { DISPATCH_BWD_ONLY(4, 4); }
+    else if (n_state == 8 && head_v_dim == 8) { DISPATCH_BWD_ONLY(8, 8); }
+    else if (n_state == 16 && head_v_dim == 16) { DISPATCH_BWD_ONLY(16, 16); }
+    else if (n_state == 32 && head_v_dim == 32) { DISPATCH_BWD_ONLY(32, 32); }
+    else if (n_state == 48 && head_v_dim == 48) { DISPATCH_BWD_ONLY(48, 48); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_BWD_ONLY(64, 64); }
+    else if (n_state == 96 && head_v_dim == 96) { DISPATCH_BWD_ONLY(96, 96); }
+    else if (n_state == 128 && head_v_dim == 128) { DISPATCH_BWD_ONLY(128, 128); }
+    // Asymmetric configurations
+    else if (n_state == 32 && head_v_dim == 64) { DISPATCH_BWD_ONLY(32, 64); }
+    else if (n_state == 32 && head_v_dim == 128) { DISPATCH_BWD_ONLY(32, 128); }
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_BWD_ONLY(64, 128); }
     else if (n_state == 48 && head_v_dim == 96) { DISPATCH_BWD_ONLY(48, 96); }
     else {
@@ -387,16 +405,33 @@ void dispatch_e88_backward_only(
     #undef DISPATCH_BWD_ONLY
 }
 
-// Template instantiations
+// Template instantiations - Forward Replay - Symmetric configurations
+template __global__ void E88ForwardReplayAllKernel_BF16<4, 4>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<8, 8>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<16, 16>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<32, 32>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<48, 48>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<64, 64>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<96, 96>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+template __global__ void E88ForwardReplayAllKernel_BF16<128, 128>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
+// Forward Replay - Asymmetric configurations
 template __global__ void E88ForwardReplayAllKernel_BF16<32, 64>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
 template __global__ void E88ForwardReplayAllKernel_BF16<32, 128>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
-template __global__ void E88ForwardReplayAllKernel_BF16<64, 64>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
 template __global__ void E88ForwardReplayAllKernel_BF16<64, 128>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
 template __global__ void E88ForwardReplayAllKernel_BF16<48, 96>(int, int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int);
 
+// Backward Only - Symmetric configurations
+template __global__ void E88BackwardOnlyKernel_BF16<4, 4>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<8, 8>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<16, 16>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<32, 32>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<48, 48>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<64, 64>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<96, 96>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+template __global__ void E88BackwardOnlyKernel_BF16<128, 128>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
+// Backward Only - Asymmetric configurations
 template __global__ void E88BackwardOnlyKernel_BF16<32, 64>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
 template __global__ void E88BackwardOnlyKernel_BF16<32, 128>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
-template __global__ void E88BackwardOnlyKernel_BF16<64, 64>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
 template __global__ void E88BackwardOnlyKernel_BF16<64, 128>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
 template __global__ void E88BackwardOnlyKernel_BF16<48, 96>(int, int, int, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*);
 
