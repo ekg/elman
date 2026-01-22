@@ -1,0 +1,67 @@
+# E88 Scaling Laws Study
+# Goal: Understand how E88 scales with dimension, depth, n_state, and total params
+
+# =============================================================================
+# EXPERIMENT 1: Dimension Sweep (~500M params, varying width vs depth)
+# =============================================================================
+# Question: Does wider dimension help, or is deeper better at same param count?
+
+# narrow + deep: dim=1536, depth=50
+python train.py --level E88_dim1536 --dim 1536 --depth 50 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim1536
+
+# medium-narrow: dim=1792, depth=38
+python train.py --level E88_dim1792 --dim 1792 --depth 38 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim1792
+
+# medium: dim=2048, depth=28
+python train.py --level E88_dim2048 --dim 2048 --depth 28 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim2048
+
+# medium-wide: dim=2304, depth=22
+python train.py --level E88_dim2304 --dim 2304 --depth 22 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim2304
+
+# wide: dim=2560, depth=18
+python train.py --level E88_dim2560 --dim 2560 --depth 18 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim2560
+
+# wider: dim=2816, depth=16
+python train.py --level E88_dim2816 --dim 2816 --depth 16 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim2816
+
+# widest: dim=3072, depth=14
+python train.py --level E88_dim3072 --dim 3072 --depth 14 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/dim3072
+
+# =============================================================================
+# EXPERIMENT 2: n_state Sweep (dim=2048, depth=32, ~540M params)
+# =============================================================================
+# Question: Is n_state=32 universally optimal, or scale-dependent?
+
+python train.py --level E88_n16 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/n16
+python train.py --level E88_n24 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/n24
+python train.py --level E88_n32 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/n32
+python train.py --level E88_n40 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/n40
+python train.py --level E88_n48 --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/n48
+
+# =============================================================================
+# EXPERIMENT 3: Multi-Scale Comparison (E88 vs baselines at 100M-1B)
+# =============================================================================
+# Question: How does E88 scale compared to Mamba2 and FLA-GDN?
+
+# 100M scale
+python train.py --level E88_100M --dim 1024 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/E88_100M
+python train.py --level mamba2 --dim 640 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/mamba2_100M
+python train.py --level fla-gdn --dim 640 --depth 16 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/fla-gdn_100M
+
+# 300M scale
+python train.py --level E88_300M --dim 1536 --depth 28 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/E88_300M
+python train.py --level mamba2 --dim 1024 --depth 28 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/mamba2_300M
+python train.py --level fla-gdn --dim 1280 --depth 18 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/fla-gdn_300M
+
+# 500M scale (already have from balanced benchmark, but include for completeness)
+python train.py --level E88_500M --dim 2048 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/E88_500M
+python train.py --level mamba2 --dim 1600 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/mamba2_500M
+python train.py --level fla-gdn --dim 2304 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/fla-gdn_500M
+
+# 750M scale
+python train.py --level E88_750M --dim 2304 --depth 38 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/E88_750M
+python train.py --level mamba2 --dim 1920 --depth 38 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/mamba2_750M
+
+# 1B scale
+python train.py --level E88_1B --dim 2560 --depth 44 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/E88_1B
+python train.py --level mamba2 --dim 2048 --depth 44 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_scaling/mamba2_1B
