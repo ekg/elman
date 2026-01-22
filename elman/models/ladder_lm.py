@@ -576,6 +576,14 @@ def get_ladder_level(level):
         'E88_h64n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 147,456 state
         'E88_h32n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 32, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 131,072 state
         'E88_h24n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 24, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 98,304 state
+        # Balanced configs for ~500M params (dim ≈ d_inner)
+        'E88_h48n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 48, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 49,152 state
+        'E88_h64n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 64, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 65,536 state
+        'E88_h68n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 68, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 69,632 state
+        'E88_h72n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 72, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 73,728 state
+        'E88_h76n32': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 76, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 77,824 state
+        'E88_h48n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 48, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 110,592 state
+        'E88_h48n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 48, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 196,608 state
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh

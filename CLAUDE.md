@@ -342,3 +342,98 @@ Matrix state models have O(n²) state size and require different dims to hit 100
 | E73cp | 1408 | 96 | 96×96 | E73 with gradient checkpointing |
 
 **E73cp Checkpointing**: 2.5x memory reduction (7.8 GB vs 19.7 GB) with ~6% throughput overhead.
+
+## E88 FLA Hybrid (Delta Rule with Multi-Head Matrix State)
+
+E88 combines FLA-GatedDeltaNet's design elements with multi-head matrix state. Through extensive ablation, the **best E88 configuration** strips down to:
+
+```python
+# E88 optimal config (ablation-derived):
+expansion = 1.0       # NO expansion (square state)
+use_conv = False      # NO short convolutions
+use_gate = False      # NO output gating
+use_output_norm = False  # NO RMSNorm on output
+n_state = 32          # Matrix state size (or 16/24 for speed)
+n_heads = 4-16        # More heads = more parallelism
+```
+
+### E88 Level Names
+
+Registered configs in `ladder_lm.py` (use with `--level`):
+- `E88f_h32n16` - 32 heads, n_state=16, fully ablated (74K tok/s)
+- `E88f_h24n24` - 24 heads, n_state=24, fully ablated (65K tok/s)
+- `E88e_h8_75m` - 8 heads, n_state=32, ~40M params (104K tok/s)
+- `E88b_nonorm` - 16 heads, n_state=32, with gate (65K tok/s)
+- `E88d_h12` - 12 heads at n_state=32
+- `E88d_h20` - 20 heads at n_state=32
+- `E88f_h4`, `E88f_h6` - smaller head counts at n_state=32
+
+### E88 Benchmark Results (Jan 22, 2026 - Verified)
+
+| Config | Params | Loss (Last100) | Throughput | Notes |
+|--------|--------|----------------|------------|-------|
+| mamba2 | 101.9M | **1.39** | 64.6K tok/s | Reference baseline |
+| fla-gdn | 59.6M | **1.51** | 75.3K tok/s | Reference baseline |
+| E88_h24n24 | 71.9M | 1.52 | 65.0K tok/s | n_state=24 working! |
+| E88_h16n32_gate | 79.6M | 1.52 | 64.9K tok/s | With output gate |
+| E88_h32n16 | 64.3M | 1.53 | **74.2K tok/s** | n_state=16 working! |
+| E88_h8n32 | 40.2M | 1.55 | **104K tok/s** | Fastest E88 |
+
+**Key findings (Jan 22, 2026):**
+- n_state=16 and n_state=24 templates work correctly (no NaN)
+- E88_h32n16 matches FLA-GDN throughput (74K tok/s)
+- E88_h8n32 achieves **104K tok/s** (fastest recurrent model)
+- E88 loss (~1.52-1.55) still trails FLA-GDN (1.51) and Mamba2 (1.39)
+
+### E88 CUDA Kernel Architecture
+
+Files:
+- `elman/cuda/lib/e88_fla_hybrid_gpu.cu.cc` - Main forward/backward kernel
+- `elman/cuda/lib/e88_parallel_segment_gpu.cu.cc` - Parallel segment processing
+- `elman/cuda/lib/e88_reduced_sync_backward.cu.cc` - Optimized backward with reduced syncs
+- `elman/cuda/lib/e88_fused_projection_gpu.cu.cc` - Fused GEMM+conv+silu+norm (inference only)
+
+### Running E88 Benchmarks
+
+```bash
+# Test n_state variants (16, 24, 32)
+python gen_jobs.py e88_nstate --minutes 10 > jobs.txt
+python sched.py jobs.txt
+python extract_results.py sched_logs/TIMESTAMP/
+
+# Test head count scaling
+python gen_jobs.py e88_heads --minutes 10 > jobs.txt
+python sched.py jobs.txt
+
+# Compare vs baselines
+python gen_jobs.py e88_vs_baselines --minutes 10 > jobs.txt
+python sched.py jobs.txt
+```
+
+## E88 CUDA Optimization TODO
+
+### Completed
+- [x] Add n_state templates (4, 8, 16, 32, 48, 64, 96, 128) to main kernel
+- [x] Add n_state templates to e88_reduced_sync_backward.cu.cc
+- [x] Add n_state templates to e88_parallel_segment_gpu.cu.cc
+- [x] Implement fused projection kernel (inference only)
+- [x] Fix O(T²) backward pass in segment processing
+- [x] Gradient checkpointing with checkpoint_interval=32
+
+### Verified (Jan 22, 2026)
+- [x] Benchmark n_state=16 (E88f_h32n16) - 74.2K tok/s, loss 1.53
+- [x] Benchmark n_state=24 (E88f_h24n24) - 65K tok/s, loss 1.52
+- [x] Verify no NaN with new templates - all configs train successfully
+- [x] Compare throughput: E88_h8n32 achieves 104K tok/s at 40M params
+
+### TODO: Performance Optimization
+- [ ] Profile backward pass bottleneck (currently 4-5x slower than forward)
+- [ ] Investigate memory usage (E88 uses 24GB vs FLA-GDN's 7GB at similar params)
+- [ ] Test cuBLAS backward kernel (USE_CUBLAS_BACKWARD flag)
+- [ ] Optimize segment boundaries in parallel backward
+
+### TODO: Quality Parity with FLA-GDN
+- [ ] Understand why E88 loss (~1.5-1.6) trails FLA-GDN (~1.3-1.4)
+- [ ] Test if nonlinear state (tanh) helps or hurts
+- [ ] Test linear_state=True variant
+- [ ] Ablate remaining components (L2 norm, SiLU, etc.)
