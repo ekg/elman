@@ -126,6 +126,7 @@ CUDA_OBJS := \
 	lib/e87_sparse_block_gpu.o \
 	lib/e88_fla_hybrid_gpu.o \
 	lib/e88_cublas_backward_gpu.o \
+	lib/e88_reduced_sync_backward.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

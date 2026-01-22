@@ -14787,6 +14787,63 @@ std::vector<Tensor> e88_fla_hybrid_backward_cublas(
     return {d_k, d_v, d_q, d_decay};
 }
 
+std::vector<Tensor> e88_fla_hybrid_backward_reduced_sync(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor S_checkpoints,   // [num_checkpoints, B, H, n_state, head_v_dim]
+    Tensor Sq_cache,        // [T, B, H, head_v_dim]
+    Tensor segment_cache,   // Pre-allocated extended cache
+    Tensor d_output,        // [T, B, H, head_v_dim]
+    int n_heads,
+    int checkpoint_interval) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(d_output);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: gradients for k, v, q, decay
+    Tensor d_k = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_v = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor d_q = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_decay = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 FLA Hybrid Reduced Sync Backward only supports bfloat16");
+
+    using namespace elman;
+
+    dispatch_e88_reduced_sync_backward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
 }  // anonymous namespace
 
 
@@ -15239,4 +15296,6 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: Backward pass with gradient checkpointing");
     m.def("e88_fla_hybrid_backward_cublas", &e88_fla_hybrid_backward_cublas,
           "E88 FLA Hybrid: cuBLAS tensor core backward pass");
+    m.def("e88_fla_hybrid_backward_reduced_sync", &e88_fla_hybrid_backward_reduced_sync,
+          "E88 FLA Hybrid: Reduced sync backward pass (optimized sync barriers)");
 }

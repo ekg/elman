@@ -9382,6 +9382,19 @@ void dispatch_e88_cublas_backward(
 // Workspace size for cuBLAS backward kernel
 size_t e88_cublas_backward_workspace_size(int B, int H, int n_state, int head_v_dim);
 
+// E88 reduced sync backward (optimized sync barriers)
+void dispatch_e88_reduced_sync_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
 template<typename T>
 struct E88FLAHybridForward {
     E88FLAHybridForward(
