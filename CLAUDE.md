@@ -113,7 +113,13 @@ Python implementations are 100-300x slower than optimized CUDA kernels due to:
 
 3. Up to 8 parallel jobs on 8 GPUs - scheduler handles assignment automatically
 
-4. Always extract results with `extract_results.py` for consistent last-100 avg loss
+4. **CHECK GPU AVAILABILITY BEFORE ASSIGNING** - Before launching experiments, check which GPUs are free:
+   ```bash
+   nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv
+   ```
+   Avoid GPUs with significant memory usage or high utilization - they may be in use by other users. When a user specifies to stay off certain GPUs, respect that.
+
+5. Always extract results with `extract_results.py` for consistent last-100 avg loss
 
 ## Benchmarking Rules
 

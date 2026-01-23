@@ -43,11 +43,34 @@ Loss: 1.44 (vs Mamba2: 1.80, FLA-GDN: 1.29)
 | E88 uses 7x less state than Mamba2 | 57K vs 410K per layer |
 | FLA-GDN still leads | 1.29 loss with 1.33M state |
 
+### Gating Ablation (Jan 23, 2026) - COMPLETED
+
+Testing whether SiLU gating (suggested by elman-proofs) improves E88.
+
+| Config | Params | Loss | Tok/s | Notes |
+|--------|--------|------|-------|-------|
+| **Mamba2** | 508M | **1.36** | 17K | Best overall |
+| **FLA-GDN** | 534M | **1.40** | 19K | Second best |
+| E88 ungated | 492M | 1.61 | 10.5K | Best E88 |
+| E88 SiLU gated | 614M | 1.70 | 9.1K | Worse than ungated |
+| E88 sigmoid gated | 614M | 1.70 | 9.2K | Worse than ungated |
+
+**Key Finding: Output gating HURTS E88 performance!**
+- Gated variants are 0.09 nats worse than ungated
+- This is despite having 122M more parameters (614M vs 492M)
+- The g_proj output gating used by FLA-GDN does not help E88
+- E88's internal tanh nonlinearity may already provide sufficient regularization
+
+---
+
 ## Open Questions
 
-1. **Does wider dimension help?** (dim=3000+ vs dim=2000)
-2. **Depth vs width trade-off?** (depth=48 vs depth=20 at same params)
-3. **Is n_state=32 universally optimal?** Or scale-dependent?
+1. **Does wider dimension help?** (dim=3000+ vs dim=2000) - ANSWERED: No, dim=1792 optimal
+2. **Depth vs width trade-off?** (depth=48 vs depth=20 at same params) - ANSWERED: depth=38 optimal
+3. **Is n_state=32 universally optimal?** Or scale-dependent? - ANSWERED: Yes, n_state=32 is optimal
+4. **Does SiLU gating help?** - ANSWERED: **NO!** Both SiLU and sigmoid gating hurt E88 by ~0.09 nats
+5. **Why does E88 trail FLA-GDN?** E88 ungated (1.61) vs FLA-GDN (1.40) - 0.21 nats gap remains
+6. **Can E88 match baselines at same params?** Current best E88 (492M) trails Mamba2 (508M) by 0.25 nats
 4. **What's the minimum useful state size?**
 5. **How does E88 scale from 100M → 1B?**
 6. **Can more state close the gap to FLA-GDN?**
