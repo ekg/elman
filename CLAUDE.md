@@ -189,6 +189,55 @@ python calc_dim.py --model E75h4n32 --params 100M --depth 20
 **n_state MUST be a multiple of 8** for numerical stability. Valid values: 16, 24, 32, 40, 48, etc.
 Values like 20, 28 cause NaN during training.
 
+## E88 FLA-Hybrid Configuration Guidelines (Jan 2026)
+
+E88 combines FLA-GDN's Mamba2-style decay with nonlinear (tanh) matrix state. **Critical: E88 does NOT use the same defaults as FLA-GDN.**
+
+### Optimal E88 Defaults
+
+| Parameter | E88 Optimal | FLA-GDN Default | Impact |
+|-----------|-------------|-----------------|--------|
+| `expansion` | **1.0** | 2.0 | Square state (n_state × n_state), ~1 nat better |
+| `use_gate` | **False** | True | Output gating HURTS E88 by ~0.09 nats |
+| `use_conv` | **False** | True | Short convolutions not needed for E88 |
+| `use_output_norm` | **False** | True | Output RMSNorm not needed |
+
+### Head Configuration (CRITICAL)
+
+**Prefer MORE heads with SMALLER n_state.** At equal n_heads × n_state = dim:
+
+| Config | Loss | Throughput | Finding |
+|--------|------|------------|---------|
+| h56_n32 (56×32=1792) | **1.44** | **11K tok/s** | **BEST** - many heads, small state |
+| h74_n24 (74×24=1776) | **1.49** | 10K tok/s | Good - even more heads |
+| h28_n64 (28×64=1792) | 1.76 | 6K tok/s | Worse - fewer heads |
+
+**Rule of thumb:** Set n_heads = dim / n_state, then prefer smaller n_state (32-48).
+
+### Best E88 Config for 500M Params
+
+Use the predefined level **E88_dim1792**:
+```bash
+python train.py --level E88_dim1792 --dim 1792 --depth 38 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --bf16 --train_minutes 10
+```
+
+This uses: n_heads=56, n_state=32, expansion=1.0, no gate, no conv, no output norm.
+
+**Results:** 1.44 loss at 500M params, competitive with FLA-GDN (1.40).
+
+### CUDA Kernel n_state Support
+
+E88 CUDA kernel supports: 4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128
+
+**Large n_state (≥80) uses global memory fallback** - slower but functional.
+
+### Common Mistakes
+
+1. **Using expansion=2.0** - This is the OLD FLA-GDN default, causes 1+ nat worse loss
+2. **Using balanced n_heads=dim/n_state with large n_state** - Use more heads, smaller state
+3. **Enabling output gating** - Gating hurts E88 (unlike FLA-GDN)
+4. **Using --level E88 without explicit params** - Use E88_dim{X} levels instead
+
 ## CRITICAL: Testing Models with LadderLM
 
 **ALWAYS use `LadderLM` from `elman.models` for benchmarking E-series models.** Do NOT write custom LM wrappers.

@@ -451,7 +451,7 @@ class E88FLAHybrid(nn.Module):
     def __init__(
         self,
         dim: int,
-        expansion: float = 2.0,  # FLA-GDN default
+        expansion: float = 1.0,  # E88 default (1.0 = square state, better for nonlinear recurrence)
         n_state: int = 32,
         n_heads: int = 8,  # More heads like FLA-GDN
         dropout: float = 0.0,
@@ -459,13 +459,13 @@ class E88FLAHybrid(nn.Module):
         use_cuda: bool = True,
         tie_kv: bool = False,  # When True and expansion=1.0, skip v_proj (v=k)
         # Ablation options
-        use_conv: bool = True,  # Set False to skip short convolutions
+        use_conv: bool = False,  # E88 optimal: no short convolutions (unlike FLA-GDN)
         linear_state: bool = False,  # Set True to use linear state update (no tanh)
-        use_gate: bool = True,  # Set False to skip output gating
+        use_gate: bool = False,  # E88 optimal: no output gating (gating hurts E88)
         simple_decay: bool = False,  # Set True to use simple sigmoid decay instead of Mamba2
         use_silu: bool = True,  # Set False to skip SiLU on projections
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
-        use_output_norm: bool = True,  # Set False to skip RMSNorm on output
+        use_output_norm: bool = False,  # E88 optimal: no output RMSNorm
         head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
         gate_activation: str = 'sigmoid',  # Gate activation: 'sigmoid' (E88 original) or 'silu' (FLA-GDN style)
         **kwargs

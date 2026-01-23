@@ -1269,6 +1269,9 @@ void dispatch_e88_fla_hybrid_forward(
     // n_state=80
     else if (n_state == 80 && head_v_dim == 80) { DISPATCH_E88_FWD(80, 80); }
     else if (n_state == 80 && head_v_dim == 64) { DISPATCH_E88_FWD(80, 64); }
+    // n_state=88 (for balanced configs at various dims)
+    else if (n_state == 88 && head_v_dim == 88) { DISPATCH_E88_FWD(88, 88); }
+    else if (n_state == 88 && head_v_dim == 64) { DISPATCH_E88_FWD(88, 64); }
     // n_state=96
     else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_FWD(96, 32); }
     else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_FWD(96, 64); }
@@ -1392,15 +1395,23 @@ void dispatch_e88_fla_hybrid_backward(
     else if (n_state == 72 && head_v_dim == 72) { DISPATCH_E88_BWD(72, 72); }
     else if (n_state == 72 && head_v_dim == 64) { DISPATCH_E88_BWD(72, 64); }
     else if (n_state == 72 && head_v_dim == 96) { DISPATCH_E88_BWD(72, 96); }
-    // n_state=80
-    else if (n_state == 80 && head_v_dim == 80) { DISPATCH_E88_BWD(80, 80); }
-    else if (n_state == 80 && head_v_dim == 64) { DISPATCH_E88_BWD(80, 64); }
-    // n_state=96
-    else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_BWD(96, 32); }
-    else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_BWD(96, 64); }
-    else if (n_state == 96 && head_v_dim == 96) { DISPATCH_E88_BWD(96, 96); }  // 75KB shared, within limit
+    // n_state=80 (~103KB shared for 80x80, use global memory)
+    else if (n_state == 80 && head_v_dim == 80) {
+        DISPATCH_E88_BWD_GLOBAL(80, 80);
+    }
+    else if (n_state == 80 && head_v_dim == 64) { DISPATCH_E88_BWD(80, 64); }  // ~68KB, OK
+    // n_state=88 (~124KB shared for 88x88, use global memory)
+    else if (n_state == 88 && head_v_dim == 88) {
+        DISPATCH_E88_BWD_GLOBAL(88, 88);
+    }
+    else if (n_state == 88 && head_v_dim == 64) { DISPATCH_E88_BWD(88, 64); }  // ~70KB, OK
+    // n_state=96 (~148KB shared for 96x96, use global memory)
+    else if (n_state == 96 && head_v_dim == 32) { DISPATCH_E88_BWD(96, 32); }  // ~49KB, OK
+    else if (n_state == 96 && head_v_dim == 64) { DISPATCH_E88_BWD(96, 64); }  // ~80KB, borderline
+    else if (n_state == 96 && head_v_dim == 96) {
+        DISPATCH_E88_BWD_GLOBAL(96, 96);  // ~148KB shared, needs global
+    }
     else if (n_state == 96 && head_v_dim == 128) {
-        // ~100KB shared needed, use global memory fallback
         DISPATCH_E88_BWD_GLOBAL(96, 128);
     }
     // n_state=128
