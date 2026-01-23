@@ -696,6 +696,7 @@ class LadderLM(nn.Module):
         n_state=64,  # For E70-E73: matrix state size (S is n_state x n_state)
         n_heads=None,  # For E88 FLA Hybrid: number of heads
         use_gate=True,  # For E88 FLA Hybrid: output gating (False for "best" config)
+        linear_state=False,  # For E88 FLA Hybrid: linear state update (no tanh)
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
@@ -717,6 +718,7 @@ class LadderLM(nn.Module):
         self.n_state = n_state
         self.n_heads = n_heads
         self.use_gate = use_gate
+        self.linear_state = linear_state
         self.rank = rank
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
@@ -748,6 +750,7 @@ class LadderLM(nn.Module):
                 n_state=n_state,  # For E70-E73 matrix state
                 n_heads=n_heads,  # For E88 FLA Hybrid
                 use_gate=use_gate,  # For E88 FLA Hybrid: output gating
+                linear_state=linear_state,  # For E88 FLA Hybrid: linear state
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,

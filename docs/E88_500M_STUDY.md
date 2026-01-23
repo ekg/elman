@@ -74,6 +74,17 @@ E88 d24_h32_n48 (ratio=0.46)
   Last-100 loss (30 min): 1.4908
 ```
 
+## Linear vs Tanh: NOT the Problem
+
+We tested whether the tanh nonlinearity was causing the scaling gap:
+
+| Variant | Last-10 Loss (10 min) |
+|---------|----------------------|
+| E88 TANH | 1.686 |
+| E88 LINEAR | 1.684 |
+
+**Finding: Tanh is NOT the scaling problem.** Both achieve identical loss.
+
 ## Why the Gap?
 
 Several hypotheses for why E88 underperforms at 500M:
