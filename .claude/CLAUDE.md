@@ -58,3 +58,18 @@ Working n_state values in CUDA kernel:
 - 4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 96, 128
 
 Square states (expansion=1.0) generally outperform rectangular states.
+
+## E88 Gate Activation Finding
+
+**Use SiLU (swish) gating, NOT sigmoid.** FLA-GDN uses silu/swish for output gating.
+
+At 500M scale (10 min training):
+- No gate: 2.25 loss
+- SiLU gate: 2.08 loss (BETTER by 0.17)
+
+The difference between FLA-GDN gating (silu) and E88's original gating (sigmoid):
+- FLA-GDN: `output = RMSNorm(x) * silu(g)` = `RMSNorm(x) * g * sigmoid(g)`
+- E88 original: `output = RMSNorm(x) * sigmoid(g)`
+
+SiLU includes the raw gate value `g`, allowing negative gates and better gradient flow.
+Use `--gate_activation silu` with `--use_gate 1`.

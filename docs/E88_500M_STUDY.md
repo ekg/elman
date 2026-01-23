@@ -85,17 +85,46 @@ We tested whether the tanh nonlinearity was causing the scaling gap:
 
 **Finding: Tanh is NOT the scaling problem.** Both achieve identical loss.
 
-## Why the Gap?
+## SiLU Gating: Partial Improvement
 
-Several hypotheses for why E88 underperforms at 500M:
+FLA-GDN uses SiLU (swish) activation for its output gating, while E88 originally used sigmoid.
 
-1. **Architecture limitations**: The nonlinear tanh state update may not scale as well as linear attention (FLA-GDN) or selective SSMs (Mamba2)
+Gating comparison (30 min, 500M):
+| Gating | Loss | Notes |
+|--------|------|-------|
+| SiLU gate | 1.4294 | FLA-GDN style: `output * silu(g)` |
+| No gate | 1.4856 | Best E88 config from overnight |
+| Sigmoid gate | worse | E88 original: `output * sigmoid(g)` |
 
-2. **Hyperparameter sensitivity**: E88 may require different learning rates, batch sizes, or other hyperparameters at this scale
+**Finding: SiLU gating helps!** E88 with SiLU gating is 0.06 better than no gating. The difference is that FLA-GDN's gating is:
+- `output = RMSNorm(x) * g * sigmoid(g)` = `output * silu(g)`
 
-3. **State matrix overhead**: E88's H × n² state per layer may be inefficient compared to Mamba2's linear state
+While E88's original was just:
+- `output = RMSNorm(x) * sigmoid(g)`
 
-4. **Training dynamics**: The "best" config from 10-min exploration may not be optimal for longer training
+The extra multiplication by `g` allows negative gates and better gradient flow.
+
+**Updated comparison (30 min):**
+| Rank | Model | Loss |
+|------|-------|------|
+| 1 | Mamba2 | 1.2752 |
+| 2 | FLA-GDN | 1.3187 |
+| 3 | E88 SiLU gate | 1.4294 |
+| 4 | E88 no gate | 1.4856 |
+
+**Gap after SiLU fix**: E88 is ~0.11 behind FLA-GDN (improved from ~0.21)
+
+## Why the Remaining Gap?
+
+With SiLU gating, E88 is closer to baselines but still ~0.11-0.15 behind. Remaining hypotheses:
+
+1. **Projection bottleneck**: E88 projects dim→key_dim→dim, which may constrain capacity. FLA-GDN expands (dim→2*dim→dim) while E88 contracts.
+
+2. **State matrix overhead**: E88's H × n² state per layer may be less parameter-efficient than FLA-GDN's d_state × 2d_inner or Mamba2's linear state.
+
+3. **Gradient flow through tanh**: The tanh nonlinearity may still create gradient issues at scale, even if it doesn't directly hurt loss.
+
+4. **Hyperparameter sensitivity**: E88 may require different learning rates or batch sizes at 500M scale.
 
 ## Comparison with 100M Results
 
@@ -113,15 +142,18 @@ The gap widens significantly at larger scale, suggesting E88 has scaling limitat
 
 ## Recommendations
 
-1. **For production use at 500M**: Use Mamba2 or FLA-GDN instead of E88
-2. **For further E88 research**:
-   - Investigate why the architecture doesn't scale
-   - Try longer training runs to see if the gap closes
-   - Explore larger n_state values (64, 72) if CUDA kernel supports them
-   - Consider hybrid architectures mixing E88 with attention
+1. **For E88 at 500M**: Use SiLU gating (`--use_gate 1 --gate_activation silu`)
+2. **For production use at 500M**: Mamba2 or FLA-GDN still outperform E88 by ~0.11-0.15
+3. **For further E88 research**:
+   - Investigate the projection bottleneck (E88 contracts, FLA-GDN expands)
+   - Try removing the projection entirely (direct state output)
+   - Explore different normalization strategies
+   - Test longer training runs to see if gap closes
 
 ## Files
 
 - Overnight exploration: `benchmark_results/overnight_e88/20260123_051430/`
 - 30-min comparison: `benchmark_results/e88_500m_30min/20260123_123714/`
+- SiLU gating comparison: `benchmark_results/silu_baseline_30m/`
+- Gate activation tests: `benchmark_results/gate_test/` and `benchmark_results/gate_test_10m/`
 - Exploration script: `overnight_e88_exploration.py`

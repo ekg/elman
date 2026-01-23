@@ -467,6 +467,7 @@ class E88FLAHybrid(nn.Module):
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
         use_output_norm: bool = True,  # Set False to skip RMSNorm on output
         head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
+        gate_activation: str = 'sigmoid',  # Gate activation: 'sigmoid' (E88 original) or 'silu' (FLA-GDN style)
         **kwargs
     ):
         super().__init__()
@@ -474,6 +475,10 @@ class E88FLAHybrid(nn.Module):
         # Validate n_state is multiple of 4 (CUDA kernel supports 4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 96, 128)
         if n_state % 4 != 0:
             raise ValueError(f"n_state must be multiple of 4, got {n_state}")
+
+        # Validate gate activation
+        if gate_activation not in ['sigmoid', 'silu', 'swish']:
+            raise ValueError(f"gate_activation must be 'sigmoid', 'silu', or 'swish', got {gate_activation}")
 
         self.dim = dim
         self.n_state = n_state
@@ -485,6 +490,7 @@ class E88FLAHybrid(nn.Module):
         self.use_conv = use_conv
         self.linear_state = linear_state
         self.use_gate = use_gate
+        self.gate_activation = gate_activation
         self.simple_decay = simple_decay
         self.use_silu = use_silu
         self.use_l2_norm = use_l2_norm
@@ -898,7 +904,10 @@ class E88FLAHybrid(nn.Module):
 
         if self.use_gate and self.g_proj is not None:
             g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
-            output = output * torch.sigmoid(g)
+            if self.gate_activation == 'sigmoid':
+                output = output * torch.sigmoid(g)
+            else:  # silu/swish - FLA-GDN style
+                output = output * F.silu(g)
 
         # Head mixing (output is [B, T, H, head_v_dim])
         if self.head_mix == 'concat':
@@ -948,6 +957,8 @@ class E88FLAHybrid(nn.Module):
             ablation_str.append('no_output_norm')
         if self.head_mix != 'concat':
             ablation_str.append(f'head_mix={self.head_mix}')
+        if self.gate_activation != 'sigmoid':
+            ablation_str.append(f'gate={self.gate_activation}')
         ablation_info = f', ablations=[{",".join(ablation_str)}]' if ablation_str else ''
         return (f'dim={self.dim}, key_dim={self.key_dim}, value_dim={self.value_dim}, '
                 f'n_state={self.n_state}, n_heads={self.n_heads}, expansion={self.expansion}, '

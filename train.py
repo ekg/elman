@@ -72,6 +72,8 @@ def parse_args():
                         help='Number of heads for E88 FLA Hybrid')
     parser.add_argument('--use_gate', type=int, default=1,
                         help='Use output gating for E88 (0=no gate, 1=gate, default=1)')
+    parser.add_argument('--gate_activation', type=str, default='sigmoid',
+                        help='Gate activation for E88 (sigmoid=E88 original, silu=FLA-GDN style)')
     parser.add_argument('--linear_state', type=int, default=0,
                         help='Use linear state update for E88 (0=tanh, 1=linear)')
     parser.add_argument('--r_h_mode', type=str, default='auto',
@@ -350,6 +352,7 @@ def train(args):
             n_state=args.n_state,
             n_heads=args.n_heads,
             use_gate=bool(args.use_gate),
+            gate_activation=args.gate_activation,
             linear_state=bool(args.linear_state),
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,

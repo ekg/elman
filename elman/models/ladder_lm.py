@@ -638,6 +638,14 @@ def get_ladder_level(level):
         'E88_750M': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 72, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
         'E88_1B': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 80, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
+        # Gating ablation: compare no gating vs sigmoid vs SiLU
+        # Using best config: dim=1792, depth=38, n_heads=56, n_state=32 (1.44 loss ungated)
+        'E88_gated_sigmoid': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': True, 'gate_activation': 'sigmoid', 'use_output_norm': False}),
+        'E88_gated_silu': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': True, 'gate_activation': 'silu', 'use_output_norm': False}),
+        # With convolutions (FLA-GDN style)
+        'E88_conv_silu': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': True, 'use_gate': True, 'gate_activation': 'silu', 'use_output_norm': True}),
+        'E88_full_fla': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': True, 'use_gate': True, 'gate_activation': 'silu', 'use_output_norm': True, 'use_silu': True, 'use_l2_norm': True}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -696,6 +704,7 @@ class LadderLM(nn.Module):
         n_state=64,  # For E70-E73: matrix state size (S is n_state x n_state)
         n_heads=None,  # For E88 FLA Hybrid: number of heads
         use_gate=True,  # For E88 FLA Hybrid: output gating (False for "best" config)
+        gate_activation='sigmoid',  # For E88 FLA Hybrid: gate activation ('sigmoid' or 'silu')
         linear_state=False,  # For E88 FLA Hybrid: linear state update (no tanh)
         rank=None,
         delta_init=-2.0,
@@ -718,6 +727,7 @@ class LadderLM(nn.Module):
         self.n_state = n_state
         self.n_heads = n_heads
         self.use_gate = use_gate
+        self.gate_activation = gate_activation
         self.linear_state = linear_state
         self.rank = rank
         self.r_h_mode = r_h_mode
@@ -750,6 +760,7 @@ class LadderLM(nn.Module):
                 n_state=n_state,  # For E70-E73 matrix state
                 n_heads=n_heads,  # For E88 FLA Hybrid
                 use_gate=use_gate,  # For E88 FLA Hybrid: output gating
+                gate_activation=gate_activation,  # For E88 FLA Hybrid: gate activation
                 linear_state=linear_state,  # For E88 FLA Hybrid: linear state
                 rank=rank,
                 delta_init=delta_init,
