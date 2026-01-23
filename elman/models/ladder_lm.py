@@ -694,6 +694,8 @@ class LadderLM(nn.Module):
         n_slots=8,
         n_banks=4,  # For E10 multi-scale: number of EMA memory banks
         n_state=64,  # For E70-E73: matrix state size (S is n_state x n_state)
+        n_heads=None,  # For E88 FLA Hybrid: number of heads
+        use_gate=True,  # For E88 FLA Hybrid: output gating (False for "best" config)
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
@@ -713,6 +715,8 @@ class LadderLM(nn.Module):
         self.n_slots = n_slots
         self.n_banks = n_banks
         self.n_state = n_state
+        self.n_heads = n_heads
+        self.use_gate = use_gate
         self.rank = rank
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
@@ -742,6 +746,8 @@ class LadderLM(nn.Module):
                 n_slots=n_slots,
                 n_banks=n_banks,  # For E10 multi-scale
                 n_state=n_state,  # For E70-E73 matrix state
+                n_heads=n_heads,  # For E88 FLA Hybrid
+                use_gate=use_gate,  # For E88 FLA Hybrid: output gating
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,

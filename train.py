@@ -21,6 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
+import schedulefree
 from pathlib import Path
 import json
 import datetime
@@ -67,6 +68,10 @@ def parse_args():
                         help='Number of groups for compete softmax')
     parser.add_argument('--n_state', type=int, default=64,
                         help='Matrix state size for E70-E73 (S is n_state x n_state)')
+    parser.add_argument('--n_heads', type=int, default=None,
+                        help='Number of heads for E88 FLA Hybrid')
+    parser.add_argument('--use_gate', type=int, default=1,
+                        help='Use output gating for E88 (0=no gate, 1=gate, default=1)')
     parser.add_argument('--r_h_mode', type=str, default='auto',
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
@@ -88,8 +93,11 @@ def parse_args():
                         help='Total training steps')
     parser.add_argument('--train_minutes', type=float, default=None,
                         help='Train for N minutes (overrides --steps)')
-    parser.add_argument('--warmup_steps', type=int, default=1000,
-                        help='Warmup steps for learning rate')
+    parser.add_argument('--warmup_steps', type=int, default=0,
+                        help='Warmup steps for learning rate (only for adamw)')
+    parser.add_argument('--optimizer', type=str, default='schedulefree',
+                        choices=['adamw', 'schedulefree'],
+                        help='Optimizer: adamw (with LR schedule) or schedulefree (no schedule needed)')
 
     # Checkpointing
     parser.add_argument('--output', type=str, default='./output',
@@ -338,6 +346,8 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             n_state=args.n_state,
+            n_heads=args.n_heads,
+            use_gate=bool(args.use_gate),
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,
         )
@@ -363,12 +373,22 @@ def train(args):
     print(f"Model: Level {args.level}, {model.get_num_params():,} parameters")
 
     # Create optimizer
-    optimizer = AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        betas=(0.9, 0.95),
-    )
+    if args.optimizer == 'schedulefree':
+        optimizer = schedulefree.AdamWScheduleFree(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.95),
+        )
+        print(f"Using schedule-free AdamW (lr={args.lr})")
+    else:
+        optimizer = AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.95),
+        )
+        print(f"Using AdamW with warmup={args.warmup_steps} steps")
 
     # Resume if requested
     start_step = 0
@@ -416,6 +436,8 @@ def train(args):
     print()
 
     model.train()
+    if args.optimizer == 'schedulefree':
+        optimizer.train()  # Schedule-free needs this
     step = start_step
 
     # Time-based training setup
@@ -509,10 +531,13 @@ def train(args):
             else:
                 grad_norm = sum(p.grad.norm().item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
 
-            # Learning rate schedule
-            lr = get_lr(step, args.warmup_steps, args.lr)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
+            # Learning rate schedule (only for standard AdamW)
+            if args.optimizer == 'adamw':
+                lr = get_lr(step, args.warmup_steps, args.lr)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
+            else:
+                lr = args.lr  # Schedule-free handles LR internally
 
             optimizer.step()
             optimizer.zero_grad()
@@ -535,17 +560,27 @@ def train(args):
 
             # Validation
             if val_loader and step % args.val_every == 0:
+                if args.optimizer == 'schedulefree':
+                    optimizer.eval()  # Get averaged params for eval
                 val_loss = validate(model, val_loader, device)
                 print(f"  >>> validation loss: {val_loss:.4f}")
+                if args.optimizer == 'schedulefree':
+                    optimizer.train()  # Back to training mode
 
             # Checkpointing
             if step % args.save_every == 0:
+                if args.optimizer == 'schedulefree':
+                    optimizer.eval()  # Get averaged params for checkpoint
                 ckpt_path = save_checkpoint(
                     model, optimizer, step, avg_loss, output_dir, args.keep_checkpoints
                 )
                 print(f"  >>> saved checkpoint: {ckpt_path.name}")
+                if args.optimizer == 'schedulefree':
+                    optimizer.train()  # Back to training mode
 
     # Final checkpoint
+    if args.optimizer == 'schedulefree':
+        optimizer.eval()  # Get averaged params for final checkpoint
     save_checkpoint(model, optimizer, step, avg_loss, output_dir, args.keep_checkpoints)
     print(f"\nTraining complete! Final step: {step}")
 

@@ -74,28 +74,32 @@ def calc_fla_gdn_params(dim, depth, expansion=2.0, vocab_size=256):
     return layers_total + embed
 
 
-def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256):
+def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256, use_gate=True):
     """Calculate E88 FLA Hybrid parameters.
 
-    Best E88 config uses expansion=1.0, no conv, no gate, no output norm.
+    Args:
+        use_gate: If True (default), includes g_proj for output gating.
+                  Set False for "best" ablated config (no gate).
     """
     # Key dimensions
     key_dim = n_heads * n_state
     value_dim = int(n_heads * n_state * expansion)
 
-    # Per layer (for best config: expansion=1.0, no conv, no gate):
+    # Per layer:
     # qkv_proj: dim → 2*key_dim + value_dim = 3*H*n (when expansion=1.0)
     # a_proj: dim → n_heads (decay)
     # A_log: n_heads
     # dt_bias: n_heads
+    # g_proj: dim → value_dim (only if use_gate=True)
     # o_proj: value_dim → dim
     # o_norm_weight: n_state (always created)
     qkv_proj = dim * (2 * key_dim + value_dim)
     decay_params = dim * n_heads + n_heads + n_heads  # a_proj + A_log + dt_bias
+    gate_proj = dim * value_dim if use_gate else 0
     out_proj = value_dim * dim
     norm_weight = n_state  # head_v_dim
 
-    per_layer = qkv_proj + decay_params + out_proj + norm_weight
+    per_layer = qkv_proj + decay_params + gate_proj + out_proj + norm_weight
 
     layers_total = per_layer * depth
     embed = vocab_size * dim  # tied embeddings
