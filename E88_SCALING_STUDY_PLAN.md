@@ -27,9 +27,10 @@
 
 ### Best Config for 500M
 ```
-dim=1792, depth=38, n_heads=56, n_state=32
-Loss: 1.44 (vs Mamba2: 1.80, FLA-GDN: 1.29)
+dim=1792, depth=38, n_state=64 (NOT 32!)
+Loss: 1.44 (vs Mamba2: 1.36, FLA-GDN: 1.40)
 ```
+**NOTE**: E88 is now competitive with FLA-GDN (1.44 vs 1.40, only 0.04 nats difference)!
 
 ---
 
@@ -63,14 +64,28 @@ Testing whether SiLU gating (suggested by elman-proofs) improves E88.
 
 ---
 
+### n_state Verification (Jan 23, 2026)
+
+**Critical finding: n_state=64 >> n_state=32 at dim=1792, depth=38!**
+
+| Config | n_state | Loss | Difference |
+|--------|---------|------|------------|
+| n64_default | 64 | **1.44** | baseline |
+| n32_explicit | 32 | 1.84 | +0.40 worse |
+
+The previous "good" results (1.44 loss) used n_state=64 (train.py default), not n_state=32.
+This 0.40 nat difference is huge - optimal n_state depends on dim/depth combination.
+
+---
+
 ## Open Questions
 
 1. **Does wider dimension help?** (dim=3000+ vs dim=2000) - ANSWERED: No, dim=1792 optimal
 2. **Depth vs width trade-off?** (depth=48 vs depth=20 at same params) - ANSWERED: depth=38 optimal
-3. **Is n_state=32 universally optimal?** Or scale-dependent? - ANSWERED: Yes, n_state=32 is optimal
+3. **Is n_state=32 universally optimal?** - ANSWERED: **NO!** n_state=64 is better at dim=1792 (+0.40 nats)
 4. **Does SiLU gating help?** - ANSWERED: **NO!** Both SiLU and sigmoid gating hurt E88 by ~0.09 nats
-5. **Why does E88 trail FLA-GDN?** E88 ungated (1.61) vs FLA-GDN (1.40) - 0.21 nats gap remains
-6. **Can E88 match baselines at same params?** Current best E88 (492M) trails Mamba2 (508M) by 0.25 nats
+5. **Why does E88 trail FLA-GDN?** E88 (1.44 with n_state=64) vs FLA-GDN (1.40) - gap is now only 0.04 nats!
+6. **What's the optimal n_state for different dim/depth?** Need systematic sweep
 4. **What's the minimum useful state size?**
 5. **How does E88 scale from 100M → 1B?**
 6. **Can more state close the gap to FLA-GDN?**
