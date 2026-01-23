@@ -471,9 +471,9 @@ class E88FLAHybrid(nn.Module):
     ):
         super().__init__()
 
-        # Validate n_state is multiple of 8
-        if n_state % 8 != 0:
-            raise ValueError(f"n_state must be multiple of 8, got {n_state}")
+        # Validate n_state is multiple of 4 (CUDA kernel supports 4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 96, 128)
+        if n_state % 4 != 0:
+            raise ValueError(f"n_state must be multiple of 4, got {n_state}")
 
         self.dim = dim
         self.n_state = n_state

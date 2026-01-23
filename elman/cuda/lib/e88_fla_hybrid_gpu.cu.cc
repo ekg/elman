@@ -1236,6 +1236,21 @@ void dispatch_e88_fla_hybrid_forward(
     else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_FWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_FWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_FWD(32, 128); }
+    // n_state=36 (for balanced configs)
+    else if (n_state == 36 && head_v_dim == 36) { DISPATCH_E88_FWD(36, 36); }
+    else if (n_state == 36 && head_v_dim == 48) { DISPATCH_E88_FWD(36, 48); }
+    else if (n_state == 36 && head_v_dim == 64) { DISPATCH_E88_FWD(36, 64); }
+    else if (n_state == 36 && head_v_dim == 72) { DISPATCH_E88_FWD(36, 72); }
+    // n_state=40 (for balanced configs)
+    else if (n_state == 40 && head_v_dim == 40) { DISPATCH_E88_FWD(40, 40); }
+    else if (n_state == 40 && head_v_dim == 48) { DISPATCH_E88_FWD(40, 48); }
+    else if (n_state == 40 && head_v_dim == 64) { DISPATCH_E88_FWD(40, 64); }
+    else if (n_state == 40 && head_v_dim == 80) { DISPATCH_E88_FWD(40, 80); }
+    // n_state=44 (for balanced configs)
+    else if (n_state == 44 && head_v_dim == 44) { DISPATCH_E88_FWD(44, 44); }
+    else if (n_state == 44 && head_v_dim == 48) { DISPATCH_E88_FWD(44, 48); }
+    else if (n_state == 44 && head_v_dim == 64) { DISPATCH_E88_FWD(44, 64); }
+    else if (n_state == 44 && head_v_dim == 88) { DISPATCH_E88_FWD(44, 88); }
     // n_state=48 (for proper scaling at 500M)
     else if (n_state == 48 && head_v_dim == 48) { DISPATCH_E88_FWD(48, 48); }
     else if (n_state == 48 && head_v_dim == 64) { DISPATCH_E88_FWD(48, 64); }
@@ -1347,6 +1362,21 @@ void dispatch_e88_fla_hybrid_backward(
     else if (n_state == 32 && head_v_dim == 32) { DISPATCH_E88_BWD(32, 32); }
     else if (n_state == 32 && head_v_dim == 64) { DISPATCH_E88_BWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_E88_BWD(32, 128); }
+    // n_state=36 (for balanced configs)
+    else if (n_state == 36 && head_v_dim == 36) { DISPATCH_E88_BWD(36, 36); }
+    else if (n_state == 36 && head_v_dim == 48) { DISPATCH_E88_BWD(36, 48); }
+    else if (n_state == 36 && head_v_dim == 64) { DISPATCH_E88_BWD(36, 64); }
+    else if (n_state == 36 && head_v_dim == 72) { DISPATCH_E88_BWD(36, 72); }
+    // n_state=40 (for balanced configs)
+    else if (n_state == 40 && head_v_dim == 40) { DISPATCH_E88_BWD(40, 40); }
+    else if (n_state == 40 && head_v_dim == 48) { DISPATCH_E88_BWD(40, 48); }
+    else if (n_state == 40 && head_v_dim == 64) { DISPATCH_E88_BWD(40, 64); }
+    else if (n_state == 40 && head_v_dim == 80) { DISPATCH_E88_BWD(40, 80); }
+    // n_state=44 (for balanced configs)
+    else if (n_state == 44 && head_v_dim == 44) { DISPATCH_E88_BWD(44, 44); }
+    else if (n_state == 44 && head_v_dim == 48) { DISPATCH_E88_BWD(44, 48); }
+    else if (n_state == 44 && head_v_dim == 64) { DISPATCH_E88_BWD(44, 64); }
+    else if (n_state == 44 && head_v_dim == 88) { DISPATCH_E88_BWD(44, 88); }
     // n_state=48 (for proper scaling at 500M)
     else if (n_state == 48 && head_v_dim == 48) { DISPATCH_E88_BWD(48, 48); }
     else if (n_state == 48 && head_v_dim == 64) { DISPATCH_E88_BWD(48, 64); }
