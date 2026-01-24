@@ -9,22 +9,41 @@ After this, we've made some modifications generating E1, and that for a long tim
 And that in a nutshell is a lot of the kind of work that's been happening. It's been a slow process to try to regularize, organize all the effort to develop the standard protocol for how to implement the CUDA kernels to... Basically the standard protocol involves cross-checking the Python and CUDA implementation in forward and backward passes on the same data to verify no difference in output.
 We want to make sure that we remember to do this, and this process is very involved. So we basically need to be sure to run subagents in the background to do this. And in fact, for really a lot of effort, you want to be using salvations. I think it helps you save your focus and not get confused or distracted and allows a lot of work to be done at the same time. It also can simplify your interface with the system.
 
-## Current Best Model
+## Current Best Models (Jan 2026)
 
-**E42 (Linear Tied Self-Gated) d1536×6** - 1.59 loss, 137K tok/s at 43M params
-- Linear recurrence (no tanh) + tied weights (W_x = W_h) + self-gating
-- Beats E33 baseline (1.62 loss, 116K tok/s) on both metrics
-- 25% fewer params than E33 at equal quality, or better quality at equal params
+### E88 vs Baselines at 500M Params
 
-**Architecture:**
-```python
-h_t = W @ x_t + W @ h_{t-1} + b    # Linear recurrence, tied weights
-output = h_t * silu(h_t)            # Self-gating (only nonlinearity)
+| Model | Params | Loss | Tok/s | State/Layer | Notes |
+|-------|--------|------|-------|-------------|-------|
+| **FLA-GDN** | 517M | **1.33** | 20.5K | 1.3M | ICLR 2025 baseline |
+| **Mamba2** | 469M | **1.33** | 20.3K | 307K | SSM baseline |
+| **E88** | 492M | **1.44** | 10.7K | 57K | Nonlinear matrix state |
+
+**Key findings:**
+- E88 only 0.11 nats behind FLA-GDN/Mamba2
+- E88 uses **23x less state** than FLA-GDN (57K vs 1.3M per layer)
+- E88 uses **5x less state** than Mamba2 (57K vs 307K)
+- E88 is 2x slower due to sequential recurrence (no parallel scan)
+
+### Reproducing E88 vs Baselines Benchmark
+
+```bash
+# E88 at 500M (dim=1792, depth=38, h56_n32)
+CUDA_VISIBLE_DEVICES=0 python train.py --level E88 --dim 1792 --depth 38 \
+  --n_heads 56 --n_state 32 --expansion 1.0 --use_gate 0 \
+  --data data/pile.txt --batch_size 32 --chunk_size 512 \
+  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
+
+# Mamba2 at 500M (dim=1536, depth=32)
+CUDA_VISIBLE_DEVICES=1 python train.py --level mamba2 --dim 1536 --depth 32 \
+  --data data/pile.txt --batch_size 32 --chunk_size 512 \
+  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
+
+# FLA-GDN at 500M (dim=1792, depth=32)
+CUDA_VISIBLE_DEVICES=2 python train.py --level fla-gdn --dim 1792 --depth 32 \
+  --data data/pile.txt --batch_size 32 --chunk_size 512 \
+  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
 ```
-
-**Key optimizations:**
-- Batched GEMM: pre-compute W @ x for all timesteps (E37v2 lesson)
-- Spectral normalization for stability (linear recurrence needs ||W|| < 1)
 
 ## Model Variants
 
@@ -204,15 +223,19 @@ E88 combines FLA-GDN's Mamba2-style decay with nonlinear (tanh) matrix state. **
 
 ### Head Configuration (CRITICAL)
 
-**Prefer MORE heads with SMALLER n_state.** At equal n_heads × n_state = dim:
+**Prefer MORE heads with SMALLER n_state.** At equal n_heads × n_state ≈ dim:
 
-| Config | Loss | Throughput | Finding |
-|--------|------|------------|---------|
-| h56_n32 (56×32=1792) | **1.44** | **11K tok/s** | **BEST** - many heads, small state |
-| h74_n24 (74×24=1776) | **1.49** | 10K tok/s | Good - even more heads |
-| h28_n64 (28×64=1792) | 1.76 | 6K tok/s | Worse - fewer heads |
+| Config | Heads | n_state | Loss | Tok/s | State/Layer |
+|--------|-------|---------|------|-------|-------------|
+| **h56_n32** | 56 | 32 | **1.44** | 10.7K | 57K |
+| h74_n24 | 74 | 24 | 1.57 | 10.9K | 42K |
+| h44_n40 | 44 | 40 | 1.67 | 9.4K | 70K |
+| h112_n16 | 112 | 16 | 1.70 | 12K | 28K |
+| h36_n48 | 36 | 48 | 1.71 | 9.1K | 82K |
+| h28_n64 | 28 | 64 | 1.75 | 6.4K | 114K |
 
-**Rule of thumb:** Set n_heads = dim / n_state, then prefer smaller n_state (32-48).
+**Key insight:** n_state=32 is optimal. Smaller (16, 24) or larger (40+) performs worse.
+More state does NOT help - h28_n64 has 2x state but 0.31 nats worse than h56_n32.
 
 ### Best E88 Config for 500M Params
 
@@ -398,97 +421,16 @@ Matrix state models have O(n²) state size and require different dims to hit 100
 
 **E73cp Checkpointing**: 2.5x memory reduction (7.8 GB vs 19.7 GB) with ~6% throughput overhead.
 
-## E88 FLA Hybrid (Delta Rule with Multi-Head Matrix State)
+## E88 CUDA Kernel Details
 
-E88 combines FLA-GatedDeltaNet's design elements with multi-head matrix state. Through extensive ablation, the **best E88 configuration** strips down to:
+### Supported n_state Values
 
-```python
-# E88 optimal config (ablation-derived):
-expansion = 1.0       # NO expansion (square state)
-use_conv = False      # NO short convolutions
-use_gate = False      # NO output gating
-use_output_norm = False  # NO RMSNorm on output
-n_state = 32          # Matrix state size (or 16/24 for speed)
-n_heads = 4-16        # More heads = more parallelism
-```
+E88 CUDA kernel supports: **4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128**
 
-### E88 Level Names
+- n_state ≥ 80 uses global memory fallback (slower but functional)
+- Optimal: n_state=32 with many heads (h56_n32)
 
-Registered configs in `ladder_lm.py` (use with `--level`):
-- `E88f_h32n16` - 32 heads, n_state=16, fully ablated (74K tok/s)
-- `E88f_h24n24` - 24 heads, n_state=24, fully ablated (65K tok/s)
-- `E88e_h8_75m` - 8 heads, n_state=32, ~40M params (104K tok/s)
-- `E88b_nonorm` - 16 heads, n_state=32, with gate (65K tok/s)
-- `E88d_h12` - 12 heads at n_state=32
-- `E88d_h20` - 20 heads at n_state=32
-- `E88f_h4`, `E88f_h6` - smaller head counts at n_state=32
+### Files
 
-### E88 Benchmark Results (Jan 22, 2026 - Verified)
-
-| Config | Params | Loss (Last100) | Throughput | Notes |
-|--------|--------|----------------|------------|-------|
-| mamba2 | 101.9M | **1.39** | 64.6K tok/s | Reference baseline |
-| fla-gdn | 59.6M | **1.51** | 75.3K tok/s | Reference baseline |
-| E88_h24n24 | 71.9M | 1.52 | 65.0K tok/s | n_state=24 working! |
-| E88_h16n32_gate | 79.6M | 1.52 | 64.9K tok/s | With output gate |
-| E88_h32n16 | 64.3M | 1.53 | **74.2K tok/s** | n_state=16 working! |
-| E88_h8n32 | 40.2M | 1.55 | **104K tok/s** | Fastest E88 |
-
-**Key findings (Jan 22, 2026):**
-- n_state=16 and n_state=24 templates work correctly (no NaN)
-- E88_h32n16 matches FLA-GDN throughput (74K tok/s)
-- E88_h8n32 achieves **104K tok/s** (fastest recurrent model)
-- E88 loss (~1.52-1.55) still trails FLA-GDN (1.51) and Mamba2 (1.39)
-
-### E88 CUDA Kernel Architecture
-
-Files:
 - `elman/cuda/lib/e88_fla_hybrid_gpu.cu.cc` - Main forward/backward kernel
-- `elman/cuda/lib/e88_parallel_segment_gpu.cu.cc` - Parallel segment processing
-- `elman/cuda/lib/e88_reduced_sync_backward.cu.cc` - Optimized backward with reduced syncs
-- `elman/cuda/lib/e88_fused_projection_gpu.cu.cc` - Fused GEMM+conv+silu+norm (inference only)
-
-### Running E88 Benchmarks
-
-```bash
-# Test n_state variants (16, 24, 32)
-python gen_jobs.py e88_nstate --minutes 10 > jobs.txt
-python sched.py jobs.txt
-python extract_results.py sched_logs/TIMESTAMP/
-
-# Test head count scaling
-python gen_jobs.py e88_heads --minutes 10 > jobs.txt
-python sched.py jobs.txt
-
-# Compare vs baselines
-python gen_jobs.py e88_vs_baselines --minutes 10 > jobs.txt
-python sched.py jobs.txt
-```
-
-## E88 CUDA Optimization TODO
-
-### Completed
-- [x] Add n_state templates (4, 8, 16, 32, 48, 64, 96, 128) to main kernel
-- [x] Add n_state templates to e88_reduced_sync_backward.cu.cc
-- [x] Add n_state templates to e88_parallel_segment_gpu.cu.cc
-- [x] Implement fused projection kernel (inference only)
-- [x] Fix O(T²) backward pass in segment processing
-- [x] Gradient checkpointing with checkpoint_interval=32
-
-### Verified (Jan 22, 2026)
-- [x] Benchmark n_state=16 (E88f_h32n16) - 74.2K tok/s, loss 1.53
-- [x] Benchmark n_state=24 (E88f_h24n24) - 65K tok/s, loss 1.52
-- [x] Verify no NaN with new templates - all configs train successfully
-- [x] Compare throughput: E88_h8n32 achieves 104K tok/s at 40M params
-
-### TODO: Performance Optimization
-- [ ] Profile backward pass bottleneck (currently 4-5x slower than forward)
-- [ ] Investigate memory usage (E88 uses 24GB vs FLA-GDN's 7GB at similar params)
-- [ ] Test cuBLAS backward kernel (USE_CUBLAS_BACKWARD flag)
-- [ ] Optimize segment boundaries in parallel backward
-
-### TODO: Quality Parity with FLA-GDN
-- [ ] Understand why E88 loss (~1.5-1.6) trails FLA-GDN (~1.3-1.4)
-- [ ] Test if nonlinear state (tanh) helps or hurts
-- [ ] Test linear_state=True variant
-- [ ] Ablate remaining components (L2 norm, SiLU, etc.)
+- `elman/models/e88_fla_hybrid.py` - Python model definition
