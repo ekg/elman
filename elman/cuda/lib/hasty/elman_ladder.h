@@ -9382,6 +9382,42 @@ void dispatch_e88_cublas_backward(
 // Workspace size for cuBLAS backward kernel
 size_t e88_cublas_backward_workspace_size(int B, int H, int n_state, int head_v_dim);
 
+// =============================================================================
+// E89 Residual State CUDA Kernel
+//
+// Key difference from E88: RESIDUAL state update
+//   E88: S = tanh(decay * S + outer(delta, k))  -- tanh on entire update
+//   E89: S = decay * S + tanh(outer(delta, k))  -- tanh only on outer product
+//
+// Better gradient flow - decay path doesn't go through tanh saturation
+// =============================================================================
+
+// BF16 Dispatcher functions
+void dispatch_e89_fla_hybrid_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+void dispatch_e89_fla_hybrid_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    float* S_global, float* dS_global,
+    __nv_bfloat16* segment_state_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// Check if configuration needs global memory fallback
+bool e89_needs_global_mem_backward(int n_state, int head_v_dim);
+
 // E88 reduced sync backward (optimized sync barriers)
 void dispatch_e88_reduced_sync_backward(
     int T, int B, int H, int n_state, int head_v_dim,
@@ -9503,6 +9539,84 @@ struct E88FLAHybridBackward {
         const cudaStream_t& stream);
 
     ~E88FLAHybridBackward();
+
+    void Run(
+        int steps,
+        const T* k,             // [T, B, H, n_state]
+        const T* v,             // [T, B, H, head_v_dim]
+        const T* q,             // [T, B, H, n_state]
+        const T* decay,         // [T, B, H]
+        const T* S_checkpoints, // [num_checkpoints, B, H, n_state, head_v_dim]
+        const T* Sq_cache,      // [T, B, H, head_v_dim]
+        const T* d_output,      // [T, B, H, head_v_dim]
+        T* d_k,                 // [T, B, H, n_state]
+        T* d_v,                 // [T, B, H, head_v_dim]
+        T* d_q,                 // [T, B, H, n_state]
+        T* d_decay);            // [T, B, H]
+
+private:
+    int batch_size_;
+    int n_state_;
+    int head_v_dim_;
+    int n_heads_;
+    cudaStream_t stream_;
+    bool use_global_mem_;       // True if using global memory fallback
+    float* S_global_;           // [B*H, n_state, head_v_dim] for large configs
+    float* dS_global_;          // [B*H, n_state, head_v_dim] for large configs
+    void* segment_state_cache_; // [B*H, checkpoint_interval, n_state, head_v_dim] for O(T) backward
+};
+
+// =============================================================================
+// E89 Residual State Structs (same interface as E88, calls E89 kernels)
+// =============================================================================
+
+template<typename T>
+struct E89ResidualStateForward {
+    E89ResidualStateForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int head_v_dim,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* k,         // [T, B, H, n_state] L2 normalized keys
+        const T* v,         // [T, B, H, head_v_dim] values
+        const T* q,         // [T, B, H, n_state] L2 normalized queries
+        const T* decay,     // [T, B, H] exponential decay factors
+        T* S,               // [B, H, n_state, head_v_dim]
+        T* output,          // [T, B, H, head_v_dim]
+        T* S_cache);        // checkpoints + Sq_cache
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int head_v_dim, int n_heads) {
+        // S_checkpoints + Sq_cache
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        int64_t size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim * sizeof(T);
+        size += steps * batch_size * n_heads * head_v_dim * sizeof(T);
+        return size;
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int head_v_dim_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E89ResidualStateBackward {
+    E89ResidualStateBackward(
+        int batch_size,
+        int n_state,
+        int head_v_dim,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    ~E89ResidualStateBackward();
 
     void Run(
         int steps,

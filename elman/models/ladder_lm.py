@@ -99,6 +99,7 @@ from .e74_v2 import E74v2
 from .e75_gated_delta import E75GatedDelta
 from .e75_multihead import E75MultiHead
 from .e88_fla_hybrid import E88FLAHybrid
+from .e89_residual_state import E89ResidualStateCell
 from .e76_logspace_delta import E76LogSpaceDelta
 from .e77_linear_matrix import E77LinearMatrix
 from .e78_projected_matrix import E78ProjectedMatrix
@@ -645,6 +646,13 @@ def get_ladder_level(level):
         # With convolutions (FLA-GDN style)
         'E88_conv_silu': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': True, 'use_gate': True, 'gate_activation': 'silu', 'use_output_norm': True}),
         'E88_full_fla': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': True, 'use_gate': True, 'gate_activation': 'silu', 'use_output_norm': True, 'use_silu': True, 'use_l2_norm': True}),
+
+        # E89: Residual State - tanh only on outer product (better gradient flow)
+        # S = decay * S + tanh(outer(delta, k)) instead of tanh(decay * S + outer)
+        89: E89ResidualStateCell,
+        'E89': E89ResidualStateCell,
+        # E89 with optimal E88 config (h56_n32, expansion=1.0)
+        'E89_opt': lambda **kw: E89ResidualStateCell(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh

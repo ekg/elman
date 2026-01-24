@@ -15024,6 +15024,126 @@ std::vector<Tensor> e88_fused_projection(
     return {q_out, k_out, v_out, decay_out};
 }
 
+// =============================================================================
+// E89: Residual State - tanh only on outer product for better gradient flow
+// S_new = decay * S_old + tanh(outer(delta, k))  instead of tanh(decay*S + outer)
+// =============================================================================
+
+std::vector<Tensor> e89_residual_state_forward(
+    bool training,
+    Tensor k,           // [T, B, H, n_state] L2 normalized keys
+    Tensor v,           // [T, B, H, head_v_dim] values
+    Tensor q,           // [T, B, H, n_state] L2 normalized queries
+    Tensor decay,       // [T, B, H] exponential decay factors
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S0);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+
+    // S_cache for checkpoints + Sq_cache
+    const int checkpoint_interval = 32;  // Must match E89_CHECKPOINT_INTERVAL
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+    const int64_t sq_cache_size = time_steps * batch_size * n_heads * head_v_dim;
+    Tensor S_cache = training ?
+        torch::empty({s_checkpoints_size + sq_cache_size}, options) :
+        torch::empty({0}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E89 Residual State Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    E89ResidualStateForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, head_v_dim, n_heads,
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr);
+
+    return {S, output, S_cache};
+}
+
+std::vector<Tensor> e89_residual_state_backward(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor S_checkpoints,   // [num_checkpoints * B * H * n_state * head_v_dim]
+    Tensor Sq_cache,        // [T * B * H * head_v_dim]
+    Tensor d_output,        // [T, B, H, head_v_dim]
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(d_output);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: gradients for k, v, q, decay
+    Tensor d_k = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_v = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor d_q = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_decay = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E89 Residual State Backward only supports bfloat16");
+
+    using namespace elman;
+
+    E89ResidualStateBackward<__nv_bfloat16> backward(
+        batch_size, n_state, head_v_dim, n_heads,
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()));
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
 }  // anonymous namespace
 
 
@@ -15484,4 +15604,10 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: Backward pass using pre-computed states (no forward replay)");
     m.def("e88_fused_projection", &e88_fused_projection,
           "E88 Fused Projection: Combined GEMM + conv + silu + L2 norm + decay computation");
+
+    // E89: Residual State - tanh only on outer product, better gradient flow
+    m.def("e89_residual_state_forward", &e89_residual_state_forward,
+          "E89 Residual State: decay*S + tanh(outer) - tanh only on outer product");
+    m.def("e89_residual_state_backward", &e89_residual_state_backward,
+          "E89 Residual State: Backward pass with gradient checkpointing");
 }
