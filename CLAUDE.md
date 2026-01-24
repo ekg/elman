@@ -9,21 +9,57 @@ After this, we've made some modifications generating E1, and that for a long tim
 And that in a nutshell is a lot of the kind of work that's been happening. It's been a slow process to try to regularize, organize all the effort to develop the standard protocol for how to implement the CUDA kernels to... Basically the standard protocol involves cross-checking the Python and CUDA implementation in forward and backward passes on the same data to verify no difference in output.
 We want to make sure that we remember to do this, and this process is very involved. So we basically need to be sure to run subagents in the background to do this. And in fact, for really a lot of effort, you want to be using salvations. I think it helps you save your focus and not get confused or distracted and allows a lot of work to be done at the same time. It also can simplify your interface with the system.
 
-## Current Best Models (Jan 2026)
+## Current Best Models (Jan 24, 2026)
 
 ### E88 vs Baselines at 500M Params
 
 | Model | Params | Loss | Tok/s | State/Layer | Notes |
 |-------|--------|------|-------|-------------|-------|
-| **FLA-GDN** | 517M | **1.33** | 20.5K | 1.3M | ICLR 2025 baseline |
-| **Mamba2** | 469M | **1.33** | 20.3K | 307K | SSM baseline |
-| **E88** | 492M | **1.44** | 10.7K | 57K | Nonlinear matrix state |
+| **FLA-GDN** | 517M | **1.36** | 20.1K | 1.3M | ICLR 2025 baseline |
+| Mamba2 | 469M | 1.50 | 19.5K | 307K | SSM baseline |
+| **E88** | 492M | **1.44** | 11.0K | 57K | Nonlinear matrix state |
 
 **Key findings:**
-- E88 only 0.11 nats behind FLA-GDN/Mamba2
-- E88 uses **23x less state** than FLA-GDN (57K vs 1.3M per layer)
+- E88 beats Mamba2 (1.44 vs 1.50) at similar params
+- E88 only 0.08 nats behind FLA-GDN with **23x less state**
 - E88 uses **5x less state** than Mamba2 (57K vs 307K)
-- E88 is 2x slower due to sequential recurrence (no parallel scan)
+- E88 is ~2x slower due to sequential recurrence (no parallel scan)
+
+### What We've Learned (Scaling Study)
+
+**More state HURTS E88:**
+| Config | State/Layer | Loss | Notes |
+|--------|-------------|------|-------|
+| h56_n32 | 57K | 1.44 | optimal |
+| h37_n48 | 85K | 1.69 | +0.25 worse |
+| h22_n80 | 141K | 2.15 | +0.71 worse |
+| h14_n128 | 229K | 2.55 | +1.11 worse |
+
+**Linear state doesn't help:** E88 with `linear_state=True` gets 1.67 loss vs 1.44 with tanh.
+
+**Optimal config:** dim=1792, depth=38, n_heads=56, n_state=32 (cannot improve by going wider/deeper/more state)
+
+### E88 Next Steps (Potential Cheap Wins)
+
+The puzzle: E88 with 57K state nearly matches FLA-GDN with 1.3M state, but adding more state hurts. What can we try?
+
+**Almost-free state utilization ideas:**
+1. **Residual state**: `S_new = S + tanh(update)` instead of `S_new = tanh(decay*S + update)` - untangles gradient flow
+2. **State refinement**: Run state update 2x per timestep (no new params, just reuse k,v,q)
+3. **Multi-scale heads**: Mix n_state=32 and n_state=16 heads in same layer
+4. **Key blending**: `k_eff = alpha*k_prev + (1-alpha)*k` - temporal smoothing almost free
+5. **Output-state mixing**: `output = o + gate * linear(S.mean(dim=-1))` - use state info in output
+
+**Cheap compute additions:**
+1. **Short conv on output**: 1D conv with kernel=3 on output sequence (~0.1% params)
+2. **Cross-head state attention**: Tiny attention between heads' states (expensive but powerful)
+3. **Learned decay schedule**: Instead of per-timestep decay, use position-dependent decay
+
+**NOT worth trying (already tested):**
+- Linear state (tanh removal): 1.67 vs 1.44 - worse
+- More state via larger n_state: dramatically worse
+- Output gating: hurts by ~0.09 nats
+- Wider/deeper at same params: worse
 
 ### Reproducing E88 vs Baselines Benchmark
 
