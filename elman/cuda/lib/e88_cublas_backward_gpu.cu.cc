@@ -607,6 +607,7 @@ void dispatch_e88_cublas_backward(
     // Common configurations
     if (n_state == 32 && head_v_dim == 64) { DISPATCH_CUBLAS_BWD(32, 64); }
     else if (n_state == 32 && head_v_dim == 128) { DISPATCH_CUBLAS_BWD(32, 128); }
+    else if (n_state == 32 && head_v_dim == 32) { DISPATCH_CUBLAS_BWD(32, 32); }
     else if (n_state == 64 && head_v_dim == 64) { DISPATCH_CUBLAS_BWD(64, 64); }
     else if (n_state == 64 && head_v_dim == 128) { DISPATCH_CUBLAS_BWD(64, 128); }
     else if (n_state == 48 && head_v_dim == 96) { DISPATCH_CUBLAS_BWD(48, 96); }
@@ -620,6 +621,12 @@ void dispatch_e88_cublas_backward(
 }
 
 // Explicit template instantiations for common configurations
+template void e88_cublas_backward_impl<32, 32>(
+    int, int, int, const __nv_bfloat16*, const __nv_bfloat16*,
+    const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*,
+    const __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*,
+    __nv_bfloat16*, __nv_bfloat16*, float*, __nv_bfloat16*, int, cudaStream_t);
+
 template void e88_cublas_backward_impl<32, 64>(
     int, int, int, const __nv_bfloat16*, const __nv_bfloat16*,
     const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*,

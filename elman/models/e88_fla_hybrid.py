@@ -74,6 +74,10 @@ except ImportError:
 # Global flag to enable cuBLAS backward kernel (can be toggled at runtime)
 USE_CUBLAS_BACKWARD = False
 
+# Global flag to enable reduced-sync backward kernel (fewer __syncthreads())
+# Default True: ~15% faster backward (21ms vs 24.7ms at B=32, T=512, dim=1792)
+USE_REDUCED_SYNC_BACKWARD = True
+
 # Global flag to enable fused projection kernel (can be toggled at runtime)
 USE_FUSED_PROJECTION = True
 
@@ -200,11 +204,26 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
         S_checkpoints = S_cache[:checkpoints_size].view(num_checkpoints, B, H, n_state, head_v_dim)
         Sq_cache = S_cache[checkpoints_size:checkpoints_size + sq_cache_size].view(T, B, H, head_v_dim)
 
-        # Use cuBLAS tensor core backward if enabled
+        # Choose backward kernel
         if USE_CUBLAS_BACKWARD and E88_CUBLAS_BACKWARD_AVAILABLE:
             grads = hasty_pytorch_lib.e88_fla_hybrid_backward_cublas(
                 k, v, q, decay,
                 S_checkpoints.view(-1),  # Flatten for cuBLAS kernel
+                d_output.contiguous(),
+                n_heads,
+                checkpoint_interval
+            )
+        elif USE_REDUCED_SYNC_BACKWARD:
+            # Allocate segment cache for reduced sync kernel
+            cache_entry_size = n_state * head_v_dim + n_state + head_v_dim + 1
+            segment_cache = torch.empty(
+                B * H * checkpoint_interval * cache_entry_size,
+                dtype=k.dtype, device=k.device
+            )
+            grads = hasty_pytorch_lib.e88_fla_hybrid_backward_reduced_sync(
+                k, v, q, decay,
+                S_checkpoints, Sq_cache,
+                segment_cache,
                 d_output.contiguous(),
                 n_heads,
                 checkpoint_interval
