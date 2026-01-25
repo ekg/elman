@@ -52,6 +52,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, List, Tuple
 
+# Try to import FLA's per-head normalization modules
+try:
+    from fla.modules import FusedRMSNormGated, RMSNorm as FLARMSNorm
+    FLA_FUSED_NORM_AVAILABLE = True
+except ImportError:
+    FLA_FUSED_NORM_AVAILABLE = False
+    FusedRMSNormGated = None
+    FLARMSNorm = None
+
 # Try to import CUDA kernel
 try:
     import hasty_pytorch_lib
@@ -633,9 +642,22 @@ class E88FLAHybrid(nn.Module):
         else:
             raise ValueError(f"Unknown head_mix: {head_mix}")
 
-        # === Output normalization (RMSNorm like FLA, works with bfloat16) ===
-        self.o_norm_weight = nn.Parameter(torch.ones(self.head_v_dim))
+        # === Output normalization (per-head RMSNorm like FLA-GDN) ===
+        # FLA-GDN ALWAYS uses per-head norm before mixing heads - crucial for many-head configs
         self.norm_eps = 1e-5
+        if FLA_FUSED_NORM_AVAILABLE:
+            if use_gate:
+                # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
+                self.o_norm = FusedRMSNormGated(self.head_v_dim, eps=self.norm_eps)
+                self._use_fused_norm_gate = True
+            else:
+                # FLA RMSNorm without gating (still efficient Triton kernel)
+                self.o_norm = FLARMSNorm(self.head_v_dim, eps=self.norm_eps)
+                self._use_fused_norm_gate = False
+        else:
+            # Fallback: manual per-head RMSNorm weight
+            self.o_norm_weight = nn.Parameter(torch.ones(self.head_v_dim))
+            self._use_fused_norm_gate = False
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -916,17 +938,40 @@ class E88FLAHybrid(nn.Module):
             output = torch.stack(outputs, dim=1)
 
         # === Output normalization and gating (FLA-GDN style) ===
-        if self.use_output_norm:
-            # RMSNorm: x / sqrt(mean(x^2) + eps) * weight
-            rms = output.pow(2).mean(dim=-1, keepdim=True).add(self.norm_eps).rsqrt()
-            output = output * rms * self.o_norm_weight
-
-        if self.use_gate and self.g_proj is not None:
+        # Per-head RMSNorm is crucial for mixing many heads effectively
+        if self._use_fused_norm_gate and self.g_proj is not None:
+            # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
             g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
-            if self.gate_activation == 'sigmoid':
-                output = output * torch.sigmoid(g)
-            else:  # silu/swish - FLA-GDN style
-                output = output * F.silu(g)
+            # Reshape to 2D for Triton kernel: [B*T*H, head_v_dim]
+            output_2d = output.reshape(-1, self.head_v_dim)
+            g_2d = g.reshape(-1, self.head_v_dim)
+            output_2d = self.o_norm(output_2d, g_2d)
+            output = output_2d.view(B, T, H, self.head_v_dim)
+        elif FLA_FUSED_NORM_AVAILABLE and hasattr(self, 'o_norm'):
+            # FLA RMSNorm without gating (still efficient Triton kernel)
+            output_2d = output.reshape(-1, self.head_v_dim)
+            output_2d = self.o_norm(output_2d)
+            output = output_2d.view(B, T, H, self.head_v_dim)
+            # Apply gating separately if enabled
+            if self.use_gate and self.g_proj is not None:
+                g = self.g_proj(x).view(B, T, H, self.head_v_dim)
+                if self.gate_activation == 'sigmoid':
+                    output = output * torch.sigmoid(g)
+                else:  # silu/swish
+                    output = output * F.silu(g)
+        else:
+            # Fallback: manual per-head norm and gating
+            if self.use_output_norm and hasattr(self, 'o_norm_weight'):
+                # Per-head RMSNorm: x / sqrt(mean(x^2) + eps) * weight
+                rms = output.pow(2).mean(dim=-1, keepdim=True).add(self.norm_eps).rsqrt()
+                output = output * rms * self.o_norm_weight
+
+            if self.use_gate and self.g_proj is not None:
+                g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
+                if self.gate_activation == 'sigmoid':
+                    output = output * torch.sigmoid(g)
+                else:  # silu/swish - FLA-GDN style
+                    output = output * F.silu(g)
 
         # Head mixing (output is [B, T, H, head_v_dim])
         if self.head_mix == 'concat':
