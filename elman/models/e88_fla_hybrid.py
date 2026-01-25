@@ -132,7 +132,7 @@ class E75MultiHeadCUDAFunction(torch.autograd.Function):
         # S_cache layout: [checkpoints_flat || sq_cache_flat]
         T, B, _ = x.shape
         n_state = k_cache.size(3)
-        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
+        checkpoint_interval = 16  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         checkpoints_size = num_checkpoints * B * n_heads * n_state * n_state
         sq_cache_size = T * B * n_heads * n_state
@@ -203,7 +203,7 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
         head_v_dim = ctx.head_v_dim
 
         T, B, H, _ = k.shape
-        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
+        checkpoint_interval = 16  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
 
         # Split S_cache into S_checkpoints and Sq_cache
@@ -293,7 +293,7 @@ class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
 
         # Split S_cache into S_checkpoints and Sq_cache
         T, B, H, n_state = k.shape
-        checkpoint_interval = 32  # Must match E88_CHECKPOINT_INTERVAL in CUDA
+        checkpoint_interval = 16  # Must match E88_CHECKPOINT_INTERVAL in CUDA
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         checkpoints_size = num_checkpoints * B * H * n_state * n_state
         sq_cache_size = T * B * H * n_state

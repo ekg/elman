@@ -11756,7 +11756,7 @@ std::vector<Tensor> e75_multihead_precomputed_forward(
     Tensor output = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
 
     // S_cache for checkpoints + Sq_cache
-    const int checkpoint_interval = 32;  // Must match E88_CHECKPOINT_INTERVAL
+    const int checkpoint_interval = 16;  // Must match E88_CHECKPOINT_INTERVAL
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * n_state;
     const int64_t sq_cache_size = time_steps * batch_size * n_heads * n_state;
@@ -14636,7 +14636,7 @@ std::vector<Tensor> e88_fla_hybrid_forward(
     Tensor output = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
 
     // S_cache for checkpoints + Sq_cache
-    const int checkpoint_interval = 32;  // Must match E88_CHECKPOINT_INTERVAL
+    const int checkpoint_interval = 16;  // Must match E88_CHECKPOINT_INTERVAL
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
     const int64_t sq_cache_size = time_steps * batch_size * n_heads * head_v_dim;

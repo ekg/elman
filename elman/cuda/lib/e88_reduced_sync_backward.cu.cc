@@ -18,7 +18,24 @@
 #include <cstdio>
 #include "hasty/elman_ladder.h"
 
+// Use hardware tanhf - Pade approximation is actually slower on A100
+#define USE_FAST_TANH 0
+
 namespace elman {
+
+#if USE_FAST_TANH
+__device__ __forceinline__ float e88_tanh(float x) {
+    x = fmaxf(-5.0f, fminf(5.0f, x));
+    float x2 = x * x;
+    float num = x * (135135.0f + x2 * (17325.0f + x2 * 378.0f));
+    float den = 135135.0f + x2 * (62370.0f + x2 * (3150.0f + x2 * 28.0f));
+    return num / den;
+}
+#else
+__device__ __forceinline__ float e88_tanh(float x) {
+    return tanhf(x);
+}
+#endif
 
 template<int N_STATE, int HEAD_V_DIM>
 __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
@@ -64,7 +81,22 @@ __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
     float* warp_results = d_delta + HEAD_V_DIM;
 
     int tid = threadIdx.x;
-    int state_size = N_STATE * HEAD_V_DIM;
+    constexpr int state_size = N_STATE * HEAD_V_DIM;
+
+    // OPTIMIZATION: Precompute row/col indices for this thread's work items
+    // Avoids integer division in inner loops (expensive on GPU)
+    int my_start = tid;
+    int my_stride = blockDim.x;
+
+    // Precompute indices for first 4 elements
+    int row0 = my_start / HEAD_V_DIM;
+    int col0 = my_start % HEAD_V_DIM;
+    int row1 = (my_start + my_stride) / HEAD_V_DIM;
+    int col1 = (my_start + my_stride) % HEAD_V_DIM;
+    int row2 = (my_start + 2*my_stride) / HEAD_V_DIM;
+    int col2 = (my_start + 2*my_stride) % HEAD_V_DIM;
+    int row3 = (my_start + 3*my_stride) / HEAD_V_DIM;
+    int col3 = (my_start + 3*my_stride) % HEAD_V_DIM;
 
     // Segment cache offsets
     int cache_entry_size = state_size + N_STATE + HEAD_V_DIM + 1;
@@ -145,10 +177,23 @@ __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
             __syncthreads();  // SYNC 4
 
             // Update S: S_t = tanh(decay * S + outer(delta, k))
-            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+            // OPTIMIZATION: Use precomputed indices
+            if (my_start < state_size) {
+                S[my_start] = e88_tanh(decay_val * S[my_start] + delta[col0] * k[row0]);
+            }
+            if (my_start + my_stride < state_size) {
+                S[my_start + my_stride] = e88_tanh(decay_val * S[my_start + my_stride] + delta[col1] * k[row1]);
+            }
+            if (my_start + 2*my_stride < state_size) {
+                S[my_start + 2*my_stride] = e88_tanh(decay_val * S[my_start + 2*my_stride] + delta[col2] * k[row2]);
+            }
+            if (my_start + 3*my_stride < state_size) {
+                S[my_start + 3*my_stride] = e88_tanh(decay_val * S[my_start + 3*my_stride] + delta[col3] * k[row3]);
+            }
+            for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                S[idx] = tanhf(decay_val * S[idx] + delta[j] * k[i]);
+                S[idx] = e88_tanh(decay_val * S[idx] + delta[j] * k[i]);
             }
             __syncthreads();  // SYNC 5 (needed for next iteration)
         }
@@ -197,15 +242,27 @@ __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
             }
             __syncthreads();  // SYNC 7
 
-            // Compute S_t and dtanh
-            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+            // Compute S_t and dtanh - OPTIMIZATION: Use precomputed indices
+            #define COMPUTE_ST_DTANH(IDX, ROW, COL) do { \
+                float pre_tanh = decay_val * S[IDX] + delta[COL] * k[ROW]; \
+                float tanh_val = e88_tanh(pre_tanh); \
+                S_t[IDX] = tanh_val; \
+                dtanh[IDX] = 1.0f - tanh_val * tanh_val; \
+            } while(0)
+
+            if (my_start < state_size) COMPUTE_ST_DTANH(my_start, row0, col0);
+            if (my_start + my_stride < state_size) COMPUTE_ST_DTANH(my_start + my_stride, row1, col1);
+            if (my_start + 2*my_stride < state_size) COMPUTE_ST_DTANH(my_start + 2*my_stride, row2, col2);
+            if (my_start + 3*my_stride < state_size) COMPUTE_ST_DTANH(my_start + 3*my_stride, row3, col3);
+            for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float pre_tanh = decay_val * S[idx] + delta[j] * k[i];
-                float tanh_val = tanhf(pre_tanh);
+                float tanh_val = e88_tanh(pre_tanh);
                 S_t[idx] = tanh_val;
                 dtanh[idx] = 1.0f - tanh_val * tanh_val;
             }
+            #undef COMPUTE_ST_DTANH
             __syncthreads();  // SYNC 8
 
             // Compute d_q and update dS with output gradient
@@ -216,7 +273,12 @@ __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
                 }
                 d_q[tid] = sum;
             }
-            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+            // OPTIMIZATION: Use precomputed indices
+            if (my_start < state_size) dS[my_start] += q[row0] * d_Sq[col0];
+            if (my_start + my_stride < state_size) dS[my_start + my_stride] += q[row1] * d_Sq[col1];
+            if (my_start + 2*my_stride < state_size) dS[my_start + 2*my_stride] += q[row2] * d_Sq[col2];
+            if (my_start + 3*my_stride < state_size) dS[my_start + 3*my_stride] += q[row3] * d_Sq[col3];
+            for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 dS[idx] += q[i] * d_Sq[j];
@@ -296,13 +358,23 @@ __global__ void E88FLAHybridBackwardKernel_ReducedSync_BF16(
                 d_decay_all[decay_offset] = __float2bfloat16(d_decay_accum);
             }
 
-            // Update dS for next iteration (sync needed for next iteration's dS access)
-            for (int idx = tid; idx < state_size; idx += blockDim.x) {
+            // Update dS for next iteration - OPTIMIZATION: Use precomputed indices
+            #define UPDATE_DS(IDX, ROW, COL) do { \
+                float d_pre = dS[IDX] * dtanh[IDX]; \
+                dS[IDX] = d_pre * decay_val + (-d_delta[COL]) * k[ROW]; \
+            } while(0)
+
+            if (my_start < state_size) UPDATE_DS(my_start, row0, col0);
+            if (my_start + my_stride < state_size) UPDATE_DS(my_start + my_stride, row1, col1);
+            if (my_start + 2*my_stride < state_size) UPDATE_DS(my_start + 2*my_stride, row2, col2);
+            if (my_start + 3*my_stride < state_size) UPDATE_DS(my_start + 3*my_stride, row3, col3);
+            for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float d_pre = dS[idx] * dtanh[idx];
                 dS[idx] = d_pre * decay_val + (-d_delta[j]) * k[i];
             }
+            #undef UPDATE_DS
             __syncthreads();  // SYNC 13
         }
         // Backward: 8 syncs per timestep (was 15)

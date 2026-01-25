@@ -29,9 +29,28 @@
 #include <cstdio>
 #include "hasty/elman_ladder.h"
 
-#define E88_CHECKPOINT_INTERVAL 32  // Checkpoint every 32 steps
+#define E88_CHECKPOINT_INTERVAL 16  // Checkpoint every 16 steps (optimal)
+
+// Use hardware tanhf - Pade approximation is actually slower on A100
+#define USE_FAST_TANH 0
 
 namespace elman {
+
+#if USE_FAST_TANH
+__device__ __forceinline__ float e88_tanh(float x) {
+    // Clamp to avoid issues at extreme values
+    x = fmaxf(-5.0f, fminf(5.0f, x));
+    float x2 = x * x;
+    // Pade (6,6) coefficients for tanh
+    float num = x * (135135.0f + x2 * (17325.0f + x2 * 378.0f));
+    float den = 135135.0f + x2 * (62370.0f + x2 * (3150.0f + x2 * 28.0f));
+    return num / den;
+}
+#else
+__device__ __forceinline__ float e88_tanh(float x) {
+    return tanhf(x);
+}
+#endif
 
 // ============================================================================
 // E88 FLA Hybrid Forward Kernel
@@ -72,10 +91,29 @@ __global__ void E88FLAHybridForwardKernel_BF16(
     float* retrieved = q_shared + N_STATE;
 
     int tid = threadIdx.x;
-    int state_size = N_STATE * HEAD_V_DIM;
+    constexpr int state_size = N_STATE * HEAD_V_DIM;
 
     // State offset for this (batch, head)
     int state_offset = (b * H + h) * state_size;
+
+    // OPTIMIZATION: Precompute row/col indices for this thread's work items
+    // Avoids integer division in the inner loop (expensive on GPU)
+    // Each thread handles state_size/blockDim.x elements
+    int my_start = tid;
+    int my_stride = blockDim.x;
+
+    // Precompute indices for first 4 elements (typical: 1024 state / 256 threads = 4)
+    int row0 = my_start / HEAD_V_DIM;
+    int col0 = my_start % HEAD_V_DIM;
+    int row1 = (my_start + my_stride) / HEAD_V_DIM;
+    int col1 = (my_start + my_stride) % HEAD_V_DIM;
+    int row2 = (my_start + 2*my_stride) / HEAD_V_DIM;
+    int col2 = (my_start + 2*my_stride) % HEAD_V_DIM;
+    int row3 = (my_start + 3*my_stride) / HEAD_V_DIM;
+    int col3 = (my_start + 3*my_stride) % HEAD_V_DIM;
+
+    // Shared decay value (moved outside loop for better register allocation)
+    __shared__ float decay_val;
 
     // Load initial state for this head
     for (int i = tid; i < state_size; i += blockDim.x) {
@@ -90,7 +128,7 @@ __global__ void E88FLAHybridForwardKernel_BF16(
     __syncthreads();
 
     for (int t = 0; t < T; t++) {
-        // Load k, v, q for this timestep
+        // Load k, v, q, decay for this timestep - MERGED INTO SINGLE SYNC
         int k_offset = ((t * B + b) * H + h) * N_STATE;
         int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
         int decay_offset = (t * B + b) * H + h;
@@ -102,14 +140,10 @@ __global__ void E88FLAHybridForwardKernel_BF16(
         if (tid < HEAD_V_DIM) {
             v_shared[tid] = __bfloat162float(v_all[v_offset + tid]);
         }
-        __syncthreads();
-
-        // Load decay (single scalar per head per timestep)
-        __shared__ float decay_val;
         if (tid == 0) {
             decay_val = __bfloat162float(decay_all[decay_offset]);
         }
-        __syncthreads();
+        __syncthreads();  // SYNC 1: All loads complete (was 2 syncs, now 1)
 
         // retrieved = S @ k (S is [N_STATE, HEAD_V_DIM], k is [N_STATE])
         // retrieved[j] = sum_i S[i,j] * k[i]
@@ -127,14 +161,31 @@ __global__ void E88FLAHybridForwardKernel_BF16(
         // delta = v - retrieved
         // outer(delta, k)[i,j] = delta[j] * k[i]
         // S[i,j] = tanh(decay * S[i,j] + (v[j] - retrieved[j]) * k[i])
-        for (int idx = tid; idx < state_size; idx += blockDim.x) {
-            int i = idx / HEAD_V_DIM;  // row index (k dimension)
-            int j = idx % HEAD_V_DIM;  // col index (v dimension)
-            float delta_j = v_shared[j] - retrieved[j];
-            float update = decay_val * S_shared[idx] + delta_j * k_shared[i];
-            S_shared[idx] = tanhf(update);
+        // OPTIMIZATION: Use precomputed row/col indices, avoid division in loop
+        if (my_start < state_size) {
+            float delta0 = v_shared[col0] - retrieved[col0];
+            S_shared[my_start] = e88_tanh(decay_val * S_shared[my_start] + delta0 * k_shared[row0]);
         }
-        __syncthreads();
+        if (my_start + my_stride < state_size) {
+            float delta1 = v_shared[col1] - retrieved[col1];
+            S_shared[my_start + my_stride] = e88_tanh(decay_val * S_shared[my_start + my_stride] + delta1 * k_shared[row1]);
+        }
+        if (my_start + 2*my_stride < state_size) {
+            float delta2 = v_shared[col2] - retrieved[col2];
+            S_shared[my_start + 2*my_stride] = e88_tanh(decay_val * S_shared[my_start + 2*my_stride] + delta2 * k_shared[row2]);
+        }
+        if (my_start + 3*my_stride < state_size) {
+            float delta3 = v_shared[col3] - retrieved[col3];
+            S_shared[my_start + 3*my_stride] = e88_tanh(decay_val * S_shared[my_start + 3*my_stride] + delta3 * k_shared[row3]);
+        }
+        // Handle any remaining elements (for state_size > 4 * blockDim.x)
+        for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
+            int i = idx / HEAD_V_DIM;
+            int j = idx % HEAD_V_DIM;
+            float delta_j = v_shared[j] - retrieved[j];
+            S_shared[idx] = e88_tanh(decay_val * S_shared[idx] + delta_j * k_shared[i]);
+        }
+        __syncthreads();  // SYNC 3: State updated
 
         // Save checkpoint
         if ((t + 1) % checkpoint_interval == 0) {
@@ -144,7 +195,6 @@ __global__ void E88FLAHybridForwardKernel_BF16(
                 S_checkpoints[cp_offset + i] = __float2bfloat16(S_shared[i]);
             }
         }
-        __syncthreads();
 
         // Compute output: Sq = S^T @ q (FLA-GDN style - no self-gating)
         // Sq[j] = sum_i S[i,j] * q[i]
@@ -314,7 +364,7 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float update = decay_val_replay * S[idx] + delta[j] * k[i];
-                S[idx] = tanhf(update);
+                S[idx] = e88_tanh(update);
             }
             __syncthreads();
         }
@@ -371,7 +421,7 @@ __global__ void E88FLAHybridBackwardKernel_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float pre_tanh = decay_val * S[idx] + delta[j] * k[i];
-                float tanh_val = tanhf(pre_tanh);
+                float tanh_val = e88_tanh(pre_tanh);
                 S_t[idx] = tanh_val;
                 dtanh[idx] = 1.0f - tanh_val * tanh_val;
             }
@@ -666,7 +716,7 @@ __global__ void E88FLAHybridBackwardKernel_Cached_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float update = decay_val_replay * S[idx] + delta[j] * k[i];
-                S[idx] = tanhf(update);
+                S[idx] = e88_tanh(update);
             }
             __syncthreads();
         }
@@ -729,7 +779,7 @@ __global__ void E88FLAHybridBackwardKernel_Cached_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float pre_tanh = decay_val * S[idx] + delta[j] * k[i];
-                float tanh_val = tanhf(pre_tanh);
+                float tanh_val = e88_tanh(pre_tanh);
                 S_t[idx] = tanh_val;
                 dtanh[idx] = 1.0f - tanh_val * tanh_val;
             }
@@ -1002,7 +1052,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float update = decay_val_replay * S[idx] + delta[j] * k[i];
-                S[idx] = tanhf(update);
+                S[idx] = e88_tanh(update);
             }
             __syncthreads();
         }
@@ -1070,7 +1120,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             if (tid < N_STATE) {
                 float sum = 0.0f;
                 for (int j = 0; j < HEAD_V_DIM; j++) {
-                    float S_t_ij = tanhf(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
+                    float S_t_ij = e88_tanh(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
                     sum += S_t_ij * d_Sq[j];
                 }
                 d_q[tid] = sum;
@@ -1091,7 +1141,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             if (tid < HEAD_V_DIM) {
                 float d_delta_local = 0.0f;
                 for (int i = 0; i < N_STATE; i++) {
-                    float S_t_ij = tanhf(decay_val * S[i * HEAD_V_DIM + tid] + delta[tid] * k[i]);
+                    float S_t_ij = e88_tanh(decay_val * S[i * HEAD_V_DIM + tid] + delta[tid] * k[i]);
                     float d_pre = dS[i * HEAD_V_DIM + tid] * (1.0f - S_t_ij * S_t_ij);
                     d_delta_local += d_pre * k[i];
                 }
@@ -1102,7 +1152,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             if (tid < N_STATE) {
                 float d_k_local = 0.0f;
                 for (int j = 0; j < HEAD_V_DIM; j++) {
-                    float S_t_ij = tanhf(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
+                    float S_t_ij = e88_tanh(decay_val * S[tid * HEAD_V_DIM + j] + delta[j] * k[tid]);
                     float d_pre = dS[tid * HEAD_V_DIM + j] * (1.0f - S_t_ij * S_t_ij);
                     d_k_local += d_pre * delta[j];
                 }
@@ -1115,7 +1165,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             for (int idx = tid; idx < state_size; idx += blockDim.x) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
+                float S_t_ij = e88_tanh(decay_val * S[idx] + delta[j] * k[i]);
                 float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
                 d_decay_local += d_pre * S[idx];
             }
@@ -1174,7 +1224,7 @@ __global__ void E88FLAHybridBackwardKernel_GlobalMem_BF16(
             for (int idx = tid; idx < state_size; idx += blockDim.x) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                float S_t_ij = tanhf(decay_val * S[idx] + delta[j] * k[i]);
+                float S_t_ij = e88_tanh(decay_val * S[idx] + delta[j] * k[i]);
                 float d_pre = dS[idx] * (1.0f - S_t_ij * S_t_ij);
                 dS[idx] = d_pre * decay_val + (-d_delta[j]) * k[i];
             }
