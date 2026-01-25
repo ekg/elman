@@ -9,77 +9,77 @@ After this, we've made some modifications generating E1, and that for a long tim
 And that in a nutshell is a lot of the kind of work that's been happening. It's been a slow process to try to regularize, organize all the effort to develop the standard protocol for how to implement the CUDA kernels to... Basically the standard protocol involves cross-checking the Python and CUDA implementation in forward and backward passes on the same data to verify no difference in output.
 We want to make sure that we remember to do this, and this process is very involved. So we basically need to be sure to run subagents in the background to do this. And in fact, for really a lot of effort, you want to be using salvations. I think it helps you save your focus and not get confused or distracted and allows a lot of work to be done at the same time. It also can simplify your interface with the system.
 
-## Current Best Models (Jan 24, 2026)
+## Current Best: E88 at 480M Scale (Jan 25, 2026)
 
-### E88 vs Baselines at 500M Params
+### Benchmark Results (Matched Params, Same Seed)
 
-| Model | Params | Loss | Tok/s | State/Layer | Notes |
-|-------|--------|------|-------|-------------|-------|
-| **FLA-GDN** | 517M | **1.36** | 20.1K | 1.3M | ICLR 2025 baseline |
-| Mamba2 | 469M | 1.50 | 19.5K | 307K | SSM baseline |
-| **E88** | 492M | **1.44** | 11.0K | 57K | Nonlinear matrix state |
+All models tested at ~480M params, seed=42, 10 min training, batch_size=16, chunk_size=512, lr=3e-4, bf16.
+
+| Model | Params | Loss | Steps | Tok/s | Notes |
+|-------|--------|------|-------|-------|-------|
+| **Mamba2** | 475M | **1.34** | 1430 | 18.2K | SSM baseline |
+| FLA-GDN | 474M | 1.36 | 1160 | 19.9K | ICLR 2025 baseline |
+| **E88 d=28** | 480M | 1.38 | 630 | 8.5K | Nonlinear matrix state |
+| **E88 d=32** | 480M | 1.38 | 600 | 8.3K | Nonlinear matrix state |
+| E88 d=24 | 479M | 1.56 | 850 | 11.0K | Too shallow |
+| E88 d=20 | 478M | 1.62 | 720 | 9.3K | Too shallow |
+| E88 d=40 | 478M | 1.78 | 450 | 6.0K | Too deep |
+| E88 d=36 | 481M | 1.85 | 510 | 6.5K | Too deep |
 
 **Key findings:**
-- E88 beats Mamba2 (1.44 vs 1.50) at similar params
-- E88 only 0.08 nats behind FLA-GDN with **23x less state**
-- E88 uses **5x less state** than Mamba2 (57K vs 307K)
-- E88 is ~2x slower due to sequential recurrence (no parallel scan)
+- E88 is within 0.04 nats of FLA-GDN and 0.02 nats of Mamba2 (competitive!)
+- E88 learns **faster per step** (1.38 in 600 steps vs 1.34 in 1430 steps)
+- E88 is ~2x slower throughput due to sequential recurrence (no parallel scan)
+- Depth 28-32 is optimal for E88 at 480M scale (clear U-shape in loss vs depth)
+- n_state=32 with SiLU gating is optimal
 
-### What We've Learned (Scaling Study)
+### Optimal E88 Configuration (480M)
 
-**More state HURTS E88:**
-| Config | State/Layer | Loss | Notes |
-|--------|-------------|------|-------|
-| h56_n32 | 57K | 1.44 | optimal |
-| h37_n48 | 85K | 1.69 | +0.25 worse |
-| h22_n80 | 141K | 2.15 | +0.71 worse |
-| h14_n128 | 229K | 2.55 | +1.11 worse |
+```
+dim=896, depth=32, n_heads=104, n_state=32, use_gate=1, gate_activation=silu
+```
 
-**Linear state doesn't help:** E88 with `linear_state=True` gets 1.67 loss vs 1.44 with tanh.
+Or equivalently at depth=28:
+```
+dim=1024, depth=28, n_heads=104, n_state=32, use_gate=1, gate_activation=silu
+```
 
-**Optimal config:** dim=1792, depth=38, n_heads=56, n_state=32 (cannot improve by going wider/deeper/more state)
-
-### E88 Next Steps (Potential Cheap Wins)
-
-The puzzle: E88 with 57K state nearly matches FLA-GDN with 1.3M state, but adding more state hurts. What can we try?
-
-**Almost-free state utilization ideas:**
-1. **Residual state**: `S_new = S + tanh(update)` instead of `S_new = tanh(decay*S + update)` - untangles gradient flow
-2. **State refinement**: Run state update 2x per timestep (no new params, just reuse k,v,q)
-3. **Multi-scale heads**: Mix n_state=32 and n_state=16 heads in same layer
-4. **Key blending**: `k_eff = alpha*k_prev + (1-alpha)*k` - temporal smoothing almost free
-5. **Output-state mixing**: `output = o + gate * linear(S.mean(dim=-1))` - use state info in output
-
-**Cheap compute additions:**
-1. **Short conv on output**: 1D conv with kernel=3 on output sequence (~0.1% params)
-2. **Cross-head state attention**: Tiny attention between heads' states (expensive but powerful)
-3. **Learned decay schedule**: Instead of per-timestep decay, use position-dependent decay
-
-**NOT worth trying (already tested):**
-- Linear state (tanh removal): 1.67 vs 1.44 - worse
-- More state via larger n_state: dramatically worse
-- Output gating: hurts by ~0.09 nats
-- Wider/deeper at same params: worse
-
-### Reproducing E88 vs Baselines Benchmark
+### Reproducing the Benchmark
 
 ```bash
-# E88 at 500M (dim=1792, depth=38, h56_n32)
-CUDA_VISIBLE_DEVICES=0 python train.py --level E88 --dim 1792 --depth 38 \
-  --n_heads 56 --n_state 32 --expansion 1.0 --use_gate 0 \
-  --data data/pile.txt --batch_size 32 --chunk_size 512 \
-  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
+# E88 at 480M (optimal config)
+CUDA_VISIBLE_DEVICES=0 python train.py --level E88 \
+  --dim 896 --depth 32 --n_heads 104 --n_state 32 \
+  --use_gate 1 --gate_activation silu \
+  --data data/pile.txt --batch_size 16 --chunk_size 512 \
+  --lr 3e-4 --seed 42 --bf16 --train_minutes 10
 
-# Mamba2 at 500M (dim=1536, depth=32)
-CUDA_VISIBLE_DEVICES=1 python train.py --level mamba2 --dim 1536 --depth 32 \
-  --data data/pile.txt --batch_size 32 --chunk_size 512 \
-  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
+# Mamba2 at 480M
+CUDA_VISIBLE_DEVICES=1 python train.py --level mamba2 \
+  --dim 1664 --depth 28 \
+  --data data/pile.txt --batch_size 16 --chunk_size 512 \
+  --lr 3e-4 --seed 42 --bf16 --train_minutes 10
 
-# FLA-GDN at 500M (dim=1792, depth=32)
-CUDA_VISIBLE_DEVICES=2 python train.py --level fla-gdn --dim 1792 --depth 32 \
-  --data data/pile.txt --batch_size 32 --chunk_size 512 \
-  --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10
+# FLA-GDN at 480M
+CUDA_VISIBLE_DEVICES=2 python train.py --level fla-gdn \
+  --dim 1984 --depth 24 \
+  --data data/pile.txt --batch_size 16 --chunk_size 512 \
+  --lr 3e-4 --seed 42 --bf16 --train_minutes 10
 ```
+
+### n_state Scaling (480M, SiLU gate)
+
+| n_state | dim | depth | n_heads | Loss | Tok/s |
+|---------|-----|-------|---------|------|-------|
+| 16 | 2432 | 32 | 76 | 1.49 | 15.9K |
+| **32** | 896 | 32 | 104 | **1.31** | 8.1K |
+| 48 | 768 | 24 | 108 | 1.81 | 5.4K |
+
+n_state=32 is optimal. Smaller (16) or larger (48) performs worse.
+
+### Performance Gap Analysis
+
+E88 is 2x slower than Mamba2/FLA-GDN. Next step: **profile and optimize CUDA kernel**.
 
 ## Model Variants
 
@@ -244,58 +244,27 @@ python calc_dim.py --model E75h4n32 --params 100M --depth 20
 **n_state MUST be a multiple of 8** for numerical stability. Valid values: 16, 24, 32, 40, 48, etc.
 Values like 20, 28 cause NaN during training.
 
-## E88 FLA-Hybrid Configuration Guidelines (Jan 2026)
+## E88 Configuration Reference
 
-E88 combines FLA-GDN's Mamba2-style decay with nonlinear (tanh) matrix state. **Critical: E88 does NOT use the same defaults as FLA-GDN.**
+E88 combines FLA-GDN's Mamba2-style decay with nonlinear (tanh) matrix state.
 
-### Optimal E88 Defaults
+### Optimal E88 Parameters (480M scale)
 
-| Parameter | E88 Optimal | FLA-GDN Default | Impact |
-|-----------|-------------|-----------------|--------|
-| `expansion` | **1.0** | 2.0 | Square state (n_state × n_state), ~1 nat better |
-| `use_gate` | **False** | True | Output gating HURTS E88 by ~0.09 nats |
-| `use_conv` | **False** | True | Short convolutions not needed for E88 |
-| `use_output_norm` | **False** | True | Output RMSNorm not needed |
-
-### Head Configuration (CRITICAL)
-
-**Prefer MORE heads with SMALLER n_state.** At equal n_heads × n_state ≈ dim:
-
-| Config | Heads | n_state | Loss | Tok/s | State/Layer |
-|--------|-------|---------|------|-------|-------------|
-| **h56_n32** | 56 | 32 | **1.44** | 10.7K | 57K |
-| h74_n24 | 74 | 24 | 1.57 | 10.9K | 42K |
-| h44_n40 | 44 | 40 | 1.67 | 9.4K | 70K |
-| h112_n16 | 112 | 16 | 1.70 | 12K | 28K |
-| h36_n48 | 36 | 48 | 1.71 | 9.1K | 82K |
-| h28_n64 | 28 | 64 | 1.75 | 6.4K | 114K |
-
-**Key insight:** n_state=32 is optimal. Smaller (16, 24) or larger (40+) performs worse.
-More state does NOT help - h28_n64 has 2x state but 0.31 nats worse than h56_n32.
-
-### Best E88 Config for 500M Params
-
-Use the predefined level **E88_dim1792**:
-```bash
-python train.py --level E88_dim1792 --dim 1792 --depth 38 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --bf16 --train_minutes 10
-```
-
-This uses: n_heads=56, n_state=32, expansion=1.0, no gate, no conv, no output norm.
-
-**Results:** 1.44 loss at 500M params, competitive with FLA-GDN (1.40).
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `n_state` | **32** | Critical - 16 or 48 are worse |
+| `use_gate` | **1** | SiLU gating helps at 480M scale |
+| `gate_activation` | **silu** | |
+| `expansion` | **1.0** | Square state matrix |
+| `depth` | **28-32** | U-shaped loss curve, these are optimal |
+| `use_conv` | 0 | Not needed |
+| `use_output_norm` | 0 | Not needed |
 
 ### CUDA Kernel n_state Support
 
-E88 CUDA kernel supports: 4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128
+E88 CUDA kernel supports: **4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128**
 
-**Large n_state (≥80) uses global memory fallback** - slower but functional.
-
-### Common Mistakes
-
-1. **Using expansion=2.0** - This is the OLD FLA-GDN default, causes 1+ nat worse loss
-2. **Using balanced n_heads=dim/n_state with large n_state** - Use more heads, smaller state
-3. **Enabling output gating** - Gating hurts E88 (unlike FLA-GDN)
-4. **Using --level E88 without explicit params** - Use E88_dim{X} levels instead
+Large n_state (>=80) uses global memory fallback (slower).
 
 ## CRITICAL: Testing Models with LadderLM
 
@@ -457,16 +426,7 @@ Matrix state models have O(n²) state size and require different dims to hit 100
 
 **E73cp Checkpointing**: 2.5x memory reduction (7.8 GB vs 19.7 GB) with ~6% throughput overhead.
 
-## E88 CUDA Kernel Details
+## E88 Files
 
-### Supported n_state Values
-
-E88 CUDA kernel supports: **4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128**
-
-- n_state ≥ 80 uses global memory fallback (slower but functional)
-- Optimal: n_state=32 with many heads (h56_n32)
-
-### Files
-
-- `elman/cuda/lib/e88_fla_hybrid_gpu.cu.cc` - Main forward/backward kernel
+- `elman/cuda/lib/e88_fla_hybrid_gpu.cu.cc` - CUDA forward/backward kernel
 - `elman/models/e88_fla_hybrid.py` - Python model definition
