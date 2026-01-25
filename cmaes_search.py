@@ -49,10 +49,10 @@ SEARCH_SPACES = {
         'lr': (1e-4, 6e-4, 'log', 'Learning rate'),
     },
     'fla-gdn': {
-        'expansion': (1.5, 3.0, 'float', 'FFN expansion factor'),
+        'expansion': (1, 3, 'int', 'FFN expansion factor (must be int for FLA)'),
         'depth': (20, 44, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        'lr': (1e-4, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-4, 5e-4, 'log', 'Learning rate'),
     },
     'mamba2': {
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
