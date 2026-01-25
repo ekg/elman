@@ -643,21 +643,24 @@ class E88FLAHybrid(nn.Module):
             raise ValueError(f"Unknown head_mix: {head_mix}")
 
         # === Output normalization (per-head RMSNorm like FLA-GDN) ===
-        # FLA-GDN ALWAYS uses per-head norm before mixing heads - crucial for many-head configs
+        # NOTE: Per-head norm HURTS E88 in practice (loss 1.53 -> 3.0 at 480M params)
+        # FLA-GDN benefits from per-head norm because it has linear dynamics that can grow unboundedly
+        # E88's tanh-bounded state already prevents magnitude explosion, so norm interferes
+        # Only enable when use_output_norm=True (default False)
         self.norm_eps = 1e-5
-        if FLA_FUSED_NORM_AVAILABLE:
-            if use_gate:
-                # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
-                self.o_norm = FusedRMSNormGated(self.head_v_dim, eps=self.norm_eps)
-                self._use_fused_norm_gate = True
+        self._use_fused_norm_gate = False
+        if use_output_norm:
+            if FLA_FUSED_NORM_AVAILABLE:
+                if use_gate:
+                    # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
+                    self.o_norm = FusedRMSNormGated(self.head_v_dim, eps=self.norm_eps)
+                    self._use_fused_norm_gate = True
+                else:
+                    # FLA RMSNorm without gating (still efficient Triton kernel)
+                    self.o_norm = FLARMSNorm(self.head_v_dim, eps=self.norm_eps)
             else:
-                # FLA RMSNorm without gating (still efficient Triton kernel)
-                self.o_norm = FLARMSNorm(self.head_v_dim, eps=self.norm_eps)
-                self._use_fused_norm_gate = False
-        else:
-            # Fallback: manual per-head RMSNorm weight
-            self.o_norm_weight = nn.Parameter(torch.ones(self.head_v_dim))
-            self._use_fused_norm_gate = False
+                # Fallback: manual per-head RMSNorm weight
+                self.o_norm_weight = nn.Parameter(torch.ones(self.head_v_dim))
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -937,8 +940,9 @@ class E88FLAHybrid(nn.Module):
             # Stack time: [B, T, H, head_v_dim]
             output = torch.stack(outputs, dim=1)
 
-        # === Output normalization and gating (FLA-GDN style) ===
-        # Per-head RMSNorm is crucial for mixing many heads effectively
+        # === Output normalization and gating ===
+        # NOTE: Per-head norm hurts E88 (tanh-bounded state doesn't need it)
+        # Only applied when use_output_norm=True (default False)
         if self._use_fused_norm_gate and self.g_proj is not None:
             # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
             g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
