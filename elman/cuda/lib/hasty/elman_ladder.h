@@ -9356,6 +9356,17 @@ void dispatch_e88_fla_hybrid_forward(
     int checkpoint_interval, cudaStream_t stream
 );
 
+// E88 forward with fused output gating (saves 2 memory ops per element per timestep)
+void dispatch_e88_fused_gate_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* g_all,  // gate projections [T, B, H, head_v_dim]
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
 void dispatch_e88_fla_hybrid_backward(
     int T, int B, int H, int n_state, int head_v_dim,
     const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,

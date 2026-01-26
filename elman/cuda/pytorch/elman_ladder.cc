@@ -14666,6 +14666,71 @@ std::vector<Tensor> e88_fla_hybrid_forward(
     return {S, output, S_cache};
 }
 
+// E88 Forward with fused output gating - saves 2 memory ops per element per timestep
+std::vector<Tensor> e88_fused_gate_forward(
+    bool training,
+    Tensor k,           // [T, B, H, n_state] L2 normalized keys
+    Tensor v,           // [T, B, H, head_v_dim] values
+    Tensor q,           // [T, B, H, n_state] L2 normalized queries
+    Tensor decay,       // [T, B, H] exponential decay factors
+    Tensor g,           // [T, B, H, head_v_dim] gate projections
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(g);
+    CHECK_INPUT(S0);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+
+    // S_cache for checkpoints + Sq_cache (for backward)
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+    const int64_t sq_cache_size = time_steps * batch_size * n_heads * head_v_dim;
+    Tensor S_checkpoints = training ?
+        torch::empty({s_checkpoints_size}, options) :
+        torch::empty({0}, options);
+    Tensor Sq_cache = training ?
+        torch::empty({sq_cache_size}, options) :
+        torch::empty({0}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Fused Gate Forward only supports bfloat16");
+
+    using namespace elman;
+
+    dispatch_e88_fused_gate_forward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(S_checkpoints.data_ptr()) : nullptr,
+        training ? reinterpret_cast<__nv_bfloat16*>(Sq_cache.data_ptr()) : nullptr,
+        checkpoint_interval,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S, output, S_checkpoints, Sq_cache};
+}
+
 std::vector<Tensor> e88_fla_hybrid_backward(
     Tensor k,               // [T, B, H, n_state]
     Tensor v,               // [T, B, H, head_v_dim]
@@ -15604,6 +15669,8 @@ void elman_ladder_init(py::module& m) {
           "E88 FLA Hybrid: Backward pass using pre-computed states (no forward replay)");
     m.def("e88_fused_projection", &e88_fused_projection,
           "E88 Fused Projection: Combined GEMM + conv + silu + L2 norm + decay computation");
+    m.def("e88_fused_gate_forward", &e88_fused_gate_forward,
+          "E88 Fused Gate Forward: Forward pass with fused output gating (saves 2 memory ops per element)");
 
     // E89: Residual State - tanh only on outer product, better gradient flow
     m.def("e89_residual_state_forward", &e89_residual_state_forward,
