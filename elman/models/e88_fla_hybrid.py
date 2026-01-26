@@ -70,6 +70,8 @@ try:
     E88_CUBLAS_BACKWARD_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fla_hybrid_backward_cublas')
     # E88 fused projection kernel (GEMM + conv + silu + L2 norm + decay)
     E88_FUSED_PROJECTION_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fused_projection')
+    # E88 fused gate forward kernel (fuses Sq * silu(g) into forward pass)
+    E88_FUSED_GATE_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fused_gate_forward')
     # Legacy E75 kernels for backwards compatibility
     E88_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_forward')
     E88_PRECOMPUTED_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'e75_multihead_precomputed_forward')
@@ -77,6 +79,7 @@ except ImportError:
     E88_NATIVE_CUDA_AVAILABLE = False
     E88_CUBLAS_BACKWARD_AVAILABLE = False
     E88_FUSED_PROJECTION_AVAILABLE = False
+    E88_FUSED_GATE_AVAILABLE = False
     E88_CUDA_AVAILABLE = False
     E88_PRECOMPUTED_CUDA_AVAILABLE = False
 
@@ -89,6 +92,10 @@ USE_REDUCED_SYNC_BACKWARD = True
 
 # Global flag to enable fused projection kernel (can be toggled at runtime)
 USE_FUSED_PROJECTION = True
+
+# Global flag to enable fused gate forward kernel (fuses output gating into forward)
+# Saves ~4.5% forward time by eliminating separate gating kernel
+USE_FUSED_GATE = True
 
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE
@@ -252,6 +259,96 @@ class E88FLAHybridCUDAFunction(torch.autograd.Function):
 
         # Return gradients for: training, k, v, q, decay, S0, n_heads
         return None, d_k, d_v, d_q, d_decay, None, None
+
+
+class E88FusedGateCUDAFunction(torch.autograd.Function):
+    """CUDA-accelerated E88 with fused output gating.
+
+    Fuses Sq * silu(g) directly into the forward kernel, saving memory bandwidth.
+    Backward computes gradients for both the recurrence (k, v, q, decay) and gate (g).
+    """
+
+    @staticmethod
+    def forward(ctx, training, k, v, q, decay, g, S0, n_heads):
+        """
+        Args:
+            training: bool
+            k: [T, B, H, n_state] L2 normalized keys
+            v: [T, B, H, head_v_dim] values
+            q: [T, B, H, n_state] L2 normalized queries
+            decay: [T, B, H] exponential decay factors
+            g: [T, B, H, head_v_dim] gate projections (pre-activation)
+            S0: [B, H, n_state, head_v_dim] initial state
+            n_heads: int
+        """
+        results = hasty_pytorch_lib.e88_fused_gate_forward(
+            training, k, v, q, decay, g, S0, n_heads
+        )
+        # results = [S_final, output, S_checkpoints, Sq_cache]
+        S_final = results[0]      # [B, H, n_state, head_v_dim]
+        output = results[1]       # [T, B, H, head_v_dim] - already gated (Sq * silu(g))
+        S_checkpoints = results[2]  # Checkpoints for backward
+        Sq_cache = results[3]     # Un-gated Sq for backward
+
+        ctx.save_for_backward(k, v, q, decay, g, S_checkpoints, Sq_cache)
+        ctx.n_heads = n_heads
+        ctx.n_state = k.size(-1)
+        ctx.head_v_dim = v.size(-1)
+        return S_final, output
+
+    @staticmethod
+    def backward(ctx, dS, d_output):
+        k, v, q, decay, g, S_checkpoints, Sq_cache = ctx.saved_tensors
+        n_heads = ctx.n_heads
+        n_state = ctx.n_state
+        head_v_dim = ctx.head_v_dim
+
+        T, B, H, _ = k.shape
+        checkpoint_interval = 16
+
+        # Compute d_g from fused output: output = Sq * silu(g)
+        # d_output/d_g = Sq * silu'(g) = Sq * (sigmoid(g) + g * sigmoid(g) * (1 - sigmoid(g)))
+        #              = Sq * sigmoid(g) * (1 + g * (1 - sigmoid(g)))
+        Sq = Sq_cache.view(T, B, H, head_v_dim)
+        sig_g = torch.sigmoid(g)
+        silu_grad = sig_g * (1.0 + g * (1.0 - sig_g))
+        d_g = d_output * Sq * silu_grad
+
+        # Compute d_Sq from fused output: d_Sq = d_output * silu(g)
+        silu_g = g * sig_g
+        d_Sq = d_output * silu_g
+
+        # Reshape S_checkpoints for backward kernel
+        num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
+        S_checkpoints_view = S_checkpoints.view(num_checkpoints, B, H, n_state, head_v_dim)
+
+        # Call backward kernel with d_Sq (gradients w.r.t. un-gated output)
+        if USE_REDUCED_SYNC_BACKWARD:
+            cache_entry_size = n_state * head_v_dim + n_state + head_v_dim + 1
+            segment_cache = torch.empty(
+                B * H * checkpoint_interval * cache_entry_size,
+                dtype=k.dtype, device=k.device
+            )
+            grads = hasty_pytorch_lib.e88_fla_hybrid_backward_reduced_sync(
+                k, v, q, decay,
+                S_checkpoints_view, Sq,
+                segment_cache,
+                d_Sq.contiguous(),
+                n_heads,
+                checkpoint_interval
+            )
+        else:
+            grads = hasty_pytorch_lib.e88_fla_hybrid_backward(
+                k, v, q, decay,
+                S_checkpoints_view, Sq,
+                d_Sq.contiguous(),
+                n_heads
+            )
+
+        d_k, d_v, d_q, d_decay = grads[0], grads[1], grads[2], grads[3]
+
+        # Return gradients for: training, k, v, q, decay, g, S0, n_heads
+        return None, d_k, d_v, d_q, d_decay, d_g, None, None
 
 
 class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
@@ -859,6 +956,9 @@ class E88FLAHybrid(nn.Module):
         use_cuda = (E88_NATIVE_CUDA_AVAILABLE and x.is_cuda and
                     x.dtype == torch.bfloat16 and self.training)
 
+        # Track whether fused gating was used (to skip separate gating later)
+        fused_gate_used = False
+
         if use_cuda:
             input_dtype = x.dtype  # Use x.dtype as authoritative (should be bf16)
 
@@ -880,10 +980,33 @@ class E88FLAHybrid(nn.Module):
             decay_cuda = decay.to(input_dtype).transpose(0, 1).contiguous()
             S0 = S0.to(input_dtype)
 
-            # Call CUDA kernel via autograd.Function
-            S_final, output_cuda = E88FLAHybridCUDAFunction.apply(
-                self.training, k_cuda, v_cuda, q_cuda, decay_cuda, S0, H
+            # Check if we can use fused gate kernel
+            # Conditions: use_gate + silu + no output norm + fused gate available
+            use_fused_gate = (
+                USE_FUSED_GATE and
+                E88_FUSED_GATE_AVAILABLE and
+                self.use_gate and
+                self.g_proj is not None and
+                self.gate_activation == 'silu' and
+                not self.use_output_norm and
+                not self._use_fused_norm_gate
             )
+
+            if use_fused_gate:
+                # Compute gate projection and reshape for CUDA kernel
+                g = self.g_proj(x).view(B, T, H, self.head_v_dim)
+                g_cuda = g.to(input_dtype).transpose(0, 1).contiguous()
+
+                # Call fused gate CUDA kernel
+                S_final, output_cuda = E88FusedGateCUDAFunction.apply(
+                    self.training, k_cuda, v_cuda, q_cuda, decay_cuda, g_cuda, S0, H
+                )
+                fused_gate_used = True
+            else:
+                # Call standard CUDA kernel via autograd.Function
+                S_final, output_cuda = E88FLAHybridCUDAFunction.apply(
+                    self.training, k_cuda, v_cuda, q_cuda, decay_cuda, S0, H
+                )
 
             # Transpose output back: [T, B, H, head_v_dim] -> [B, T, H, head_v_dim]
             output = output_cuda.transpose(0, 1)
@@ -943,6 +1066,7 @@ class E88FLAHybrid(nn.Module):
         # === Output normalization and gating ===
         # NOTE: Per-head norm hurts E88 (tanh-bounded state doesn't need it)
         # Only applied when use_output_norm=True (default False)
+        # Skip gating if already done by fused gate kernel
         if self._use_fused_norm_gate and self.g_proj is not None:
             # FusedRMSNormGated: rms_norm(x) * weight * g * sigmoid(g) in one Triton kernel
             g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
@@ -956,8 +1080,8 @@ class E88FLAHybrid(nn.Module):
             output_2d = output.reshape(-1, self.head_v_dim)
             output_2d = self.o_norm(output_2d)
             output = output_2d.view(B, T, H, self.head_v_dim)
-            # Apply gating separately if enabled
-            if self.use_gate and self.g_proj is not None:
+            # Apply gating separately if enabled (skip if fused gate was used)
+            if self.use_gate and self.g_proj is not None and not fused_gate_used:
                 g = self.g_proj(x).view(B, T, H, self.head_v_dim)
                 if self.gate_activation == 'sigmoid':
                     output = output * torch.sigmoid(g)
@@ -970,7 +1094,8 @@ class E88FLAHybrid(nn.Module):
                 rms = output.pow(2).mean(dim=-1, keepdim=True).add(self.norm_eps).rsqrt()
                 output = output * rms * self.o_norm_weight
 
-            if self.use_gate and self.g_proj is not None:
+            # Apply gating (skip if fused gate was used)
+            if self.use_gate and self.g_proj is not None and not fused_gate_used:
                 g = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
                 if self.gate_activation == 'sigmoid':
                     output = output * torch.sigmoid(g)
