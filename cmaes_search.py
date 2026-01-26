@@ -36,16 +36,17 @@ except ImportError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calc_dim import calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params
 
-# Supported n_state values for E88 CUDA kernel (must match head_v_dim for default config)
-E88_SUPPORTED_N_STATE = [4, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72, 80, 88, 96, 128]
+# Supported n_state values for E88 CUDA fused gate kernel (must match head_v_dim for default config)
+# Only these sizes are efficiently supported without warnings/fallbacks: 16, 32, 48, 64
+E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 
 # Search space definitions for each model
 SEARCH_SPACES = {
     'e88': {
         # Parameter: (min, max, type, description)
-        'n_heads': (16, 96, 'int', 'Number of attention heads'),
-        'n_state': (16, 96, 'e88_n_state', 'State dimension (constrained to CUDA support)'),
-        'depth': (20, 44, 'int', 'Number of layers'),
+        'n_heads': (64, 160, 'int', 'Number of attention heads'),  # Expanded to include 104+
+        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported by fused kernel)'),
+        'depth': (24, 40, 'int', 'Number of layers'),  # Narrowed around optimal 28-32
         'lr': (1e-4, 6e-4, 'log', 'Learning rate'),
     },
     'fla-gdn': {
@@ -95,6 +96,52 @@ def decode_params(x, model_type):
     return params
 
 
+def encode_params(params, model_type):
+    """Convert model parameters to CMA-ES vector [0,1]^n."""
+    space = SEARCH_SPACES[model_type]
+    x = []
+
+    for name, (lo, hi, ptype, desc) in space.items():
+        val = params.get(name, (lo + hi) / 2)  # Default to middle if not specified
+
+        if ptype == 'int' or ptype == 'int_mult16' or ptype == 'e88_n_state':
+            # Linear interpolation
+            x_val = (val - lo) / (hi - lo)
+        elif ptype == 'log':
+            # Log-scale interpolation
+            log_lo, log_hi = np.log10(lo), np.log10(hi)
+            x_val = (np.log10(val) - log_lo) / (log_hi - log_lo)
+        else:  # float
+            x_val = (val - lo) / (hi - lo)
+
+        x.append(np.clip(x_val, 0, 1))
+
+    return x
+
+
+# Known best configs for warm-starting
+BEST_CONFIGS = {
+    'e88': {
+        'n_heads': 104,
+        'n_state': 32,
+        'depth': 32,
+        'lr': 3e-4,
+    },
+    'fla-gdn': {
+        'expansion': 2,
+        'depth': 24,
+        'n_heads': 16,
+        'lr': 3e-4,
+    },
+    'mamba2': {
+        'd_state': 64,
+        'expand': 2,
+        'depth': 28,
+        'lr': 3e-4,
+    },
+}
+
+
 def estimate_dim_and_params(params, model_type, target_params):
     """Calculate dim to hit target params, return (dim, actual_params)."""
     if model_type == 'e88':
@@ -110,7 +157,7 @@ def estimate_dim_and_params(params, model_type, target_params):
             n_state=n_state,
             depth=depth,
             expansion=1.0,  # Best E88 config uses expansion=1.0
-            use_gate=False  # Best E88 config has no gate
+            use_gate=True   # We use SiLU gating which adds params
         )
         return dim, actual_params
 
@@ -141,11 +188,14 @@ def estimate_dim_and_params(params, model_type, target_params):
     return 1024, target_params
 
 
-def build_train_command(params, model_type, dim, train_minutes, output_dir, target_params):
+def build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params):
     """Build training command for a configuration."""
-    # Adjust batch size based on model size
-    if target_params > 400_000_000:
-        batch_size = 16  # Smaller batch for 500M models
+    # Adjust batch size based on actual model size (not target)
+    # E88 with gating uses more memory than other models
+    if actual_params > 480_000_000:
+        batch_size = 8   # 480M+ models need small batch
+    elif actual_params > 350_000_000:
+        batch_size = 16  # 350-480M models
     else:
         batch_size = 32
 
@@ -170,7 +220,8 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, targ
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',
-            '--use_gate', '0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
         ])
     elif model_type == 'fla-gdn':
         cmd.extend([
@@ -225,7 +276,7 @@ def evaluate_config_worker(args):
     output_dir = os.path.join(work_dir, f'eval_{eval_id}')
     log_file = os.path.join(work_dir, f'eval_{eval_id}.log')
 
-    cmd = build_train_command(params, model_type, dim, train_minutes, output_dir, target_params)
+    cmd = build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params)
 
     config_str = ', '.join(f'{k}={v:.4g}' if isinstance(v, float) else f'{k}={v}'
                            for k, v in params.items())
@@ -263,7 +314,7 @@ def evaluate_config_worker(args):
     return {'eval_id': eval_id, 'loss': loss, 'params': params, 'dim': dim, 'actual_params': actual_params}
 
 
-def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance):
+def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance, start_from_best=False):
     """Run CMA-ES search for optimal configuration."""
     space = SEARCH_SPACES[model_type]
     n_dims = len(space)
@@ -273,8 +324,14 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
     os.makedirs(output_dir, exist_ok=True)
 
     # Initialize CMA-ES
-    x0 = [0.5] * n_dims
-    sigma0 = 0.3
+    if start_from_best and model_type in BEST_CONFIGS:
+        x0 = encode_params(BEST_CONFIGS[model_type], model_type)
+        sigma0 = 0.15  # Smaller sigma for local refinement around known best
+        print(f"Starting from known best config: {BEST_CONFIGS[model_type]}")
+        print(f"Encoded x0: {[f'{v:.3f}' for v in x0]}")
+    else:
+        x0 = [0.5] * n_dims
+        sigma0 = 0.3
 
     # Population size = number of GPUs for parallel eval
     popsize = max(n_gpus, 4)
@@ -409,6 +466,8 @@ def main():
                         help='Parameter tolerance (e.g., 50M)')
     parser.add_argument('--output', type=str, default='benchmark_results/cmaes_search',
                         help='Output directory')
+    parser.add_argument('--start_from_best', action='store_true',
+                        help='Start search from known best config (for local refinement)')
     args = parser.parse_args()
 
     # Parse GPU IDs
@@ -438,7 +497,8 @@ def main():
         gpu_ids,
         output_dir,
         target_params,
-        tolerance
+        tolerance,
+        start_from_best=args.start_from_best
     )
 
     print(f"\nTo train with best config:")
@@ -446,7 +506,7 @@ def main():
         dim, _ = estimate_dim_and_params(best_params, 'e88', target_params)
         print(f"python train.py --level E88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
-              f"--lr {best_params['lr']:.6f} --expansion 1.0 --use_gate 0 --train_minutes 30")
+              f"--lr {best_params['lr']:.6f} --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30")
 
 
 if __name__ == '__main__':
