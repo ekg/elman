@@ -9,7 +9,7 @@ After this, we've made some modifications generating E1, and that for a long tim
 And that in a nutshell is a lot of the kind of work that's been happening. It's been a slow process to try to regularize, organize all the effort to develop the standard protocol for how to implement the CUDA kernels to... Basically the standard protocol involves cross-checking the Python and CUDA implementation in forward and backward passes on the same data to verify no difference in output.
 We want to make sure that we remember to do this, and this process is very involved. So we basically need to be sure to run subagents in the background to do this. And in fact, for really a lot of effort, you want to be using salvations. I think it helps you save your focus and not get confused or distracted and allows a lot of work to be done at the same time. It also can simplify your interface with the system.
 
-## Current Best: E88 at 480M Scale (Jan 25, 2026)
+## Current Best: E88 at 480M Scale (Jan 26, 2026)
 
 ### Benchmark Results (Matched Params, Same Seed)
 
@@ -17,21 +17,45 @@ All models tested at ~480M params, seed=42, 10 min training, batch_size=16, chun
 
 | Model | Params | Loss | Steps | Tok/s | Notes |
 |-------|--------|------|-------|-------|-------|
-| **Mamba2** | 475M | **1.34** | 1430 | 18.2K | SSM baseline |
-| FLA-GDN | 474M | 1.36 | 1160 | 19.9K | ICLR 2025 baseline |
-| **E88 d=28** | 480M | 1.38 | 630 | 8.5K | Nonlinear matrix state |
-| **E88 d=32** | 480M | 1.38 | 600 | 8.3K | Nonlinear matrix state |
+| **E88** | 480M | **1.37** | 626 | 8.3K | Nonlinear matrix state (h=104, n=32) |
+| **Mamba2** | 475M | **1.37** | 1541 | 20.8K | SSM baseline |
+| FLA-GDN | 474M | 1.39 | 1433 | 19.1K | ICLR 2025 baseline |
 | E88 d=24 | 479M | 1.56 | 850 | 11.0K | Too shallow |
 | E88 d=20 | 478M | 1.62 | 720 | 9.3K | Too shallow |
 | E88 d=40 | 478M | 1.78 | 450 | 6.0K | Too deep |
 | E88 d=36 | 481M | 1.85 | 510 | 6.5K | Too deep |
 
 **Key findings:**
-- E88 is within 0.04 nats of FLA-GDN and 0.02 nats of Mamba2 (competitive!)
-- E88 learns **faster per step** (1.38 in 600 steps vs 1.34 in 1430 steps)
-- E88 is ~2x slower throughput due to sequential recurrence (no parallel scan)
+- E88 matches Mamba2 loss (1.37 vs 1.37) and beats FLA-GDN (1.37 vs 1.39)
+- E88 learns **2.4x faster per step** (1.37 in 626 steps vs 1541 for Mamba2)
+- E88 is ~2.5x slower throughput due to sequential recurrence (no parallel scan)
 - Depth 28-32 is optimal for E88 at 480M scale (clear U-shape in loss vs depth)
 - n_state=32 with SiLU gating is optimal
+
+### State Size Comparison (Critical Finding)
+
+E88 achieves competitive loss with **dramatically less state memory**:
+
+| Model | Config | State Structure | State/Layer | vs E88 |
+|-------|--------|-----------------|-------------|--------|
+| **E88** | h=104, n=32 | 104 × (32×32) matrices | **106,496** | 1x |
+| **Mamba2** | d=1664, exp=2 | 3328 × 64 SSM | **213,248** | 2x |
+| **FLA-GDN** | d=1984, exp=2 | ~16 × (124×248) | **~492,032** | 4.6x |
+
+**State Architecture Details:**
+
+```
+E88:     104 heads × 32×32 NONLINEAR matrix state (tanh applied)
+         Update: S = tanh(decay * S + outer(delta, k))
+
+Mamba2:  3328 × 64 diagonal SSM (LINEAR, parallel scan)
+         Update: h = A*h + B*x
+
+FLA-GDN: 16 heads × 124×248 LINEAR attention matrix
+         Update: S = decay*S + outer(k, v)
+```
+
+**Why this matters:** E88's 104 small (32×32) nonlinear matrix heads provide high expressivity through **parallel specialized memories** rather than through raw state size. Each head learns independent key-value associations.
 
 ### Optimal E88 Configuration (480M)
 
@@ -243,6 +267,42 @@ python calc_dim.py --model E75h4n32 --params 100M --depth 20
 ### CRITICAL: E75 n_state Constraints
 **n_state MUST be a multiple of 8** for numerical stability. Valid values: 16, 24, 32, 40, 48, etc.
 Values like 20, 28 cause NaN during training.
+
+## Configuration Search: CMA-ES
+
+We use **CMA-ES (Covariance Matrix Adaptation Evolution Strategy)** for architecture/hyperparameter search.
+
+### Why CMA-ES?
+
+- Gradient-free optimization for discrete/mixed parameters (n_heads, n_state, depth)
+- Handles non-convex fitness landscapes (loss vs config is highly irregular)
+- Runs population in parallel across GPUs
+- Found optimal E88 config: h=104, n=32 (104 heads is unexpected!)
+
+### Running CMA-ES Search
+
+```bash
+pip install cma
+
+# E88 search (most likely to find improvements)
+python cmaes_search.py --model e88 --generations 50 --train_minutes 2 --gpus 0,1,2,3
+
+# FLA-GDN search
+python cmaes_search.py --model fla-gdn --generations 30 --train_minutes 2 --gpus 0,1,2,3
+
+# Mamba2 search (already well-optimized)
+python cmaes_search.py --model mamba2 --generations 20 --train_minutes 2 --gpus 0,1,2,3
+```
+
+### CMA-ES Search Space
+
+| Model | Parameters Searched |
+|-------|---------------------|
+| E88 | n_heads (16-96), n_state (16-96), depth (20-44), lr (1e-4 to 6e-4) |
+| FLA-GDN | expansion (1-3), depth (20-44), n_heads (8-32), lr (1e-4 to 5e-4) |
+| Mamba2 | d_state (64-256), expand (1-3), depth (20-44), lr (1e-4 to 1e-3) |
+
+**Key Finding:** CMA-ES discovered that **more heads with smaller state** (h=104, n=32) outperforms fewer heads with larger state. This was counterintuitive but validated by benchmark.
 
 ## E88 Configuration Reference
 
