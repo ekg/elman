@@ -81,29 +81,38 @@ class DocumentStreamDataset(Dataset):
                 self.position = 0
                 self.wraps += 1
 
-            byte_val = self.mmap[self.position]
-            self.position += 1
-            self.bytes_processed += 1
+            # Read in larger chunks for efficiency
+            bytes_needed = self.chunk_size - len(self.token_buffer) + 64  # Extra buffer for doc boundaries
+            end_pos = min(self.position + bytes_needed, self.file_size)
+            raw_bytes = self.mmap[self.position:end_pos]
 
-            # Check for document boundary
-            if byte_val == 0x1e:
+            # Find document boundary in this chunk
+            delim_pos = raw_bytes.find(b'\x1e')
+
+            if delim_pos == -1:
+                # No delimiter in this chunk - add all bytes
+                self.token_buffer.extend(raw_bytes)
+                self.bytes_processed += len(raw_bytes)
+                self.position = end_pos
+            else:
+                # Found delimiter - add bytes up to it
+                if delim_pos > 0:
+                    self.token_buffer.extend(raw_bytes[:delim_pos])
+                self.bytes_processed += delim_pos + 1
+                self.position += delim_pos + 1
                 self.docs_completed += 1
 
                 if len(self.token_buffer) > 0:
                     # Partial chunk at document boundary - pad to maintain fixed size
-                    actual_length = len(self.token_buffer)
+                    actual_length = min(len(self.token_buffer), self.chunk_size)
 
                     chunk = torch.zeros(self.chunk_size, dtype=torch.long)
-                    chunk[:actual_length] = torch.tensor(self.token_buffer, dtype=torch.long)
-                    self.token_buffer = []
+                    chunk[:actual_length] = torch.tensor(self.token_buffer[:actual_length], dtype=torch.long)
+                    self.token_buffer = self.token_buffer[actual_length:] if actual_length < len(self.token_buffer) else []
                     self.chunks_served += 1
 
                     return chunk, True, actual_length
-                else:
-                    # Empty buffer at document start, skip delimiter
-                    continue
-            else:
-                self.token_buffer.append(byte_val)
+                # Empty buffer at document start, continue
 
         # Full chunk
         chunk = torch.tensor(self.token_buffer[:self.chunk_size], dtype=torch.long)
@@ -121,6 +130,44 @@ class DocumentStreamDataset(Dataset):
             'wraps': self.wraps,
             'position': self.position
         }
+
+    def get_batch(self, batch_size: int, device=None):
+        """
+        Get a batch of chunks using pinned memory for efficient GPU transfer.
+
+        Args:
+            batch_size: Number of chunks to get
+            device: Target device (GPU) for transfer
+
+        Returns:
+            chunks: [batch_size, chunk_size] tensor
+            is_doc_end: [batch_size] boolean tensor
+            actual_lengths: [batch_size] tensor of actual lengths
+        """
+        # Lazily initialize pinned memory buffers
+        if not hasattr(self, '_pinned_chunks') or self._pinned_chunks.shape[0] != batch_size:
+            self._pinned_chunks = torch.empty(batch_size, self.chunk_size, dtype=torch.long, pin_memory=True)
+            self._pinned_doc_ends = torch.empty(batch_size, dtype=torch.bool, pin_memory=True)
+            self._pinned_lengths = torch.empty(batch_size, dtype=torch.long, pin_memory=True)
+
+        # Fill buffers directly
+        for i in range(batch_size):
+            chunk, is_doc_end, actual_length = self[0]
+            self._pinned_chunks[i] = chunk
+            self._pinned_doc_ends[i] = is_doc_end
+            self._pinned_lengths[i] = actual_length
+
+        if device is not None:
+            # Use non_blocking=True with pinned memory for async transfer
+            chunks = self._pinned_chunks.to(device, non_blocking=True)
+            is_doc_end = self._pinned_doc_ends.to(device, non_blocking=True)
+            actual_lengths = self._pinned_lengths.to(device, non_blocking=True)
+        else:
+            chunks = self._pinned_chunks.clone()
+            is_doc_end = self._pinned_doc_ends.clone()
+            actual_lengths = self._pinned_lengths.clone()
+
+        return chunks, is_doc_end, actual_lengths
 
     def __del__(self):
         if hasattr(self, 'mmap'):
@@ -153,6 +200,10 @@ class BatchedStreamDataset:
         self.data_file = open(data_path, 'rb')
         self.mmap = mmap.mmap(self.data_file.fileno(), 0, access=mmap.ACCESS_READ)
         self.file_size = len(self.mmap)
+
+        # Pre-allocate pinned memory buffer for faster GPU transfers
+        self._pinned_chunks = torch.empty(batch_size, chunk_size, dtype=torch.long, pin_memory=True)
+        self._pinned_doc_ends = torch.empty(batch_size, dtype=torch.bool, pin_memory=True)
 
         # Each batch element has its own stream state
         # Spread starting positions evenly across file
@@ -223,20 +274,19 @@ class BatchedStreamDataset:
             chunks: [batch_size, chunk_size] tensor
             is_doc_end: [batch_size] boolean tensor (True if chunk ends at doc boundary)
         """
-        chunks = []
-        is_doc_ends = []
-
+        # Fill pinned memory buffers directly (avoids tensor creation/stacking overhead)
         for i in range(self.batch_size):
             chunk, is_doc_end, _ = self._get_chunk(i)
-            chunks.append(chunk)
-            is_doc_ends.append(is_doc_end)
-
-        chunks = torch.stack(chunks)
-        is_doc_end = torch.tensor(is_doc_ends, dtype=torch.bool)
+            self._pinned_chunks[i] = chunk
+            self._pinned_doc_ends[i] = is_doc_end
 
         if device is not None:
-            chunks = chunks.to(device)
-            is_doc_end = is_doc_end.to(device)
+            # Use non_blocking=True with pinned memory for async transfer
+            chunks = self._pinned_chunks.to(device, non_blocking=True)
+            is_doc_end = self._pinned_doc_ends.to(device, non_blocking=True)
+        else:
+            chunks = self._pinned_chunks.clone()
+            is_doc_end = self._pinned_doc_ends.clone()
 
         return chunks, is_doc_end
 

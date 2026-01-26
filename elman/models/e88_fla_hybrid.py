@@ -48,6 +48,18 @@ Output: out_proj(concat(out_0, ..., out_{H-1}))
 
 import math
 import torch
+
+# Try to import Triton ops for fused element-wise operations
+try:
+    from .triton_ops import mamba2_decay as triton_mamba2_decay, l2_norm as triton_l2_norm
+    TRITON_OPS_AVAILABLE = True
+except ImportError:
+    TRITON_OPS_AVAILABLE = False
+    triton_mamba2_decay = None
+    triton_l2_norm = None
+
+# Global flag to enable Triton ops (can be disabled for debugging)
+USE_TRITON_OPS = True
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, List, Tuple
@@ -936,13 +948,15 @@ class E88FLAHybrid(nn.Module):
                 decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
             else:
                 # Mamba2-style exponential decay
-                # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
-                # Compute in float32 for numerical stability, then cast back
-                g = -self.A_log.float().exp() * F.softplus(
-                    self.a_proj(x).float() + self.dt_bias
-                )
-                # Convert to decay factor: decay = exp(g) in [0, 1]
-                decay = g.exp().to(x.dtype)  # [B, T, H], cast back to input dtype
+                alpha = self.a_proj(x)  # [B, T, H]
+                if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x.is_cuda and x.dtype == torch.bfloat16:
+                    # Use fused Triton kernel (19x faster)
+                    decay = triton_mamba2_decay(alpha, self.A_log.float(), self.dt_bias.float())
+                else:
+                    # Fallback: PyTorch ops
+                    # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
+                    g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
+                    decay = g.exp().to(x.dtype)  # [B, T, H]
 
             # Reshape for per-head processing
             # q, k: [B, T, H, n_state]
@@ -972,8 +986,14 @@ class E88FLAHybrid(nn.Module):
             # L2 normalize k and q if enabled and not already done by fused projection
             # Fused projection already does L2 norm, so skip if used
             if self.use_l2_norm and not use_fused_proj:
-                k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
-                q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
+                    # Use fused Triton kernel (36% faster)
+                    k_norm = triton_l2_norm(k)
+                    q_norm = triton_l2_norm(q)
+                else:
+                    # Fallback: PyTorch ops
+                    k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                    q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
             else:
                 # Either L2 norm disabled, or already done by fused projection
                 k_norm = k.to(input_dtype)

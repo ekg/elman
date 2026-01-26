@@ -80,6 +80,12 @@ def parse_args():
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
 
+    # Mamba2-specific
+    parser.add_argument('--mamba_expand', type=int, default=2,
+                        help='Mamba2 expansion factor (expand)')
+    parser.add_argument('--mamba_d_state', type=int, default=64,
+                        help='Mamba2 state dimension (d_state)')
+
     # Training
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size')
@@ -270,13 +276,13 @@ def train(args):
                 vocab_size=256,
                 dim=args.dim,
                 depth=args.depth,
-                d_state=128,
-                expand=2,
+                d_state=args.mamba_d_state,
+                expand=args.mamba_expand,
                 headdim=64,
             )
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
-            model = create_mamba2_model(target_params=args.params, vocab_size=256)
+            model = create_mamba2_model(target_params=args.params, vocab_size=256, expand=args.mamba_expand)
     elif args.level == 'gru':
         # GRU baseline
         if args.dim is not None and args.depth is not None:
@@ -458,27 +464,42 @@ def train(args):
             return time.time() < train_end_time
         return step < args.steps
 
+    # Prefetch data function
+    import threading
+    import queue
+    prefetch_queue = queue.Queue(maxsize=2)
+    prefetch_stop = threading.Event()
+
+    def prefetch_worker():
+        """Background thread to prefetch batches."""
+        while not prefetch_stop.is_set():
+            try:
+                if args.tbptt:
+                    chunks, is_doc_end = train_dataset.get_batch(device=device)
+                    actual_lengths = torch.full((args.batch_size,), args.chunk_size + 1, device=device)
+                else:
+                    chunks, is_doc_end, actual_lengths = train_dataset.get_batch(args.batch_size, device=device)
+                prefetch_queue.put((chunks, is_doc_end, actual_lengths), timeout=1.0)
+            except queue.Full:
+                continue
+            except Exception as e:
+                print(f"Prefetch error: {e}")
+                break
+
+    prefetch_thread = threading.Thread(target=prefetch_worker, daemon=True)
+    prefetch_thread.start()
+
     while should_continue():
-        # Get batch - different methods for TBPTT vs non-TBPTT
-        if args.tbptt:
-            # BatchedStreamDataset: each batch element has its own persistent stream
-            chunks, is_doc_end = train_dataset.get_batch(device=device)
-            actual_lengths = torch.full((args.batch_size,), args.chunk_size + 1, device=device)
-        else:
-            # DocumentStreamDataset: single stream, no hidden state persistence
-            batch_chunks = []
-            batch_doc_ends = []
-            batch_lengths = []
-
-            for _ in range(args.batch_size):
-                chunk, is_doc_end_single, actual_length = train_dataset[0]
-                batch_chunks.append(chunk)
-                batch_doc_ends.append(is_doc_end_single)
-                batch_lengths.append(actual_length)
-
-            chunks = torch.stack(batch_chunks).to(device)
-            is_doc_end = torch.tensor(batch_doc_ends, dtype=torch.bool, device=device)
-            actual_lengths = torch.tensor(batch_lengths, dtype=torch.long, device=device)
+        # Get prefetched batch
+        try:
+            chunks, is_doc_end, actual_lengths = prefetch_queue.get(timeout=5.0)
+        except queue.Empty:
+            print("Warning: prefetch queue empty, fetching synchronously")
+            if args.tbptt:
+                chunks, is_doc_end = train_dataset.get_batch(device=device)
+                actual_lengths = torch.full((args.batch_size,), args.chunk_size + 1, device=device)
+            else:
+                chunks, is_doc_end, actual_lengths = train_dataset.get_batch(args.batch_size, device=device)
 
         # Reset hidden state at document boundaries (only if TBPTT enabled)
         if args.tbptt and hidden_state is not None:
@@ -583,6 +604,10 @@ def train(args):
                 print(f"  >>> saved checkpoint: {ckpt_path.name}")
                 if args.optimizer == 'schedulefree':
                     optimizer.train()  # Back to training mode
+
+    # Stop prefetch thread
+    prefetch_stop.set()
+    prefetch_thread.join(timeout=2.0)
 
     # Final checkpoint
     if args.optimizer == 'schedulefree':
