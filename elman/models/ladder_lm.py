@@ -108,6 +108,7 @@ from .e83_circular_tower import E83CircularTower
 from .e85_input_as_matrix import E85InputAsMatrixLayer
 from .e86_input_matrix_delta import E86InputMatrixDeltaLayer
 from .e87_sparse_block import E87SparseBlockLayer
+from .mom_e88 import MoME88
 
 
 def get_ladder_level(level):
@@ -653,6 +654,29 @@ def get_ladder_level(level):
         'E89': E89ResidualStateCell,
         # E89 with optimal E88 config (h56_n32, expansion=1.0)
         'E89_opt': lambda **kw: E89ResidualStateCell(**{**kw, 'n_heads': 56, 'n_state': 32, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),
+
+        # MoM E88: Mixture of Memory - sparse routing to memory heads
+        # Routes each token to top-K heads instead of all heads
+        # Allows 2-3x more heads with same compute budget
+        'MoME88': MoME88,
+        'MoM': MoME88,  # Short alias
+        # Default: 196 heads (2x E88 optimal), top_k=32
+        'MoM_h196k32': lambda **kw: MoME88(**{**kw, 'n_heads': 196, 'top_k': 32}),
+        # More heads, same compute
+        'MoM_h256k32': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 32}),
+        'MoM_h312k32': lambda **kw: MoME88(**{**kw, 'n_heads': 312, 'top_k': 32}),  # 3x E88
+        # Sparser routing
+        'MoM_h256k16': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 16}),
+        'MoM_h312k16': lambda **kw: MoME88(**{**kw, 'n_heads': 312, 'top_k': 16}),
+        # Denser routing (more heads active per token)
+        'MoM_h196k64': lambda **kw: MoME88(**{**kw, 'n_heads': 196, 'top_k': 64}),
+        'MoM_h256k64': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 64}),
+        # Match E88 optimal n_state=32
+        'MoM_h196k32n32': lambda **kw: MoME88(**{**kw, 'n_heads': 196, 'top_k': 32, 'n_state': 32}),
+        'MoM_h256k32n32': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 32, 'n_state': 32}),
+        # Smaller n_state for speed
+        'MoM_h256k32n16': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 32, 'n_state': 16}),
+        'MoM_h312k32n16': lambda **kw: MoME88(**{**kw, 'n_heads': 312, 'top_k': 32, 'n_state': 16}),
 
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
