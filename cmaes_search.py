@@ -49,9 +49,9 @@ E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 SEARCH_SPACES = {
     'e88': {
         # Parameter: (min, max, type, description)
-        'n_heads': (64, 160, 'int', 'Number of attention heads'),  # Expanded to include 104+
+        'n_heads': (32, 160, 'int', 'Number of attention heads'),  # Expanded range
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported by fused kernel)'),
-        'depth': (20, 40, 'int', 'Number of layers'),
+        'depth': (12, 40, 'int', 'Number of layers'),  # Allow shallower networks
         # LR removed - fixed at 3e-4 for fair comparison
     },
     'fla-gdn': {
@@ -149,9 +149,9 @@ def encode_params(params, model_type):
 # Known best configs for warm-starting
 BEST_CONFIGS = {
     'e88': {
-        'n_heads': 104,
+        'n_heads': 98,
         'n_state': 32,
-        'depth': 32,
+        'depth': 14,
     },
     'fla-gdn': {
         'expansion': 2,

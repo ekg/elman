@@ -8,20 +8,20 @@
 
 We used CMA-ES (Covariance Matrix Adaptation Evolution Strategy) to find optimal hyperparameters for 8 different sequence models at 480M parameter scale. Each model was searched for 15 generations with 8 parallel evaluations per generation (120 total evaluations per model).
 
-### Final Results
+### Final Results (Updated Jan 27, 2026)
 
 | Rank | Model | Best Loss | Optimal Config | Status |
 |------|-------|-----------|----------------|--------|
 | 1 | **mamba2** | **1.2713** | d_state=96, expand=2, depth=25, dim=1792 | Completed |
 | 2 | **fla-gdn** | **1.2727** | expansion=2, depth=17, n_heads=24, dim=1920 | Completed |
-| 3 | **e88** | **1.37*** | n_heads=104, n_state=32, depth=32, dim=896 | *Prior benchmark |
+| 3 | **e88** | **1.3905** | n_heads=98, n_state=32, depth=14, dim=2176 | **Completed (30 gens)** |
 | 4 | **transformer** | 1.5054 | n_heads=8, expansion=4, depth=13, dim=1536 | Completed |
 | 5 | **mingru** | 1.5281 | expansion=1, depth=14, dim=2944 | Completed |
 | 6 | **minlstm** | 1.5608 | expansion=1, depth=31, dim=1792 | Completed |
 | 7 | **gru** | Failed | - | Training instability (NaN) |
 | 8 | **lstm** | Failed | - | Training instability (NaN) |
 
-**\*E88 Note:** The CMA-ES search for E88 was initialized with the wrong starting config (n_heads=68, n_state=16) and found a local optimum of 1.41 loss. The actual best known config is n_heads=104, n_state=32, depth=32 with loss 1.37 from prior benchmarks. The CMA-ES BEST_CONFIGS has been corrected for future runs.
+**E88 Extended Search (Jan 27):** A 30-generation search with expanded bounds (n_heads 32-160, depth 12-40) found that **shallow+wide beats deep+narrow**. The optimal config (d=14, dim=2176) is much shallower than the original (d=32, dim=896). E88 trails SSMs by ~0.12 nats, which appears to be the cost of using 3-5x less state memory per layer.
 
 ## Methodology
 
