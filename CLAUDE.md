@@ -298,11 +298,35 @@ python cmaes_search.py --model mamba2 --generations 20 --train_minutes 2 --gpus 
 
 | Model | Parameters Searched |
 |-------|---------------------|
-| E88 | n_heads (16-96), n_state (16-96), depth (20-44), lr (1e-4 to 6e-4) |
-| FLA-GDN | expansion (1-3), depth (20-44), n_heads (8-32), lr (1e-4 to 5e-4) |
-| Mamba2 | d_state (64-256), expand (1-3), depth (20-44), lr (1e-4 to 1e-3) |
+| E88 | n_heads (64-160), n_state (16/32/48/64), depth (20-40) |
+| FLA-GDN | expansion (1-3), depth (16-40), n_heads (8-32) |
+| Mamba2 | d_state (64-256), expand (1-3), depth (16-40) |
+| Transformer | n_heads (8-32), expansion (2-6), depth (12-36) |
+| MinGRU/MinLSTM | expansion (1-4), depth (12-40) |
+| GRU/LSTM | expansion (1-3), depth (12-48) |
 
-**Key Finding:** CMA-ES discovered that **more heads with smaller state** (h=104, n=32) outperforms fewer heads with larger state. This was counterintuitive but validated by benchmark.
+**Note:** LR is fixed at 3e-4 for all models to ensure fair comparison.
+
+### CMA-ES Study Results (Jan 27, 2026)
+
+Full 480M-scale search across 8 models. See `docs/CMAES_480M_STUDY.md` for details.
+
+| Model | CMA-ES Best Loss | Optimal Config Found |
+|-------|------------------|----------------------|
+| **Mamba2** | **1.2713** | d_state=96, expand=2, depth=25, dim=1792 |
+| **FLA-GDN** | **1.2727** | expansion=2, depth=17, n_heads=24, dim=1920 |
+| **E88** | 1.37* | n_heads=104, n_state=32, depth=32 (*prior benchmark) |
+| Transformer | 1.5054 | n_heads=8, expansion=4, depth=13, dim=1536 |
+| MinGRU | 1.5281 | expansion=1, depth=14, dim=2944 |
+| MinLSTM | 1.5608 | expansion=1, depth=31, dim=1792 |
+| GRU | Failed | Training instability at 480M scale |
+| LSTM | Failed | Training instability at 480M scale |
+
+**Key Findings from CMA-ES:**
+- Mamba2 optimal d_state=96 (vs default 64) - larger state helps
+- FLA-GDN optimal depth=17 (vs default 24) - shallower is better
+- MinGRU/MinLSTM both prefer expansion=1 (wider networks, no expansion)
+- CUDA GRU/LSTM have training instability at 480M scale (needs investigation)
 
 ## E88 Configuration Reference
 

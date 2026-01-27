@@ -34,32 +34,59 @@ except ImportError:
 
 # Import param calculation functions
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from calc_dim import calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params
+from calc_dim import (
+    calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
+    calc_transformer_params, calc_gru_params, calc_lstm_params,
+    calc_mingru_params, calc_minlstm_params
+)
 
 # Supported n_state values for E88 CUDA fused gate kernel (must match head_v_dim for default config)
 # Only these sizes are efficiently supported without warnings/fallbacks: 16, 32, 48, 64
 E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 
 # Search space definitions for each model
+# NOTE: LR is FIXED at 3e-4 for all models to match benchmark conditions
 SEARCH_SPACES = {
     'e88': {
         # Parameter: (min, max, type, description)
         'n_heads': (64, 160, 'int', 'Number of attention heads'),  # Expanded to include 104+
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported by fused kernel)'),
-        'depth': (24, 40, 'int', 'Number of layers'),  # Narrowed around optimal 28-32
-        'lr': (1e-4, 6e-4, 'log', 'Learning rate'),
+        'depth': (20, 40, 'int', 'Number of layers'),
+        # LR removed - fixed at 3e-4 for fair comparison
     },
     'fla-gdn': {
         'expansion': (1, 3, 'int', 'FFN expansion factor (must be int for FLA)'),
-        'depth': (20, 44, 'int', 'Number of layers'),
+        'depth': (16, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        'lr': (1e-4, 5e-4, 'log', 'Learning rate'),
+        # LR fixed at 3e-4
     },
     'mamba2': {
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 44, 'int', 'Number of layers'),
-        'lr': (1e-4, 1e-3, 'log', 'Learning rate'),
+        'depth': (16, 40, 'int', 'Number of layers'),
+        # LR fixed at 3e-4
+    },
+    'transformer': {
+        'n_heads': (8, 32, 'int', 'Number of attention heads'),
+        'expansion': (2, 6, 'int', 'FFN expansion factor'),
+        'depth': (12, 36, 'int', 'Number of layers'),
+        # LR fixed at 3e-4
+    },
+    'gru': {
+        'expansion': (1, 3, 'int', 'Expansion factor for dim_inner'),
+        'depth': (12, 48, 'int', 'Number of layers'),
+    },
+    'lstm': {
+        'expansion': (1, 3, 'int', 'Expansion factor for dim_inner'),
+        'depth': (12, 48, 'int', 'Number of layers'),
+    },
+    'mingru': {
+        'expansion': (1, 4, 'int', 'Expansion factor'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+    },
+    'minlstm': {
+        'expansion': (1, 4, 'int', 'Expansion factor'),
+        'depth': (12, 40, 'int', 'Number of layers'),
     },
 }
 
@@ -125,19 +152,37 @@ BEST_CONFIGS = {
         'n_heads': 104,
         'n_state': 32,
         'depth': 32,
-        'lr': 3e-4,
     },
     'fla-gdn': {
         'expansion': 2,
         'depth': 24,
         'n_heads': 16,
-        'lr': 3e-4,
     },
     'mamba2': {
         'd_state': 64,
         'expand': 2,
         'depth': 28,
-        'lr': 3e-4,
+    },
+    'transformer': {
+        'n_heads': 16,
+        'expansion': 4,
+        'depth': 24,
+    },
+    'gru': {
+        'expansion': 1,
+        'depth': 20,
+    },
+    'lstm': {
+        'expansion': 1,
+        'depth': 20,
+    },
+    'mingru': {
+        'expansion': 2,
+        'depth': 20,
+    },
+    'minlstm': {
+        'expansion': 2,
+        'depth': 20,
     },
 }
 
@@ -185,13 +230,74 @@ def estimate_dim_and_params(params, model_type, target_params):
         )
         return dim, actual_params
 
+    elif model_type == 'transformer':
+        depth = params['depth']
+        n_heads = params.get('n_heads', 16)
+        expansion = params.get('expansion', 4)
+
+        dim, actual_params = find_dim_for_params(
+            calc_transformer_params,
+            target_params,
+            depth=depth,
+            n_heads=n_heads,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'gru':
+        depth = params['depth']
+        expansion = params.get('expansion', 1)
+
+        dim, actual_params = find_dim_for_params(
+            calc_gru_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'lstm':
+        depth = params['depth']
+        expansion = params.get('expansion', 1)
+
+        dim, actual_params = find_dim_for_params(
+            calc_lstm_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'mingru':
+        depth = params['depth']
+        expansion = params.get('expansion', 2)
+
+        dim, actual_params = find_dim_for_params(
+            calc_mingru_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'minlstm':
+        depth = params['depth']
+        expansion = params.get('expansion', 2)
+
+        dim, actual_params = find_dim_for_params(
+            calc_minlstm_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
     return 1024, target_params
 
 
 def build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params):
     """Build training command for a configuration."""
     # Adjust batch size based on actual model size (not target)
-    # E88 with gating uses more memory than other models
     if actual_params > 480_000_000:
         batch_size = 8   # 480M+ models need small batch
     elif actual_params > 350_000_000:
@@ -199,12 +305,15 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
     else:
         batch_size = 32
 
+    # Fixed LR for all models at 3e-4
+    lr = 3e-4
+
     cmd = [
         'python', 'train.py',
         '--data', 'data/pile.txt',
         '--dim', str(dim),
         '--depth', str(params['depth']),
-        '--lr', str(params['lr']),
+        '--lr', str(lr),
         '--bf16',
         '--batch_size', str(batch_size),
         '--chunk_size', '512',
@@ -232,6 +341,32 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
     elif model_type == 'mamba2':
         cmd.extend([
             '--level', 'mamba2',
+        ])
+    elif model_type == 'transformer':
+        cmd.extend([
+            '--level', 'llama',
+            '--n_heads', str(params.get('n_heads', 16)),
+            '--expansion', str(params.get('expansion', 4)),
+        ])
+    elif model_type == 'gru':
+        cmd.extend([
+            '--level', 'cudagru',
+            '--expansion', str(params.get('expansion', 1)),
+        ])
+    elif model_type == 'lstm':
+        cmd.extend([
+            '--level', 'cudalstm',
+            '--expansion', str(params.get('expansion', 1)),
+        ])
+    elif model_type == 'mingru':
+        cmd.extend([
+            '--level', 'mingru',
+            '--expansion', str(params.get('expansion', 2)),
+        ])
+    elif model_type == 'minlstm':
+        cmd.extend([
+            '--level', 'minlstm',
+            '--expansion', str(params.get('expansion', 2)),
         ])
 
     return cmd
@@ -452,7 +587,8 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
 
 def main():
     parser = argparse.ArgumentParser(description='CMA-ES search for optimal model config')
-    parser.add_argument('--model', type=str, required=True, choices=['e88', 'fla-gdn', 'mamba2'],
+    parser.add_argument('--model', type=str, required=True,
+                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm'],
                         help='Model type to optimize')
     parser.add_argument('--generations', type=int, default=20,
                         help='Number of CMA-ES generations')
@@ -502,11 +638,29 @@ def main():
     )
 
     print(f"\nTo train with best config:")
+    dim, _ = estimate_dim_and_params(best_params, args.model, target_params)
     if args.model == 'e88':
-        dim, _ = estimate_dim_and_params(best_params, 'e88', target_params)
         print(f"python train.py --level E88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
-              f"--lr {best_params['lr']:.6f} --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30")
+              f"--lr 3e-4 --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30")
+    elif args.model == 'fla-gdn':
+        print(f"python train.py --level fla-gdn --dim {dim} --depth {best_params['depth']} "
+              f"--expansion {best_params['expansion']} --n_heads {best_params.get('n_heads', 16)} "
+              f"--lr 3e-4 --train_minutes 30")
+    elif args.model == 'mamba2':
+        print(f"python train.py --level mamba2 --dim {dim} --depth {best_params['depth']} "
+              f"--lr 3e-4 --train_minutes 30")
+    elif args.model == 'transformer':
+        print(f"python train.py --level llama --dim {dim} --depth {best_params['depth']} "
+              f"--n_heads {best_params.get('n_heads', 16)} --expansion {best_params.get('expansion', 4)} "
+              f"--lr 3e-4 --train_minutes 30")
+    elif args.model in ['gru', 'lstm']:
+        level = 'cudagru' if args.model == 'gru' else 'cudalstm'
+        print(f"python train.py --level {level} --dim {dim} --depth {best_params['depth']} "
+              f"--expansion {best_params.get('expansion', 1)} --lr 3e-4 --train_minutes 30")
+    elif args.model in ['mingru', 'minlstm']:
+        print(f"python train.py --level {args.model} --dim {dim} --depth {best_params['depth']} "
+              f"--expansion {best_params.get('expansion', 2)} --lr 3e-4 --train_minutes 30")
 
 
 if __name__ == '__main__':

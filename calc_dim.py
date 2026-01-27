@@ -74,6 +74,80 @@ def calc_fla_gdn_params(dim, depth, expansion=2.0, vocab_size=256):
     return layers_total + embed
 
 
+def calc_transformer_params(dim, depth, n_heads=8, expansion=4.0, vocab_size=256):
+    """Calculate Transformer (Llama-style) parameters."""
+    # Self-attention: Q, K, V, O projections
+    attn = dim * dim * 4  # 4 projections of dim x dim
+    # FFN: up_proj, gate_proj, down_proj (SwiGLU style)
+    ffn_dim = int(dim * expansion)
+    ffn = dim * ffn_dim * 3  # 3 projections
+    # RMSNorm
+    norm = dim * 2
+    per_layer = attn + ffn + norm
+    layers_total = per_layer * depth
+    embed = vocab_size * dim
+    return layers_total + embed
+
+
+def calc_gru_params(dim, depth, expansion=1.0, vocab_size=256):
+    """Calculate GRU parameters (CudaGRU with expansion)."""
+    dim_inner = int(dim * expansion)
+    # Per layer: input_proj, output_proj, GRU gates on dim_inner
+    # GRU gates: 3 gates * (dim_inner*dim_inner for W_hh + dim_inner for bias)
+    # Plus input_proj (dim -> dim_inner) and output_proj (dim_inner -> dim)
+    gru_params = 3 * (dim_inner * dim_inner + dim_inner)  # W_hh and bias for 3 gates
+    input_proj = dim * dim_inner
+    output_proj = dim_inner * dim
+    layer_norm = 2 * dim  # weight and bias
+    per_layer = gru_params + input_proj + output_proj + layer_norm
+    layers_total = per_layer * depth
+    embed = vocab_size * dim * 2  # embedding + lm_head (tied)
+    return layers_total + embed
+
+
+def calc_lstm_params(dim, depth, expansion=1.0, vocab_size=256):
+    """Calculate LSTM parameters (CudaLSTM with expansion)."""
+    dim_inner = int(dim * expansion)
+    # Per layer: input_proj, output_proj, LSTM gates on dim_inner
+    # LSTM gates: 4 gates * (dim_inner*dim_inner for W_hh + dim_inner for bias)
+    lstm_params = 4 * (dim_inner * dim_inner + dim_inner)  # W_hh and bias for 4 gates
+    input_proj = dim * dim_inner
+    output_proj = dim_inner * dim
+    layer_norm = 2 * dim  # weight and bias
+    per_layer = lstm_params + input_proj + output_proj + layer_norm
+    layers_total = per_layer * depth
+    embed = vocab_size * dim * 2  # embedding + lm_head (tied)
+    return layers_total + embed
+
+
+def calc_mingru_params(dim, depth, expansion=2.0, vocab_size=256):
+    """Calculate minGRU parameters (simplified GRU from Feng et al.)."""
+    d_inner = int(dim * expansion)
+    # minGRU: in_proj, out_proj, and simplified gates
+    per_layer = (
+        dim * d_inner +      # in_proj
+        d_inner * dim +      # out_proj
+        d_inner * d_inner * 2  # simplified W_z and W_h
+    )
+    layers_total = per_layer * depth
+    embed = vocab_size * dim
+    return layers_total + embed
+
+
+def calc_minlstm_params(dim, depth, expansion=2.0, vocab_size=256):
+    """Calculate minLSTM parameters (simplified LSTM from Feng et al.)."""
+    d_inner = int(dim * expansion)
+    # minLSTM: in_proj, out_proj, and simplified gates
+    per_layer = (
+        dim * d_inner +      # in_proj
+        d_inner * dim +      # out_proj
+        d_inner * d_inner * 3  # simplified W_i, W_f, W_o
+    )
+    layers_total = per_layer * depth
+    embed = vocab_size * dim
+    return layers_total + embed
+
+
 def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256, use_gate=True):
     """Calculate E88 FLA Hybrid parameters.
 
