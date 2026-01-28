@@ -33,6 +33,78 @@ except ImportError:
 
 USE_TRITON_OPS = True
 
+# Try to import CUDA kernel
+try:
+    import hasty_pytorch_lib
+    MOM_E88_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'mom_e88_forward')
+except ImportError:
+    MOM_E88_CUDA_AVAILABLE = False
+
+# Note: CUDA backward kernel is not yet implemented
+# For training, we use the Python prototype with autograd
+# CUDA forward can be used for inference only
+MOM_E88_CUDA_BACKWARD_AVAILABLE = False
+
+
+class MoME88CUDAFunction(torch.autograd.Function):
+    """
+    CUDA autograd function for MoM E88.
+    Forward uses CUDA kernel, backward falls back to PyTorch autograd.
+    """
+    @staticmethod
+    def forward(ctx, k, v, q, decay, head_indices, router_weights, S0, n_heads, top_k, training):
+        """
+        Args:
+            k: [B, T, H, n_state] L2 normalized keys
+            v: [B, T, H, head_v_dim] values
+            q: [B, T, H, n_state] L2 normalized queries
+            decay: [B, T, H] exponential decay factors
+            head_indices: [B, T, K] which head for each slot (int32)
+            router_weights: [B, T, K] routing weights
+            S0: [B, H, n_state, head_v_dim] initial state
+            n_heads: int
+            top_k: int
+            training: bool
+
+        Returns:
+            output: [B, T, head_v_dim]
+            S_final: [B, H, n_state, head_v_dim]
+        """
+        # Transpose to [T, B, ...] for CUDA kernel
+        k_t = k.transpose(0, 1).contiguous()  # [T, B, H, n_state]
+        v_t = v.transpose(0, 1).contiguous()  # [T, B, H, head_v_dim]
+        q_t = q.transpose(0, 1).contiguous()  # [T, B, H, n_state]
+        decay_t = decay.transpose(0, 1).contiguous()  # [T, B, H]
+        head_indices_t = head_indices.transpose(0, 1).contiguous().int()  # [T, B, K]
+        router_weights_t = router_weights.transpose(0, 1).contiguous()  # [T, B, K]
+
+        output_t, S_final, S_cache = hasty_pytorch_lib.mom_e88_forward(
+            training,
+            k_t, v_t, q_t, decay_t,
+            head_indices_t, router_weights_t,
+            S0, n_heads, top_k
+        )
+
+        # Transpose output back to [B, T, head_v_dim]
+        output = output_t.transpose(0, 1).contiguous()
+
+        # Save for backward (if training, we'd use these with CUDA backward)
+        # But since CUDA backward isn't implemented, we can't use this for training
+        ctx.save_for_backward(k, v, q, decay, head_indices, router_weights, S_cache)
+        ctx.n_heads = n_heads
+        ctx.top_k = top_k
+
+        return output, S_final
+
+    @staticmethod
+    def backward(ctx, grad_output, grad_S):
+        # CUDA backward not implemented - this should never be called
+        # because we only use CUDA for inference (not training)
+        raise RuntimeError(
+            "MoM E88 CUDA backward not implemented. "
+            "CUDA path should only be used for inference (training=False)."
+        )
+
 
 class MoME88(nn.Module):
     """
@@ -67,9 +139,13 @@ class MoME88(nn.Module):
         use_l2_norm: bool = True,
         use_output_norm: bool = False,
         gate_activation: str = 'silu',
+        use_cuda: bool = True,  # Use CUDA kernel when available (inference only)
         **kwargs
     ):
         super().__init__()
+
+        # CUDA acceleration flag (only for inference since backward not implemented)
+        self.use_cuda = use_cuda and MOM_E88_CUDA_AVAILABLE
 
         # Default top_k to min(32, n_heads) if not specified
         if top_k is None:
@@ -299,6 +375,11 @@ class MoME88(nn.Module):
         k_all = k_all.view(B, T, H, n)  # [B, T, H, n_state]
         v_all = v_all.view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
 
+        # === L2 normalize k and q ===
+        if self.use_l2_norm:
+            k_all = k_all / (k_all.norm(dim=-1, keepdim=True) + 1e-6)
+            q_all = q_all / (q_all.norm(dim=-1, keepdim=True) + 1e-6)
+
         # === Compute decay for ALL heads ===
         if self.simple_decay:
             decay_all = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
@@ -316,6 +397,52 @@ class MoME88(nn.Module):
         else:
             S_all = torch.stack(hidden, dim=1)  # [B, H, n_state, head_v_dim]
 
+        # === CUDA Fast Path (inference only) ===
+        # Use CUDA kernel for inference when available and bf16
+        use_cuda_path = (
+            self.use_cuda and
+            not self.training and
+            x.is_cuda and
+            x.dtype == torch.bfloat16 and
+            not self.linear_state  # CUDA kernel uses tanh
+        )
+
+        if use_cuda_path:
+            output, S_final = MoME88CUDAFunction.apply(
+                k_all, v_all, q_all, decay_all,
+                top_k_indices, top_k_weights,
+                S_all, H, K, self.training
+            )
+
+            # Apply output gating
+            if self.use_gate and self.g_proj is not None:
+                g_all = self.g_proj(x).view(B, T, H, self.head_v_dim)
+
+                # Get weighted gate from selected heads
+                g_selected = torch.zeros(B, T, self.head_v_dim, device=x.device, dtype=x.dtype)
+                for t in range(T):
+                    for b in range(B):
+                        for i in range(K):
+                            h = top_k_indices[b, t, i].item()
+                            w = top_k_weights[b, t, i]
+                            g_selected[b, t] += w * g_all[b, t, h]
+
+                if self.gate_activation == 'sigmoid':
+                    output = output * torch.sigmoid(g_selected)
+                else:
+                    output = output * F.silu(g_selected)
+
+            # Output projection
+            output = self.o_proj(output)
+            output = self.dropout(output)
+
+            # Convert S_final back to list
+            S_list = [S_final[:, h] for h in range(H)]
+
+            if return_aux_loss:
+                return output, S_list, torch.tensor(0.0, device=x.device)
+            return output, S_list
+
         # === Recurrence with sparse routing ===
         outputs = []
 
@@ -330,10 +457,7 @@ class MoME88(nn.Module):
             indices_t = top_k_indices[:, t]  # [B, K]
             weights_t = top_k_weights[:, t]  # [B, K]
 
-            # L2 normalize k and q if enabled
-            if self.use_l2_norm:
-                k_t = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)
-                q_t = q_t / (q_t.norm(dim=-1, keepdim=True) + 1e-6)
+            # Note: L2 normalization already applied to k_all, q_all above
 
             # Clone S_all to avoid in-place modification issues with autograd
             # This creates a new tensor node in the computation graph
@@ -356,9 +480,10 @@ class MoME88(nn.Module):
                     q_h = q_t[b, h]  # [n_state]
                     decay_h = decay_t[b, h]  # scalar
 
-                    # Retrieve from memory: S @ k -> [head_v_dim]
+                    # Retrieve from memory: S.T @ k -> [head_v_dim]
                     # Read from S_all (original state for this timestep)
-                    retrieved = S_all[b, h] @ k_h  # [n_state, head_v_dim] @ [n_state] -> [head_v_dim]
+                    # S is [n_state, head_v_dim], k is [n_state], so S.T @ k gives [head_v_dim]
+                    retrieved = S_all[b, h].T @ k_h  # [head_v_dim, n_state] @ [n_state] -> [head_v_dim]
 
                     # Delta update
                     delta = v_h - retrieved  # [head_v_dim]
@@ -375,8 +500,8 @@ class MoME88(nn.Module):
                     # Write new state to S_next (the cloned tensor)
                     S_next[b, h] = new_state
 
-                    # Query the NEW state: S @ q -> [head_v_dim]
-                    Sq = new_state @ q_h
+                    # Query the NEW state: S.T @ q -> [head_v_dim]
+                    Sq = new_state.T @ q_h
 
                     # Weight by routing probability
                     head_outputs.append(w * Sq)

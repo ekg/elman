@@ -15209,6 +15209,105 @@ std::vector<Tensor> e89_residual_state_backward(
     return {d_k, d_v, d_q, d_decay};
 }
 
+// =============================================================================
+// MoM E88: Mixture of Memory - Sparse routing to memory heads
+// =============================================================================
+
+std::vector<Tensor> mom_e88_forward(
+    bool training,
+    Tensor k,               // [T, B, H, n_state] L2 normalized keys
+    Tensor v,               // [T, B, H, head_v_dim] values
+    Tensor q,               // [T, B, H, n_state] L2 normalized queries
+    Tensor decay,           // [T, B, H] exponential decay factors
+    Tensor head_indices,    // [T, B, K] which head for each slot
+    Tensor router_weights,  // [T, B, K] routing weights
+    Tensor S0,              // [B, H, n_state, head_v_dim] initial state for ALL heads
+    int n_heads,
+    int top_k) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(head_indices);
+    CHECK_INPUT(router_weights);
+    CHECK_INPUT(S0);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // State for all heads
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+
+    // Output: combined weighted output from all K slots
+    Tensor output = torch::empty({time_steps, batch_size, head_v_dim}, options);
+
+    // Caches for gradient checkpointing and output reduction
+    // Layout: [S_checkpoints | Sq_cache]
+    // Both are always allocated since kernel writes unconditionally
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * top_k * n_state * head_v_dim;
+    const int64_t sq_cache_size = time_steps * batch_size * top_k * head_v_dim;
+
+    // Single combined buffer for both caches
+    Tensor S_cache = torch::empty({s_checkpoints_size + sq_cache_size}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "MoM E88 Forward only supports bfloat16, got ", k.scalar_type());
+    TORCH_CHECK(head_indices.scalar_type() == at::ScalarType::Int,
+                "MoM E88 Forward: head_indices must be int32");
+
+    using namespace elman;
+
+    // Split pointers into the combined buffer
+    __nv_bfloat16* S_checkpoints_ptr = reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr());
+    __nv_bfloat16* Sq_cache_ptr = S_checkpoints_ptr + s_checkpoints_size;
+
+    dispatch_mom_e88_forward(
+        time_steps, batch_size, n_heads, top_k, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const int*>(head_indices.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(router_weights.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        S_checkpoints_ptr,
+        Sq_cache_ptr,
+        checkpoint_interval,
+        at::cuda::getCurrentCUDAStream());
+
+    return {output, S, S_cache};
+}
+
+// MoM E88 Backward - placeholder that raises an error
+// (For now, use PyTorch autograd via the Python prototype)
+std::vector<Tensor> mom_e88_backward(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor head_indices,    // [T, B, K]
+    Tensor router_weights,  // [T, B, K]
+    Tensor S_cache,         // Combined checkpoints + Sq cache
+    Tensor d_output,        // [T, B, head_v_dim]
+    int n_heads,
+    int top_k) {
+
+    TORCH_CHECK(false, "MoM E88 CUDA backward not yet implemented. Use PyTorch autograd via Python prototype.");
+
+    // Placeholder return - never reached
+    return {};
+}
+
 }  // anonymous namespace
 
 
@@ -15677,4 +15776,10 @@ void elman_ladder_init(py::module& m) {
           "E89 Residual State: decay*S + tanh(outer) - tanh only on outer product");
     m.def("e89_residual_state_backward", &e89_residual_state_backward,
           "E89 Residual State: Backward pass with gradient checkpointing");
+
+    // MoM E88: Mixture of Memory - Sparse routing to memory heads
+    m.def("mom_e88_forward", &mom_e88_forward,
+          "MoM E88: Mixture of Memory forward - sparse routing to top-K heads per token");
+    m.def("mom_e88_backward", &mom_e88_backward,
+          "MoM E88: Mixture of Memory backward (placeholder - use PyTorch autograd)");
 }
