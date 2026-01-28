@@ -15288,8 +15288,7 @@ std::vector<Tensor> mom_e88_forward(
     return {output, S, S_cache};
 }
 
-// MoM E88 Backward - placeholder that raises an error
-// (For now, use PyTorch autograd via the Python prototype)
+// MoM E88 Backward - compute gradients for k, v, q, decay, router_weights
 std::vector<Tensor> mom_e88_backward(
     Tensor k,               // [T, B, H, n_state]
     Tensor v,               // [T, B, H, head_v_dim]
@@ -15297,15 +15296,89 @@ std::vector<Tensor> mom_e88_backward(
     Tensor decay,           // [T, B, H]
     Tensor head_indices,    // [T, B, K]
     Tensor router_weights,  // [T, B, K]
-    Tensor S_cache,         // Combined checkpoints + Sq cache
+    Tensor S_cache,         // Combined checkpoints + Sq cache from forward
     Tensor d_output,        // [T, B, head_v_dim]
     int n_heads,
     int top_k) {
 
-    TORCH_CHECK(false, "MoM E88 CUDA backward not yet implemented. Use PyTorch autograd via Python prototype.");
+    // Validate inputs
+    TORCH_CHECK(k.is_cuda() && v.is_cuda() && q.is_cuda() && decay.is_cuda(),
+                "All inputs must be CUDA tensors");
+    TORCH_CHECK(d_output.is_cuda(), "d_output must be a CUDA tensor");
+    TORCH_CHECK(k.scalar_type() == torch::kBFloat16, "k must be bfloat16");
+    TORCH_CHECK(v.scalar_type() == torch::kBFloat16, "v must be bfloat16");
+    TORCH_CHECK(q.scalar_type() == torch::kBFloat16, "q must be bfloat16");
+    TORCH_CHECK(decay.scalar_type() == torch::kBFloat16, "decay must be bfloat16");
+    TORCH_CHECK(d_output.scalar_type() == torch::kBFloat16, "d_output must be bfloat16");
+    TORCH_CHECK(head_indices.scalar_type() == torch::kInt32, "head_indices must be int32");
+    TORCH_CHECK(router_weights.scalar_type() == torch::kBFloat16, "router_weights must be bfloat16");
 
-    // Placeholder return - never reached
-    return {};
+    // Get dimensions
+    int time_steps = k.size(0);
+    int batch_size = k.size(1);
+    int n_state = k.size(3);
+    int head_v_dim = v.size(3);
+
+    // Validate dimensions
+    TORCH_CHECK(k.size(2) == n_heads, "k head dimension mismatch");
+    TORCH_CHECK(v.size(2) == n_heads, "v head dimension mismatch");
+    TORCH_CHECK(q.size(2) == n_heads, "q head dimension mismatch");
+    TORCH_CHECK(decay.size(2) == n_heads, "decay head dimension mismatch");
+    TORCH_CHECK(head_indices.size(2) == top_k, "head_indices K dimension mismatch");
+    TORCH_CHECK(router_weights.size(2) == top_k, "router_weights K dimension mismatch");
+    TORCH_CHECK(d_output.size(2) == head_v_dim, "d_output dimension mismatch");
+
+    // Create output gradient tensors (initialized to zero for atomic adds)
+    auto options = torch::TensorOptions().dtype(torch::kBFloat16).device(k.device());
+    Tensor d_k = torch::zeros_like(k);
+    Tensor d_v = torch::zeros_like(v);
+    Tensor d_q = torch::zeros_like(q);
+    Tensor d_decay = torch::zeros_like(decay);
+    Tensor d_router_weights = torch::zeros_like(router_weights);
+
+    // Extract checkpoints and Sq_cache from combined S_cache
+    int state_size = n_state * head_v_dim;
+    constexpr int checkpoint_interval = 16;  // Must match MOM_E88_CHECKPOINT_INTERVAL in mom_e88_gpu.cu.cc
+    int num_checkpoints = (time_steps + checkpoint_interval) / checkpoint_interval;  // +1 for initial checkpoint
+    int64_t s_checkpoints_size = (int64_t)num_checkpoints * batch_size * top_k * state_size;
+    int64_t sq_cache_size = (int64_t)time_steps * batch_size * top_k * head_v_dim;
+
+    // Get pointers to checkpoints and Sq_cache within S_cache
+    const __nv_bfloat16* S_checkpoints_ptr = reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr());
+    const __nv_bfloat16* Sq_cache_ptr = S_checkpoints_ptr + s_checkpoints_size;
+
+    // Allocate segment cache for backward pass
+    // Layout: [B*K, checkpoint_interval, state_size + N_STATE + HEAD_V_DIM + 1]
+    int cache_entry_size = state_size + n_state + head_v_dim + 1;
+    int64_t segment_cache_size = (int64_t)batch_size * top_k * checkpoint_interval * cache_entry_size;
+    Tensor segment_cache = torch::empty({segment_cache_size}, options);
+
+    // Get CUDA stream
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Call the CUDA backward kernel
+    elman::dispatch_mom_e88_backward(
+        time_steps, batch_size, n_heads, top_k, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const int*>(head_indices.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(router_weights.data_ptr()),
+        S_checkpoints_ptr,
+        Sq_cache_ptr,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_router_weights.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        stream
+    );
+
+    return {d_k, d_v, d_q, d_decay, d_router_weights};
 }
 
 }  // anonymous namespace
@@ -15779,7 +15852,9 @@ void elman_ladder_init(py::module& m) {
 
     // MoM E88: Mixture of Memory - Sparse routing to memory heads
     m.def("mom_e88_forward", &mom_e88_forward,
-          "MoM E88: Mixture of Memory forward - sparse routing to top-K heads per token");
+          "MoM E88: Mixture of Memory forward - sparse routing to top-K heads per token. "
+          "Correct when head indices are fixed per slot across timesteps.");
     m.def("mom_e88_backward", &mom_e88_backward,
-          "MoM E88: Mixture of Memory backward (placeholder - use PyTorch autograd)");
+          "MoM E88: Mixture of Memory backward - computes gradients for k, v, q, decay, router_weights. "
+          "Correct when head indices are fixed per slot across timesteps.");
 }

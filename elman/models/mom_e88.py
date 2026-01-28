@@ -14,6 +14,14 @@ Key differences from E88:
 
 Based on E88 CMA-ES optimal: n_heads=98, n_state=32, depth=14, dim=2176
 MoM can use 2-3x more heads with same compute budget.
+
+CUDA Kernel Notes:
+- CUDA forward and backward kernels are available for bf16
+- CUDA kernels are CORRECT when head indices are fixed per slot across timesteps
+  (the common case for inference and typical training with softmax routing)
+- CUDA kernels may have small numerical differences with random head changes
+  between timesteps due to state tracking design differences
+- For full correctness with arbitrary head changes, use Python fallback (slower)
 """
 
 import math
@@ -37,19 +45,16 @@ USE_TRITON_OPS = True
 try:
     import hasty_pytorch_lib
     MOM_E88_CUDA_AVAILABLE = hasattr(hasty_pytorch_lib, 'mom_e88_forward')
+    MOM_E88_CUDA_BACKWARD_AVAILABLE = hasattr(hasty_pytorch_lib, 'mom_e88_backward')
 except ImportError:
     MOM_E88_CUDA_AVAILABLE = False
-
-# Note: CUDA backward kernel is not yet implemented
-# For training, we use the Python prototype with autograd
-# CUDA forward can be used for inference only
-MOM_E88_CUDA_BACKWARD_AVAILABLE = False
+    MOM_E88_CUDA_BACKWARD_AVAILABLE = False
 
 
 class MoME88CUDAFunction(torch.autograd.Function):
     """
     CUDA autograd function for MoM E88.
-    Forward uses CUDA kernel, backward falls back to PyTorch autograd.
+    Both forward and backward use CUDA kernels.
     """
     @staticmethod
     def forward(ctx, k, v, q, decay, head_indices, router_weights, S0, n_heads, top_k, training):
@@ -88,9 +93,8 @@ class MoME88CUDAFunction(torch.autograd.Function):
         # Transpose output back to [B, T, head_v_dim]
         output = output_t.transpose(0, 1).contiguous()
 
-        # Save for backward (if training, we'd use these with CUDA backward)
-        # But since CUDA backward isn't implemented, we can't use this for training
-        ctx.save_for_backward(k, v, q, decay, head_indices, router_weights, S_cache)
+        # Save for backward - keep transposed versions for CUDA kernel
+        ctx.save_for_backward(k_t, v_t, q_t, decay_t, head_indices_t, router_weights_t, S_cache)
         ctx.n_heads = n_heads
         ctx.top_k = top_k
 
@@ -98,12 +102,41 @@ class MoME88CUDAFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output, grad_S):
-        # CUDA backward not implemented - this should never be called
-        # because we only use CUDA for inference (not training)
-        raise RuntimeError(
-            "MoM E88 CUDA backward not implemented. "
-            "CUDA path should only be used for inference (training=False)."
+        """
+        Backward pass using CUDA kernel.
+
+        Args:
+            grad_output: [B, T, head_v_dim] gradient from output
+            grad_S: [B, H, n_state, head_v_dim] gradient from final state (usually None)
+
+        Returns:
+            Gradients for: k, v, q, decay, head_indices, router_weights, S0, n_heads, top_k, training
+        """
+        k_t, v_t, q_t, decay_t, head_indices_t, router_weights_t, S_cache = ctx.saved_tensors
+        n_heads = ctx.n_heads
+        top_k = ctx.top_k
+
+        # Transpose grad_output to [T, B, head_v_dim] for CUDA kernel
+        grad_output_t = grad_output.transpose(0, 1).contiguous()
+
+        # Call CUDA backward kernel
+        d_k_t, d_v_t, d_q_t, d_decay_t, d_router_weights_t = hasty_pytorch_lib.mom_e88_backward(
+            k_t, v_t, q_t, decay_t,
+            head_indices_t, router_weights_t,
+            S_cache, grad_output_t,
+            n_heads, top_k
         )
+
+        # Transpose gradients back to [B, T, ...] format
+        d_k = d_k_t.transpose(0, 1).contiguous()
+        d_v = d_v_t.transpose(0, 1).contiguous()
+        d_q = d_q_t.transpose(0, 1).contiguous()
+        d_decay = d_decay_t.transpose(0, 1).contiguous()
+        d_router_weights = d_router_weights_t.transpose(0, 1).contiguous()
+
+        # head_indices is int tensor - no gradient
+        # S0, n_heads, top_k, training are not differentiable
+        return d_k, d_v, d_q, d_decay, None, d_router_weights, None, None, None, None
 
 
 class MoME88(nn.Module):
@@ -397,14 +430,16 @@ class MoME88(nn.Module):
         else:
             S_all = torch.stack(hidden, dim=1)  # [B, H, n_state, head_v_dim]
 
-        # === CUDA Fast Path (inference only) ===
-        # Use CUDA kernel for inference when available and bf16
+        # === CUDA Fast Path ===
+        # Use CUDA kernel when available and bf16
+        # Training: requires CUDA backward kernel
+        # Inference: only needs CUDA forward kernel
         use_cuda_path = (
             self.use_cuda and
-            not self.training and
             x.is_cuda and
             x.dtype == torch.bfloat16 and
-            not self.linear_state  # CUDA kernel uses tanh
+            not self.linear_state and  # CUDA kernel uses tanh
+            (not self.training or MOM_E88_CUDA_BACKWARD_AVAILABLE)
         )
 
         if use_cuda_path:
