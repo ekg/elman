@@ -182,6 +182,50 @@ def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256,
     return layers_total + embed + norms
 
 
+def calc_mom_e88_params(dim, n_heads, top_k, n_state, depth, expansion=1.0, vocab_size=256, use_gate=True):
+    """Calculate MoM E88 (Mixture of Memory) parameters.
+
+    Note: top_k doesn't affect param count - only H, n, and dim do.
+    top_k affects compute and state size, not params.
+
+    Args:
+        dim: Model dimension
+        n_heads: Total number of memory heads (H)
+        top_k: Number of active heads per token (K) - doesn't affect params
+        n_state: State dimension per head (n)
+        depth: Number of layers
+        expansion: Value dimension expansion (default 1.0)
+        vocab_size: Vocabulary size
+        use_gate: If True (default), includes g_proj for output gating.
+    """
+    # Key dimensions
+    key_dim = n_heads * n_state
+    value_dim = int(n_heads * n_state * expansion)
+    head_v_dim = value_dim // n_heads  # n_state when expansion=1.0
+
+    # Per layer:
+    # router: dim → n_heads (for top-K selection)
+    # qkv_proj: dim → 2*key_dim + value_dim = 3*H*n (when expansion=1.0)
+    # a_proj: dim → n_heads (decay)
+    # A_log: n_heads
+    # dt_bias: n_heads
+    # g_proj: dim → value_dim (only if use_gate=True)
+    # o_proj: head_v_dim → dim (different from E88: projects per-head output)
+    router = dim * n_heads
+    qkv_proj = dim * (2 * key_dim + value_dim)
+    decay_params = dim * n_heads + n_heads + n_heads  # a_proj + A_log + dt_bias
+    gate_proj = dim * value_dim if use_gate else 0
+    out_proj = head_v_dim * dim  # Note: o_proj is per head_v_dim, not full value_dim
+
+    per_layer = router + qkv_proj + decay_params + gate_proj + out_proj
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    norms = dim * (depth + 1)  # RMSNorm
+
+    return layers_total + embed + norms
+
+
 def find_dim_for_params(calc_func, target_params, **kwargs):
     """Binary search for 128-aligned dim that hits target params."""
     max_dim = 8192  # Extended for 500M+ models

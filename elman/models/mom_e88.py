@@ -423,28 +423,32 @@ class MoME88(nn.Module):
             decay_all = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
         else:
             alpha = self.a_proj(x)  # [B, T, H]
-            if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x.is_cuda and x.dtype == torch.bfloat16:
+            # Use Triton if available and inputs are bf16 (check alpha.dtype, not x.dtype for autocast compatibility)
+            if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x.is_cuda and alpha.dtype == torch.bfloat16:
                 decay_all = triton_mamba2_decay(alpha, self.A_log.float(), self.dt_bias.float())
             else:
                 g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
-                decay_all = g.exp().to(x.dtype)  # [B, T, H]
+                decay_all = g.exp().to(alpha.dtype)  # [B, T, H] - match projection output dtype
 
         # === Initialize per-slot states ===
         # State shape: [B, K, n_state, head_v_dim] - each slot has independent memory
+        # Use k_all.dtype for autocast compatibility (projections produce bf16 under autocast)
         if hidden is None:
-            S_slots = torch.zeros(B, K, n, self.head_v_dim, device=x.device, dtype=x.dtype)
+            S_slots = torch.zeros(B, K, n, self.head_v_dim, device=x.device, dtype=k_all.dtype)
         else:
             # hidden is list of K slot states, each [B, n_state, head_v_dim]
-            S_slots = torch.stack(hidden, dim=1)  # [B, K, n_state, head_v_dim]
+            S_slots = torch.stack(hidden, dim=1).to(dtype=k_all.dtype)  # [B, K, n_state, head_v_dim]
 
         # === CUDA Fast Path ===
         # Use CUDA kernel when available and bf16
         # Training: requires CUDA backward kernel
         # Inference: only needs CUDA forward kernel
+        # Check k_all.dtype instead of x.dtype because x might be float32 under autocast
+        # while projections produce bf16 output
         use_cuda_path = (
             self.use_cuda and
             x.is_cuda and
-            x.dtype == torch.bfloat16 and
+            k_all.dtype == torch.bfloat16 and
             not self.linear_state and  # CUDA kernel uses tanh
             (not self.training or MOM_E88_CUDA_BACKWARD_AVAILABLE)
         )
@@ -458,16 +462,15 @@ class MoME88(nn.Module):
 
             # Apply output gating
             if self.use_gate and self.g_proj is not None:
-                g_all = self.g_proj(x).view(B, T, H, self.head_v_dim)
+                g_all = self.g_proj(x).view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
 
-                # Get weighted gate from selected heads
-                g_selected = torch.zeros(B, T, self.head_v_dim, device=x.device, dtype=x.dtype)
-                for t in range(T):
-                    for b in range(B):
-                        for i in range(K):
-                            h = top_k_indices[b, t, i].item()
-                            w = top_k_weights[b, t, i]
-                            g_selected[b, t] += w * g_all[b, t, h]
+                # Get weighted gate from selected heads - VECTORIZED
+                # top_k_indices: [B, T, K], g_all: [B, T, H, head_v_dim]
+                # Expand indices for gather: [B, T, K, 1] -> [B, T, K, head_v_dim]
+                indices_expanded = top_k_indices.unsqueeze(-1).expand(-1, -1, -1, self.head_v_dim)
+                g_selected_k = torch.gather(g_all, 2, indices_expanded)  # [B, T, K, head_v_dim]
+                # Weighted sum over K: [B, T, K, 1] * [B, T, K, head_v_dim] -> sum over K
+                g_selected = (top_k_weights.unsqueeze(-1) * g_selected_k).sum(dim=2)  # [B, T, head_v_dim]
 
                 if self.gate_activation == 'sigmoid':
                     output = output * torch.sigmoid(g_selected)

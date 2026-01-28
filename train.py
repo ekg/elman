@@ -70,6 +70,8 @@ def parse_args():
                         help='Matrix state size for E70-E73 (S is n_state x n_state)')
     parser.add_argument('--n_heads', type=int, default=None,
                         help='Number of heads for E88 FLA Hybrid')
+    parser.add_argument('--top_k', type=int, default=None,
+                        help='Number of active heads per token for MoM E88 (sparse routing)')
     parser.add_argument('--use_gate', type=int, default=1,
                         help='Use output gating for E88 (0=no gate, 1=gate, default=1)')
     parser.add_argument('--gate_activation', type=str, default='sigmoid',
@@ -357,6 +359,7 @@ def train(args):
             n_groups=args.n_groups,
             n_state=args.n_state,
             n_heads=args.n_heads,
+            top_k=args.top_k,
             use_gate=bool(args.use_gate),
             gate_activation=args.gate_activation,
             linear_state=bool(args.linear_state),

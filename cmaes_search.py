@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calc_dim import (
     calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
     calc_transformer_params, calc_gru_params, calc_lstm_params,
-    calc_mingru_params, calc_minlstm_params
+    calc_mingru_params, calc_minlstm_params, calc_mom_e88_params
 )
 
 # Supported n_state values for E88 CUDA fused gate kernel (must match head_v_dim for default config)
@@ -87,6 +87,14 @@ SEARCH_SPACES = {
     'minlstm': {
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (12, 40, 'int', 'Number of layers'),
+    },
+    'mom-e88': {
+        # Mixture of Memory E88: sparse top-K routing to memory heads
+        'n_heads': (64, 256, 'int', 'Total number of memory heads'),
+        'top_k': (8, 64, 'int', 'Number of active heads per token (compute/state, not params)'),
+        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        # LR fixed at 3e-4
     },
 }
 
@@ -183,6 +191,13 @@ BEST_CONFIGS = {
     'minlstm': {
         'expansion': 2,
         'depth': 20,
+    },
+    'mom-e88': {
+        # Start from E88's best config, but with more heads and sparse routing
+        'n_heads': 128,  # 2x E88's 64 heads
+        'top_k': 32,     # ~25% sparsity
+        'n_state': 32,
+        'depth': 28,
     },
 }
 
@@ -292,6 +307,25 @@ def estimate_dim_and_params(params, model_type, target_params):
         )
         return dim, actual_params
 
+    elif model_type == 'mom-e88':
+        n_heads = params['n_heads']
+        top_k = params['top_k']
+        n_state = params['n_state']
+        depth = params['depth']
+
+        # top_k doesn't affect params, only compute/state
+        dim, actual_params = find_dim_for_params(
+            calc_mom_e88_params,
+            target_params,
+            n_heads=n_heads,
+            top_k=top_k,
+            n_state=n_state,
+            depth=depth,
+            expansion=1.0,
+            use_gate=True
+        )
+        return dim, actual_params
+
     return 1024, target_params
 
 
@@ -367,6 +401,16 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
         cmd.extend([
             '--level', 'minlstm',
             '--expansion', str(params.get('expansion', 2)),
+        ])
+    elif model_type == 'mom-e88':
+        cmd.extend([
+            '--level', 'MoME88',
+            '--n_heads', str(params['n_heads']),
+            '--top_k', str(params['top_k']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
         ])
 
     return cmd
@@ -588,7 +632,7 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
 def main():
     parser = argparse.ArgumentParser(description='CMA-ES search for optimal model config')
     parser.add_argument('--model', type=str, required=True,
-                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm'],
+                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88'],
                         help='Model type to optimize')
     parser.add_argument('--generations', type=int, default=20,
                         help='Number of CMA-ES generations')
@@ -661,6 +705,11 @@ def main():
     elif args.model in ['mingru', 'minlstm']:
         print(f"python train.py --level {args.model} --dim {dim} --depth {best_params['depth']} "
               f"--expansion {best_params.get('expansion', 2)} --lr 3e-4 --train_minutes 30")
+    elif args.model == 'mom-e88':
+        print(f"python train.py --level MoM-E88 --dim {dim} --n_heads {best_params['n_heads']} "
+              f"--top_k {best_params['top_k']} --n_state {best_params['n_state']} "
+              f"--depth {best_params['depth']} --lr 3e-4 --expansion 1.0 --use_gate 1 "
+              f"--gate_activation silu --train_minutes 30")
 
 
 if __name__ == '__main__':
