@@ -1,27 +1,27 @@
 """
 MoM E88: Mixture of Memory variant of E88.
 
-Applies Mixture-of-Experts routing to E88's memory heads:
-- Route each token to top-K heads (e.g., 32 of 196)
-- Non-selected heads retain their state but are not updated or read
-- Load balancing loss prevents head collapse
+Applies Mixture-of-Experts routing to E88's memory heads.
+Each token selects top-K heads for reading k/v/q projections,
+but each SLOT maintains its own independent state trajectory.
 
-Key differences from E88:
-1. Router: Linear(dim, num_heads) to select top-K heads per token
-2. Sparse update: Only selected heads are updated
-3. Sparse read: Only selected heads contribute to output
-4. Load balancing: Auxiliary loss for uniform head usage
+KEY DESIGN: Per-Slot State
+- State shape: [B, K, n_state, head_v_dim] (K slots, not H heads)
+- Each slot has its own independent memory state
+- Head selection (from top-K routing) determines which k/v/q projections to use
+- This avoids race conditions when multiple slots select same head
+- Allows fully parallel CUDA execution with no inter-block dependencies
 
-Based on E88 CMA-ES optimal: n_heads=98, n_state=32, depth=14, dim=2176
-MoM can use 2-3x more heads with same compute budget.
+This design is different from having H persistent head states.
+Instead, think of it as K parallel memory "experts", where each expert
+uses projections from whichever head the router selects.
 
-CUDA Kernel Notes:
-- CUDA forward and backward kernels are available for bf16
-- CUDA kernels are CORRECT when head indices are fixed per slot across timesteps
-  (the common case for inference and typical training with softmax routing)
-- CUDA kernels may have small numerical differences with random head changes
-  between timesteps due to state tracking design differences
-- For full correctness with arbitrary head changes, use Python fallback (slower)
+Load balancing loss encourages uniform head usage across projections.
+
+CUDA Kernel:
+- Full forward and backward kernels available in bf16
+- Fully correct with dynamic head routing (head indices can change each timestep)
+- Uses gradient checkpointing for memory efficiency
 """
 
 import math
@@ -53,27 +53,32 @@ except ImportError:
 
 class MoME88CUDAFunction(torch.autograd.Function):
     """
-    CUDA autograd function for MoM E88.
+    CUDA autograd function for MoM E88 with per-slot state.
     Both forward and backward use CUDA kernels.
+
+    Per-slot state design:
+    - State shape: [B, K, n_state, head_v_dim] (K slots, not H heads)
+    - Each slot maintains independent memory
+    - Head indices determine which k/v/q projections to use
     """
     @staticmethod
     def forward(ctx, k, v, q, decay, head_indices, router_weights, S0, n_heads, top_k, training):
         """
         Args:
-            k: [B, T, H, n_state] L2 normalized keys
-            v: [B, T, H, head_v_dim] values
-            q: [B, T, H, n_state] L2 normalized queries
-            decay: [B, T, H] exponential decay factors
-            head_indices: [B, T, K] which head for each slot (int32)
+            k: [B, T, H, n_state] L2 normalized keys (all heads)
+            v: [B, T, H, head_v_dim] values (all heads)
+            q: [B, T, H, n_state] L2 normalized queries (all heads)
+            decay: [B, T, H] exponential decay factors (all heads)
+            head_indices: [B, T, K] which head's projections to use for each slot
             router_weights: [B, T, K] routing weights
-            S0: [B, H, n_state, head_v_dim] initial state
-            n_heads: int
-            top_k: int
+            S0: [B, K, n_state, head_v_dim] initial per-slot state
+            n_heads: int (H, for indexing k/v/q/decay)
+            top_k: int (K, number of slots)
             training: bool
 
         Returns:
-            output: [B, T, head_v_dim]
-            S_final: [B, H, n_state, head_v_dim]
+            output: [B, T, head_v_dim] weighted sum across slots
+            S_final: [B, K, n_state, head_v_dim] final per-slot state
         """
         # Transpose to [T, B, ...] for CUDA kernel
         k_t = k.transpose(0, 1).contiguous()  # [T, B, H, n_state]
@@ -351,12 +356,12 @@ class MoME88(nn.Module):
         """
         Args:
             x: [B, T, dim] input
-            hidden: Optional list of H matrices, each [B, n_state, head_v_dim]
+            hidden: Optional list of K slot states, each [B, n_state, head_v_dim]
             return_aux_loss: If True, return (output, hidden, aux_loss)
 
         Returns:
             output: [B, T, dim]
-            hidden: list of H final matrix states
+            hidden: list of K final slot states (per-slot, not per-head)
             aux_loss: (optional) load balance loss
         """
         B, T, D = x.shape
@@ -424,11 +429,13 @@ class MoME88(nn.Module):
                 g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
                 decay_all = g.exp().to(x.dtype)  # [B, T, H]
 
-        # === Initialize states ===
+        # === Initialize per-slot states ===
+        # State shape: [B, K, n_state, head_v_dim] - each slot has independent memory
         if hidden is None:
-            S_all = torch.zeros(B, H, n, self.head_v_dim, device=x.device, dtype=x.dtype)
+            S_slots = torch.zeros(B, K, n, self.head_v_dim, device=x.device, dtype=x.dtype)
         else:
-            S_all = torch.stack(hidden, dim=1)  # [B, H, n_state, head_v_dim]
+            # hidden is list of K slot states, each [B, n_state, head_v_dim]
+            S_slots = torch.stack(hidden, dim=1)  # [B, K, n_state, head_v_dim]
 
         # === CUDA Fast Path ===
         # Use CUDA kernel when available and bf16
@@ -446,7 +453,7 @@ class MoME88(nn.Module):
             output, S_final = MoME88CUDAFunction.apply(
                 k_all, v_all, q_all, decay_all,
                 top_k_indices, top_k_weights,
-                S_all, H, K, self.training
+                S_slots, H, K, self.training
             )
 
             # Apply output gating
@@ -471,18 +478,20 @@ class MoME88(nn.Module):
             output = self.o_proj(output)
             output = self.dropout(output)
 
-            # Convert S_final back to list
-            S_list = [S_final[:, h] for h in range(H)]
+            # Convert S_final back to list of K slot states
+            S_list = [S_final[:, s] for s in range(K)]
 
             if return_aux_loss:
                 return output, S_list, torch.tensor(0.0, device=x.device)
             return output, S_list
 
-        # === Recurrence with sparse routing ===
+        # === Recurrence with per-slot state (matches CUDA kernel) ===
+        # Each slot has its own independent memory state
+        # Head indices determine which k/v/q/decay projections to use
         outputs = []
 
         for t in range(T):
-            # Get projections for this timestep
+            # Get projections for this timestep (all heads)
             k_t = k_all[:, t]  # [B, H, n_state]
             v_t = v_all[:, t]  # [B, H, head_v_dim]
             q_t = q_all[:, t]  # [B, H, n_state]
@@ -492,22 +501,19 @@ class MoME88(nn.Module):
             indices_t = top_k_indices[:, t]  # [B, K]
             weights_t = top_k_weights[:, t]  # [B, K]
 
-            # Note: L2 normalization already applied to k_all, q_all above
+            # Clone S_slots to avoid in-place modification issues with autograd
+            S_next = S_slots.clone()
 
-            # Clone S_all to avoid in-place modification issues with autograd
-            # This creates a new tensor node in the computation graph
-            S_next = S_all.clone()
-
-            # For each batch element, update only selected heads
-            # This is the key MoM operation
+            # Per-slot state: each slot has its own memory
+            # Head index determines which projections to use, not which state
             batch_outputs = []
 
             for b in range(B):
-                head_outputs = []
+                slot_outputs = []
 
-                for i in range(K):
-                    h = indices_t[b, i].item()  # Get head index
-                    w = weights_t[b, i]  # Get routing weight
+                for slot in range(K):
+                    h = indices_t[b, slot].item()  # Get head index for projections
+                    w = weights_t[b, slot]  # Get routing weight
 
                     # Get this head's projections
                     k_h = k_t[b, h]  # [n_state]
@@ -515,38 +521,39 @@ class MoME88(nn.Module):
                     q_h = q_t[b, h]  # [n_state]
                     decay_h = decay_t[b, h]  # scalar
 
-                    # Retrieve from memory: S.T @ k -> [head_v_dim]
-                    # Read from S_all (original state for this timestep)
-                    # S is [n_state, head_v_dim], k is [n_state], so S.T @ k gives [head_v_dim]
-                    retrieved = S_all[b, h].T @ k_h  # [head_v_dim, n_state] @ [n_state] -> [head_v_dim]
+                    # Get this SLOT's state (not head's state!)
+                    S_slot = S_slots[b, slot]  # [n_state, head_v_dim]
+
+                    # Retrieve from slot's memory: S.T @ k -> [head_v_dim]
+                    retrieved = S_slot.T @ k_h  # [head_v_dim]
 
                     # Delta update
                     delta = v_h - retrieved  # [head_v_dim]
 
                     # Outer product: [n_state, head_v_dim]
-                    outer = torch.outer(k_h, delta)  # [n_state] x [head_v_dim] -> [n_state, head_v_dim]
+                    outer = torch.outer(k_h, delta)
 
-                    # Compute new state (non-in-place): S = tanh(decay * S + outer) or linear
+                    # Compute new state for this SLOT
                     if self.linear_state:
-                        new_state = decay_h * S_all[b, h] + outer
+                        new_state = decay_h * S_slot + outer
                     else:
-                        new_state = torch.tanh(decay_h * S_all[b, h] + outer)
+                        new_state = torch.tanh(decay_h * S_slot + outer)
 
-                    # Write new state to S_next (the cloned tensor)
-                    S_next[b, h] = new_state
+                    # Write new state to this slot
+                    S_next[b, slot] = new_state
 
                     # Query the NEW state: S.T @ q -> [head_v_dim]
                     Sq = new_state.T @ q_h
 
                     # Weight by routing probability
-                    head_outputs.append(w * Sq)
+                    slot_outputs.append(w * Sq)
 
-                # Sum weighted head outputs for this batch element
-                out_b = sum(head_outputs)  # [head_v_dim]
+                # Sum weighted slot outputs for this batch element
+                out_b = sum(slot_outputs)  # [head_v_dim]
                 batch_outputs.append(out_b)
 
-            # Update S_all for next timestep
-            S_all = S_next
+            # Update S_slots for next timestep
+            S_slots = S_next
 
             # Stack batch outputs: [B, head_v_dim]
             out_t = torch.stack(batch_outputs, dim=0)
@@ -557,17 +564,16 @@ class MoME88(nn.Module):
 
         # === Output gating ===
         if self.use_gate and self.g_proj is not None:
-            # For gating, we need the average gate across all heads
-            # (since output is weighted sum of selected heads)
+            # For gating, use weighted gate from selected heads
             g_all = self.g_proj(x).view(B, T, H, self.head_v_dim)
 
             # Get weighted gate from selected heads
             g_selected = torch.zeros(B, T, self.head_v_dim, device=x.device, dtype=x.dtype)
             for t in range(T):
                 for b in range(B):
-                    for i in range(K):
-                        h = top_k_indices[b, t, i].item()
-                        w = top_k_weights[b, t, i]
+                    for slot in range(K):
+                        h = top_k_indices[b, t, slot].item()
+                        w = top_k_weights[b, t, slot]
                         g_selected[b, t] += w * g_all[b, t, h]
 
             if self.gate_activation == 'sigmoid':
@@ -579,8 +585,8 @@ class MoME88(nn.Module):
         output = self.o_proj(output)  # [B, T, dim]
         output = self.dropout(output)
 
-        # Convert S_all back to list
-        S_list = [S_all[:, h] for h in range(H)]
+        # Return K slot states (not H head states)
+        S_list = [S_slots[:, slot] for slot in range(K)]
 
         if return_aux_loss:
             return output, S_list, self._aux_loss * self.load_balance_weight

@@ -1,25 +1,26 @@
 /**
- * MoM E88 CUDA Kernel - Mixture of Memory
+ * MoM E88 CUDA Kernel - Mixture of Memory (Per-Slot State Design)
  *
  * Sparse routing to memory heads (MoE-style for memory).
  * Each token routes to top-K heads instead of all H heads.
  *
- * Key differences from E88:
- * 1. Block indexing: (batch, slot) instead of (batch, head)
- * 2. Head lookup: actual head = head_indices[batch, slot]
- * 3. Output weighting: output scaled by router_weights
- * 4. State access: gather from non-contiguous heads
+ * CRITICAL DESIGN: Per-slot state
+ * - State shape: [B, K, n_state, head_v_dim]
+ * - Each slot maintains its own independent state trajectory
+ * - No shared state between slots = no race conditions
+ * - Head indices only affect which k/v/q/decay to READ, not which state to write
  *
- * Per selected head h = head_indices[b, slot]:
- *   k_h = L2_normalized(W_k_h @ x)  [n_state]
- *   v_h = W_v_h @ x                 [head_v_dim]
- *   q_h = L2_normalized(W_q_h @ x)  [n_state]
- *   decay_h = exp(-softplus(W_decay_h @ x))  [scalar]
+ * Per slot i at timestep t:
+ *   h = head_indices[t, b, i]
+ *   k_h = k_all[t, b, h]       [n_state]
+ *   v_h = v_all[t, b, h]       [head_v_dim]
+ *   q_h = q_all[t, b, h]       [n_state]
+ *   decay_h = decay_all[t, b, h]  [scalar]
  *
- *   retrieved = S_h @ k_h           [head_v_dim]
- *   delta = v_h - retrieved         [head_v_dim]
- *   S_h = tanh(decay_h * S_h + outer(delta, k_h))  [n_state x head_v_dim]
- *   out_slot = router_weight * (S_h^T @ q_h)  [head_v_dim]
+ *   retrieved = S_slot @ k_h    [head_v_dim]
+ *   delta = v_h - retrieved     [head_v_dim]
+ *   S_slot = tanh(decay_h * S_slot + outer(delta, k_h))  [n_state x head_v_dim]
+ *   out_slot = router_weight * (S_slot^T @ q_h)  [head_v_dim]
  *
  * Output: sum of weighted slot outputs for each batch
  */
@@ -40,27 +41,27 @@ __device__ __forceinline__ float mom_e88_tanh(float x) {
 }
 
 // ============================================================================
-// MoM E88 Forward Kernel
+// MoM E88 Forward Kernel (Per-Slot State Design)
 // Each block handles one (batch, slot) pair
-// Slot maps to different heads based on routing
+// State is per-slot, no shared state between slots
 // ============================================================================
 
 template<int N_STATE, int HEAD_V_DIM>
 __global__ void MoME88ForwardKernel_BF16(
     int T,                    // Sequence length
     int B,                    // Batch size
-    int H,                    // Total number of heads
-    int K,                    // Top-k (number of active heads per token)
+    int H,                    // Total number of heads (for indexing k/v/q/decay)
+    int K,                    // Top-k (number of slots)
     const __nv_bfloat16* __restrict__ k_all,      // [T, B, H, N_STATE]
     const __nv_bfloat16* __restrict__ v_all,      // [T, B, H, HEAD_V_DIM]
     const __nv_bfloat16* __restrict__ q_all,      // [T, B, H, N_STATE]
     const __nv_bfloat16* __restrict__ decay_all,  // [T, B, H]
     const int* __restrict__ head_indices,         // [T, B, K] - which head for each slot
     const __nv_bfloat16* __restrict__ router_weights, // [T, B, K] - routing weights
-    __nv_bfloat16* __restrict__ S,                // [B, H, N_STATE, HEAD_V_DIM] - all head states
+    __nv_bfloat16* __restrict__ S,                // [B, K, N_STATE, HEAD_V_DIM] - per-slot states
     __nv_bfloat16* __restrict__ output,           // [T, B, HEAD_V_DIM] - combined output
-    __nv_bfloat16* __restrict__ S_checkpoints,    // For gradient checkpointing
-    __nv_bfloat16* __restrict__ Sq_cache,         // [T, B, K, HEAD_V_DIM] - per-slot outputs
+    __nv_bfloat16* __restrict__ S_checkpoints,    // [num_checkpoints, B, K, N_STATE, HEAD_V_DIM]
+    __nv_bfloat16* __restrict__ Sq_cache,         // [T, B, K, HEAD_V_DIM] - per-slot weighted outputs
     int checkpoint_interval
 ) {
     // Block handles one (batch, slot) pair
@@ -83,29 +84,24 @@ __global__ void MoME88ForwardKernel_BF16(
     __shared__ int current_head;
     __shared__ float router_weight;
 
-    // Get initial head for slot 0 (will be updated per timestep)
-    // Note: This is just for initialization; actual head changes per timestep
-    int init_head = head_indices[b * K + slot];
-    int state_offset = (b * H + init_head) * state_size;
+    // State offset for this (batch, slot) pair - per-slot state!
+    int state_offset = (b * K + slot) * state_size;
 
-    // Load initial state for this slot's initial head
+    // Load initial state for this slot
     for (int i = tid; i < state_size; i += blockDim.x) {
         S_shared[i] = __bfloat162float(S[state_offset + i]);
     }
     __syncthreads();
 
-    // Save initial checkpoint (slot-specific checkpoint index)
-    int cp_base_offset = (b * K + slot) * state_size;
+    // Save initial checkpoint (t=0)
+    int cp_base_offset = (0 * B * K + b * K + slot) * state_size;  // checkpoint 0
     for (int i = tid; i < state_size; i += blockDim.x) {
         S_checkpoints[cp_base_offset + i] = __float2bfloat16(S_shared[i]);
     }
     __syncthreads();
 
-    // Track which head we're currently working with
-    int prev_head = init_head;
-
     for (int t = 0; t < T; t++) {
-        // Get head index for this timestep and slot
+        // Get head index and router weight for this timestep and slot
         int idx_offset = (t * B + b) * K + slot;
         if (tid == 0) {
             current_head = head_indices[idx_offset];
@@ -115,22 +111,7 @@ __global__ void MoME88ForwardKernel_BF16(
 
         int h = current_head;
 
-        // If head changed, need to load state from the new head
-        // (This handles the case where routing changes heads mid-sequence)
-        if (h != prev_head) {
-            int new_state_offset = (b * H + h) * state_size;
-            for (int i = tid; i < state_size; i += blockDim.x) {
-                // First, save current state back to previous head
-                int old_state_offset = (b * H + prev_head) * state_size;
-                S[old_state_offset + i] = __float2bfloat16(S_shared[i]);
-                // Then load state from new head
-                S_shared[i] = __bfloat162float(S[new_state_offset + i]);
-            }
-            __syncthreads();
-            prev_head = h;
-        }
-
-        // Load k, v, q, decay for this timestep and head
+        // Load k, v, q, decay for this timestep and the selected head
         int k_offset = ((t * B + b) * H + h) * N_STATE;
         int v_offset = ((t * B + b) * H + h) * HEAD_V_DIM;
         int decay_offset = (t * B + b) * H + h;
@@ -147,7 +128,7 @@ __global__ void MoME88ForwardKernel_BF16(
         }
         __syncthreads();
 
-        // retrieved = S @ k
+        // retrieved = S @ k (S stored as [N_STATE, HEAD_V_DIM])
         if (tid < HEAD_V_DIM) {
             float sum = 0.0f;
             #pragma unroll 8
@@ -159,6 +140,7 @@ __global__ void MoME88ForwardKernel_BF16(
         __syncthreads();
 
         // S = tanh(decay * S + outer(delta, k))
+        // where delta = v - retrieved
         for (int idx = tid; idx < state_size; idx += blockDim.x) {
             int i = idx / HEAD_V_DIM;
             int j = idx % HEAD_V_DIM;
@@ -167,7 +149,7 @@ __global__ void MoME88ForwardKernel_BF16(
         }
         __syncthreads();
 
-        // Save checkpoint
+        // Save checkpoint after update (so checkpoint t contains S after processing timestep t-1)
         if ((t + 1) % checkpoint_interval == 0) {
             int cp_idx = (t + 1) / checkpoint_interval;
             int cp_offset = (cp_idx * B * K + b * K + slot) * state_size;
@@ -190,10 +172,9 @@ __global__ void MoME88ForwardKernel_BF16(
         __syncthreads();
     }
 
-    // Write final state back to the last head we were working with
-    int final_state_offset = (b * H + prev_head) * state_size;
+    // Write final state back to global memory (per-slot state)
     for (int i = tid; i < state_size; i += blockDim.x) {
-        S[final_state_offset + i] = __float2bfloat16(S_shared[i]);
+        S[state_offset + i] = __float2bfloat16(S_shared[i]);
     }
 }
 
@@ -290,14 +271,9 @@ void dispatch_mom_e88_forward(
 }
 
 // ============================================================================
-// MoM E88 Backward Kernel
-// Each block handles one (batch, slot) pair (same as forward)
+// MoM E88 Backward Kernel (Per-Slot State Design)
+// Each block handles one (batch, slot) pair
 // Uses segment-level caching for efficient gradient computation
-//
-// Key differences from E88 backward:
-// 1. Head index changes per timestep (sparse routing)
-// 2. Need to compute d_router_weights gradient
-// 3. Gradients scatter to correct heads based on head_indices
 //
 // Forward equations (for reference):
 //   h = head_indices[t, b, slot]
@@ -335,7 +311,7 @@ __global__ void MoME88BackwardKernel_BF16(
     const int* __restrict__ head_indices,          // [T, B, K]
     const __nv_bfloat16* __restrict__ router_weights, // [T, B, K]
     const __nv_bfloat16* __restrict__ S_checkpoints,  // [num_checkpoints, B, K, N_STATE, HEAD_V_DIM]
-    const __nv_bfloat16* __restrict__ Sq_cache,    // [T, B, K, HEAD_V_DIM] - unweighted Sq from forward
+    const __nv_bfloat16* __restrict__ Sq_cache,    // [T, B, K, HEAD_V_DIM] - weighted from forward
     const __nv_bfloat16* __restrict__ d_output,    // [T, B, HEAD_V_DIM]
     __nv_bfloat16* __restrict__ d_k_all,           // [T, B, H, N_STATE]
     __nv_bfloat16* __restrict__ d_v_all,           // [T, B, H, HEAD_V_DIM]
@@ -398,6 +374,10 @@ __global__ void MoME88BackwardKernel_BF16(
     __shared__ int current_head;
     __shared__ float router_weight_val;
 
+    const int warp_id = tid / 32;
+    const int lane_id = tid % 32;
+    const int num_warps = (blockDim.x + 31) / 32;
+
     // Initialize dS to zero
     for (int i = tid; i < state_size; i += blockDim.x) {
         dS[i] = 0.0f;
@@ -415,7 +395,7 @@ __global__ void MoME88BackwardKernel_BF16(
         // PHASE 1: Forward replay through segment, caching S_{t-1}, k, v, decay
         // ================================================================
 
-        // Load checkpoint for this segment
+        // Load checkpoint for this segment (per-slot checkpoint!)
         int cp_offset = (seg * B * K + b * K + slot) * state_size;
         for (int i = tid; i < state_size; i += blockDim.x) {
             S[i] = __bfloat162float(S_checkpoints[cp_offset + i]);
@@ -471,8 +451,7 @@ __global__ void MoME88BackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Compute retrieved = S.T @ k (note: S is stored as [N_STATE, HEAD_V_DIM])
-            // S.T @ k = sum_i S[i, j] * k[i]
+            // Compute retrieved = S.T @ k
             if (tid < HEAD_V_DIM) {
                 float sum = 0.0f;
                 #pragma unroll 8
@@ -591,9 +570,6 @@ __global__ void MoME88BackwardKernel_BF16(
                 d_rw_local += __shfl_xor_sync(0xFFFFFFFF, d_rw_local, offset);
             }
 
-            const int warp_id = tid / 32;
-            const int lane_id = tid % 32;
-            const int num_warps = (blockDim.x + 31) / 32;
             if (lane_id == 0) {
                 warp_results[warp_id] = d_rw_local;
             }
@@ -610,7 +586,7 @@ __global__ void MoME88BackwardKernel_BF16(
             }
             __syncthreads();
 
-            // Write d_router_weight (atomic add since multiple slots might target same memory)
+            // Write d_router_weight
             if (tid == 0) {
                 d_router_weights[idx_offset] = __float2bfloat16(d_rw_accum);
             }

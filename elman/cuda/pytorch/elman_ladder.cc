@@ -15210,18 +15210,18 @@ std::vector<Tensor> e89_residual_state_backward(
 }
 
 // =============================================================================
-// MoM E88: Mixture of Memory - Sparse routing to memory heads
+// MoM E88: Mixture of Memory - Sparse routing with per-slot state
 // =============================================================================
 
 std::vector<Tensor> mom_e88_forward(
     bool training,
-    Tensor k,               // [T, B, H, n_state] L2 normalized keys
-    Tensor v,               // [T, B, H, head_v_dim] values
-    Tensor q,               // [T, B, H, n_state] L2 normalized queries
-    Tensor decay,           // [T, B, H] exponential decay factors
-    Tensor head_indices,    // [T, B, K] which head for each slot
+    Tensor k,               // [T, B, H, n_state] L2 normalized keys (all heads)
+    Tensor v,               // [T, B, H, head_v_dim] values (all heads)
+    Tensor q,               // [T, B, H, n_state] L2 normalized queries (all heads)
+    Tensor decay,           // [T, B, H] exponential decay factors (all heads)
+    Tensor head_indices,    // [T, B, K] which head's projections to use for each slot
     Tensor router_weights,  // [T, B, K] routing weights
-    Tensor S0,              // [B, H, n_state, head_v_dim] initial state for ALL heads
+    Tensor S0,              // [B, K, n_state, head_v_dim] initial PER-SLOT state
     int n_heads,
     int top_k) {
 
@@ -15241,8 +15241,9 @@ std::vector<Tensor> mom_e88_forward(
     const auto options = k.options();
     const at::cuda::CUDAGuard guard(options.device_index());
 
-    // State for all heads
-    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    // Per-slot state: [B, K, n_state, head_v_dim]
+    // Each slot maintains independent memory
+    Tensor S = torch::empty({batch_size, top_k, n_state, head_v_dim}, options);
     S.copy_(S0);
 
     // Output: combined weighted output from all K slots
@@ -15263,6 +15264,8 @@ std::vector<Tensor> mom_e88_forward(
                 "MoM E88 Forward only supports bfloat16, got ", k.scalar_type());
     TORCH_CHECK(head_indices.scalar_type() == at::ScalarType::Int,
                 "MoM E88 Forward: head_indices must be int32");
+    TORCH_CHECK(S0.size(1) == top_k,
+                "MoM E88 Forward: S0 must have shape [B, K, n_state, head_v_dim] (per-slot state)");
 
     using namespace elman;
 
@@ -15339,7 +15342,8 @@ std::vector<Tensor> mom_e88_backward(
     // Extract checkpoints and Sq_cache from combined S_cache
     int state_size = n_state * head_v_dim;
     constexpr int checkpoint_interval = 16;  // Must match MOM_E88_CHECKPOINT_INTERVAL in mom_e88_gpu.cu.cc
-    int num_checkpoints = (time_steps + checkpoint_interval) / checkpoint_interval;  // +1 for initial checkpoint
+    // Must match forward calculation: (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1
+    int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     int64_t s_checkpoints_size = (int64_t)num_checkpoints * batch_size * top_k * state_size;
     int64_t sq_cache_size = (int64_t)time_steps * batch_size * top_k * head_v_dim;
 
@@ -15850,11 +15854,11 @@ void elman_ladder_init(py::module& m) {
     m.def("e89_residual_state_backward", &e89_residual_state_backward,
           "E89 Residual State: Backward pass with gradient checkpointing");
 
-    // MoM E88: Mixture of Memory - Sparse routing to memory heads
+    // MoM E88: Mixture of Memory with per-slot state
     m.def("mom_e88_forward", &mom_e88_forward,
-          "MoM E88: Mixture of Memory forward - sparse routing to top-K heads per token. "
-          "Correct when head indices are fixed per slot across timesteps.");
+          "MoM E88: Mixture of Memory forward with per-slot state. "
+          "Each slot maintains independent memory. Head indices determine which projections to use.");
     m.def("mom_e88_backward", &mom_e88_backward,
-          "MoM E88: Mixture of Memory backward - computes gradients for k, v, q, decay, router_weights. "
-          "Correct when head indices are fixed per slot across timesteps.");
+          "MoM E88: Mixture of Memory backward with per-slot state. "
+          "Computes gradients for k, v, q, decay, router_weights.");
 }
