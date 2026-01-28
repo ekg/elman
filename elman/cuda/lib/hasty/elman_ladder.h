@@ -9655,6 +9655,36 @@ private:
     void* segment_state_cache_; // [B*H, checkpoint_interval, n_state, head_v_dim] for O(T) backward
 };
 
+// ============================================================================
+// MoM E88: Mixture of Memory - Sparse routing to memory heads
+// ============================================================================
+
+// MoM E88 Forward - routes each token to top-K heads
+void dispatch_mom_e88_forward(
+    int T, int B, int H, int K, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const int* head_indices, const __nv_bfloat16* router_weights,
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
+// MoM E88 Backward (placeholder - uses PyTorch autograd for now)
+void dispatch_mom_e88_backward(
+    int T, int B, int H, int K, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const int* head_indices, const __nv_bfloat16* router_weights,
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* d_router_weights,
+    __nv_bfloat16* segment_state_cache,
+    int checkpoint_interval, cudaStream_t stream
+);
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H
