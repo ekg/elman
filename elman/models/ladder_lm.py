@@ -748,6 +748,7 @@ class LadderLM(nn.Module):
         state_expansion=2,  # For E16: d_state = d_inner * state_expansion
         use_conv=False,  # Conv1d hurts E-series (nonlinear RNN doesn't need it)
         d_conv=4,  # Conv kernel size (if enabled)
+        top_k=None,  # For MoM E88: number of active memory slots (top-K routing)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -804,6 +805,7 @@ class LadderLM(nn.Module):
                 state_expansion=state_expansion,  # For E16
                 use_conv=use_conv,  # Conv1d before recurrence (like Mamba2)
                 d_conv=d_conv,  # Conv kernel size
+                top_k=top_k,  # For MoM E88: number of active memory slots
             )
             for _ in range(depth)
         ])

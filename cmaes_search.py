@@ -90,10 +90,11 @@ SEARCH_SPACES = {
     },
     'mom-e88': {
         # Mixture of Memory E88: sparse top-K routing to memory heads
-        'n_heads': (64, 256, 'int', 'Total number of memory heads'),
-        'top_k': (8, 64, 'int', 'Number of active heads per token (compute/state, not params)'),
+        # Balanced search space - ensure dim stays reasonable (>512)
+        'n_heads': (32, 256, 'int', 'Total number of memory heads'),
+        'top_k': (8, 96, 'int', 'Active heads per token'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
-        'depth': (12, 40, 'int', 'Number of layers'),
+        'depth': (8, 32, 'int', 'Number of layers'),
         # LR fixed at 3e-4
     },
 }
@@ -127,6 +128,10 @@ def decode_params(x, model_type):
             params[name] = 10 ** (log_lo + val * (log_hi - log_lo))
         else:  # float
             params[name] = lo + val * (hi - lo)
+
+    # MoM E88 constraint: top_k must be <= n_heads
+    if model_type == 'mom-e88' and 'top_k' in params and 'n_heads' in params:
+        params['top_k'] = min(params['top_k'], params['n_heads'])
 
     return params
 
@@ -193,11 +198,11 @@ BEST_CONFIGS = {
         'depth': 20,
     },
     'mom-e88': {
-        # Start from E88's best config, but with more heads and sparse routing
-        'n_heads': 128,  # 2x E88's 64 heads
-        'top_k': 32,     # ~25% sparsity
-        'n_state': 32,
-        'depth': 28,
+        # Start from middle of search space for broad exploration
+        'n_heads': 196,  # Middle of 32-512 range
+        'top_k': 48,     # Middle of 4-128 range
+        'n_state': 32,   # Sweet spot from E88
+        'depth': 20,     # Middle of 6-48 range
     },
 }
 
@@ -706,7 +711,7 @@ def main():
         print(f"python train.py --level {args.model} --dim {dim} --depth {best_params['depth']} "
               f"--expansion {best_params.get('expansion', 2)} --lr 3e-4 --train_minutes 30")
     elif args.model == 'mom-e88':
-        print(f"python train.py --level MoM-E88 --dim {dim} --n_heads {best_params['n_heads']} "
+        print(f"python train.py --level MoME88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--top_k {best_params['top_k']} --n_state {best_params['n_state']} "
               f"--depth {best_params['depth']} --lr 3e-4 --expansion 1.0 --use_gate 1 "
               f"--gate_activation silu --train_minutes 30")

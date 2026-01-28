@@ -378,6 +378,7 @@ class MoME88(nn.Module):
             router_logits = router_logits + noise
 
         # Softmax to get routing probabilities
+        # Note: softmax returns fp32 under autocast for stability
         router_probs = F.softmax(router_logits, dim=-1)  # [B, T, H]
 
         # Select top-K heads per token
@@ -385,6 +386,8 @@ class MoME88(nn.Module):
 
         # Renormalize top-K probabilities (optional, for weighted combination)
         top_k_weights = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)  # [B, T, K]
+        # Cast back to match projection dtype (bf16 under autocast) for CUDA kernel
+        top_k_weights = top_k_weights.to(router_logits.dtype)
 
         # Compute load balance loss
         if self.training:
@@ -414,9 +417,13 @@ class MoME88(nn.Module):
         v_all = v_all.view(B, T, H, self.head_v_dim)  # [B, T, H, head_v_dim]
 
         # === L2 normalize k and q ===
+        # Note: norm() returns fp32 under autocast for stability, so we cast back
         if self.use_l2_norm:
+            input_dtype = k_all.dtype
             k_all = k_all / (k_all.norm(dim=-1, keepdim=True) + 1e-6)
+            k_all = k_all.to(input_dtype)
             q_all = q_all / (q_all.norm(dim=-1, keepdim=True) + 1e-6)
+            q_all = q_all.to(input_dtype)
 
         # === Compute decay for ALL heads ===
         if self.simple_decay:
