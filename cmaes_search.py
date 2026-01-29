@@ -37,12 +37,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calc_dim import (
     calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
     calc_transformer_params, calc_gru_params, calc_lstm_params,
-    calc_mingru_params, calc_minlstm_params, calc_mom_e88_params
+    calc_mingru_params, calc_minlstm_params, calc_mom_e88_params, calc_e90_params
 )
 
 # Supported n_state values for E88 CUDA fused gate kernel (must match head_v_dim for default config)
 # Only these sizes are efficiently supported without warnings/fallbacks: 16, 32, 48, 64
 E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
+
+# E90 valid (k_fast, k_slow) configurations supported by CUDA kernel
+# Note: k_slow=64 configs have backward kernel bug, excluded for now
+E90_CONFIGS = [
+    (8, 16),   # config_idx=0
+    (8, 24),   # config_idx=1
+    (16, 32),  # config_idx=2
+    (16, 48),  # config_idx=3
+]
 
 # Search space definitions for each model
 # NOTE: LR is FIXED at 3e-4 for all models to match benchmark conditions
@@ -97,6 +106,15 @@ SEARCH_SPACES = {
         'depth': (8, 32, 'int', 'Number of layers'),
         # LR fixed at 3e-4
     },
+    'e90': {
+        # E90 Dual-Rate: fast + slow memory systems
+        # CUDA kernel only supports specific (k_fast, k_slow) configs (k_slow=64 has backward bug):
+        # (8,16), (8,24), (16,32), (16,48)
+        'n_heads': (32, 128, 'int', 'Number of heads'),
+        'config_idx': (0, 3, 'e90_config', 'Fast/slow config index'),  # Maps to valid configs
+        'depth': (12, 32, 'int', 'Number of layers'),
+        # LR fixed at 3e-4
+    },
 }
 
 
@@ -116,12 +134,21 @@ def decode_params(x, model_type):
             raw = lo + val * (hi - lo)
             params[name] = int(round(raw / 16) * 16)
             params[name] = max(16, params[name])
+        elif ptype == 'int_mult8':
+            raw = lo + val * (hi - lo)
+            params[name] = int(round(raw / 8) * 8)
+            params[name] = max(8, params[name])
         elif ptype == 'e88_n_state':
             # Map to nearest supported n_state value
             raw = lo + val * (hi - lo)
             # Find closest supported value
             closest = min(E88_SUPPORTED_N_STATE, key=lambda x: abs(x - raw))
             params[name] = closest
+        elif ptype == 'e90_config':
+            # Map to valid E90 (k_fast, k_slow) config index
+            idx = int(round(lo + val * (hi - lo)))
+            idx = max(0, min(idx, len(E90_CONFIGS) - 1))
+            params[name] = idx
         elif ptype == 'log':
             # Log-scale interpolation
             log_lo, log_hi = np.log10(lo), np.log10(hi)
@@ -144,7 +171,7 @@ def encode_params(params, model_type):
     for name, (lo, hi, ptype, desc) in space.items():
         val = params.get(name, (lo + hi) / 2)  # Default to middle if not specified
 
-        if ptype == 'int' or ptype == 'int_mult16' or ptype == 'e88_n_state':
+        if ptype in ('int', 'int_mult16', 'int_mult8', 'e88_n_state', 'e90_config'):
             # Linear interpolation
             x_val = (val - lo) / (hi - lo)
         elif ptype == 'log':
@@ -203,6 +230,12 @@ BEST_CONFIGS = {
         'top_k': 48,     # Middle of 4-128 range
         'n_state': 32,   # Sweet spot from E88
         'depth': 20,     # Middle of 6-48 range
+    },
+    'e90': {
+        # E90 Dual-Rate: Start with (16, 48) config which has good balance
+        'n_heads': 64,    # Middle of 32-128 range
+        'config_idx': 3,  # (16, 48) - good balance of fast/slow
+        'depth': 20,      # Standard depth
     },
 }
 
@@ -331,6 +364,23 @@ def estimate_dim_and_params(params, model_type, target_params):
         )
         return dim, actual_params
 
+    elif model_type == 'e90':
+        n_heads = params['n_heads']
+        config_idx = params['config_idx']
+        k_fast, k_slow = E90_CONFIGS[config_idx]
+        depth = params['depth']
+
+        dim, actual_params = find_dim_for_params(
+            calc_e90_params,
+            target_params,
+            n_heads=n_heads,
+            k_fast=k_fast,
+            k_slow=k_slow,
+            depth=depth,
+            use_gate=True
+        )
+        return dim, actual_params
+
     return 1024, target_params
 
 
@@ -414,6 +464,17 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--top_k', str(params['top_k']),
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
+        ])
+    elif model_type == 'e90':
+        config_idx = params['config_idx']
+        k_fast, k_slow = E90_CONFIGS[config_idx]
+        cmd.extend([
+            '--level', 'E90',
+            '--n_heads', str(params['n_heads']),
+            '--k_fast', str(k_fast),
+            '--k_slow', str(k_slow),
             '--use_gate', '1',
             '--gate_activation', 'silu',
         ])
@@ -637,7 +698,7 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
 def main():
     parser = argparse.ArgumentParser(description='CMA-ES search for optimal model config')
     parser.add_argument('--model', type=str, required=True,
-                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88'],
+                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88', 'e90'],
                         help='Model type to optimize')
     parser.add_argument('--generations', type=int, default=20,
                         help='Number of CMA-ES generations')
@@ -714,6 +775,13 @@ def main():
         print(f"python train.py --level MoME88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--top_k {best_params['top_k']} --n_state {best_params['n_state']} "
               f"--depth {best_params['depth']} --lr 3e-4 --expansion 1.0 --use_gate 1 "
+              f"--gate_activation silu --train_minutes 30")
+    elif args.model == 'e90':
+        config_idx = best_params['config_idx']
+        k_fast, k_slow = E90_CONFIGS[config_idx]
+        print(f"python train.py --level E90 --dim {dim} --n_heads {best_params['n_heads']} "
+              f"--k_fast {k_fast} --k_slow {k_slow} "
+              f"--depth {best_params['depth']} --lr 3e-4 --use_gate 1 "
               f"--gate_activation silu --train_minutes 30")
 
 
