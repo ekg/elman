@@ -9685,6 +9685,52 @@ void dispatch_mom_e88_backward(
     int checkpoint_interval, cudaStream_t stream
 );
 
+// ============================================================================
+// E90 Dual-Rate State: Fast + Slow state with gated updates
+//
+// Extends E88 with dual-rate factorized state:
+// - Fast state: Small (k_fast × v_fast), updated every timestep
+// - Slow state: Larger (k_slow × v_slow), updated via learned soft gate
+// ============================================================================
+
+void dispatch_e90_dual_rate_forward(
+    int T, int B, int H,
+    int k_fast, int v_fast, int k_slow, int v_slow,
+    const __nv_bfloat16* k_fast_all, const __nv_bfloat16* v_fast_all,
+    const __nv_bfloat16* q_fast_all, const __nv_bfloat16* decay_fast_all,
+    const __nv_bfloat16* k_slow_all, const __nv_bfloat16* v_slow_all,
+    const __nv_bfloat16* q_slow_all, const __nv_bfloat16* decay_slow_all,
+    const __nv_bfloat16* slow_gate_all,
+    const __nv_bfloat16* mix_fast_all, const __nv_bfloat16* mix_slow_all,
+    __nv_bfloat16* S_fast, __nv_bfloat16* S_slow,
+    __nv_bfloat16* output,
+    __nv_bfloat16* S_fast_checkpoints, __nv_bfloat16* S_slow_checkpoints,
+    int out_v_dim,
+    cudaStream_t stream
+);
+
+void dispatch_e90_dual_rate_backward(
+    int T, int B, int H,
+    int k_fast, int v_fast, int k_slow, int v_slow,
+    const __nv_bfloat16* k_fast_all, const __nv_bfloat16* v_fast_all,
+    const __nv_bfloat16* q_fast_all, const __nv_bfloat16* decay_fast_all,
+    const __nv_bfloat16* k_slow_all, const __nv_bfloat16* v_slow_all,
+    const __nv_bfloat16* q_slow_all, const __nv_bfloat16* decay_slow_all,
+    const __nv_bfloat16* slow_gate_all,
+    const __nv_bfloat16* mix_fast_all, const __nv_bfloat16* mix_slow_all,
+    const __nv_bfloat16* d_output,
+    const __nv_bfloat16* S_fast_checkpoints, const __nv_bfloat16* S_slow_checkpoints,
+    __nv_bfloat16* seg_fast_cache, __nv_bfloat16* seg_slow_cache,
+    __nv_bfloat16* d_k_fast_all, __nv_bfloat16* d_v_fast_all,
+    __nv_bfloat16* d_q_fast_all, __nv_bfloat16* d_decay_fast_all,
+    __nv_bfloat16* d_k_slow_all, __nv_bfloat16* d_v_slow_all,
+    __nv_bfloat16* d_q_slow_all, __nv_bfloat16* d_decay_slow_all,
+    __nv_bfloat16* d_slow_gate_all,
+    __nv_bfloat16* d_mix_fast_all, __nv_bfloat16* d_mix_slow_all,
+    int out_v_dim,
+    cudaStream_t stream
+);
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H

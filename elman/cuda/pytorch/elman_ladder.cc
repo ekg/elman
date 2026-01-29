@@ -15385,6 +15385,207 @@ std::vector<Tensor> mom_e88_backward(
     return {d_k, d_v, d_q, d_decay, d_router_weights};
 }
 
+// =============================================================================
+// E90: Dual-Rate Factorized State
+// Fast state (small, updated every step) + Slow state (larger, gated update)
+// =============================================================================
+
+// E90 checkpoint interval - must match CUDA kernel
+#define E90_CHECKPOINT_INTERVAL 16
+
+std::vector<Tensor> e90_dual_rate_forward(
+    Tensor k_fast,           // [T, B, H, k_fast_dim]
+    Tensor v_fast,           // [T, B, H, v_fast_dim]
+    Tensor q_fast,           // [T, B, H, k_fast_dim]
+    Tensor decay_fast,       // [T, B, H]
+    Tensor k_slow,           // [T, B, H, k_slow_dim]
+    Tensor v_slow,           // [T, B, H, v_slow_dim]
+    Tensor q_slow,           // [T, B, H, k_slow_dim]
+    Tensor decay_slow,       // [T, B, H]
+    Tensor slow_gate,        // [T, B, H]
+    Tensor mix_fast,         // [T, B, H]
+    Tensor mix_slow,         // [T, B, H]
+    Tensor S_fast0,          // [B, H, k_fast_dim, v_fast_dim] initial fast state
+    Tensor S_slow0,          // [B, H, k_slow_dim, v_slow_dim] initial slow state
+    int n_heads) {
+
+    const auto T = k_fast.size(0);
+    const auto B = k_fast.size(1);
+    const auto H = n_heads;
+    const auto k_fast_dim = k_fast.size(3);
+    const auto v_fast_dim = v_fast.size(3);
+    const auto k_slow_dim = k_slow.size(3);
+    const auto v_slow_dim = v_slow.size(3);
+
+    CHECK_INPUT(k_fast);
+    CHECK_INPUT(v_fast);
+    CHECK_INPUT(q_fast);
+    CHECK_INPUT(decay_fast);
+    CHECK_INPUT(k_slow);
+    CHECK_INPUT(v_slow);
+    CHECK_INPUT(q_slow);
+    CHECK_INPUT(decay_slow);
+    CHECK_INPUT(slow_gate);
+    CHECK_INPUT(mix_fast);
+    CHECK_INPUT(mix_slow);
+    CHECK_INPUT(S_fast0);
+    CHECK_INPUT(S_slow0);
+
+    const auto options = k_fast.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    const int out_v_dim = std::max(v_fast_dim, v_slow_dim);
+    Tensor S_fast = torch::empty({B, H, k_fast_dim, v_fast_dim}, options);
+    Tensor S_slow = torch::empty({B, H, k_slow_dim, v_slow_dim}, options);
+    S_fast.copy_(S_fast0);
+    S_slow.copy_(S_slow0);
+    Tensor output = torch::empty({T, B, H, out_v_dim}, options);
+
+    // Checkpoint buffers for backward pass
+    // num_checkpoints = ceil(T / checkpoint_interval) + 1 (includes initial state)
+    const int checkpoint_interval = E90_CHECKPOINT_INTERVAL;
+    const int num_checkpoints = (T + checkpoint_interval) / checkpoint_interval + 1;
+    Tensor S_fast_checkpoints = torch::empty({num_checkpoints, B, H, k_fast_dim, v_fast_dim}, options);
+    Tensor S_slow_checkpoints = torch::empty({num_checkpoints, B, H, k_slow_dim, v_slow_dim}, options);
+
+    TORCH_CHECK(k_fast.scalar_type() == at::ScalarType::BFloat16,
+                "E90 Dual-Rate Forward only supports bfloat16, got ", k_fast.scalar_type());
+
+    using namespace elman;
+
+    dispatch_e90_dual_rate_forward(
+        T, B, H,
+        k_fast_dim, v_fast_dim, k_slow_dim, v_slow_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(k_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(slow_gate.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(mix_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(mix_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_fast_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_slow_checkpoints.data_ptr()),
+        out_v_dim,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S_fast, S_slow, output, S_fast_checkpoints, S_slow_checkpoints};
+}
+
+std::vector<Tensor> e90_dual_rate_backward(
+    Tensor k_fast,           // [T, B, H, k_fast_dim]
+    Tensor v_fast,           // [T, B, H, v_fast_dim]
+    Tensor q_fast,           // [T, B, H, k_fast_dim]
+    Tensor decay_fast,       // [T, B, H]
+    Tensor k_slow,           // [T, B, H, k_slow_dim]
+    Tensor v_slow,           // [T, B, H, v_slow_dim]
+    Tensor q_slow,           // [T, B, H, k_slow_dim]
+    Tensor decay_slow,       // [T, B, H]
+    Tensor slow_gate,        // [T, B, H]
+    Tensor mix_fast,         // [T, B, H]
+    Tensor mix_slow,         // [T, B, H]
+    Tensor S_fast_checkpoints,  // [num_cp, B, H, k_fast_dim, v_fast_dim] from forward
+    Tensor S_slow_checkpoints,  // [num_cp, B, H, k_slow_dim, v_slow_dim] from forward
+    Tensor d_output,         // [T, B, H, out_v_dim]
+    int n_heads) {
+
+    const auto T = k_fast.size(0);
+    const auto B = k_fast.size(1);
+    const auto H = n_heads;
+    const auto k_fast_dim = k_fast.size(3);
+    const auto v_fast_dim = v_fast.size(3);
+    const auto k_slow_dim = k_slow.size(3);
+    const auto v_slow_dim = v_slow.size(3);
+
+    CHECK_INPUT(k_fast);
+    CHECK_INPUT(v_fast);
+    CHECK_INPUT(q_fast);
+    CHECK_INPUT(decay_fast);
+    CHECK_INPUT(k_slow);
+    CHECK_INPUT(v_slow);
+    CHECK_INPUT(q_slow);
+    CHECK_INPUT(decay_slow);
+    CHECK_INPUT(slow_gate);
+    CHECK_INPUT(mix_fast);
+    CHECK_INPUT(mix_slow);
+    CHECK_INPUT(S_fast_checkpoints);
+    CHECK_INPUT(S_slow_checkpoints);
+    CHECK_INPUT(d_output);
+
+    const auto options = k_fast.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Output gradients
+    Tensor d_k_fast = torch::empty({T, B, H, k_fast_dim}, options);
+    Tensor d_v_fast = torch::empty({T, B, H, v_fast_dim}, options);
+    Tensor d_q_fast = torch::empty({T, B, H, k_fast_dim}, options);
+    Tensor d_decay_fast = torch::empty({T, B, H}, options);
+    Tensor d_k_slow = torch::empty({T, B, H, k_slow_dim}, options);
+    Tensor d_v_slow = torch::empty({T, B, H, v_slow_dim}, options);
+    Tensor d_q_slow = torch::empty({T, B, H, k_slow_dim}, options);
+    Tensor d_decay_slow = torch::empty({T, B, H}, options);
+    Tensor d_slow_gate = torch::empty({T, B, H}, options);
+    Tensor d_mix_fast = torch::empty({T, B, H}, options);
+    Tensor d_mix_slow = torch::empty({T, B, H}, options);
+
+    // Segment cache for backward (caches S_{t-1} within each segment)
+    // Layout: [B*H, checkpoint_interval, state_size]
+    const int checkpoint_interval = E90_CHECKPOINT_INTERVAL;
+    Tensor seg_fast_cache = torch::empty({B * H, checkpoint_interval, k_fast_dim * v_fast_dim}, options);
+    Tensor seg_slow_cache = torch::empty({B * H, checkpoint_interval, k_slow_dim * v_slow_dim}, options);
+
+    TORCH_CHECK(k_fast.scalar_type() == at::ScalarType::BFloat16,
+                "E90 Dual-Rate Backward only supports bfloat16, got ", k_fast.scalar_type());
+
+    using namespace elman;
+
+    const int out_v_dim = std::max(v_fast_dim, v_slow_dim);
+
+    dispatch_e90_dual_rate_backward(
+        T, B, H,
+        k_fast_dim, v_fast_dim, k_slow_dim, v_slow_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(k_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(slow_gate.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(mix_fast.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(mix_slow.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_fast_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_slow_checkpoints.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(seg_fast_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(seg_slow_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay_slow.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_slow_gate.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_mix_fast.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_mix_slow.data_ptr()),
+        out_v_dim,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k_fast, d_v_fast, d_q_fast, d_decay_fast,
+            d_k_slow, d_v_slow, d_q_slow, d_decay_slow,
+            d_slow_gate, d_mix_fast, d_mix_slow};
+}
+
 }  // anonymous namespace
 
 
@@ -15861,4 +16062,11 @@ void elman_ladder_init(py::module& m) {
     m.def("mom_e88_backward", &mom_e88_backward,
           "MoM E88: Mixture of Memory backward with per-slot state. "
           "Computes gradients for k, v, q, decay, router_weights.");
+
+    // E90: Dual-Rate Factorized State
+    m.def("e90_dual_rate_forward", &e90_dual_rate_forward,
+          "E90 Dual-Rate: Forward pass with fast+slow states. "
+          "Fast state updated every step, slow state has gated updates.");
+    m.def("e90_dual_rate_backward", &e90_dual_rate_backward,
+          "E90 Dual-Rate: Backward pass computing gradients for all inputs.");
 }
