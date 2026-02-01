@@ -226,6 +226,64 @@ def calc_mom_e88_params(dim, n_heads, top_k, n_state, depth, expansion=1.0, voca
     return layers_total + embed + norms
 
 
+def calc_e90_params(dim, n_heads, k_fast, k_slow, depth, vocab_size=256, use_gate=True):
+    """Calculate E90 Dual-Rate State parameters.
+
+    E90 has two memory systems per head:
+    - Fast state: k_fast × k_fast per head (updated every step)
+    - Slow state: k_slow × k_slow per head (gated update)
+
+    Args:
+        dim: Model dimension
+        n_heads: Number of heads (H)
+        k_fast: Fast state key/value dimension
+        k_slow: Slow state key/value dimension
+        depth: Number of layers
+        vocab_size: Vocabulary size
+        use_gate: If True (default), includes g_proj for output gating
+    """
+    # Fast state projections
+    key_dim_fast = n_heads * k_fast
+    value_dim_fast = n_heads * k_fast  # Square state
+    qkv_fast = dim * (2 * key_dim_fast + value_dim_fast)  # q, k, v for fast
+
+    # Slow state projections
+    key_dim_slow = n_heads * k_slow
+    value_dim_slow = n_heads * k_slow  # Square state
+    qkv_slow = dim * (2 * key_dim_slow + value_dim_slow)  # q, k, v for slow
+
+    # Output dimension is max(v_fast, v_slow) per head
+    out_v_dim = max(k_fast, k_slow)
+
+    # Per layer:
+    # qkv_proj (fast): dim → 2*key_dim_fast + value_dim_fast
+    # qkv_slow_proj: dim → 2*key_dim_slow + value_dim_slow
+    # slow_gate_proj: dim → n_heads (with bias)
+    # mix_proj: dim → n_heads * 2 (with bias)
+    # a_proj (fast decay): dim → n_heads
+    # a_slow_proj (slow decay): dim → n_heads
+    # A_log, dt_bias for fast: n_heads each
+    # A_slow_log, dt_slow_bias for slow: n_heads each
+    # g_proj (gate): dim → n_heads * out_v_dim (if use_gate)
+    # o_proj: n_heads * out_v_dim → dim
+
+    decay_params_fast = dim * n_heads + n_heads + n_heads  # a_proj + A_log + dt_bias
+    decay_params_slow = dim * n_heads + n_heads + n_heads  # a_slow_proj + A_slow_log + dt_slow_bias
+    slow_gate = dim * n_heads + n_heads  # slow_gate_proj with bias
+    mix_proj = dim * n_heads * 2 + n_heads * 2  # mix_proj with bias
+    gate_proj = dim * (n_heads * out_v_dim) if use_gate else 0
+    out_proj = (n_heads * out_v_dim) * dim
+
+    per_layer = (qkv_fast + qkv_slow + decay_params_fast + decay_params_slow +
+                 slow_gate + mix_proj + gate_proj + out_proj)
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    norms = dim * (depth + 1)  # RMSNorm
+
+    return layers_total + embed + norms
+
+
 def find_dim_for_params(calc_func, target_params, **kwargs):
     """Binary search for 128-aligned dim that hits target params."""
     max_dim = 8192  # Extended for 500M+ models

@@ -132,6 +132,7 @@ CUDA_OBJS := \
 	lib/e88_fused_gate_gpu.o \
 	lib/mom_e88_gpu.o \
 	lib/e89_residual_state_gpu.o \
+	lib/e90_dual_rate_gpu.o \
 	lib/gru_gpu.o \
 	lib/lstm_gpu.o
 

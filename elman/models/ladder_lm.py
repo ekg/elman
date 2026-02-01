@@ -109,6 +109,7 @@ from .e85_input_as_matrix import E85InputAsMatrixLayer
 from .e86_input_matrix_delta import E86InputMatrixDeltaLayer
 from .e87_sparse_block import E87SparseBlockLayer
 from .mom_e88 import MoME88
+from .e90_dual_rate import E90DualRate
 
 
 def get_ladder_level(level):
@@ -678,6 +679,23 @@ def get_ladder_level(level):
         'MoM_h256k32n16': lambda **kw: MoME88(**{**kw, 'n_heads': 256, 'top_k': 32, 'n_state': 16}),
         'MoM_h312k32n16': lambda **kw: MoME88(**{**kw, 'n_heads': 312, 'top_k': 32, 'n_state': 16}),
 
+        # E90: Dual-Rate Factorized State (fast + slow memory)
+        # Fast state: small k_fast×k_fast, updated every step
+        # Slow state: larger k_slow×k_slow, updated via learned soft gate
+        'E90': E90DualRate,
+        'E90_f16s32': lambda **kw: E90DualRate(**{**kw, 'k_fast': 16, 'k_slow': 32}),
+        'E90_f16s48': lambda **kw: E90DualRate(**{**kw, 'k_fast': 16, 'k_slow': 48}),
+        'E90_f16s64': lambda **kw: E90DualRate(**{**kw, 'k_fast': 16, 'k_slow': 64}),
+        'E90_f32s64': lambda **kw: E90DualRate(**{**kw, 'k_fast': 32, 'k_slow': 64}),
+        'E90_f32s96': lambda **kw: E90DualRate(**{**kw, 'k_fast': 32, 'k_slow': 96}),
+        # High state capacity variants
+        'E90_f16s96': lambda **kw: E90DualRate(**{**kw, 'k_fast': 16, 'k_slow': 96}),
+        'E90_f16s128': lambda **kw: E90DualRate(**{**kw, 'k_fast': 16, 'k_slow': 128}),
+        # More heads variants
+        'E90_h32': lambda **kw: E90DualRate(**{**kw, 'n_heads': 32}),
+        'E90_h64': lambda **kw: E90DualRate(**{**kw, 'n_heads': 64}),
+        'E90_h96': lambda **kw: E90DualRate(**{**kw, 'n_heads': 96}),
+
         '21s': lambda **kw: StructuredElman(mimo_rank=4, **kw),  # E21-S: smaller rank
         '21t': lambda **kw: StructuredElman(nonlinearity='tanh', **kw),  # E21-T: tanh
         '21l': lambda **kw: StructuredElman(nonlinearity='linear', **kw),  # E21-L: linear (ablation)
@@ -749,6 +767,8 @@ class LadderLM(nn.Module):
         use_conv=False,  # Conv1d hurts E-series (nonlinear RNN doesn't need it)
         d_conv=4,  # Conv kernel size (if enabled)
         top_k=None,  # For MoM E88: number of active memory slots (top-K routing)
+        k_fast=None,  # For E90 Dual-Rate: fast state dimension
+        k_slow=None,  # For E90 Dual-Rate: slow state dimension
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -806,6 +826,8 @@ class LadderLM(nn.Module):
                 use_conv=use_conv,  # Conv1d before recurrence (like Mamba2)
                 d_conv=d_conv,  # Conv kernel size
                 top_k=top_k,  # For MoM E88: number of active memory slots
+                k_fast=k_fast,  # For E90 Dual-Rate: fast state dimension
+                k_slow=k_slow,  # For E90 Dual-Rate: slow state dimension
             )
             for _ in range(depth)
         ])
