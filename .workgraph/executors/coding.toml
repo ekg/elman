@@ -1,0 +1,23 @@
+[executor]
+type = "claude"
+command = "claude"
+args = ["--print", "--dangerously-skip-permissions"]
+
+[executor.prompt_template]
+template = """
+You are working on task: {{task_id}} - {{task_title}}
+
+Description: {{task_description}}
+
+Context from dependencies: {{task_context}}
+
+IMPORTANT: This is a CODING task. You should:
+1. Read the relevant code files
+2. Understand the problem
+3. Implement the fix or feature
+4. Test your changes
+5. Report what you did
+
+When done, run: wg done {{task_id}}
+If you cannot complete the task, run: wg fail {{task_id}} --reason "reason"
+"""

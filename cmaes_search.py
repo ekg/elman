@@ -37,7 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from calc_dim import (
     calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
     calc_transformer_params, calc_gru_params, calc_lstm_params,
-    calc_mingru_params, calc_minlstm_params, calc_mom_e88_params, calc_e90_params
+    calc_mingru_params, calc_minlstm_params, calc_mom_e88_params, calc_e90_params,
+    calc_e1_params, calc_e23_params, calc_e42_params, calc_e75_params
 )
 
 # Supported n_state values for E88 CUDA fused gate kernel (must match head_v_dim for default config)
@@ -54,66 +55,131 @@ E90_CONFIGS = [
 ]
 
 # Search space definitions for each model
-# NOTE: LR is FIXED at 3e-4 for all models to match benchmark conditions
+# All search spaces are 6D: dim + architecture params + learning rate (log scale)
+# - dim: 1024-3072 (128-aligned) - model width
+# - lr: 1e-5 to 1e-3 (log scale) - learning rate
 SEARCH_SPACES = {
     'e88': {
-        # Parameter: (min, max, type, description)
-        'n_heads': (32, 160, 'int', 'Number of attention heads'),  # Expanded range
-        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported by fused kernel)'),
-        'depth': (12, 40, 'int', 'Number of layers'),  # Allow shallower networks
-        # LR removed - fixed at 3e-4 for fair comparison
+        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, expansion) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_heads': (32, 160, 'int', 'Number of attention heads'),
+        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        'expansion': (0.5, 2.0, 'float', 'Value expansion: head_v_dim = n_state * expansion'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'fla-gdn': {
-        'expansion': (1, 3, 'int', 'FFN expansion factor (must be int for FLA)'),
-        'depth': (16, 40, 'int', 'Number of layers'),
+        # 6D: capacity (dim, depth) + architecture (expansion, n_heads, conv_size) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'expansion': (1, 3, 'int', 'Value expansion factor'),
+        'depth': (12, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        # LR fixed at 3e-4
+        'conv_size': (2, 8, 'int', 'Short convolution kernel size'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'mamba2': {
+        # 6D: capacity (dim, depth) + state (d_state, headdim, expand) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
+        'headdim': (32, 128, 'int_pow2', 'Head dimension (32, 64, or 128)'),
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (16, 40, 'int', 'Number of layers'),
-        # LR fixed at 3e-4
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'transformer': {
+        # 6D: capacity (dim, depth) + attention (n_heads, head_dim, expansion) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
+        'head_dim': (32, 128, 'int_mult16', 'Head dimension'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (12, 36, 'int', 'Number of layers'),
-        # LR fixed at 3e-4
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'gru': {
+        # 4D - GRU (may be unstable at large scale)
+        'dim': (512, 2048, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor for dim_inner'),
         'depth': (12, 48, 'int', 'Number of layers'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'lstm': {
+        # 4D - LSTM (may be unstable at large scale)
+        'dim': (512, 2048, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor for dim_inner'),
         'depth': (12, 48, 'int', 'Number of layers'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'mingru': {
+        # 6D: capacity (dim, expansion, depth) + architecture (use_conv, d_conv) + lr
+        'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (12, 40, 'int', 'Number of layers'),
+        'use_conv': (0, 1, 'binary', 'Use Conv1d (0=no, 1=yes)'),
+        'd_conv': (3, 7, 'int', 'Conv kernel size (if use_conv=1)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'minlstm': {
+        # 6D: capacity (dim, expansion, depth) + architecture (use_conv, d_conv) + lr
+        'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (12, 40, 'int', 'Number of layers'),
+        'use_conv': (0, 1, 'binary', 'Use Conv1d (0=no, 1=yes)'),
+        'd_conv': (3, 7, 'int', 'Conv kernel size (if use_conv=1)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'mom-e88': {
-        # Mixture of Memory E88: sparse top-K routing to memory heads
-        # Balanced search space - ensure dim stays reasonable (>512)
+        # 6D: capacity (dim, depth) + routing (n_heads, top_k) + state (n_state) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 256, 'int', 'Total number of memory heads'),
         'top_k': (8, 96, 'int', 'Active heads per token'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
         'depth': (8, 32, 'int', 'Number of layers'),
-        # LR fixed at 3e-4
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'e90': {
-        # E90 Dual-Rate: fast + slow memory systems
-        # CUDA kernel only supports specific (k_fast, k_slow) configs (k_slow=64 has backward bug):
-        # (8,16), (8,24), (16,32), (16,48)
+        # 6D: capacity (dim, depth) + architecture (n_heads, config_idx, use_gate) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 128, 'int', 'Number of heads'),
-        'config_idx': (0, 3, 'e90_config', 'Fast/slow config index'),  # Maps to valid configs
+        'config_idx': (0, 3, 'e90_config', 'Fast/slow config index'),
         'depth': (12, 32, 'int', 'Number of layers'),
-        # LR fixed at 3e-4
+        'use_gate': (0, 1, 'binary', 'Use output gating (0=no, 1=yes)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
+    'e1': {
+        # 6D: capacity (dim, expansion, depth) + architecture (use_conv, mamba2_init) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'expansion': (1, 3, 'int', 'Expansion factor for d_inner'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        'use_conv': (0, 1, 'binary', 'Use Conv1d for local context (0=no, 1=yes)'),
+        'mamba2_init': (0, 1, 'binary', 'Use Mamba2-style init (0=xavier, 1=mamba2)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
+    'e23': {
+        # 6D: capacity (dim, expansion, depth) + architecture (n_slots) + stability (w_h_init_scale) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
+        'expansion': (1, 3, 'float', 'Hidden expansion factor'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        'w_h_init_scale': (0.5, 1.0, 'float', 'W_h orthogonal init scale (stability)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
+    'e42': {
+        # 6D: capacity (dim, expansion, depth) + stability (spectral_radius) + init (mamba2_init) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'expansion': (1, 3, 'int', 'Expansion factor for d_inner'),
+        'depth': (12, 48, 'int', 'Number of layers'),
+        'spectral_radius': (0.95, 0.9999, 'float', 'Target spectral radius for W (stability)'),
+        'mamba2_init': (0, 1, 'binary', 'Init strategy (0=xavier, 1=mamba2)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
+    'e75': {
+        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, expansion) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_heads': (2, 16, 'int', 'Number of heads'),
+        'n_state': (16, 64, 'int_mult8', 'State dimension per head (must be mult of 8)'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        'expansion': (0.5, 2.0, 'float', 'Value expansion factor'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
 }
 
@@ -130,6 +196,9 @@ def decode_params(x, model_type):
 
         if ptype == 'int':
             params[name] = int(round(lo + val * (hi - lo)))
+        elif ptype == 'binary':
+            # Binary 0/1 parameter
+            params[name] = 1 if val >= 0.5 else 0
         elif ptype == 'int_mult16':
             raw = lo + val * (hi - lo)
             params[name] = int(round(raw / 16) * 16)
@@ -138,6 +207,20 @@ def decode_params(x, model_type):
             raw = lo + val * (hi - lo)
             params[name] = int(round(raw / 8) * 8)
             params[name] = max(8, params[name])
+        elif ptype == 'int_mult128':
+            raw = lo + val * (hi - lo)
+            params[name] = int(round(raw / 128) * 128)
+            params[name] = max(128, params[name])
+        elif ptype == 'int_pow2':
+            # Map to nearest power of 2 within range
+            raw = lo + val * (hi - lo)
+            # Valid powers of 2 in typical ranges: 32, 64, 128
+            powers = [p for p in [16, 32, 64, 128, 256] if lo <= p <= hi]
+            if powers:
+                closest = min(powers, key=lambda p: abs(p - raw))
+                params[name] = closest
+            else:
+                params[name] = int(round(raw))
         elif ptype == 'e88_n_state':
             # Map to nearest supported n_state value
             raw = lo + val * (hi - lo)
@@ -171,7 +254,13 @@ def encode_params(params, model_type):
     for name, (lo, hi, ptype, desc) in space.items():
         val = params.get(name, (lo + hi) / 2)  # Default to middle if not specified
 
-        if ptype in ('int', 'int_mult16', 'int_mult8', 'e88_n_state', 'e90_config'):
+        if ptype == 'binary':
+            # Binary: 0 -> 0.25, 1 -> 0.75 (away from boundaries)
+            x_val = 0.75 if val else 0.25
+        elif ptype == 'int_pow2':
+            # Power of 2: linear interpolation
+            x_val = (val - lo) / (hi - lo)
+        elif ptype in ('int', 'int_mult16', 'int_mult8', 'int_mult128', 'e88_n_state', 'e90_config'):
             # Linear interpolation
             x_val = (val - lo) / (hi - lo)
         elif ptype == 'log':
@@ -186,58 +275,163 @@ def encode_params(params, model_type):
     return x
 
 
-# Known best configs for warm-starting
+# Known best configs for warm-starting (6D: includes dim and lr)
 BEST_CONFIGS = {
     'e88': {
+        'dim': 2176,
         'n_heads': 98,
         'n_state': 32,
         'depth': 14,
+        'expansion': 1.0,
+        'lr': 3e-4,
     },
     'fla-gdn': {
+        'dim': 1920,
         'expansion': 2,
-        'depth': 24,
-        'n_heads': 16,
+        'depth': 17,
+        'n_heads': 24,
+        'conv_size': 4,
+        'lr': 3e-4,
     },
     'mamba2': {
-        'd_state': 64,
+        'dim': 1792,
+        'd_state': 96,
+        'headdim': 64,
         'expand': 2,
-        'depth': 28,
+        'depth': 25,
+        'lr': 3e-4,
     },
     'transformer': {
+        'dim': 1536,
         'n_heads': 16,
+        'head_dim': 64,
         'expansion': 4,
         'depth': 24,
+        'lr': 1e-4,  # Transformers often need lower LR
     },
     'gru': {
+        'dim': 1024,
         'expansion': 1,
         'depth': 20,
+        'lr': 3e-4,
     },
     'lstm': {
+        'dim': 1024,
         'expansion': 1,
         'depth': 20,
+        'lr': 3e-4,
     },
     'mingru': {
-        'expansion': 2,
-        'depth': 20,
+        'dim': 2944,
+        'expansion': 1,
+        'depth': 14,
+        'use_conv': 0,
+        'd_conv': 4,
+        'lr': 3e-4,
     },
     'minlstm': {
-        'expansion': 2,
-        'depth': 20,
+        'dim': 1792,
+        'expansion': 1,
+        'depth': 31,
+        'use_conv': 0,
+        'd_conv': 4,
+        'lr': 3e-4,
     },
     'mom-e88': {
-        # Start from middle of search space for broad exploration
-        'n_heads': 196,  # Middle of 32-512 range
-        'top_k': 48,     # Middle of 4-128 range
-        'n_state': 32,   # Sweet spot from E88
-        'depth': 20,     # Middle of 6-48 range
+        'dim': 2048,
+        'n_heads': 196,
+        'top_k': 48,
+        'n_state': 32,
+        'depth': 20,
+        'lr': 3e-4,
     },
     'e90': {
-        # E90 Dual-Rate: Start with (16, 48) config which has good balance
-        'n_heads': 64,    # Middle of 32-128 range
-        'config_idx': 3,  # (16, 48) - good balance of fast/slow
-        'depth': 20,      # Standard depth
+        'dim': 2048,
+        'n_heads': 64,
+        'config_idx': 3,
+        'depth': 20,
+        'use_gate': 1,
+        'lr': 3e-4,
+    },
+    'e1': {
+        'dim': 2048,
+        'expansion': 2,
+        'depth': 20,
+        'use_conv': 0,
+        'mamba2_init': 0,
+        'lr': 3e-4,
+    },
+    'e23': {
+        'dim': 2048,
+        'n_slots': 64,
+        'expansion': 1.0,
+        'depth': 20,
+        'w_h_init_scale': 0.9,
+        'lr': 3e-4,
+    },
+    'e42': {
+        'dim': 2944,
+        'expansion': 1,
+        'depth': 19,
+        'spectral_radius': 0.999,
+        'mamba2_init': 0,
+        'lr': 3e-4,
+    },
+    'e75': {
+        'dim': 2048,
+        'n_heads': 8,
+        'n_state': 32,
+        'depth': 20,
+        'expansion': 1.0,
+        'lr': 3e-4,
     },
 }
+
+
+def estimate_params_for_dim(params, model_type, dim):
+    """Estimate actual params for a given dim value."""
+    depth = params.get('depth', 20)
+    expansion = params.get('expansion', 2)
+
+    if model_type == 'e88':
+        return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
+                               n_state=params.get('n_state', 32), expansion=params.get('expansion', 1.0),
+                               use_gate=True)
+    elif model_type == 'fla-gdn':
+        return calc_fla_gdn_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'mamba2':
+        return calc_mamba2_params(dim, depth=depth, expand=params.get('expand', 2))
+    elif model_type == 'transformer':
+        return calc_transformer_params(dim, depth=depth, n_heads=params.get('n_heads', 16),
+                                       expansion=params.get('expansion', 4))
+    elif model_type == 'gru':
+        return calc_gru_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'lstm':
+        return calc_lstm_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'mingru':
+        return calc_mingru_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'minlstm':
+        return calc_minlstm_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'mom-e88':
+        return calc_mom_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 196),
+                                   top_k=params.get('top_k', 48), n_state=params.get('n_state', 32))
+    elif model_type == 'e90':
+        config_idx = params.get('config_idx', 3)
+        k_fast, k_slow = E90_CONFIGS[config_idx]
+        return calc_e90_params(dim, depth=depth, n_heads=params.get('n_heads', 64),
+                               k_fast=k_fast, k_slow=k_slow)
+    elif model_type == 'e1':
+        return calc_e1_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'e23':
+        return calc_e23_params(dim, depth=depth, expansion=expansion, n_slots=params.get('n_slots', 64))
+    elif model_type == 'e42':
+        return calc_e42_params(dim, depth=depth, expansion=expansion)
+    elif model_type == 'e75':
+        return calc_e75_params(dim, depth=depth, n_heads=params.get('n_heads', 8),
+                               n_state=params.get('n_state', 32), expansion=params.get('expansion', 1.0))
+    else:
+        # Rough estimate: ~4 * dim^2 * depth for typical RNNs
+        return 4 * dim * dim * depth
 
 
 def estimate_dim_and_params(params, model_type, target_params):
@@ -381,6 +575,57 @@ def estimate_dim_and_params(params, model_type, target_params):
         )
         return dim, actual_params
 
+    elif model_type == 'e1':
+        depth = params['depth']
+        expansion = params.get('expansion', 2)
+
+        dim, actual_params = find_dim_for_params(
+            calc_e1_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'e23':
+        depth = params['depth']
+        n_slots = params.get('n_slots', 64)
+
+        dim, actual_params = find_dim_for_params(
+            calc_e23_params,
+            target_params,
+            depth=depth,
+            n_slots=n_slots
+        )
+        return dim, actual_params
+
+    elif model_type == 'e42':
+        depth = params['depth']
+        expansion = params.get('expansion', 1)
+
+        dim, actual_params = find_dim_for_params(
+            calc_e42_params,
+            target_params,
+            depth=depth,
+            expansion=expansion
+        )
+        return dim, actual_params
+
+    elif model_type == 'e75':
+        n_heads = params['n_heads']
+        n_state = params['n_state']
+        depth = params['depth']
+
+        dim, actual_params = find_dim_for_params(
+            calc_e75_params,
+            target_params,
+            n_heads=n_heads,
+            n_state=n_state,
+            depth=depth,
+            expansion=1.0
+        )
+        return dim, actual_params
+
     return 1024, target_params
 
 
@@ -394,8 +639,8 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
     else:
         batch_size = 32
 
-    # Fixed LR for all models at 3e-4
-    lr = 3e-4
+    # Use LR from search space (log scale 1e-5 to 1e-3)
+    lr = params.get('lr', 3e-4)
 
     cmd = [
         'python', 'train.py',
@@ -417,7 +662,7 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--level', 'E88',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
-            '--expansion', '1.0',
+            '--expansion', str(params.get('expansion', 1.0)),
             '--use_gate', '1',
             '--gate_activation', 'silu',
         ])
@@ -427,16 +672,22 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--expansion', str(params['expansion']),
             '--n_heads', str(params.get('n_heads', 16)),
         ])
+        if 'conv_size' in params:
+            cmd.extend(['--d_conv', str(params['conv_size'])])
     elif model_type == 'mamba2':
         cmd.extend([
             '--level', 'mamba2',
         ])
+        # Note: headdim passed via Mamba2 config, not train.py flag
+        # Mamba2 calculates nheads from d_inner // headdim internally
     elif model_type == 'transformer':
         cmd.extend([
             '--level', 'llama',
             '--n_heads', str(params.get('n_heads', 16)),
             '--expansion', str(params.get('expansion', 4)),
         ])
+        if 'head_dim' in params:
+            cmd.extend(['--head_dim', str(params['head_dim'])])
     elif model_type == 'gru':
         cmd.extend([
             '--level', 'cudagru',
@@ -452,11 +703,15 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--level', 'mingru',
             '--expansion', str(params.get('expansion', 2)),
         ])
+        if params.get('use_conv', 0):
+            cmd.extend(['--use_conv', '1', '--d_conv', str(params.get('d_conv', 4))])
     elif model_type == 'minlstm':
         cmd.extend([
             '--level', 'minlstm',
             '--expansion', str(params.get('expansion', 2)),
         ])
+        if params.get('use_conv', 0):
+            cmd.extend(['--use_conv', '1', '--d_conv', str(params.get('d_conv', 4))])
     elif model_type == 'mom-e88':
         cmd.extend([
             '--level', 'MoME88',
@@ -470,13 +725,47 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
     elif model_type == 'e90':
         config_idx = params['config_idx']
         k_fast, k_slow = E90_CONFIGS[config_idx]
+        use_gate = params.get('use_gate', 1)
         cmd.extend([
             '--level', 'E90',
             '--n_heads', str(params['n_heads']),
             '--k_fast', str(k_fast),
             '--k_slow', str(k_slow),
-            '--use_gate', '1',
-            '--gate_activation', 'silu',
+            '--use_gate', str(use_gate),
+        ])
+        if use_gate:
+            cmd.extend(['--gate_activation', 'silu'])
+    elif model_type == 'e1':
+        cmd.extend([
+            '--level', '1',  # E1 is level 1 in ladder_lm.py
+            '--expansion', str(params.get('expansion', 2)),
+        ])
+        if params.get('use_conv', 0):
+            cmd.extend(['--use_conv', '1'])
+        if params.get('mamba2_init', 0):
+            cmd.extend(['--mamba2_init', '1'])
+    elif model_type == 'e23':
+        cmd.extend([
+            '--level', '23',  # E23 is level 23 in ladder_lm.py
+            '--n_slots', str(params.get('n_slots', 64)),
+            '--expansion', str(params.get('expansion', 1.0)),
+        ])
+        # w_h_init_scale would need to be added to train.py to be passed
+    elif model_type == 'e42':
+        cmd.extend([
+            '--level', '42',  # E42 is level 42 in ladder_lm.py
+            '--expansion', str(params.get('expansion', 1)),
+        ])
+        if params.get('mamba2_init', 0):
+            cmd.extend(['--mamba2_init', '1'])
+        # spectral_radius would need to be added to train.py to be passed
+    elif model_type == 'e75':
+        # E75 MultiHead - need to construct the level string
+        n_heads = params['n_heads']
+        n_state = params['n_state']
+        cmd.extend([
+            '--level', f'E75h{n_heads}n{n_state}',
+            '--expansion', str(params.get('expansion', 1.0)),
         ])
 
     return cmd
@@ -511,10 +800,19 @@ def evaluate_config_worker(args):
     x, model_type, train_minutes, gpu_id, work_dir, eval_id, target_params, tolerance = args
 
     params = decode_params(x, model_type)
-    dim, actual_params = estimate_dim_and_params(params, model_type, target_params)
 
-    # Skip if params too far from target
-    if abs(actual_params - target_params) > tolerance:
+    # Use dim from search space if provided, otherwise compute it
+    if 'dim' in params:
+        dim = params['dim']
+        # Estimate actual params with this dim (for logging)
+        # This is approximate - actual params depend on model-specific factors
+        actual_params = estimate_params_for_dim(params, model_type, dim)
+    else:
+        dim, actual_params = estimate_dim_and_params(params, model_type, target_params)
+
+    # Skip constraint when dim is directly searchable (we want to explore the full space)
+    # Only skip if params are WAY off (e.g., 10x larger than could fit in memory)
+    if 'dim' not in params and abs(actual_params - target_params) > tolerance:
         print(f"  [Eval {eval_id}] Skip - params {actual_params/1e6:.1f}M vs target {target_params/1e6:.0f}M")
         return {'eval_id': eval_id, 'loss': 10.0, 'params': params, 'skipped': True}
 
@@ -559,8 +857,13 @@ def evaluate_config_worker(args):
     return {'eval_id': eval_id, 'loss': loss, 'params': params, 'dim': dim, 'actual_params': actual_params}
 
 
-def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance, start_from_best=False):
-    """Run CMA-ES search for optimal configuration."""
+def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance, start_from_best=False, converge_threshold=None):
+    """Run CMA-ES search for optimal configuration.
+
+    Args:
+        converge_threshold: If set, stop when best loss improvement < threshold between generations.
+                          If None, run for fixed number of generations.
+    """
     space = SEARCH_SPACES[model_type]
     n_dims = len(space)
     n_gpus = len(gpu_ids)
@@ -581,8 +884,11 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
     # Population size = number of GPUs for parallel eval
     popsize = max(n_gpus, 4)
 
+    # For convergence mode, set a very high max iterations
+    max_generations = generations if converge_threshold is None else 1000
+
     opts = {
-        'maxiter': generations,
+        'maxiter': max_generations,
         'popsize': popsize,
         'bounds': [[0] * n_dims, [1] * n_dims],
         'verb_disp': 1,
@@ -597,11 +903,16 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
         print(f"  {name}: [{lo}, {hi}] ({ptype}) - {desc}")
     print(f"Target params: {target_params/1e6:.0f}M ± {tolerance/1e6:.0f}M")
     print(f"Training time per config: {train_minutes} min")
-    print(f"Generations: {generations}")
+    if converge_threshold is not None:
+        print(f"Convergence mode: stop when improvement < {converge_threshold}")
+        print(f"Max generations: {max_generations}")
+    else:
+        print(f"Generations: {generations}")
     print(f"Population: {popsize}")
     print(f"GPUs: {gpu_ids} ({n_gpus} parallel)")
-    print(f"Total evaluations: ~{generations * popsize}")
-    print(f"Estimated time: ~{generations * train_minutes:.0f} min ({generations * train_minutes / 60:.1f} hours)")
+    if converge_threshold is None:
+        print(f"Total evaluations: ~{generations * popsize}")
+        print(f"Estimated time: ~{generations * train_minutes:.0f} min ({generations * train_minutes / 60:.1f} hours)")
     print("=" * 70)
 
     # Track best
@@ -610,12 +921,19 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
     best_params = None
     history = []
 
+    # For convergence tracking
+    prev_best_loss = float('inf')
+    generations_without_improvement = 0
+
     # Run CMA-ES
     es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
 
     while not es.stop():
         gen = es.countiter + 1
-        print(f"\n--- Generation {gen}/{generations} ---")
+        if converge_threshold is not None:
+            print(f"\n--- Generation {gen} (converge threshold: {converge_threshold}) ---")
+        else:
+            print(f"\n--- Generation {gen}/{generations} ---")
 
         solutions = es.ask()
 
@@ -662,11 +980,28 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
         es.tell(solutions, fitness)
         es.disp()
 
+        # Convergence check
+        if converge_threshold is not None:
+            improvement = prev_best_loss - best_loss
+            print(f"  Generation best: {min(fitness):.4f} | Overall best: {best_loss:.4f} | Improvement: {improvement:.4f}")
+
+            if improvement < converge_threshold and improvement >= 0:
+                generations_without_improvement += 1
+                print(f"  Improvement {improvement:.4f} < threshold {converge_threshold} ({generations_without_improvement} consecutive)")
+                if generations_without_improvement >= 2:  # Stop after 2 consecutive generations without sufficient improvement
+                    print(f"\n*** CONVERGED: improvement {improvement:.4f} < {converge_threshold} ***")
+                    break
+            else:
+                generations_without_improvement = 0
+
+            prev_best_loss = best_loss
+
         # Save checkpoint
         checkpoint = {
             'generation': gen,
             'best_loss': best_loss,
             'best_params': best_params,
+            'converge_threshold': converge_threshold,
             'history': history[-100:],  # Keep last 100 evals
         }
         with open(os.path.join(output_dir, 'checkpoint.json'), 'w') as f:
@@ -692,18 +1027,41 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
     with open(os.path.join(output_dir, 'results.json'), 'w') as f:
         json.dump(results, f, indent=2, default=str)
 
+    # Cleanup: delete checkpoint files to save disk space (keep logs and results)
+    import glob
+    pt_files = glob.glob(os.path.join(output_dir, '**', '*.pt'), recursive=True)
+    if pt_files:
+        print(f"\nCleaning up {len(pt_files)} checkpoint files...")
+        for pt_file in pt_files:
+            try:
+                os.remove(pt_file)
+            except OSError:
+                pass
+        # Remove empty directories
+        for root, dirs, files in os.walk(output_dir, topdown=False):
+            for d in dirs:
+                dir_path = os.path.join(root, d)
+                try:
+                    if not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                except OSError:
+                    pass
+        print("Cleanup complete.")
+
     return best_params, best_loss
 
 
 def main():
     parser = argparse.ArgumentParser(description='CMA-ES search for optimal model config')
     parser.add_argument('--model', type=str, required=True,
-                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88', 'e90'],
+                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88', 'e90', 'e1', 'e23', 'e42', 'e75'],
                         help='Model type to optimize')
     parser.add_argument('--generations', type=int, default=20,
-                        help='Number of CMA-ES generations')
+                        help='Number of CMA-ES generations (max if using --converge)')
     parser.add_argument('--train_minutes', type=float, default=2,
                         help='Training time per config (minutes)')
+    parser.add_argument('--converge', type=float, default=None,
+                        help='Convergence threshold: stop when improvement < this value (e.g., 0.01)')
     parser.add_argument('--gpus', type=str, default='0',
                         help='Comma-separated GPU IDs (e.g., 0,1,2,3)')
     parser.add_argument('--params', type=str, default='500M',
@@ -731,10 +1089,17 @@ def main():
     target_params = parse_size(args.params)
     tolerance = parse_size(args.tolerance)
 
-    output_dir = os.path.join(
-        args.output,
-        f'{args.model}_{args.params}_{args.generations}gen_{time.strftime("%Y%m%d_%H%M%S")}'
-    )
+    # Output directory name reflects convergence mode
+    if args.converge is not None:
+        output_dir = os.path.join(
+            args.output,
+            f'{args.model}_{args.params}_converge{args.converge}_{time.strftime("%Y%m%d_%H%M%S")}'
+        )
+    else:
+        output_dir = os.path.join(
+            args.output,
+            f'{args.model}_{args.params}_{args.generations}gen_{time.strftime("%Y%m%d_%H%M%S")}'
+        )
 
     best_params, best_loss = run_cmaes_search(
         args.model,
@@ -744,45 +1109,63 @@ def main():
         output_dir,
         target_params,
         tolerance,
-        start_from_best=args.start_from_best
+        start_from_best=args.start_from_best,
+        converge_threshold=args.converge
     )
 
     print(f"\nTo train with best config:")
-    dim, _ = estimate_dim_and_params(best_params, args.model, target_params)
+    # Use dim from search if available, otherwise compute it
+    if 'dim' in best_params:
+        dim = best_params['dim']
+    else:
+        dim, _ = estimate_dim_and_params(best_params, args.model, target_params)
+    lr = best_params.get('lr', 3e-4)
     if args.model == 'e88':
         print(f"python train.py --level E88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
-              f"--lr 3e-4 --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30")
+              f"--lr {lr} --expansion {best_params.get('expansion', 1.0)} --use_gate 1 --gate_activation silu --train_minutes 30")
     elif args.model == 'fla-gdn':
         print(f"python train.py --level fla-gdn --dim {dim} --depth {best_params['depth']} "
               f"--expansion {best_params['expansion']} --n_heads {best_params.get('n_heads', 16)} "
-              f"--lr 3e-4 --train_minutes 30")
+              f"--lr {lr} --train_minutes 30")
     elif args.model == 'mamba2':
         print(f"python train.py --level mamba2 --dim {dim} --depth {best_params['depth']} "
-              f"--lr 3e-4 --train_minutes 30")
+              f"--lr {lr} --train_minutes 30")
     elif args.model == 'transformer':
         print(f"python train.py --level llama --dim {dim} --depth {best_params['depth']} "
               f"--n_heads {best_params.get('n_heads', 16)} --expansion {best_params.get('expansion', 4)} "
-              f"--lr 3e-4 --train_minutes 30")
+              f"--lr {lr} --train_minutes 30")
     elif args.model in ['gru', 'lstm']:
         level = 'cudagru' if args.model == 'gru' else 'cudalstm'
         print(f"python train.py --level {level} --dim {dim} --depth {best_params['depth']} "
-              f"--expansion {best_params.get('expansion', 1)} --lr 3e-4 --train_minutes 30")
+              f"--expansion {best_params.get('expansion', 1)} --lr {lr} --train_minutes 30")
     elif args.model in ['mingru', 'minlstm']:
         print(f"python train.py --level {args.model} --dim {dim} --depth {best_params['depth']} "
-              f"--expansion {best_params.get('expansion', 2)} --lr 3e-4 --train_minutes 30")
+              f"--expansion {best_params.get('expansion', 2)} --lr {lr} --train_minutes 30")
     elif args.model == 'mom-e88':
         print(f"python train.py --level MoME88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--top_k {best_params['top_k']} --n_state {best_params['n_state']} "
-              f"--depth {best_params['depth']} --lr 3e-4 --expansion 1.0 --use_gate 1 "
+              f"--depth {best_params['depth']} --lr {lr} --expansion 1.0 --use_gate 1 "
               f"--gate_activation silu --train_minutes 30")
     elif args.model == 'e90':
         config_idx = best_params['config_idx']
         k_fast, k_slow = E90_CONFIGS[config_idx]
         print(f"python train.py --level E90 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--k_fast {k_fast} --k_slow {k_slow} "
-              f"--depth {best_params['depth']} --lr 3e-4 --use_gate 1 "
+              f"--depth {best_params['depth']} --lr {lr} --use_gate 1 "
               f"--gate_activation silu --train_minutes 30")
+    elif args.model == 'e1':
+        print(f"python train.py --level 1 --dim {dim} --depth {best_params['depth']} "
+              f"--expansion {best_params.get('expansion', 2)} --lr {lr} --train_minutes 30")
+    elif args.model == 'e23':
+        print(f"python train.py --level 23 --dim {dim} --depth {best_params['depth']} "
+              f"--n_slots {best_params.get('n_slots', 64)} --lr {lr} --train_minutes 30")
+    elif args.model == 'e42':
+        print(f"python train.py --level 42 --dim {dim} --depth {best_params['depth']} "
+              f"--expansion {best_params.get('expansion', 1)} --lr {lr} --train_minutes 30")
+    elif args.model == 'e75':
+        print(f"python train.py --level E75h{best_params['n_heads']}n{best_params['n_state']} "
+              f"--dim {dim} --depth {best_params['depth']} --lr {lr} --expansion {best_params.get('expansion', 1.0)} --train_minutes 30")
 
 
 if __name__ == '__main__':

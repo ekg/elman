@@ -534,14 +534,19 @@ void E75MultiHeadForward<DataT>::Run(
             (__nv_bfloat16*)sq_cache, \
             CHECKPOINT_INTERVAL)
 
+    // Supported n_state values: 8, 16, 24, 32, 40, 48, 56, 64
+    // Note: n_state > 64 requires >48KB shared memory in backward pass, which exceeds
+    // default limits on most GPUs. Use E88 for larger state sizes.
     if (n == 8) { DISPATCH_E75MH_FORWARD(8); }
     else if (n == 16) { DISPATCH_E75MH_FORWARD(16); }
     else if (n == 24) { DISPATCH_E75MH_FORWARD(24); }
     else if (n == 32) { DISPATCH_E75MH_FORWARD(32); }
+    else if (n == 40) { DISPATCH_E75MH_FORWARD(40); }
     else if (n == 48) { DISPATCH_E75MH_FORWARD(48); }
+    else if (n == 56) { DISPATCH_E75MH_FORWARD(56); }
     else if (n == 64) { DISPATCH_E75MH_FORWARD(64); }
     else {
-        fprintf(stderr, "E75MultiHead Forward: unsupported n_state=%d\n", n);
+        fprintf(stderr, "E75MultiHead Forward: unsupported n_state=%d. Supported values: 8, 16, 24, 32, 40, 48, 56, 64\n", n);
     }
 
     #undef DISPATCH_E75MH_FORWARD
@@ -623,14 +628,18 @@ void E75MultiHeadBackward<DataT>::Run(
             (__nv_bfloat16*)d_beta_all, \
             CHECKPOINT_INTERVAL)
 
+    // Supported n_state values: 8, 16, 24, 32, 40, 48, 56, 64
+    // Note: n_state > 64 requires >48KB shared memory, exceeding default GPU limits.
     if (n == 8) { DISPATCH_E75MH_BACKWARD(8); }
     else if (n == 16) { DISPATCH_E75MH_BACKWARD(16); }
     else if (n == 24) { DISPATCH_E75MH_BACKWARD(24); }
     else if (n == 32) { DISPATCH_E75MH_BACKWARD(32); }
+    else if (n == 40) { DISPATCH_E75MH_BACKWARD(40); }
     else if (n == 48) { DISPATCH_E75MH_BACKWARD(48); }
+    else if (n == 56) { DISPATCH_E75MH_BACKWARD(56); }
     else if (n == 64) { DISPATCH_E75MH_BACKWARD(64); }
     else {
-        fprintf(stderr, "E75MultiHead Backward: unsupported n_state=%d\n", n);
+        fprintf(stderr, "E75MultiHead Backward: unsupported n_state=%d. Supported values: 8, 16, 24, 32, 40, 48, 56, 64\n", n);
     }
 
     #undef DISPATCH_E75MH_BACKWARD
@@ -762,14 +771,17 @@ void E75MultiHeadPrecomputedForward<DataT>::Run(
             (__nv_bfloat16*)sq_cache, \
             CHECKPOINT_INTERVAL)
 
+    // Supported n_state values: 8, 16, 24, 32, 40, 48, 56, 64
     if (n == 8) { DISPATCH_E75MH_PRECOMPUTED_FWD(8); }
     else if (n == 16) { DISPATCH_E75MH_PRECOMPUTED_FWD(16); }
     else if (n == 24) { DISPATCH_E75MH_PRECOMPUTED_FWD(24); }
     else if (n == 32) { DISPATCH_E75MH_PRECOMPUTED_FWD(32); }
+    else if (n == 40) { DISPATCH_E75MH_PRECOMPUTED_FWD(40); }
     else if (n == 48) { DISPATCH_E75MH_PRECOMPUTED_FWD(48); }
+    else if (n == 56) { DISPATCH_E75MH_PRECOMPUTED_FWD(56); }
     else if (n == 64) { DISPATCH_E75MH_PRECOMPUTED_FWD(64); }
     else {
-        fprintf(stderr, "E75MultiHeadPrecomputed Forward: unsupported n_state=%d\n", n);
+        fprintf(stderr, "E75MultiHeadPrecomputed Forward: unsupported n_state=%d. Supported values: 8, 16, 24, 32, 40, 48, 56, 64\n", n);
     }
 
     #undef DISPATCH_E75MH_PRECOMPUTED_FWD
@@ -834,14 +846,17 @@ void E75MultiHeadPrecomputedBackward<DataT>::Run(
             (__nv_bfloat16*)d_beta, \
             CHECKPOINT_INTERVAL)
 
+    // Supported n_state values: 8, 16, 24, 32, 40, 48, 56, 64
     if (n == 8) { DISPATCH_E75MH_PRECOMPUTED_BWD(8); }
     else if (n == 16) { DISPATCH_E75MH_PRECOMPUTED_BWD(16); }
     else if (n == 24) { DISPATCH_E75MH_PRECOMPUTED_BWD(24); }
     else if (n == 32) { DISPATCH_E75MH_PRECOMPUTED_BWD(32); }
+    else if (n == 40) { DISPATCH_E75MH_PRECOMPUTED_BWD(40); }
     else if (n == 48) { DISPATCH_E75MH_PRECOMPUTED_BWD(48); }
+    else if (n == 56) { DISPATCH_E75MH_PRECOMPUTED_BWD(56); }
     else if (n == 64) { DISPATCH_E75MH_PRECOMPUTED_BWD(64); }
     else {
-        fprintf(stderr, "E75MultiHeadPrecomputed Backward: unsupported n_state=%d\n", n);
+        fprintf(stderr, "E75MultiHeadPrecomputed Backward: unsupported n_state=%d. Supported values: 8, 16, 24, 32, 40, 48, 56, 64\n", n);
     }
 
     #undef DISPATCH_E75MH_PRECOMPUTED_BWD

@@ -1,0 +1,38 @@
+[executor]
+type = "claude"
+command = "claude"
+args = ["--print", "--dangerously-skip-permissions"]
+
+[executor.prompt_template]
+template = """
+You are working on task: {{task_id}} - {{task_title}}
+
+Description: {{task_description}}
+
+Context from dependencies: {{task_context}}
+
+IMPORTANT: This is a CMA-ES EXECUTION task. You need to actually RUN the CMA-ES search.
+
+Extract the model name from the task title (e.g., "mingru", "minlstm", "transformer", "e42").
+
+Then run the CMA-ES search with these parameters:
+- Training time: 30 minutes per evaluation
+- Convergence threshold: 0.01 (stop when improvement < 0.01)
+- Target params: 480M
+- Use all available GPUs
+
+Command to run:
+```
+python cmaes_search.py --model MODEL_NAME --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+```
+
+Replace MODEL_NAME with the actual model (e.g., mingru, minlstm, transformer, e42).
+
+Monitor the search until it converges or completes. Report:
+1. Best configuration found
+2. Best loss achieved
+3. Number of generations/evaluations
+
+When done, run: wg done {{task_id}}
+If the search fails, run: wg fail {{task_id}} --reason "reason for failure"
+"""

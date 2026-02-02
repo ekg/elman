@@ -344,11 +344,15 @@ class E75MultiHead(nn.Module):
     ):
         super().__init__()
 
-        # Validate n_state is multiple of 8 (required for CUDA kernel stability)
-        if n_state % 8 != 0:
+        # Validate n_state is one of the supported values (CUDA kernel instantiations)
+        # Note: Values >64 are omitted because they exceed shared memory limits on most GPUs.
+        # For larger state sizes, use E88 which has global memory fallback support.
+        SUPPORTED_N_STATE = {8, 16, 24, 32, 40, 48, 56, 64}
+        if n_state not in SUPPORTED_N_STATE:
             raise ValueError(
-                f"n_state must be a multiple of 8 for numerical stability, got {n_state}. "
-                f"Use n_state=16, 24, 32, 40, 48, etc."
+                f"n_state={n_state} is not supported by the E75 CUDA kernel. "
+                f"Supported values: {sorted(SUPPORTED_N_STATE)}. "
+                f"For larger state sizes (72, 80, 96+), use E88 instead."
             )
 
         assert conv_mode in ('pre', 'post'), f"conv_mode must be 'pre' or 'post', got {conv_mode}"

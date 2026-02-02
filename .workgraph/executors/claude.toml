@@ -1,0 +1,30 @@
+[executor]
+type = "claude"
+command = "claude"
+args = ["--print", "--dangerously-skip-permissions"]
+
+[executor.prompt_template]
+template = """
+You are working on task: {{task_id}} - {{task_title}}
+
+Description: {{task_description}}
+
+Context from dependencies: {{task_context}}
+
+IMPORTANT: This is a RESEARCH task. Do NOT write code or make changes. 
+Search the codebase to find all configurable parameters for the model(s) mentioned.
+Look at:
+1. The model class __init__ parameters
+2. The LadderLM wrapper parameters  
+3. The train.py command line arguments
+4. Any CUDA kernel constraints (supported dimensions, etc.)
+
+Output a clear list of:
+- Parameter name
+- Type (int, float, categorical)
+- Valid range or values
+- Default value
+- Whether it's currently in cmaes_search.py
+
+When done, run: wg done {{task_id}}
+"""

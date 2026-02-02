@@ -276,8 +276,14 @@ python calc_dim.py --model E75h4n32 --params 100M --depth 20
 | E75h8n24 | 1792 | 20 | H=8, n=24, exp=1.0 | 99M |
 
 ### CRITICAL: E75 n_state Constraints
-**n_state MUST be a multiple of 8** for numerical stability. Valid values: 16, 24, 32, 40, 48, etc.
-Values like 20, 28 cause NaN during training.
+**n_state MUST be one of the supported CUDA kernel instantiations:**
+Valid values: **8, 16, 24, 32, 40, 48, 56, 64**
+
+Values like 20, 28, 72, 80, 96 are NOT supported because:
+- Non-multiples of 8: Missing CUDA kernel template instantiations
+- Values >64: Exceed shared memory limits (~48KB default) in backward pass
+
+For larger state sizes (72, 80, 96+), use **E88** instead, which has global memory fallback support.
 
 ## Configuration Search: CMA-ES
 
