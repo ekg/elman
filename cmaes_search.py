@@ -60,21 +60,21 @@ E90_CONFIGS = [
 # - lr: 1e-5 to 1e-3 (log scale) - learning rate
 SEARCH_SPACES = {
     'e88': {
-        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, expansion) + lr
+        # 5D: capacity (dim, depth) + architecture (n_heads, n_state) + lr
+        # Note: expansion fixed at 1.0 (head_v_dim = n_state) to avoid shape issues
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
         'depth': (12, 40, 'int', 'Number of layers'),
-        'expansion': (0.5, 2.0, 'float', 'Value expansion: head_v_dim = n_state * expansion'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'fla-gdn': {
-        # 6D: capacity (dim, depth) + architecture (expansion, n_heads, conv_size) + lr
+        # 5D: capacity (dim, depth) + architecture (expansion, n_heads) + lr
+        # Note: conv_size not searchable (hardcoded in FLA library)
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
         'depth': (12, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        'conv_size': (2, 8, 'int', 'Short convolution kernel size'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'mamba2': {
@@ -87,10 +87,10 @@ SEARCH_SPACES = {
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'transformer': {
-        # 6D: capacity (dim, depth) + attention (n_heads, head_dim, expansion) + lr
+        # 5D: capacity (dim, depth) + attention (n_heads, expansion) + lr
+        # Note: head_dim = dim / n_heads (computed automatically)
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
-        'head_dim': (32, 128, 'int_mult16', 'Head dimension'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (12, 36, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
@@ -282,7 +282,6 @@ BEST_CONFIGS = {
         'n_heads': 98,
         'n_state': 32,
         'depth': 14,
-        'expansion': 1.0,
         'lr': 3e-4,
     },
     'fla-gdn': {
@@ -290,7 +289,6 @@ BEST_CONFIGS = {
         'expansion': 2,
         'depth': 17,
         'n_heads': 24,
-        'conv_size': 4,
         'lr': 3e-4,
     },
     'mamba2': {
@@ -304,7 +302,6 @@ BEST_CONFIGS = {
     'transformer': {
         'dim': 1536,
         'n_heads': 16,
-        'head_dim': 64,
         'expansion': 4,
         'depth': 24,
         'lr': 1e-4,  # Transformers often need lower LR
@@ -672,8 +669,7 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--expansion', str(params['expansion']),
             '--n_heads', str(params.get('n_heads', 16)),
         ])
-        if 'conv_size' in params:
-            cmd.extend(['--d_conv', str(params['conv_size'])])
+        # Note: conv_size is not passed to train.py - FLA-GDN uses hardcoded conv
     elif model_type == 'mamba2':
         cmd.extend([
             '--level', 'mamba2',
@@ -686,8 +682,7 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
             '--n_heads', str(params.get('n_heads', 16)),
             '--expansion', str(params.get('expansion', 4)),
         ])
-        if 'head_dim' in params:
-            cmd.extend(['--head_dim', str(params['head_dim'])])
+        # Note: head_dim is not passed to train.py - computed from dim/n_heads
     elif model_type == 'gru':
         cmd.extend([
             '--level', 'cudagru',
