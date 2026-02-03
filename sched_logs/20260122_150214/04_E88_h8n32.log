@@ -1,0 +1,21 @@
+# Job 4: E88_h8n32
+# GPU: 4
+# Command: python train.py --level E88f_h8_ref --dim 1920 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10.0 --output benchmark_results/e88_nstate_20260122_150206/E88_h8n32
+# Started: 2026-01-22T15:02:14.837010
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/e88_nstate_20260122_150206/E88_h8n32/levelE88f_h8_ref_100m_20260122_150220
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 584, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 337, in train
+    model = LadderLM(
+            ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 669, in __init__
+    LayerClass = get_ladder_level(level)
+                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 613, in get_ladder_level
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2")
+ValueError: Invalid level E88f_h8_ref. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2

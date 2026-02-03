@@ -1,0 +1,6 @@
+# Job 5: E88h8n128
+# GPU: 5
+# Command: python train.py --level E88h8 --dim 1280 --expansion 0.5 --n_state 128 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m_balanced/E88h8n128
+# Started: 2026-01-20T16:17:19.670638
+============================================================
+

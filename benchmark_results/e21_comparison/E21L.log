@@ -1,3 +1,0 @@
-E21L: 75,333,984 params
-Step 100 (334s): loss=2.5658, 9.8K tok/s
-FINAL E21L: steps=183, tokens=6.0M, loss=2.1473, tok/s=10.0K

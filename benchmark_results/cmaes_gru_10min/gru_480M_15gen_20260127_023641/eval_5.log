@@ -1,0 +1,32 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_gru_10min/gru_480M_15gen_20260127_023641/eval_5/levelcudagru_100m_20260127_023647
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level cudagru, 738,951,168 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 519, in train
+    result = model(
+             ^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/cuda_gru.py", line 413, in forward
+    h = h_gru.permute(1, 0, 2).contiguous()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

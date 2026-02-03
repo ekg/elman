@@ -1,5 +1,0 @@
-{"type": "header", "timestamp": "2026-01-04T14:27:09.052621", "model": "0", "num_params": 48742912, "batch_size": 4, "chunk_size": 512, "lr": 0.0003}
-{"type": "step", "step": 1, "loss": 5.65625, "perplexity": 286.07385163895896, "grad_norm": 12.0, "lr": 2.9999999999999997e-06, "tokens_seen": 2048, "tokens_per_sec": 2656.501145489542, "elapsed_s": 0.7709388732910156, "step_time_ms": 768.7675952911377}
-{"type": "step", "step": 50, "loss": 2.203125, "perplexity": 9.053260780008058, "grad_norm": 4.40625, "lr": 0.00015, "tokens_seen": 102400, "tokens_per_sec": 5075.741867571456, "elapsed_s": 20.17439079284668, "step_time_ms": 375.0796318054199}
-{"type": "step", "step": 100, "loss": 2.15625, "perplexity": 8.638681785041102, "grad_norm": 4.34375, "lr": 0.0003, "tokens_seen": 204800, "tokens_per_sec": 5037.23402915931, "elapsed_s": 40.657233476638794, "step_time_ms": 456.77661895751953}
-{"type": "step", "step": 150, "loss": 1.8828125, "perplexity": 6.571962538556527, "grad_norm": 3.453125, "lr": 0.0002977211629518312, "tokens_seen": 307200, "tokens_per_sec": 4921.595705087627, "elapsed_s": 62.41878008842468, "step_time_ms": 364.07971382141113}

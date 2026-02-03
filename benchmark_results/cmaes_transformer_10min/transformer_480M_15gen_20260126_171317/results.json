@@ -1,0 +1,1296 @@
+{
+  "model_type": "transformer",
+  "target_params": 480000000,
+  "best_loss": 1.505436,
+  "best_params": {
+    "n_heads": 8,
+    "expansion": 4,
+    "depth": 13
+  },
+  "total_evals": 120,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.7908709999999999,
+      "params": {
+        "n_heads": 12,
+        "expansion": 5,
+        "depth": 24
+      },
+      "dim": 1024,
+      "actual_params": 478461952
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "expansion": 6,
+        "depth": 19
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 12,
+        "expansion": 3,
+        "depth": 25
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.7999770000000002,
+      "params": {
+        "n_heads": 11,
+        "expansion": 4,
+        "depth": 27
+      },
+      "dim": 1024,
+      "actual_params": 453302272
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 22,
+        "expansion": 3,
+        "depth": 20
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.928792,
+      "params": {
+        "n_heads": 21,
+        "expansion": 3,
+        "depth": 22
+      },
+      "dim": 1280,
+      "actual_params": 468966400
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.6357679999999999,
+      "params": {
+        "n_heads": 15,
+        "expansion": 4,
+        "depth": 24
+      },
+      "dim": 1152,
+      "actual_params": 509958144
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 19,
+        "expansion": 4,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 9,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 13,
+        "expansion": 5,
+        "depth": 34
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.7737319999999999,
+      "params": {
+        "n_heads": 13,
+        "expansion": 4,
+        "depth": 22
+      },
+      "dim": 1152,
+      "actual_params": 467486208
+    },
+    {
+      "eval_id": 11,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 18,
+        "expansion": 4,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 12,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 10,
+        "expansion": 3,
+        "depth": 20
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.683876,
+      "params": {
+        "n_heads": 19,
+        "expansion": 5,
+        "depth": 25
+      },
+      "dim": 1024,
+      "actual_params": 498386944
+    },
+    {
+      "eval_id": 14,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 10,
+        "expansion": 5,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.886107,
+      "params": {
+        "n_heads": 16,
+        "expansion": 4,
+        "depth": 28
+      },
+      "dim": 1024,
+      "actual_params": 470081536
+    },
+    {
+      "eval_id": 16,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 14,
+        "expansion": 5,
+        "depth": 27
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 17,
+      "loss": 1.8403260000000001,
+      "params": {
+        "n_heads": 18,
+        "expansion": 5,
+        "depth": 23
+      },
+      "dim": 1024,
+      "actual_params": 458536960
+    },
+    {
+      "eval_id": 18,
+      "loss": 1.884272,
+      "params": {
+        "n_heads": 20,
+        "expansion": 5,
+        "depth": 24
+      },
+      "dim": 1024,
+      "actual_params": 478461952
+    },
+    {
+      "eval_id": 19,
+      "loss": 1.620583,
+      "params": {
+        "n_heads": 17,
+        "expansion": 5,
+        "depth": 20
+      },
+      "dim": 1152,
+      "actual_params": 504640512
+    },
+    {
+      "eval_id": 20,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 16,
+        "expansion": 5,
+        "depth": 22
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 21,
+      "loss": 1.853622,
+      "params": {
+        "n_heads": 17,
+        "expansion": 5,
+        "depth": 24
+      },
+      "dim": 1024,
+      "actual_params": 478461952
+    },
+    {
+      "eval_id": 22,
+      "loss": 1.89458,
+      "params": {
+        "n_heads": 13,
+        "expansion": 5,
+        "depth": 31
+      },
+      "dim": 896,
+      "actual_params": 473143552
+    },
+    {
+      "eval_id": 23,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 14,
+        "expansion": 4,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 24,
+      "loss": 1.8330039999999999,
+      "params": {
+        "n_heads": 16,
+        "expansion": 5,
+        "depth": 23
+      },
+      "dim": 1024,
+      "actual_params": 458536960
+    },
+    {
+      "eval_id": 25,
+      "loss": 1.917664,
+      "params": {
+        "n_heads": 22,
+        "expansion": 5,
+        "depth": 23
+      },
+      "dim": 1024,
+      "actual_params": 458536960
+    },
+    {
+      "eval_id": 26,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 15,
+        "expansion": 6,
+        "depth": 23
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 27,
+      "loss": 1.6386770000000002,
+      "params": {
+        "n_heads": 15,
+        "expansion": 6,
+        "depth": 22
+      },
+      "dim": 1024,
+      "actual_params": 507817984
+    },
+    {
+      "eval_id": 28,
+      "loss": 1.624731,
+      "params": {
+        "n_heads": 15,
+        "expansion": 4,
+        "depth": 24
+      },
+      "dim": 1152,
+      "actual_params": 509958144
+    },
+    {
+      "eval_id": 29,
+      "loss": 1.71767,
+      "params": {
+        "n_heads": 14,
+        "expansion": 5,
+        "depth": 18
+      },
+      "dim": 1152,
+      "actual_params": 454205952
+    },
+    {
+      "eval_id": 30,
+      "loss": 1.6263059999999998,
+      "params": {
+        "n_heads": 19,
+        "expansion": 5,
+        "depth": 20
+      },
+      "dim": 1152,
+      "actual_params": 504640512
+    },
+    {
+      "eval_id": 31,
+      "loss": 1.827208,
+      "params": {
+        "n_heads": 17,
+        "expansion": 5,
+        "depth": 23
+      },
+      "dim": 1024,
+      "actual_params": 458536960
+    },
+    {
+      "eval_id": 32,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 19,
+        "expansion": 5,
+        "depth": 22
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 33,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 23,
+        "expansion": 5,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 34,
+      "loss": 1.8368719999999998,
+      "params": {
+        "n_heads": 16,
+        "expansion": 5,
+        "depth": 24
+      },
+      "dim": 1024,
+      "actual_params": 478461952
+    },
+    {
+      "eval_id": 35,
+      "loss": 1.69152,
+      "params": {
+        "n_heads": 14,
+        "expansion": 5,
+        "depth": 15
+      },
+      "dim": 1280,
+      "actual_params": 467310080
+    },
+    {
+      "eval_id": 36,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 15,
+        "expansion": 4,
+        "depth": 25
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 37,
+      "loss": 1.75653,
+      "params": {
+        "n_heads": 15,
+        "expansion": 5,
+        "depth": 19
+      },
+      "dim": 1152,
+      "actual_params": 479423232
+    },
+    {
+      "eval_id": 38,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 14,
+        "expansion": 5,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 39,
+      "loss": 1.830959,
+      "params": {
+        "n_heads": 15,
+        "expansion": 5,
+        "depth": 23
+      },
+      "dim": 1024,
+      "actual_params": 458536960
+    },
+    {
+      "eval_id": 40,
+      "loss": 1.909575,
+      "params": {
+        "n_heads": 18,
+        "expansion": 6,
+        "depth": 26
+      },
+      "dim": 896,
+      "actual_params": 459486720
+    },
+    {
+      "eval_id": 41,
+      "loss": 1.588103,
+      "params": {
+        "n_heads": 10,
+        "expansion": 5,
+        "depth": 12
+      },
+      "dim": 1408,
+      "actual_params": 452396032
+    },
+    {
+      "eval_id": 42,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 11,
+        "expansion": 6,
+        "depth": 15
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 43,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 15,
+        "expansion": 5,
+        "depth": 17
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 44,
+      "loss": 1.674177,
+      "params": {
+        "n_heads": 13,
+        "expansion": 4,
+        "depth": 15
+      },
+      "dim": 1408,
+      "actual_params": 476194048
+    },
+    {
+      "eval_id": 45,
+      "loss": 1.8415569999999999,
+      "params": {
+        "n_heads": 14,
+        "expansion": 5,
+        "depth": 24
+      },
+      "dim": 1024,
+      "actual_params": 478461952
+    },
+    {
+      "eval_id": 46,
+      "loss": 1.538502,
+      "params": {
+        "n_heads": 17,
+        "expansion": 4,
+        "depth": 13
+      },
+      "dim": 1536,
+      "actual_params": 491166720
+    },
+    {
+      "eval_id": 47,
+      "loss": 1.73094,
+      "params": {
+        "n_heads": 15,
+        "expansion": 5,
+        "depth": 18
+      },
+      "dim": 1152,
+      "actual_params": 454205952
+    },
+    {
+      "eval_id": 48,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "expansion": 4,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 49,
+      "loss": 1.60876,
+      "params": {
+        "n_heads": 8,
+        "expansion": 4,
+        "depth": 24
+      },
+      "dim": 1152,
+      "actual_params": 509958144
+    },
+    {
+      "eval_id": 50,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 11,
+        "expansion": 5,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 51,
+      "loss": 1.727726,
+      "params": {
+        "n_heads": 13,
+        "expansion": 5,
+        "depth": 19
+      },
+      "dim": 1152,
+      "actual_params": 479423232
+    },
+    {
+      "eval_id": 52,
+      "loss": 1.649845,
+      "params": {
+        "n_heads": 18,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 53,
+      "loss": 1.554401,
+      "params": {
+        "n_heads": 10,
+        "expansion": 4,
+        "depth": 19
+      },
+      "dim": 1280,
+      "actual_params": 498449920
+    },
+    {
+      "eval_id": 54,
+      "loss": 1.572644,
+      "params": {
+        "n_heads": 8,
+        "expansion": 5,
+        "depth": 12
+      },
+      "dim": 1408,
+      "actual_params": 452396032
+    },
+    {
+      "eval_id": 55,
+      "loss": 1.505436,
+      "params": {
+        "n_heads": 8,
+        "expansion": 4,
+        "depth": 13
+      },
+      "dim": 1536,
+      "actual_params": 491166720
+    },
+    {
+      "eval_id": 56,
+      "loss": 1.600556,
+      "params": {
+        "n_heads": 9,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 57,
+      "loss": 1.72513,
+      "params": {
+        "n_heads": 11,
+        "expansion": 3,
+        "depth": 18
+      },
+      "dim": 1408,
+      "actual_params": 464307712
+    },
+    {
+      "eval_id": 58,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 8,
+        "expansion": 3,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 59,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 12,
+        "expansion": 3,
+        "depth": 25
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 60,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 14,
+        "expansion": 4,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 61,
+      "loss": 1.849238,
+      "params": {
+        "n_heads": 13,
+        "expansion": 3,
+        "depth": 27
+      },
+      "dim": 1152,
+      "actual_params": 466170624
+    },
+    {
+      "eval_id": 62,
+      "loss": 1.577782,
+      "params": {
+        "n_heads": 16,
+        "expansion": 3,
+        "depth": 19
+      },
+      "dim": 1408,
+      "actual_params": 490082560
+    },
+    {
+      "eval_id": 63,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 18,
+        "expansion": 5,
+        "depth": 28
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 64,
+      "loss": 1.592944,
+      "params": {
+        "n_heads": 12,
+        "expansion": 5,
+        "depth": 12
+      },
+      "dim": 1408,
+      "actual_params": 452396032
+    },
+    {
+      "eval_id": 65,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 10,
+        "expansion": 2,
+        "depth": 22
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 66,
+      "loss": 1.617702,
+      "params": {
+        "n_heads": 13,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 67,
+      "loss": 1.7098689999999999,
+      "params": {
+        "n_heads": 10,
+        "expansion": 6,
+        "depth": 20
+      },
+      "dim": 1024,
+      "actual_params": 461676544
+    },
+    {
+      "eval_id": 68,
+      "loss": 1.574057,
+      "params": {
+        "n_heads": 24,
+        "expansion": 3,
+        "depth": 16
+      },
+      "dim": 1536,
+      "actual_params": 491175936
+    },
+    {
+      "eval_id": 69,
+      "loss": 1.7803870000000002,
+      "params": {
+        "n_heads": 24,
+        "expansion": 5,
+        "depth": 15
+      },
+      "dim": 1280,
+      "actual_params": 467310080
+    },
+    {
+      "eval_id": 70,
+      "loss": 1.539953,
+      "params": {
+        "n_heads": 16,
+        "expansion": 3,
+        "depth": 12
+      },
+      "dim": 1792,
+      "actual_params": 501458944
+    },
+    {
+      "eval_id": 71,
+      "loss": 1.7102080000000002,
+      "params": {
+        "n_heads": 16,
+        "expansion": 3,
+        "depth": 13
+      },
+      "dim": 1664,
+      "actual_params": 468412672
+    },
+    {
+      "eval_id": 72,
+      "loss": 1.592511,
+      "params": {
+        "n_heads": 9,
+        "expansion": 4,
+        "depth": 23
+      },
+      "dim": 1152,
+      "actual_params": 488722176
+    },
+    {
+      "eval_id": 73,
+      "loss": 1.7622829999999998,
+      "params": {
+        "n_heads": 17,
+        "expansion": 5,
+        "depth": 18
+      },
+      "dim": 1152,
+      "actual_params": 454205952
+    },
+    {
+      "eval_id": 74,
+      "loss": 1.6411170000000002,
+      "params": {
+        "n_heads": 18,
+        "expansion": 4,
+        "depth": 23
+      },
+      "dim": 1152,
+      "actual_params": 488722176
+    },
+    {
+      "eval_id": 75,
+      "loss": 1.814429,
+      "params": {
+        "n_heads": 16,
+        "expansion": 2,
+        "depth": 17
+      },
+      "dim": 1664,
+      "actual_params": 471194880
+    },
+    {
+      "eval_id": 76,
+      "loss": 1.798367,
+      "params": {
+        "n_heads": 22,
+        "expansion": 2,
+        "depth": 14
+      },
+      "dim": 1792,
+      "actual_params": 450085888
+    },
+    {
+      "eval_id": 77,
+      "loss": 1.620028,
+      "params": {
+        "n_heads": 22,
+        "expansion": 6,
+        "depth": 17
+      },
+      "dim": 1152,
+      "actual_params": 496670976
+    },
+    {
+      "eval_id": 78,
+      "loss": 1.5738290000000001,
+      "params": {
+        "n_heads": 12,
+        "expansion": 3,
+        "depth": 19
+      },
+      "dim": 1408,
+      "actual_params": 490082560
+    },
+    {
+      "eval_id": 79,
+      "loss": 1.5724019999999999,
+      "params": {
+        "n_heads": 28,
+        "expansion": 4,
+        "depth": 13
+      },
+      "dim": 1536,
+      "actual_params": 491166720
+    },
+    {
+      "eval_id": 80,
+      "loss": 1.689008,
+      "params": {
+        "n_heads": 22,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 81,
+      "loss": 1.756858,
+      "params": {
+        "n_heads": 16,
+        "expansion": 2,
+        "depth": 14
+      },
+      "dim": 1792,
+      "actual_params": 450085888
+    },
+    {
+      "eval_id": 82,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 19,
+        "expansion": 2,
+        "depth": 16
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 83,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "expansion": 4,
+        "depth": 17
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 84,
+      "loss": 1.5356239999999999,
+      "params": {
+        "n_heads": 23,
+        "expansion": 3,
+        "depth": 12
+      },
+      "dim": 1792,
+      "actual_params": 501458944
+    },
+    {
+      "eval_id": 85,
+      "loss": 1.6757710000000001,
+      "params": {
+        "n_heads": 8,
+        "expansion": 3,
+        "depth": 18
+      },
+      "dim": 1408,
+      "actual_params": 464307712
+    },
+    {
+      "eval_id": 86,
+      "loss": 1.670233,
+      "params": {
+        "n_heads": 20,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 87,
+      "loss": 1.5892240000000002,
+      "params": {
+        "n_heads": 31,
+        "expansion": 3,
+        "depth": 12
+      },
+      "dim": 1792,
+      "actual_params": 501458944
+    },
+    {
+      "eval_id": 88,
+      "loss": 1.587284,
+      "params": {
+        "n_heads": 13,
+        "expansion": 3,
+        "depth": 19
+      },
+      "dim": 1408,
+      "actual_params": 490082560
+    },
+    {
+      "eval_id": 89,
+      "loss": 1.6266919999999998,
+      "params": {
+        "n_heads": 26,
+        "expansion": 3,
+        "depth": 16
+      },
+      "dim": 1536,
+      "actual_params": 491175936
+    },
+    {
+      "eval_id": 90,
+      "loss": 1.568394,
+      "params": {
+        "n_heads": 28,
+        "expansion": 2,
+        "depth": 12
+      },
+      "dim": 2048,
+      "actual_params": 503889920
+    },
+    {
+      "eval_id": 91,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 10,
+        "expansion": 3,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 92,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 29,
+        "expansion": 4,
+        "depth": 26
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 93,
+      "loss": 1.6731200000000002,
+      "params": {
+        "n_heads": 26,
+        "expansion": 5,
+        "depth": 20
+      },
+      "dim": 1152,
+      "actual_params": 504640512
+    },
+    {
+      "eval_id": 94,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 24,
+        "expansion": 2,
+        "depth": 16
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 95,
+      "loss": 1.863914,
+      "params": {
+        "n_heads": 24,
+        "expansion": 2,
+        "depth": 13
+      },
+      "dim": 1920,
+      "actual_params": 479773440
+    },
+    {
+      "eval_id": 96,
+      "loss": 1.614754,
+      "params": {
+        "n_heads": 21,
+        "expansion": 2,
+        "depth": 18
+      },
+      "dim": 1664,
+      "actual_params": 498887168
+    },
+    {
+      "eval_id": 97,
+      "loss": 1.6266749999999999,
+      "params": {
+        "n_heads": 26,
+        "expansion": 3,
+        "depth": 16
+      },
+      "dim": 1536,
+      "actual_params": 491175936
+    },
+    {
+      "eval_id": 98,
+      "loss": 1.575969,
+      "params": {
+        "n_heads": 12,
+        "expansion": 5,
+        "depth": 20
+      },
+      "dim": 1152,
+      "actual_params": 504640512
+    },
+    {
+      "eval_id": 99,
+      "loss": 1.9298650000000002,
+      "params": {
+        "n_heads": 27,
+        "expansion": 2,
+        "depth": 13
+      },
+      "dim": 1920,
+      "actual_params": 479773440
+    },
+    {
+      "eval_id": 100,
+      "loss": 1.9345419999999998,
+      "params": {
+        "n_heads": 32,
+        "expansion": 3,
+        "depth": 15
+      },
+      "dim": 1536,
+      "actual_params": 460502016
+    },
+    {
+      "eval_id": 101,
+      "loss": 1.76983,
+      "params": {
+        "n_heads": 18,
+        "expansion": 2,
+        "depth": 14
+      },
+      "dim": 1792,
+      "actual_params": 450085888
+    },
+    {
+      "eval_id": 102,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 19,
+        "expansion": 2,
+        "depth": 22
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 103,
+      "loss": 1.681285,
+      "params": {
+        "n_heads": 32,
+        "expansion": 2,
+        "depth": 18
+      },
+      "dim": 1664,
+      "actual_params": 498887168
+    },
+    {
+      "eval_id": 104,
+      "loss": 1.977901,
+      "params": {
+        "n_heads": 31,
+        "expansion": 2,
+        "depth": 13
+      },
+      "dim": 1920,
+      "actual_params": 479773440
+    },
+    {
+      "eval_id": 105,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 20,
+        "expansion": 3,
+        "depth": 24
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 106,
+      "loss": 1.744197,
+      "params": {
+        "n_heads": 24,
+        "expansion": 4,
+        "depth": 15
+      },
+      "dim": 1408,
+      "actual_params": 476194048
+    },
+    {
+      "eval_id": 107,
+      "loss": 2.15191,
+      "params": {
+        "n_heads": 28,
+        "expansion": 2,
+        "depth": 17
+      },
+      "dim": 1664,
+      "actual_params": 471194880
+    },
+    {
+      "eval_id": 108,
+      "loss": 1.79718,
+      "params": {
+        "n_heads": 21,
+        "expansion": 4,
+        "depth": 18
+      },
+      "dim": 1280,
+      "actual_params": 472232960
+    },
+    {
+      "eval_id": 109,
+      "loss": 1.717396,
+      "params": {
+        "n_heads": 9,
+        "expansion": 4,
+        "depth": 22
+      },
+      "dim": 1152,
+      "actual_params": 467486208
+    },
+    {
+      "eval_id": 110,
+      "loss": 1.651498,
+      "params": {
+        "n_heads": 29,
+        "expansion": 3,
+        "depth": 19
+      },
+      "dim": 1408,
+      "actual_params": 490082560
+    },
+    {
+      "eval_id": 111,
+      "loss": 1.5561699999999998,
+      "params": {
+        "n_heads": 10,
+        "expansion": 4,
+        "depth": 19
+      },
+      "dim": 1280,
+      "actual_params": 498449920
+    },
+    {
+      "eval_id": 112,
+      "loss": 1.757845,
+      "params": {
+        "n_heads": 25,
+        "expansion": 3,
+        "depth": 13
+      },
+      "dim": 1664,
+      "actual_params": 468412672
+    },
+    {
+      "eval_id": 113,
+      "loss": 1.570469,
+      "params": {
+        "n_heads": 23,
+        "expansion": 3,
+        "depth": 16
+      },
+      "dim": 1536,
+      "actual_params": 491175936
+    },
+    {
+      "eval_id": 114,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 15,
+        "expansion": 3,
+        "depth": 24
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 115,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 13,
+        "expansion": 5,
+        "depth": 28
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 116,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 11,
+        "expansion": 4,
+        "depth": 14
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 117,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 12,
+        "expansion": 6,
+        "depth": 23
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 118,
+      "loss": 1.6637469999999999,
+      "params": {
+        "n_heads": 16,
+        "expansion": 4,
+        "depth": 12
+      },
+      "dim": 1536,
+      "actual_params": 453414912
+    },
+    {
+      "eval_id": 119,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 16,
+        "expansion": 3,
+        "depth": 20
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 120,
+      "loss": 1.989378,
+      "params": {
+        "n_heads": 29,
+        "expansion": 3,
+        "depth": 18
+      },
+      "dim": 1408,
+      "actual_params": 464307712
+    }
+  ]
+}

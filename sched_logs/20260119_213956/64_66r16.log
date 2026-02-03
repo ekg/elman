@@ -1,0 +1,21 @@
+# Job 64: 66r16
+# GPU: 7
+# Command: python train.py --level 66r16 --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/all_models_20260119_213946/66r16
+# Started: 2026-01-19T22:51:37.450982
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/all_models_20260119_213946/66r16/level66r16_100m_20260119_225142
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 555, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 333, in train
+    model = LadderLM(
+            ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 479, in __init__
+    LayerClass(
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 201, in <lambda>
+    '66r16': lambda **kw: E66LowRankH(rank=16, **kw),  # E66 rank=16
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: elman.models.e66_lowrank_h.E66LowRankH() got multiple values for keyword argument 'rank'

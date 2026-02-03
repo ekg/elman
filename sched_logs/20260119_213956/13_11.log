@@ -1,0 +1,49 @@
+# Job 13: 11
+# GPU: 2
+# Command: python train.py --level 11 --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/all_models_20260119_213946/11
+# Started: 2026-01-19T21:50:07.376257
+============================================================
+
+/home/erikg/elman/elman/models/selective_elman.py:97: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  logit = torch.log(torch.tensor(decay / (1 - decay)))
+Using device: cuda
+Output directory: benchmark_results/all_models_20260119_213946/11/level11_100m_20260119_215013
+Auto r_h_mode: none (level 11 has bounded/no W_h)
+Model: Level 11, 131,582,080 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.2162 | lr 2.70e-05 | grad 7.03 | tok/s 6269
+step     20 | loss 3.8947 | lr 5.70e-05 | grad 11.56 | tok/s 7677
+step     30 | loss 4.1682 | lr 8.70e-05 | grad 3.11 | tok/s 8150
+step     40 | loss 2.9156 | lr 1.17e-04 | grad 1.97 | tok/s 8153
+step     50 | loss 2.4044 | lr 1.47e-04 | grad 2.17 | tok/s 8175
+step     60 | loss 2.7923 | lr 1.77e-04 | grad 4.09 | tok/s 8022
+step     70 | loss 2.5280 | lr 2.07e-04 | grad 1.84 | tok/s 7748
+step     80 | loss 2.8380 | lr 2.37e-04 | grad 2.45 | tok/s 8049
+step     90 | loss 2.8024 | lr 2.67e-04 | grad 3.19 | tok/s 7780
+step    100 | loss 2.4176 | lr 2.97e-04 | grad 0.92 | tok/s 7856
+step    110 | loss 2.4419 | lr 6.94e-06 | grad 2.11 | tok/s 7675
+step    120 | loss 2.6001 | lr 2.69e-05 | grad 1.05 | tok/s 7576
+step    130 | loss 2.4991 | lr 5.89e-05 | grad 0.85 | tok/s 7629
+step    140 | loss 2.2781 | lr 9.99e-05 | grad 0.82 | tok/s 7603
+step    150 | loss 2.1703 | lr 1.46e-04 | grad 1.52 | tok/s 7254
+step    160 | loss 2.0719 | lr 1.92e-04 | grad 1.09 | tok/s 7377
+step    170 | loss 2.2678 | lr 2.35e-04 | grad 3.08 | tok/s 7690
+step    180 | loss 2.2392 | lr 2.69e-04 | grad 1.08 | tok/s 7706
+step    190 | loss 1.9815 | lr 2.91e-04 | grad 1.07 | tok/s 7827
+step    200 | loss 1.6143 | lr 3.00e-04 | grad 0.89 | tok/s 8004
+step    210 | loss 2.2734 | lr 2.94e-04 | grad 1.27 | tok/s 7720
+step    220 | loss 2.1288 | lr 2.74e-04 | grad 0.83 | tok/s 7999
+step    230 | loss 1.9677 | lr 2.42e-04 | grad 1.00 | tok/s 7724
+step    240 | loss 1.9485 | lr 2.01e-04 | grad 1.25 | tok/s 7885
+step    250 | loss 1.9384 | lr 1.55e-04 | grad 0.96 | tok/s 7764
+step    260 | loss 2.0038 | lr 1.09e-04 | grad 0.59 | tok/s 7434
+step    270 | loss 1.8525 | lr 6.65e-05 | grad 0.73 | tok/s 7701
+step    280 | loss 1.7416 | lr 3.24e-05 | grad 1.23 | tok/s 7689
+step    290 | loss 1.7400 | lr 9.84e-06 | grad 0.61 | tok/s 8151
+
+Training complete! Final step: 295

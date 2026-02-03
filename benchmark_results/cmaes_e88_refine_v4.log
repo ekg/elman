@@ -1,0 +1,64 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'n_heads': 104, 'n_state': 32, 'depth': 32, 'lr': 0.0003}
+Encoded x0: ['0.417', '0.333', '0.500', '0.613']
+======================================================================
+CMA-ES Search for E88
+======================================================================
+Search space (4 dimensions):
+  n_heads: [64, 160] (int) - Number of attention heads
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported by fused kernel)
+  depth: [24, 40] (int) - Number of layers
+  lr: [0.0001, 0.0006] (log) - Learning rate
+Target params: 480M ± 30M
+Training time per config: 3.0 min
+Generations: 20
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~160
+Estimated time: ~60 min (1.0 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 4 (seed=466971, Mon Jan 26 04:36:25 2026)
+
+--- Generation 1/20 ---
+  [Eval 5] GPU 4 | n_heads=108, n_state=16, depth=30, lr=0.0003419 | dim=1792 | 470.8M params
+  [Eval 5] Loss: 2.0667
+  [Eval 2] GPU 1 | n_heads=94, n_state=32, depth=27, lr=0.0002415 | dim=1152 | 471.1M params
+  [Eval 2] Loss: 2.2143
+  [Eval 7] GPU 6 | n_heads=103, n_state=32, depth=32, lr=0.0004485 | dim=896 | 475.7M params
+  [Eval 7] Loss: 2.3315
+  [Eval 1] GPU 0 | n_heads=101, n_state=16, depth=32, lr=0.0004545 | dim=1792 | 469.7M params
+  [Eval 1] Loss: 1.9845
+  [Eval 8] GPU 7 | n_heads=82, n_state=48, depth=36, lr=0.0003434 | dim=640 | 455.5M params
+  [Eval 8] Loss: 2.5384
+  [Eval 4] GPU 3 | n_heads=88, n_state=32, depth=31, lr=0.0002461 | dim=1152 | 506.3M params
+  [Eval 4] Loss: 2.0053
+  [Eval 6] GPU 5 | n_heads=110, n_state=16, depth=33, lr=0.0003207 | dim=1664 | 489.8M params
+  [Eval 6] Loss: 1.8241
+  [Eval 3] GPU 2 | n_heads=121, n_state=32, depth=29, lr=0.0003032 | dim=896 | 506.5M params
+  [Eval 3] Loss: 2.1342
+  *** NEW BEST: 1.9845 | {'n_heads': 101, 'n_state': 16, 'depth': 32, 'lr': 0.0004545211901062085} | dim=1792 ***
+  *** NEW BEST: 1.8241 | {'n_heads': 110, 'n_state': 16, 'depth': 33, 'lr': 0.00032072116232665136} | dim=1664 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.824088888888889e+00 1.0e+00 1.55e-01  1e-01  2e-01 3:18.9
+
+--- Generation 2/20 ---
+  [Eval 15] Skip - params 517.3M vs target 480M
+  [Eval 16] GPU 7 | n_heads=123, n_state=16, depth=29, lr=0.00031 | dim=1664 | 481.3M params
+  [Eval 16] Loss: 1.8833
+  [Eval 10] GPU 1 | n_heads=109, n_state=16, depth=30, lr=0.0003303 | dim=1792 | 475.2M params
+  [Eval 10] Loss: 1.9853
+  [Eval 13] GPU 4 | n_heads=103, n_state=16, depth=32, lr=0.0003144 | dim=1792 | 478.9M params
+  [Eval 13] Loss: 2.1301
+  [Eval 11] GPU 2 | n_heads=105, n_state=32, depth=33, lr=0.0003394 | dim=896 | 500.1M params
+  [Eval 11] Loss: 2.1170
+  [Eval 14] GPU 5 | n_heads=115, n_state=32, depth=35, lr=0.000347 | dim=768 | 497.9M params
+  [Eval 14] Loss: 2.0343
+  [Eval 12] GPU 3 | n_heads=73, n_state=32, depth=30, lr=0.0005786 | dim=1408 | 496.9M params
+  [Eval 12] Loss: 1.7955
+  [Eval 9] GPU 0 | n_heads=118, n_state=16, depth=37, lr=0.0005988 | dim=1408 | 498.4M params
+  [Eval 9] Loss: 1.7924
+  *** NEW BEST: 1.7924 | {'n_heads': 118, 'n_state': 16, 'depth': 37, 'lr': 0.0005988020858290498} | dim=1408 ***
+    2     16 1.792430434782609e+00 1.4e+00 1.94e-01  2e-01  3e-01 6:37.6
+
+--- Generation 3/20 ---

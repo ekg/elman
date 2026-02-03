@@ -1,8 +1,0 @@
-Config: E28 D=1280, depth=6, batch=64
-============================================================
-
-E28 D=1280 depth=6 batch=64: params=49,527,040
-Step 50 | 88s | Loss 2.9688 | Avg100 4.9641 | 18.7K tok/s
-Step 100 | 175s | Loss 2.7969 | Avg100 3.9166 | 18.7K tok/s
-Step 150 | 263s | Loss 2.5312 | Avg100 2.7797 | 18.7K tok/s
-FINAL: steps=172, params=49.5M, loss=2.7059, tok/s=18.7K

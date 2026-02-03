@@ -1,4 +1,0 @@
-e1_d6_maxbatch: dim=3648 depth=6 batch=160 params=400,243,968
-Step 100 | 230s | Loss 2.4375 | Avg100 3.2327 | 35598 tok/s | Mem 38.5GB
-Step 200 | 466s | Loss 2.0625 | Avg100 2.2477 | 35142 tok/s | Mem 38.5GB
-DONE: e1_d6_maxbatch | Steps=257 | Time=600s | Last100=2.0857 | 35060 tok/s | PeakMem=38.5GB

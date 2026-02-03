@@ -1,0 +1,29 @@
+Using device: cuda
+Output directory: benchmark_results/autopoetic_100m/e1/level1_100m_20260118_121059
+Auto r_h_mode: spectral_norm (level 1 has full W_h)
+Model: Level 1, 97,681,920 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.6049 | lr 9.00e-07 | grad 43.75 | tok/s 2260
+step     20 | loss 5.5130 | lr 1.90e-06 | grad 32.00 | tok/s 2247
+step     30 | loss 5.3355 | lr 2.90e-06 | grad 16.62 | tok/s 2243
+step     40 | loss 5.3455 | lr 3.90e-06 | grad 14.12 | tok/s 2307
+step     50 | loss 5.6218 | lr 4.90e-06 | grad 14.19 | tok/s 2339
+step     60 | loss 5.5305 | lr 5.90e-06 | grad 10.12 | tok/s 2411
+step     70 | loss 5.3852 | lr 6.90e-06 | grad 15.44 | tok/s 2438
+step     80 | loss 5.2975 | lr 7.90e-06 | grad 9.81 | tok/s 2499
+step     90 | loss 5.0432 | lr 8.90e-06 | grad 8.69 | tok/s 2505
+step    100 | loss 4.8897 | lr 9.90e-06 | grad 9.06 | tok/s 2503
+step    110 | loss 4.5907 | lr 1.09e-05 | grad 11.06 | tok/s 2479
+step    120 | loss 4.7966 | lr 1.19e-05 | grad 10.00 | tok/s 2395
+step    130 | loss 4.2031 | lr 1.29e-05 | grad 9.44 | tok/s 2285
+step    140 | loss 3.6837 | lr 1.39e-05 | grad 12.12 | tok/s 2289
+step    150 | loss 3.4128 | lr 1.49e-05 | grad 12.69 | tok/s 2384
+step    160 | loss 3.4467 | lr 1.59e-05 | grad 7.62 | tok/s 2409
+step    170 | loss 3.4268 | lr 1.69e-05 | grad 9.06 | tok/s 2241
+
+Training complete! Final step: 178

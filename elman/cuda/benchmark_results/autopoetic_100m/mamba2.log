@@ -1,0 +1,10 @@
+Using device: cuda
+Output directory: benchmark_results/autopoetic_100m/mamba2/levelmamba2_100m_20260118_121059
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 536, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 249, in train
+    model = Mamba2LM(
+  File "/home/erikg/elman/elman/models/mamba2_baseline.py", line 41, in __init__
+    raise ImportError("mamba_ssm not installed. Install with: pip install mamba-ssm")
+ImportError: mamba_ssm not installed. Install with: pip install mamba-ssm

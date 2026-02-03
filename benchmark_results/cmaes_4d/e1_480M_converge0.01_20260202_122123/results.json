@@ -1,0 +1,1470 @@
+{
+  "model_type": "e1",
+  "target_params": 480000000,
+  "best_loss": 1.114273,
+  "best_params": {
+    "dim": 1408,
+    "expansion": 1,
+    "depth": 13,
+    "use_conv": 0,
+    "mamba2_init": 0,
+    "lr": 0.0004518344442416734
+  },
+  "total_evals": 104,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.506243,
+      "params": {
+        "dim": 2304,
+        "expansion": 2,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003001360925394885
+      },
+      "dim": 2304,
+      "actual_params": 1338437376
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.4021029999999999,
+      "params": {
+        "dim": 2048,
+        "expansion": 2,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00020923128618320058
+      },
+      "dim": 2048,
+      "actual_params": 940148736
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.372903,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 23,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00037993870130041083
+      },
+      "dim": 1408,
+      "actual_params": 638812416
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.7370189999999999,
+      "params": {
+        "dim": 2688,
+        "expansion": 2,
+        "depth": 21,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00033652060391311665
+      },
+      "dim": 2688,
+      "actual_params": 2125111296
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.489812,
+      "params": {
+        "dim": 2432,
+        "expansion": 2,
+        "depth": 19,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002674699353697692
+      },
+      "dim": 2432,
+      "actual_params": 1574053632
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.539959,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 19,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0008596463667900366
+      },
+      "dim": 1792,
+      "actual_params": 854758912
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.643835,
+      "params": {
+        "dim": 2304,
+        "expansion": 2,
+        "depth": 24,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00029838386715803965
+      },
+      "dim": 2304,
+      "actual_params": 1784385792
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.466954,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000982222983192757
+      },
+      "dim": 1664,
+      "actual_params": 543201152
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.388333,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00017902501837579655
+      },
+      "dim": 1664,
+      "actual_params": 620740224
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.431252,
+      "params": {
+        "dim": 1920,
+        "expansion": 2,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003447763275221566
+      },
+      "dim": 1920,
+      "actual_params": 929569920
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.461144,
+      "params": {
+        "dim": 2304,
+        "expansion": 2,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003375150068317606
+      },
+      "dim": 2304,
+      "actual_params": 1189787904
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.5025249999999999,
+      "params": {
+        "dim": 1536,
+        "expansion": 2,
+        "depth": 23,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000644864891980046
+      },
+      "dim": 1536,
+      "actual_params": 760194048
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.384577,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 21,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002347629803811106
+      },
+      "dim": 1664,
+      "actual_params": 814587904
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.3880439999999998,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00023846313351298854
+      },
+      "dim": 1792,
+      "actual_params": 764832768
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.496824,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 20,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005136420502074208
+      },
+      "dim": 1792,
+      "actual_params": 899721984
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.381833,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 19,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005780422191109995
+      },
+      "dim": 1664,
+      "actual_params": 263536000
+    },
+    {
+      "eval_id": 17,
+      "loss": 1.331516,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004413540630996214
+      },
+      "dim": 1664,
+      "actual_params": 208144768
+    },
+    {
+      "eval_id": 18,
+      "loss": 1.504739,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0009770605920889366
+      },
+      "dim": 1920,
+      "actual_params": 332338560
+    },
+    {
+      "eval_id": 19,
+      "loss": 1.498311,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 21,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0009753975106585583
+      },
+      "dim": 1792,
+      "actual_params": 337718528
+    },
+    {
+      "eval_id": 20,
+      "loss": 1.3668690000000001,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00028069328856620266
+      },
+      "dim": 1920,
+      "actual_params": 277031040
+    },
+    {
+      "eval_id": 21,
+      "loss": 1.356818,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002940990410687734
+      },
+      "dim": 1664,
+      "actual_params": 543201152
+    },
+    {
+      "eval_id": 22,
+      "loss": 1.4262629999999998,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004148253901350878
+      },
+      "dim": 1792,
+      "actual_params": 674906624
+    },
+    {
+      "eval_id": 23,
+      "loss": 1.353879,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00031934404690262994
+      },
+      "dim": 1664,
+      "actual_params": 543201152
+    },
+    {
+      "eval_id": 24,
+      "loss": 1.4575810000000002,
+      "params": {
+        "dim": 1280,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0007573037760451034
+      },
+      "dim": 1280,
+      "actual_params": 390333440
+    },
+    {
+      "eval_id": 25,
+      "loss": 1.40374,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0007836705997302514
+      },
+      "dim": 1792,
+      "actual_params": 241359104
+    },
+    {
+      "eval_id": 26,
+      "loss": 1.36878,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 19,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00046121666432074156
+      },
+      "dim": 1152,
+      "actual_params": 353371392
+    },
+    {
+      "eval_id": 27,
+      "loss": 1.4049639999999999,
+      "params": {
+        "dim": 1536,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003729398516545373
+      },
+      "dim": 1536,
+      "actual_params": 561985536
+    },
+    {
+      "eval_id": 28,
+      "loss": 1.35917,
+      "params": {
+        "dim": 1536,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00018689868104960006
+      },
+      "dim": 1536,
+      "actual_params": 396811776
+    },
+    {
+      "eval_id": 29,
+      "loss": 1.280643,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004931519947022819
+      },
+      "dim": 1024,
+      "actual_params": 191143936
+    },
+    {
+      "eval_id": 30,
+      "loss": 1.3501830000000001,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005058047108478578
+      },
+      "dim": 1152,
+      "actual_params": 241873920
+    },
+    {
+      "eval_id": 31,
+      "loss": 1.371292,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002257467717905997
+      },
+      "dim": 2304,
+      "actual_params": 398792448
+    },
+    {
+      "eval_id": 32,
+      "loss": 1.4421680000000001,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00046117818727529984
+      },
+      "dim": 1792,
+      "actual_params": 764832768
+    },
+    {
+      "eval_id": 33,
+      "loss": 1.472183,
+      "params": {
+        "dim": 1536,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0008065709357016252
+      },
+      "dim": 1536,
+      "actual_params": 396811776
+    },
+    {
+      "eval_id": 34,
+      "loss": 1.365864,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005247229320324443
+      },
+      "dim": 1024,
+      "actual_params": 249876480
+    },
+    {
+      "eval_id": 35,
+      "loss": 1.4112870000000002,
+      "params": {
+        "dim": 1536,
+        "expansion": 1,
+        "depth": 24,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006882494719339372
+      },
+      "dim": 1536,
+      "actual_params": 283584000
+    },
+    {
+      "eval_id": 36,
+      "loss": 1.381309,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006638757051041578
+      },
+      "dim": 1024,
+      "actual_params": 235193344
+    },
+    {
+      "eval_id": 37,
+      "loss": 1.3665010000000002,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00025409621172897093
+      },
+      "dim": 1152,
+      "actual_params": 241873920
+    },
+    {
+      "eval_id": 38,
+      "loss": 1.3860929999999998,
+      "params": {
+        "dim": 1536,
+        "expansion": 2,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00013214276241873296
+      },
+      "dim": 1536,
+      "actual_params": 595020288
+    },
+    {
+      "eval_id": 39,
+      "loss": 1.350167,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00048234425708754955
+      },
+      "dim": 1024,
+      "actual_params": 220510208
+    },
+    {
+      "eval_id": 40,
+      "loss": 1.391359,
+      "params": {
+        "dim": 1280,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006275852202042955
+      },
+      "dim": 1280,
+      "actual_params": 275626240
+    },
+    {
+      "eval_id": 41,
+      "loss": 1.366291,
+      "params": {
+        "dim": 1280,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003854880297012699
+      },
+      "dim": 1280,
+      "actual_params": 275626240
+    },
+    {
+      "eval_id": 42,
+      "loss": 1.228083,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0009310110929300167
+      },
+      "dim": 1024,
+      "actual_params": 68447232
+    },
+    {
+      "eval_id": 43,
+      "loss": 1.308143,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004106496522046879
+      },
+      "dim": 1024,
+      "actual_params": 176460800
+    },
+    {
+      "eval_id": 44,
+      "loss": 1.324263,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002714419730706334
+      },
+      "dim": 1024,
+      "actual_params": 205827072
+    },
+    {
+      "eval_id": 45,
+      "loss": 1.372872,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 23,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000677831133263354
+      },
+      "dim": 1024,
+      "actual_params": 120896512
+    },
+    {
+      "eval_id": 46,
+      "loss": 1.406193,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005874400826456754
+      },
+      "dim": 1408,
+      "actual_params": 333466496
+    },
+    {
+      "eval_id": 47,
+      "loss": 1.326254,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00038354013324937625
+      },
+      "dim": 1152,
+      "actual_params": 106501248
+    },
+    {
+      "eval_id": 48,
+      "loss": 1.366566,
+      "params": {
+        "dim": 1280,
+        "expansion": 2,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00030448528195868503
+      },
+      "dim": 1280,
+      "actual_params": 298567680
+    },
+    {
+      "eval_id": 49,
+      "loss": 1.3543459999999998,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000568488542782237
+      },
+      "dim": 1024,
+      "actual_params": 63202304
+    },
+    {
+      "eval_id": 50,
+      "loss": 1.425052,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 21,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0001195822336264396
+      },
+      "dim": 1280,
+      "actual_params": 172414720
+    },
+    {
+      "eval_id": 51,
+      "loss": 1.169293,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00014557527000714915
+      },
+      "dim": 1280,
+      "actual_params": 106858240
+    },
+    {
+      "eval_id": 52,
+      "loss": 1.359096,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0009863489786419639
+      },
+      "dim": 1024,
+      "actual_params": 176460800
+    },
+    {
+      "eval_id": 53,
+      "loss": 1.3287039999999999,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004767438910366118
+      },
+      "dim": 1152,
+      "actual_params": 223291008
+    },
+    {
+      "eval_id": 54,
+      "loss": 1.368443,
+      "params": {
+        "dim": 1024,
+        "expansion": 2,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003481749683688751
+      },
+      "dim": 1024,
+      "actual_params": 235193344
+    },
+    {
+      "eval_id": 55,
+      "loss": 10.0,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 1,
+        "lr": 0.0009982783513828107
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 56,
+      "loss": 1.37029,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004939415474946886
+      },
+      "dim": 1152,
+      "actual_params": 260456832
+    },
+    {
+      "eval_id": 57,
+      "loss": 1.3676220000000001,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 23,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00046057198647029483
+      },
+      "dim": 1280,
+      "actual_params": 188803840
+    },
+    {
+      "eval_id": 58,
+      "loss": 1.23762,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00033249651861679604
+      },
+      "dim": 1024,
+      "actual_params": 84182016
+    },
+    {
+      "eval_id": 59,
+      "loss": 1.277178,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006063842573170795
+      },
+      "dim": 1152,
+      "actual_params": 93225600
+    },
+    {
+      "eval_id": 60,
+      "loss": 1.419023,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00017051444202059997
+      },
+      "dim": 1024,
+      "actual_params": 63202304
+    },
+    {
+      "eval_id": 61,
+      "loss": 1.3739,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003531068481961709
+      },
+      "dim": 1024,
+      "actual_params": 63202304
+    },
+    {
+      "eval_id": 62,
+      "loss": 10.0,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "mamba2_init": 1,
+        "lr": 0.0006611286387918244
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 63,
+      "loss": 1.149387,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0001761140664740213
+      },
+      "dim": 1280,
+      "actual_params": 115052800
+    },
+    {
+      "eval_id": 64,
+      "loss": 1.4433289999999999,
+      "params": {
+        "dim": 1792,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0005006553721918534
+      },
+      "dim": 1792,
+      "actual_params": 540017408
+    },
+    {
+      "eval_id": 65,
+      "loss": 1.2162709999999999,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00041924893585921195
+      },
+      "dim": 1152,
+      "actual_params": 86587776
+    },
+    {
+      "eval_id": 66,
+      "loss": 1.144251,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00036624563847101403
+      },
+      "dim": 1280,
+      "actual_params": 115052800
+    },
+    {
+      "eval_id": 67,
+      "loss": 1.2855240000000001,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00041008666480591295
+      },
+      "dim": 1408,
+      "actual_params": 159004032
+    },
+    {
+      "eval_id": 68,
+      "loss": 1.272265,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002367154073495371
+      },
+      "dim": 1280,
+      "actual_params": 106858240
+    },
+    {
+      "eval_id": 69,
+      "loss": 1.13217,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000317273219243694
+      },
+      "dim": 1152,
+      "actual_params": 93225600
+    },
+    {
+      "eval_id": 70,
+      "loss": 1.244801,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00028037337514993834
+      },
+      "dim": 1152,
+      "actual_params": 86587776
+    },
+    {
+      "eval_id": 71,
+      "loss": 1.4059190000000001,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 22,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00022604883248584948
+      },
+      "dim": 1280,
+      "actual_params": 180609280
+    },
+    {
+      "eval_id": 72,
+      "loss": 1.363974,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002049551130498488
+      },
+      "dim": 1024,
+      "actual_params": 105161728
+    },
+    {
+      "eval_id": 73,
+      "loss": 1.318146,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00040949068878568185
+      },
+      "dim": 1280,
+      "actual_params": 147831040
+    },
+    {
+      "eval_id": 74,
+      "loss": 1.1870560000000001,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00017283450091681204
+      },
+      "dim": 1408,
+      "actual_params": 139173760
+    },
+    {
+      "eval_id": 75,
+      "loss": 1.266917,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00031686133477434896
+      },
+      "dim": 1024,
+      "actual_params": 78937088
+    },
+    {
+      "eval_id": 76,
+      "loss": 1.33132,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00023725321631257098
+      },
+      "dim": 1408,
+      "actual_params": 149088896
+    },
+    {
+      "eval_id": 77,
+      "loss": 1.4488349999999999,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00010963513713438286
+      },
+      "dim": 1152,
+      "actual_params": 133052544
+    },
+    {
+      "eval_id": 78,
+      "loss": 1.34947,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00018061901280081987
+      },
+      "dim": 1024,
+      "actual_params": 84182016
+    },
+    {
+      "eval_id": 79,
+      "loss": 1.340335,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00029600323795269767
+      },
+      "dim": 1152,
+      "actual_params": 79949952
+    },
+    {
+      "eval_id": 80,
+      "loss": 1.232806,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000497469243748218
+      },
+      "dim": 1152,
+      "actual_params": 86587776
+    },
+    {
+      "eval_id": 81,
+      "loss": 1.334679,
+      "params": {
+        "dim": 1152,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002893300306957716
+      },
+      "dim": 1152,
+      "actual_params": 223291008
+    },
+    {
+      "eval_id": 82,
+      "loss": 1.202136,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000531823561331379
+      },
+      "dim": 1152,
+      "actual_params": 86587776
+    },
+    {
+      "eval_id": 83,
+      "loss": 1.355287,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003080891830943127
+      },
+      "dim": 1152,
+      "actual_params": 79949952
+    },
+    {
+      "eval_id": 84,
+      "loss": 1.145286,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00017614575226500336
+      },
+      "dim": 1408,
+      "actual_params": 129258624
+    },
+    {
+      "eval_id": 85,
+      "loss": 1.201242,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004955580996110046
+      },
+      "dim": 1280,
+      "actual_params": 106858240
+    },
+    {
+      "eval_id": 86,
+      "loss": 1.319303,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003444478680201909
+      },
+      "dim": 1280,
+      "actual_params": 98663680
+    },
+    {
+      "eval_id": 87,
+      "loss": 1.120676,
+      "params": {
+        "dim": 1536,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002530281172579841
+      },
+      "dim": 1536,
+      "actual_params": 141989376
+    },
+    {
+      "eval_id": 88,
+      "loss": 1.314441,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00025999040928387967
+      },
+      "dim": 1408,
+      "actual_params": 149088896
+    },
+    {
+      "eval_id": 89,
+      "loss": 1.394355,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004509544230912876
+      },
+      "dim": 1408,
+      "actual_params": 333466496
+    },
+    {
+      "eval_id": 90,
+      "loss": 1.174418,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00045925745169413096
+      },
+      "dim": 1408,
+      "actual_params": 139173760
+    },
+    {
+      "eval_id": 91,
+      "loss": 1.331805,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00034317104806605415
+      },
+      "dim": 1152,
+      "actual_params": 106501248
+    },
+    {
+      "eval_id": 92,
+      "loss": 1.316109,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0003886986351341715
+      },
+      "dim": 1408,
+      "actual_params": 119343488
+    },
+    {
+      "eval_id": 93,
+      "loss": 1.3966839999999998,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00015138228799785469
+      },
+      "dim": 1664,
+      "actual_params": 249688192
+    },
+    {
+      "eval_id": 94,
+      "loss": 1.389763,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 17,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002735500198295742
+      },
+      "dim": 1408,
+      "actual_params": 472260096
+    },
+    {
+      "eval_id": 95,
+      "loss": 1.3187200000000001,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006633158974956081
+      },
+      "dim": 1024,
+      "actual_params": 73692160
+    },
+    {
+      "eval_id": 96,
+      "loss": 1.363843,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00013402794834170464
+      },
+      "dim": 1664,
+      "actual_params": 180449152
+    },
+    {
+      "eval_id": 97,
+      "loss": 1.174539,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 14,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0006148098289430059
+      },
+      "dim": 1280,
+      "actual_params": 115052800
+    },
+    {
+      "eval_id": 98,
+      "loss": 1.222952,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.00044486152594117235
+      },
+      "dim": 1152,
+      "actual_params": 99863424
+    },
+    {
+      "eval_id": 99,
+      "loss": 1.328322,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0002956697721958125
+      },
+      "dim": 1280,
+      "actual_params": 98663680
+    },
+    {
+      "eval_id": 100,
+      "loss": 1.114273,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0004518344442416734
+      },
+      "dim": 1408,
+      "actual_params": 129258624
+    },
+    {
+      "eval_id": 101,
+      "loss": 1.317586,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0007620790890527914
+      },
+      "dim": 1408,
+      "actual_params": 149088896
+    },
+    {
+      "eval_id": 102,
+      "loss": 1.439618,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 18,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0007125949967758694
+      },
+      "dim": 1408,
+      "actual_params": 500018816
+    },
+    {
+      "eval_id": 103,
+      "loss": 1.147369,
+      "params": {
+        "dim": 1536,
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.0001516212802047344
+      },
+      "dim": 1536,
+      "actual_params": 141989376
+    },
+    {
+      "eval_id": 104,
+      "loss": 1.221434,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "mamba2_init": 0,
+        "lr": 0.000988029616913409
+      },
+      "dim": 1280,
+      "actual_params": 123247360
+    }
+  ]
+}

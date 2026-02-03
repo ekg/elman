@@ -1,0 +1,55 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+/home/erikg/.local/lib/python3.12/site-packages/cma/utilities/utils.py:364: UserWarning: Initial solution argument x0=[0.22222222] is 1-dimensional.
+Optimization in 1-D is not supported and may bail or work poorly. 
+See issues https://github.com/CMA-ES/pycma/issues/86 and https://github.com/CMA-ES/pycma/issues/302. (time=Jan 26 20:01:32 2026)
+  warnings.warn(msg + ' (time={}'.format(time.asctime()[4:]) +
+Starting from known best config: {'depth': 20}
+Encoded x0: ['0.222']
+======================================================================
+CMA-ES Search for LSTM
+======================================================================
+Search space (1 dimensions):
+  depth: [12, 48] (int) - Number of layers
+Target params: 480M ± 30M
+Training time per config: 10.0 min
+Generations: 15
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~120
+Estimated time: ~150 min (2.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 1 (seed=518625, Mon Jan 26 20:01:32 2026)
+
+--- Generation 1/15 ---
+  [Eval 2] Skip - params 524.1M vs target 480M
+  [Eval 3] Skip - params 444.7M vs target 480M
+  [Eval 6] Skip - params 514.5M vs target 480M
+  [Eval 7] Skip - params 510.2M vs target 480M
+  [Eval 8] GPU 7 | depth=13 | dim=2176 | 493.2M params
+  [Eval 8] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | depth=12 | dim=2176 | 455.3M params
+  [Eval 4] NaN/diverged (loss=inf)
+  [Eval 5] GPU 4 | depth=14 | dim=2048 | 470.5M params
+  [Eval 5] Timeout
+  [Eval 1] GPU 0 | depth=24 | dim=1536 | 453.7M params
+  [Eval 1] NaN/diverged (loss=inf)
+  *** NEW BEST: 10.0000 | {'depth': 24} | dim=0 ***
+Traceback (most recent call last):
+  File "/home/erikg/elman/cmaes_search.py", line 659, in <module>
+    main()
+  File "/home/erikg/elman/cmaes_search.py", line 621, in main
+    best_params, best_loss = run_cmaes_search(
+                             ^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/cmaes_search.py", line 544, in run_cmaes_search
+    es.tell(solutions, fitness)
+  File "/home/erikg/.local/lib/python3.12/site-packages/cma/evolution_strategy.py", line 2486, in tell
+    return self.tell2(solutions, function_values,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/cma/evolution_strategy.py", line 2942, in tell2
+    self._stds_into_limits()
+  File "/home/erikg/.local/lib/python3.12/site-packages/cma/evolution_strategy.py", line 1528, in _stds_into_limits
+    self.sigma_vec.set_i(i, self.sigma_vec.scaling[i] * sb / s)
+  File "/home/erikg/.local/lib/python3.12/site-packages/cma/transformations.py", line 770, in set_i
+    raise ValueError("not yet initialized (dimension needed)")
+ValueError: not yet initialized (dimension needed)

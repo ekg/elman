@@ -148,6 +148,99 @@ def calc_minlstm_params(dim, depth, expansion=2.0, vocab_size=256):
     return layers_total + embed
 
 
+def calc_e1_params(dim, depth, expansion=2.0, vocab_size=256):
+    """Calculate E1 (MambaGatedElman) parameters.
+
+    E1 uses Mamba2-style split projection gating:
+    - in_proj splits input into x and z branches
+    - Elman RNN on x branch: W_x, W_h, b
+    - Output: h * silu(z)
+    """
+    d_inner = int(dim * expansion)
+
+    # Per layer:
+    # in_proj: dim → 2 * d_inner (split into x and z)
+    # W_x: d_inner → d_inner
+    # W_h: d_inner → d_inner
+    # b: d_inner
+    # out_proj: d_inner → dim
+    in_proj = dim * 2 * d_inner
+    W_x = d_inner * d_inner
+    W_h = d_inner * d_inner
+    b = d_inner
+    out_proj = d_inner * dim
+    norm = dim  # RMSNorm
+
+    per_layer = in_proj + W_x + W_h + b + out_proj + norm
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    final_norm = dim
+
+    return layers_total + embed + final_norm
+
+
+def calc_e23_params(dim, depth, n_slots=64, vocab_size=256):
+    """Calculate E23 (DualMemoryElman) parameters.
+
+    E23 has tape (N slots) + working memory architecture:
+    - Tape: read/write via attention
+    - Working memory: Elman update + read integration
+    """
+    # Per layer:
+    # W_h: dim → dim (working memory recurrence)
+    # W_x: dim → dim (input projection)
+    # b_h: dim
+    # W_write: dim → dim (write projection)
+    # in_proj: dim → dim (layer input)
+    # out_proj: dim → dim (layer output)
+    W_h = dim * dim
+    W_x = dim * dim
+    b_h = dim
+    W_write = dim * dim
+    in_proj = dim * dim
+    out_proj = dim * dim
+    norm = dim  # RMSNorm
+
+    per_layer = W_h + W_x + b_h + W_write + in_proj + out_proj + norm
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    final_norm = dim
+
+    return layers_total + embed + final_norm
+
+
+def calc_e42_params(dim, depth, expansion=1.0, vocab_size=256):
+    """Calculate E42 (LinearTied) parameters.
+
+    E42 combines:
+    - Linear recurrence (no tanh)
+    - Tied weights (W_x = W_h = W)
+    - Self-gating (h * silu(h))
+    """
+    d_inner = int(dim * expansion)
+
+    # Per layer:
+    # in_proj: dim → d_inner
+    # W: d_inner → d_inner (tied for both input and hidden)
+    # b: d_inner
+    # out_proj: d_inner → dim
+    in_proj = dim * d_inner
+    W = d_inner * d_inner  # Single tied matrix
+    b = d_inner
+    out_proj = d_inner * dim
+    norm = dim  # RMSNorm
+
+    per_layer = in_proj + W + b + out_proj + norm
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim  # tied embeddings
+    final_norm = dim
+
+    return layers_total + embed + final_norm
+
+
 def calc_e88_params(dim, n_heads, n_state, depth, expansion=1.0, vocab_size=256, use_gate=True):
     """Calculate E88 FLA Hybrid parameters.
 

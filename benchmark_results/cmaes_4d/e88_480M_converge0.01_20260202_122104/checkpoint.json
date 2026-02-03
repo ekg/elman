@@ -1,0 +1,119 @@
+{
+  "generation": 1,
+  "best_loss": 10.0,
+  "best_params": {
+    "dim": 2304,
+    "n_heads": 75,
+    "n_state": 32,
+    "depth": 18,
+    "expansion": 0.8084725573549135,
+    "lr": 0.00029436033862753673
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "dim": 2304,
+        "n_heads": 75,
+        "n_state": 32,
+        "depth": 18,
+        "expansion": 0.8084725573549135,
+        "lr": 0.00029436033862753673
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "dim": 1408,
+        "n_heads": 107,
+        "n_state": 16,
+        "depth": 21,
+        "expansion": 0.7297617109024905,
+        "lr": 0.00015454950223566972
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "dim": 2048,
+        "n_heads": 118,
+        "n_state": 32,
+        "depth": 12,
+        "expansion": 1.122876019964841,
+        "lr": 0.0007334766404714109
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "dim": 2688,
+        "n_heads": 104,
+        "n_state": 32,
+        "depth": 13,
+        "expansion": 1.0518471969756953,
+        "lr": 0.0001676232914769624
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "dim": 2176,
+        "n_heads": 110,
+        "n_state": 32,
+        "depth": 21,
+        "expansion": 1.312399714893155,
+        "lr": 0.00014745792691104258
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "dim": 1792,
+        "n_heads": 117,
+        "n_state": 16,
+        "depth": 12,
+        "expansion": 1.0385722851353048,
+        "lr": 0.0005883348717499808
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "dim": 2304,
+        "n_heads": 82,
+        "n_state": 16,
+        "depth": 15,
+        "expansion": 1.1828898870019628,
+        "lr": 0.0003004519513296721
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "dim": 2176,
+        "n_heads": 87,
+        "n_state": 32,
+        "depth": 14,
+        "expansion": 1.0915909750505022,
+        "lr": 0.00042795549185389186
+      },
+      "diverged": true
+    }
+  ]
+}

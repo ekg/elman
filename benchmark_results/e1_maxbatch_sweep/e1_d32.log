@@ -1,7 +1,0 @@
-e1_d32_maxbatch: dim=1568 depth=32 batch=64 params=393,934,912
-Step 100 | 112s | Loss 2.0469 | Avg100 2.5977 | 29257 tok/s | Mem 32.8GB
-Step 200 | 225s | Loss 1.7500 | Avg100 1.8530 | 29086 tok/s | Mem 32.8GB
-Step 300 | 339s | Loss 1.6641 | Avg100 1.6887 | 29034 tok/s | Mem 32.8GB
-Step 400 | 452s | Loss 1.7031 | Avg100 1.6084 | 29020 tok/s | Mem 32.8GB
-Step 500 | 565s | Loss 1.5703 | Avg100 1.5598 | 29016 tok/s | Mem 32.8GB
-DONE: e1_d32_maxbatch | Steps=532 | Time=601s | Last100=1.5509 | 29015 tok/s | PeakMem=32.8GB

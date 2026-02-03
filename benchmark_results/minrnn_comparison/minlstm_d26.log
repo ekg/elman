@@ -1,8 +1,0 @@
-minlstm_d26: dim=1408 depth=26 expand=2 batch=32 params=412,788,992
-Step 100 | 98s | Avg100 3.2114 | 16682 tok/s | Mem 41.1GB
-Step 200 | 197s | Avg100 2.3737 | 16624 tok/s | Mem 41.1GB
-Step 300 | 296s | Avg100 2.1613 | 16593 tok/s | Mem 41.1GB
-Step 400 | 395s | Avg100 2.0249 | 16579 tok/s | Mem 41.1GB
-Step 500 | 494s | Avg100 1.9105 | 16570 tok/s | Mem 41.1GB
-Step 600 | 593s | Avg100 1.8137 | 16565 tok/s | Mem 41.1GB
-DONE: minlstm_d26 | Steps=607 | Last100=1.8055 | 16575 tok/s

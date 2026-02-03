@@ -1,0 +1,25 @@
+# Job 14: 60b
+# GPU: 2
+# Command: python train.py --level 60b --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/elman48_20260119_191441/60b
+# Started: 2026-01-19T19:26:09.086602
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/elman48_20260119_191441/60b/level60b_100m_20260119_192615
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level 60b, 131,300,480 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.1547 | lr 2.70e-05 | grad 11.25 | tok/s 1869
+step     20 | loss 4.0589 | lr 5.70e-05 | grad 8.50 | tok/s 2011
+step     30 | loss 4.6912 | lr 8.70e-05 | grad 3.86 | tok/s 2126
+step     40 | loss 3.8330 | lr 1.17e-04 | grad 4.25 | tok/s 2144
+step     50 | loss 3.5526 | lr 1.47e-04 | grad 2.14 | tok/s 2136
+step     60 | loss 3.6341 | lr 1.77e-04 | grad 2.77 | tok/s 2084
+step     70 | loss 3.2507 | lr 2.07e-04 | grad 2.81 | tok/s 1982
+
+Training complete! Final step: 77

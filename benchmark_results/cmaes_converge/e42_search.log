@@ -1,0 +1,20 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'expansion': 1, 'depth': 20}
+Encoded x0: ['0.000', '0.222']
+======================================================================
+CMA-ES Search for E42
+======================================================================
+Search space (2 dimensions):
+  expansion: [1, 3] (int) - Expansion factor for d_inner
+  depth: [12, 48] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 4
+GPUs: [2, 3, 6] (3 parallel)
+======================================================================
+(2_w,4mirr1)-aCMA-ES (mu_w=1.5,w_1=80%) in dimension 2 (seed=1155379, Sun Feb  1 23:24:43 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---

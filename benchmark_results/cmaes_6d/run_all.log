@@ -1,0 +1,119 @@
+
+Models to run (10): ['mamba2', 'fla-gdn', 'e88', 'e1', 'e42', 'e75', 'e23', 'mingru', 'minlstm', 'transformer']
+Search space: 4D (expanded from 2-3D)
+Training per eval: 30 minutes
+Convergence: improvement < 0.01
+Target: 480M params
+GPUs: 0,1,2,3,4,5,6,7
+Output: benchmark_results/cmaes_4d
+
+[1/10] 
+======================================================================
+Starting CMA-ES 4D search for MAMBA2
+======================================================================
+Time: 2026-02-02 09:17:08
+Log: benchmark_results/cmaes_4d/mamba2_search.log
+Config: train_minutes=30, converge=0.01
+[OK] mamba2 completed in 3.06 hours
+
+[2/10] 
+======================================================================
+Starting CMA-ES 4D search for FLA-GDN
+======================================================================
+Time: 2026-02-02 12:20:55
+Log: benchmark_results/cmaes_4d/fla-gdn_search.log
+Config: train_minutes=30, converge=0.01
+[OK] fla-gdn completed in 0.00 hours
+
+[3/10] 
+======================================================================
+Starting CMA-ES 4D search for E88
+======================================================================
+Time: 2026-02-02 12:21:04
+Log: benchmark_results/cmaes_4d/e88_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e88 completed in 0.01 hours
+
+[4/10] 
+======================================================================
+Starting CMA-ES 4D search for E1
+======================================================================
+Time: 2026-02-02 12:21:23
+Log: benchmark_results/cmaes_4d/e1_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e1 completed in 6.58 hours
+
+[5/10] 
+======================================================================
+Starting CMA-ES 4D search for E42
+======================================================================
+Time: 2026-02-02 18:56:12
+Log: benchmark_results/cmaes_4d/e42_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e42 completed in 3.55 hours
+
+[6/10] 
+======================================================================
+Starting CMA-ES 4D search for E75
+======================================================================
+Time: 2026-02-02 22:29:29
+Log: benchmark_results/cmaes_4d/e75_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e75 completed in 2.02 hours
+
+[7/10] 
+======================================================================
+Starting CMA-ES 4D search for E23
+======================================================================
+Time: 2026-02-03 00:30:39
+Log: benchmark_results/cmaes_4d/e23_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e23 completed in 0.00 hours
+
+[8/10] 
+======================================================================
+Starting CMA-ES 4D search for MINGRU
+======================================================================
+Time: 2026-02-03 00:30:40
+Log: benchmark_results/cmaes_4d/mingru_search.log
+Config: train_minutes=30, converge=0.01
+[OK] mingru completed in 1.54 hours
+
+[9/10] 
+======================================================================
+Starting CMA-ES 4D search for MINLSTM
+======================================================================
+Time: 2026-02-03 02:02:53
+Log: benchmark_results/cmaes_4d/minlstm_search.log
+Config: train_minutes=30, converge=0.01
+[OK] minlstm completed in 3.06 hours
+
+[10/10] 
+======================================================================
+Starting CMA-ES 4D search for TRANSFORMER
+======================================================================
+Time: 2026-02-03 05:06:45
+Log: benchmark_results/cmaes_4d/transformer_search.log
+Config: train_minutes=30, converge=0.01
+[OK] transformer completed in 0.00 hours
+
+======================================================================
+CMA-ES 4D SEARCH SUMMARY
+======================================================================
+
+Model           Status          Hours       Loss Config
+----------------------------------------------------------------------
+mamba2          OK               3.06        N/A 
+fla-gdn         OK               0.00        N/A 
+e88             OK               0.01        N/A 
+e1              OK               6.58        N/A 
+e42             OK               3.55        N/A 
+e75             OK               2.02        N/A 
+e23             OK               0.00        N/A 
+mingru          OK               1.54        N/A 
+minlstm         OK               3.06        N/A 
+transformer     OK               0.00        N/A 
+----------------------------------------------------------------------
+
+Total time: 19.83 hours
+Completed: 10/10 models

@@ -1,0 +1,15 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_converge/e75_480M_converge0.01_20260201_223412/eval_20/levelE75h7n32_100m_20260201_233454
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 630, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 357, in train
+    model = LadderLM(
+            ^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 791, in __init__
+    LayerClass = get_ladder_level(level)
+                 ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 724, in get_ladder_level
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2")
+ValueError: Invalid level E75h7n32. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2

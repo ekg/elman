@@ -1,0 +1,575 @@
+{
+  "generation": 5,
+  "best_loss": 1.296591,
+  "best_params": {
+    "dim": 1792,
+    "expansion": 1,
+    "depth": 32,
+    "use_conv": 0,
+    "d_conv": 6,
+    "lr": 0.0007723228876505773
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.504237,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 33,
+        "use_conv": 0,
+        "d_conv": 3,
+        "lr": 0.00020176854687026105
+      },
+      "dim": 2176,
+      "actual_params": 781828096
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.535987,
+      "params": {
+        "dim": 1152,
+        "expansion": 1,
+        "depth": 35,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0005106914585780545
+      },
+      "dim": 1152,
+      "actual_params": 232538112
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.8610570000000002,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00014650000641689155
+      },
+      "dim": 1280,
+      "actual_params": 221511680
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.543285,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 32,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00017456245302173814
+      },
+      "dim": 2176,
+      "actual_params": 758153216
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.4144059999999998,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 22,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00024424333116484316
+      },
+      "dim": 2176,
+      "actual_params": 521404416
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.4477760000000002,
+      "params": {
+        "dim": 1536,
+        "expansion": 1,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0005270822173054829
+      },
+      "dim": 1536,
+      "actual_params": 354287616
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.7443309999999999,
+      "params": {
+        "dim": 1664,
+        "expansion": 2,
+        "depth": 31,
+        "use_conv": 0,
+        "d_conv": 3,
+        "lr": 0.0005784808773868252
+      },
+      "dim": 1664,
+      "actual_params": 1373798400
+    },
+    {
+      "eval_id": 8,
+      "loss": 2.042371,
+      "params": {
+        "dim": 2432,
+        "expansion": 2,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00021190959695285602
+      },
+      "dim": 2432,
+      "actual_params": 2650374144
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.543527,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00015210992276232883
+      },
+      "dim": 1920,
+      "actual_params": 498155520
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.36933,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 3,
+        "lr": 0.0003279487717031304
+      },
+      "dim": 1920,
+      "actual_params": 516587520
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.559556,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00022777924703083915
+      },
+      "dim": 1664,
+      "actual_params": 374226944
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.338106,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00044352573244449645
+      },
+      "dim": 1920,
+      "actual_params": 553451520
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.428639,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 37,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00022662896833460294
+      },
+      "dim": 1664,
+      "actual_params": 512671744
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.5292339999999998,
+      "params": {
+        "dim": 1536,
+        "expansion": 1,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0006773243750831238
+      },
+      "dim": 1536,
+      "actual_params": 330694656
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.980907,
+      "params": {
+        "dim": 2048,
+        "expansion": 2,
+        "depth": 26,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00019465216509186647
+      },
+      "dim": 2048,
+      "actual_params": 1745354752
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.6362549999999998,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 3,
+        "lr": 0.0001473170195838459
+      },
+      "dim": 1792,
+      "actual_params": 433979392
+    },
+    {
+      "eval_id": 17,
+      "loss": 1.449727,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 34,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0002504607396924198
+      },
+      "dim": 1920,
+      "actual_params": 627179520
+    },
+    {
+      "eval_id": 18,
+      "loss": 1.357247,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 24,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00035773458503330366
+      },
+      "dim": 2176,
+      "actual_params": 568754176
+    },
+    {
+      "eval_id": 19,
+      "loss": 1.3211570000000001,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 31,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00047064219574006534
+      },
+      "dim": 1920,
+      "actual_params": 571883520
+    },
+    {
+      "eval_id": 20,
+      "loss": 1.327637,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 31,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0007344139365785593
+      },
+      "dim": 1792,
+      "actual_params": 498204672
+    },
+    {
+      "eval_id": 21,
+      "loss": 1.432134,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 25,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0004168078775677743
+      },
+      "dim": 1920,
+      "actual_params": 461291520
+    },
+    {
+      "eval_id": 22,
+      "loss": 1.352669,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00041119432237054934
+      },
+      "dim": 1792,
+      "actual_params": 482148352
+    },
+    {
+      "eval_id": 23,
+      "loss": 1.714556,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.00019341431558599935
+      },
+      "dim": 1408,
+      "actual_params": 267993088
+    },
+    {
+      "eval_id": 24,
+      "loss": 1.407647,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0006973250819078757
+      },
+      "dim": 2304,
+      "actual_params": 743768064
+    },
+    {
+      "eval_id": 25,
+      "loss": 1.296591,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 32,
+        "use_conv": 0,
+        "d_conv": 6,
+        "lr": 0.0007723228876505773
+      },
+      "dim": 1792,
+      "actual_params": 514260992
+    },
+    {
+      "eval_id": 26,
+      "loss": 1.314049,
+      "params": {
+        "dim": 2048,
+        "expansion": 1,
+        "depth": 29,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0005365611615385982
+      },
+      "dim": 2048,
+      "actual_params": 608698368
+    },
+    {
+      "eval_id": 27,
+      "loss": 1.5711060000000001,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0003522591995781556
+      },
+      "dim": 1408,
+      "actual_params": 277905408
+    },
+    {
+      "eval_id": 28,
+      "loss": 1.443867,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 36,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00023605160767318633
+      },
+      "dim": 1664,
+      "actual_params": 498827264
+    },
+    {
+      "eval_id": 29,
+      "loss": 1.8985349999999999,
+      "params": {
+        "dim": 2048,
+        "expansion": 2,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00038935434480308996
+      },
+      "dim": 2048,
+      "actual_params": 1879572480
+    },
+    {
+      "eval_id": 30,
+      "loss": 1.43284,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 25,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0003851803933590499
+      },
+      "dim": 1920,
+      "actual_params": 461291520
+    },
+    {
+      "eval_id": 31,
+      "loss": 1.526064,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.00022376126041007732
+      },
+      "dim": 1664,
+      "actual_params": 415760384
+    },
+    {
+      "eval_id": 32,
+      "loss": 1.385593,
+      "params": {
+        "dim": 2432,
+        "expansion": 1,
+        "depth": 34,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.000995069301863411
+      },
+      "dim": 2432,
+      "actual_params": 1006108672
+    },
+    {
+      "eval_id": 33,
+      "loss": 1.349204,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0005070430299568228
+      },
+      "dim": 1920,
+      "actual_params": 498155520
+    },
+    {
+      "eval_id": 34,
+      "loss": 1.410508,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0002797081376583149
+      },
+      "dim": 1792,
+      "actual_params": 482148352
+    },
+    {
+      "eval_id": 35,
+      "loss": 1.432581,
+      "params": {
+        "dim": 2560,
+        "expansion": 1,
+        "depth": 34,
+        "use_conv": 0,
+        "d_conv": 6,
+        "lr": 0.0008952844112117612
+      },
+      "dim": 2560,
+      "actual_params": 1114767360
+    },
+    {
+      "eval_id": 36,
+      "loss": 1.377011,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 29,
+        "use_conv": 0,
+        "d_conv": 5,
+        "lr": 0.0008764710101805342
+      },
+      "dim": 2176,
+      "actual_params": 687128576
+    },
+    {
+      "eval_id": 37,
+      "loss": 1.390601,
+      "params": {
+        "dim": 2048,
+        "expansion": 1,
+        "depth": 32,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0007185641721354826
+      },
+      "dim": 2048,
+      "actual_params": 671612928
+    },
+    {
+      "eval_id": 38,
+      "loss": 1.435308,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 26,
+        "use_conv": 0,
+        "d_conv": 4,
+        "lr": 0.0002785538261879296
+      },
+      "dim": 2304,
+      "actual_params": 690683904
+    },
+    {
+      "eval_id": 39,
+      "loss": 1.328394,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 32,
+        "use_conv": 0,
+        "d_conv": 6,
+        "lr": 0.0006055463715492408
+      },
+      "dim": 1920,
+      "actual_params": 590315520
+    },
+    {
+      "eval_id": 40,
+      "loss": 1.3273840000000001,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 24,
+        "use_conv": 0,
+        "d_conv": 6,
+        "lr": 0.0005577553256457654
+      },
+      "dim": 2304,
+      "actual_params": 637599744
+    }
+  ]
+}

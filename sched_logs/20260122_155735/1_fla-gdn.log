@@ -1,0 +1,49 @@
+Using device: cuda
+Output directory: benchmark_results/mega_100m_20260122_155533/fla-gdn/levelfla-gdn_100m_20260122_155742
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level fla-gdn, 105,717,568 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 584, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 510, in train
+    scaled_loss.backward()
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/function.py", line 315, in apply
+    return user_fn(self, *args)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 848, in backward
+    dx, dw, db, dresidual_in, dx1, dw1, db1 = _layer_norm_bwd(
+                                              ^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 670, in _layer_norm_bwd
+    _layer_norm_bwd_kernel[grid](
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/jit.py", line 419, in <lambda>
+    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 238, in run
+    benchmark()
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 227, in benchmark
+    timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 162, in _bench
+    return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/testing.py", line 152, in do_bench
+    cache = runtime.driver.active.get_empty_cache_for_benchmark()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/triton/backends/nvidia/driver.py", line 760, in get_empty_cache_for_benchmark
+    return torch.empty(int(cache_size // 4), dtype=torch.int, device='cuda')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 256.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 139.44 MiB is free. Process 3293824 has 9.69 GiB memory in use. Process 3294433 has 9.72 GiB memory in use. Process 3298585 has 9.49 GiB memory in use. Process 3299275 has 9.49 GiB memory in use. Including non-PyTorch memory, this process has 8.84 GiB memory in use. Of the allocated memory 8.28 GiB is allocated by PyTorch, and 60.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

@@ -1,0 +1,230 @@
+{
+  "generation": 3,
+  "best_loss": 1.5740279999999998,
+  "best_params": {
+    "expansion": 1,
+    "depth": 17
+  },
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.7213370000000001,
+      "params": {
+        "expansion": 1,
+        "depth": 22
+      },
+      "dim": 2048,
+      "actual_params": 461897728
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 17
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 17
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 2.103081,
+      "params": {
+        "expansion": 2,
+        "depth": 18
+      },
+      "dim": 1280,
+      "actual_params": 472186880
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 21
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 2.1309299999999998,
+      "params": {
+        "expansion": 2,
+        "depth": 22
+      },
+      "dim": 1152,
+      "actual_params": 467435520
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 25
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.5740279999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 17
+      },
+      "dim": 2432,
+      "actual_params": 503365632
+    },
+    {
+      "eval_id": 9,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 16
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 10,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 12
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 11,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 18
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 12,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 16
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 13,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 14,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 15
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 15,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 21
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 16,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 17,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 13
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 18,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 19,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 15
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 20,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 16
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 21,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 13
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 22,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 17
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 23,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 22
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 24,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 19
+      },
+      "diverged": true
+    }
+  ]
+}

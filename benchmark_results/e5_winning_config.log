@@ -1,2 +1,0 @@
-Creating E5 model: dim=1536, rank=270, depth=20
-e5_50m_d1536_r270: params=50,254,848, depth=20, batch=256

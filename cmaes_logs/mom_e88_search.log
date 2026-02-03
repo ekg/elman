@@ -1,0 +1,50 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+======================================================================
+CMA-ES Search for MOM-E88
+======================================================================
+Search space (4 dimensions):
+  n_heads: [32, 512] (int) - Total number of memory heads (wide range for capacity exploration)
+  top_k: [4, 128] (int) - Active heads per token (wide range for sparsity exploration)
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported)
+  depth: [6, 48] (int) - Number of layers (wide range from shallow to deep)
+Target params: 500M ± 50M
+Training time per config: 3.0 min
+Generations: 30
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~240
+Estimated time: ~90 min (1.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 4 (seed=781078, Wed Jan 28 15:58:22 2026)
+
+--- Generation 1/30 ---
+  [Eval 1] GPU 0 | n_heads=307, top_k=46, n_state=64, depth=23 | dim=256 | 466.8M params
+  [Eval 2] GPU 1 | n_heads=407, top_k=127, n_state=48, depth=46 | dim=128 | 465.3M params
+  [Eval 3] GPU 2 | n_heads=463, top_k=77, n_state=32, depth=10 | dim=768 | 462.7M params
+  [Eval 5] GPU 4 | n_heads=211, top_k=121, n_state=32, depth=19 | dim=896 | 467.8M params
+  [Eval 4] GPU 3 | n_heads=499, top_k=83, n_state=48, depth=6 | dim=896 | 520.9M params
+  [Eval 6] GPU 5 | n_heads=405, top_k=64, n_state=48, depth=47 | dim=128 | 473.0M params
+  [Eval 7] GPU 6 | n_heads=209, top_k=92, n_state=32, depth=26 | dim=768 | 543.4M params  [Eval 8] GPU 7 | n_heads=142, top_k=71, n_state=32, depth=46 | dim=640 | 544.6M params
+
+  [Eval 1] NaN/diverged (loss=inf)
+  [Eval 5] Timeout
+  [Eval 4] Timeout
+  [Eval 7] Timeout
+  [Eval 3] Timeout
+  [Eval 8] Timeout
+  [Eval 2] Timeout
+  [Eval 6] Timeout
+  *** NEW BEST: 10.0000 | {'n_heads': 307, 'top_k': 46, 'n_state': 64, 'depth': 23} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 2.92e-01  3e-01  3e-01 6:13.6
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'n_heads': 307, 'top_k': 46, 'n_state': 64, 'depth': 23}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level MoM-E88 --dim 256 --n_heads 307 --top_k 46 --n_state 64 --depth 23 --lr 3e-4 --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30

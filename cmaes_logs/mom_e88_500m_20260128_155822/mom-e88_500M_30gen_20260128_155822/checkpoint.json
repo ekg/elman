@@ -1,0 +1,100 @@
+{
+  "generation": 1,
+  "best_loss": 10.0,
+  "best_params": {
+    "n_heads": 307,
+    "top_k": 46,
+    "n_state": 64,
+    "depth": 23
+  },
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 307,
+        "top_k": 46,
+        "n_state": 64,
+        "depth": 23
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 407,
+        "top_k": 127,
+        "n_state": 48,
+        "depth": 46
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 463,
+        "top_k": 77,
+        "n_state": 32,
+        "depth": 10
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 499,
+        "top_k": 83,
+        "n_state": 48,
+        "depth": 6
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 211,
+        "top_k": 121,
+        "n_state": 32,
+        "depth": 19
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 405,
+        "top_k": 64,
+        "n_state": 48,
+        "depth": 47
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 209,
+        "top_k": 92,
+        "n_state": 32,
+        "depth": 26
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 142,
+        "top_k": 71,
+        "n_state": 32,
+        "depth": 46
+      },
+      "timeout": true
+    }
+  ]
+}

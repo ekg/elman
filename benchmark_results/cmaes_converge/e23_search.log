@@ -1,0 +1,60 @@
+CMA-ES Search for e23
+Started: 2026-02-02T00:05:07.365010
+Command: python cmaes_search.py --model e23 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'n_slots': 64, 'depth': 20}
+Encoded x0: ['0.333', '0.286']
+======================================================================
+CMA-ES Search for E23
+======================================================================
+Search space (2 dimensions):
+  n_slots: [32, 128] (int) - Number of tape slots
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 2 (seed=1112040, Mon Feb  2 00:05:07 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 3] GPU 2 | n_slots=50, depth=25 | dim=1920 | 461.4M params
+  [Eval 3] NaN/diverged (loss=inf)
+  [Eval 2] GPU 1 | n_slots=46, depth=21 | dim=2176 | 497.8M params
+  [Eval 2] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | n_slots=55, depth=28 | dim=1792 | 450.1M params
+  [Eval 4] NaN/diverged (loss=inf)
+  [Eval 5] GPU 4 | n_slots=78, depth=23 | dim=2048 | 483.0M params
+  [Eval 5] NaN/diverged (loss=inf)
+  [Eval 6] GPU 5 | n_slots=80, depth=12 | dim=2816 | 476.6M params
+  [Eval 6] NaN/diverged (loss=inf)
+  [Eval 1] GPU 0 | n_slots=66, depth=13 | dim=2688 | 470.4M params
+  [Eval 1] NaN/diverged (loss=inf)
+  [Eval 8] GPU 7 | n_slots=63, depth=16 | dim=2432 | 473.9M params
+  [Eval 8] NaN/diverged (loss=inf)
+  [Eval 7] GPU 6 | n_slots=72, depth=22 | dim=2048 | 462.0M params
+  [Eval 7] NaN/diverged (loss=inf)
+  *** NEW BEST: 10.0000 | {'n_slots': 66, 'depth': 13} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 1.42e-01  1e-01  1e-01 0:08.1
+  Generation best: 10.0000 | Overall best: 10.0000 | Improvement: inf
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'n_slots': 66, 'depth': 13}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level 23 --dim 2688 --depth 13 --n_slots 66 --lr 3e-4 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-02T00:05:16.084200
+Duration: 0.00 hours
+Return code: 0

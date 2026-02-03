@@ -1,1 +1,0 @@
-{"config_id": 18, "config_desc": "Lowrank-4, tied k=q", "state": "lowrank", "proj": "tied_kq", "nonlin": "tanh", "gate": "output", "parameters": 360704, "memory_mb": 32.990234375, "mean_loss": 6.90625, "final_loss": 6.90625, "mean_time_ms": 291.6019257158041, "tokens_per_sec": 3511.6366172354865, "mean_grad_norm": 0.0, "max_grad_norm": 0.0, "checkpointed": false}

@@ -1,0 +1,35 @@
+# Job 1: E88_h72n48_d20
+# GPU: 1
+# Command: python train.py --level E88_h72n48 --dim 1920 --depth 20 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 5 --output benchmark_results/e88_depth20_test/E88_h72n48_d20
+# Started: 2026-01-22T17:26:18.834491
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/e88_depth20_test/E88_h72n48_d20/levelE88_h72n48_100m_20260122_172623
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88_h72n48, 534,142,080 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 2, Effective batch: 32
+
+Time-based training: 5.0 minutes
+step     10 | loss 10.0001 | lr 3.00e-04 | grad 13.69 | tok/s 7221
+step     20 | loss 8.1613 | lr 3.00e-04 | grad 18.88 | tok/s 8850
+step     30 | loss 8.1480 | lr 3.00e-04 | grad 9.06 | tok/s 9267
+step     40 | loss 6.2608 | lr 3.00e-04 | grad 4.62 | tok/s 9176
+step     50 | loss 5.2825 | lr 3.00e-04 | grad 3.50 | tok/s 9136
+step     60 | loss 5.7370 | lr 3.00e-04 | grad 4.44 | tok/s 8909
+step     70 | loss 5.3013 | lr 3.00e-04 | grad 2.67 | tok/s 8585
+step     80 | loss 4.8643 | lr 3.00e-04 | grad 3.58 | tok/s 8915
+step     90 | loss 5.0666 | lr 3.00e-04 | grad 9.00 | tok/s 8602
+step    100 | loss 4.4139 | lr 3.00e-04 | grad 3.97 | tok/s 8684
+step    110 | loss 4.4204 | lr 3.00e-04 | grad 2.78 | tok/s 8543
+step    120 | loss 4.5325 | lr 3.00e-04 | grad 3.36 | tok/s 8412
+step    130 | loss 4.4674 | lr 3.00e-04 | grad 2.42 | tok/s 8625
+step    140 | loss 4.1130 | lr 3.00e-04 | grad 2.25 | tok/s 8638
+step    150 | loss 3.8655 | lr 3.00e-04 | grad 2.72 | tok/s 8239
+step    160 | loss 3.7762 | lr 3.00e-04 | grad 1.75 | tok/s 8313
+
+Training complete! Final step: 164

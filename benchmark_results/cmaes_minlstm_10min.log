@@ -1,0 +1,88 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'expansion': 2, 'depth': 20}
+Encoded x0: ['0.333', '0.286']
+======================================================================
+CMA-ES Search for MINLSTM
+======================================================================
+Search space (2 dimensions):
+  expansion: [1, 4] (int) - Expansion factor
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 30M
+Training time per config: 10.0 min
+Generations: 15
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~120
+Estimated time: ~150 min (2.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 2 (seed=598306, Mon Jan 26 22:48:10 2026)
+
+--- Generation 1/15 ---
+  [Eval 3] Skip - params 446.0M vs target 480M
+  [Eval 2] Skip - params 446.0M vs target 480M
+  [Eval 7] Skip - params 531.1M vs target 480M
+  [Eval 5] Skip - params 446.2M vs target 480M
+  [Eval 1] GPU 0 | expansion=1, depth=22 | dim=2048 | 461.9M params
+  [Eval 1] Loss: 1.7213
+  [Eval 8] GPU 7 | expansion=1, depth=17 | dim=2432 | 503.4M params
+  [Eval 8] Loss: 1.5740
+  [Eval 6] GPU 5 | expansion=2, depth=22 | dim=1152 | 467.4M params
+  [Eval 6] Loss: 2.1309
+  [Eval 4] GPU 3 | expansion=2, depth=18 | dim=1280 | 472.2M params
+  [Eval 4] Loss: 2.1031
+  *** NEW BEST: 1.7213 | {'expansion': 1, 'depth': 22} | dim=2048 ***
+  *** NEW BEST: 1.5740 | {'expansion': 1, 'depth': 17} | dim=2432 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.574028000000000e+00 1.0e+00 1.70e-01  1e-01  2e-01 10:10.4
+
+--- Generation 2/15 ---
+  [Eval 14] GPU 5 | expansion=2, depth=15 | dim=1408 | 476.2M params
+  [Eval 14] NaN/diverged (loss=inf)
+  [Eval 10] GPU 1 | expansion=1, depth=12 | dim=2816 | 476.5M params
+  [Eval 10] NaN/diverged (loss=inf)
+  [Eval 9] GPU 0 | expansion=1, depth=16 | dim=2432 | 473.8M params
+  [Eval 9] NaN/diverged (loss=inf)
+  [Eval 13] GPU 4 | expansion=1, depth=19 | dim=2304 | 504.9M params
+  [Eval 13] NaN/diverged (loss=inf)
+  [Eval 11] GPU 2 | expansion=1, depth=18 | dim=2304 | 478.3M params
+  [Eval 11] NaN/diverged (loss=inf)
+  [Eval 15] GPU 6 | expansion=1, depth=21 | dim=2176 | 497.7M params
+  [Eval 15] NaN/diverged (loss=inf)
+  [Eval 16] GPU 7 | expansion=2, depth=19 | dim=1280 | 498.4M params
+  [Eval 16] NaN/diverged (loss=inf)
+  [Eval 12] GPU 3 | expansion=2, depth=16 | dim=1408 | 507.9M params
+  [Eval 12] NaN/diverged (loss=inf)
+    2     16 1.000000000000000e+01 1.5e+00 2.21e-01  2e-01  3e-01 10:11.7
+
+--- Generation 3/15 ---
+  [Eval 22] GPU 5 | expansion=1, depth=17 | dim=2432 | 503.4M params
+  [Eval 22] NaN/diverged (loss=inf)
+  [Eval 21] GPU 4 | expansion=1, depth=13 | dim=2688 | 470.3M params
+  [Eval 21] NaN/diverged (loss=inf)
+  [Eval 20] GPU 3 | expansion=1, depth=16 | dim=2432 | 473.8M params
+  [Eval 20] NaN/diverged (loss=inf)
+  [Eval 24] GPU 7 | expansion=1, depth=19 | dim=2304 | 504.9M params
+  [Eval 24] NaN/diverged (loss=inf)
+  [Eval 23] GPU 6 | expansion=2, depth=22 | dim=1152 | 467.4M params
+  [Eval 23] NaN/diverged (loss=inf)
+  [Eval 17] GPU 0 | expansion=2, depth=13 | dim=1536 | 491.1M params
+  [Eval 17] NaN/diverged (loss=inf)
+  [Eval 18] GPU 1 | expansion=1, depth=19 | dim=2304 | 504.9M params
+  [Eval 18] NaN/diverged (loss=inf)
+  [Eval 19] GPU 2 | expansion=1, depth=15 | dim=2560 | 492.2M params
+  [Eval 19] NaN/diverged (loss=inf)
+    3     24 1.000000000000000e+01 2.1e+00 2.78e-01  2e-01  3e-01 10:12.8
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.5740
+Best params: {'expansion': 1, 'depth': 17}
+Total evaluations: 24
+OSError: [Errno 28] No space left on device
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  F

@@ -1,0 +1,73 @@
+{
+  "generation": 1,
+  "best_loss": 10.0,
+  "best_params": {
+    "depth": 26
+  },
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "depth": 26
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "depth": 22
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "depth": 18
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "depth": 22
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "depth": 21
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "depth": 18
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "depth": 24
+      },
+      "diverged": true
+    }
+  ]
+}

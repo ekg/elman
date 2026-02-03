@@ -1,0 +1,31 @@
+# Job 4: E88_h20n128
+# GPU: 4
+# Command: python train.py --level E88_h20n128 --dim 1536 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_matched_d32/E88_h20n128
+# Started: 2026-01-22T16:53:08.454526
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/500m_state_matched_d32/E88_h20n128/levelE88_h20n128_100m_20260122_165315
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 584, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 359, in train
+    model = model.to(device)
+            ^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1371, in to
+    return self._apply(convert)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 930, in _apply
+    module._apply(fn)
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 930, in _apply
+    module._apply(fn)
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 930, in _apply
+    module._apply(fn)
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 957, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1357, in convert
+    return t.to(
+           ^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 46.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 23.38 MiB is free. Process 3308346 has 45.29 GiB memory in use. Including non-PyTorch memory, this process has 2.06 GiB memory in use. Of the allocated memory 1.64 GiB is allocated by PyTorch, and 4.11 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

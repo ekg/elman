@@ -1,0 +1,102 @@
+{
+  "model_type": "transformer",
+  "target_params": 480000000,
+  "best_loss": 10.0,
+  "best_params": {
+    "n_heads": 13,
+    "head_dim": 80,
+    "expansion": 4,
+    "depth": 19
+  },
+  "total_evals": 8,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 13,
+        "head_dim": 80,
+        "expansion": 4,
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "head_dim": 80,
+        "expansion": 5,
+        "depth": 20
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 12,
+        "head_dim": 32,
+        "expansion": 3,
+        "depth": 30
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "head_dim": 80,
+        "expansion": 4,
+        "depth": 22
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 12,
+        "head_dim": 64,
+        "expansion": 4,
+        "depth": 23
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 11,
+        "head_dim": 64,
+        "expansion": 3,
+        "depth": 20
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 19,
+        "head_dim": 64,
+        "expansion": 4,
+        "depth": 28
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 17,
+        "head_dim": 64,
+        "expansion": 4,
+        "depth": 29
+      },
+      "diverged": true
+    }
+  ]
+}

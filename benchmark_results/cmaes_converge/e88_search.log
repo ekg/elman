@@ -1,0 +1,87 @@
+CMA-ES Search for e88
+Started: 2026-02-01T19:02:13.680913
+Command: python cmaes_search.py --model e88 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'n_heads': 98, 'n_state': 32, 'depth': 14}
+Encoded x0: ['0.516', '0.333', '0.071']
+======================================================================
+CMA-ES Search for E88
+======================================================================
+Search space (3 dimensions):
+  n_heads: [32, 160] (int) - Number of attention heads
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported by fused kernel)
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 3 (seed=1000602, Sun Feb  1 19:02:14 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 7] GPU 6 | n_heads=79, n_state=32, depth=17 | dim=2176 | 471.1M params
+  [Eval 7] Loss: 1.3570
+  [Eval 1] GPU 0 | n_heads=67, n_state=32, depth=19 | dim=2304 | 472.9M params
+  [Eval 1] Loss: 1.3543
+  [Eval 6] GPU 5 | n_heads=111, n_state=32, depth=16 | dim=1664 | 476.3M params
+  [Eval 6] Loss: 1.3593
+  [Eval 5] GPU 4 | n_heads=90, n_state=16, depth=25 | dim=2688 | 490.7M params
+  [Eval 5] Loss: 1.3226
+  [Eval 2] GPU 1 | n_heads=72, n_state=32, depth=17 | dim=2432 | 479.9M params
+  [Eval 2] Loss: 1.3506
+  [Eval 8] GPU 7 | n_heads=86, n_state=32, depth=12 | dim=2944 | 489.9M params
+  [Eval 8] Loss: 1.2901
+  [Eval 4] GPU 3 | n_heads=97, n_state=16, depth=12 | dim=5120 | 484.1M params
+  [Eval 4] Loss: 1.2474
+  [Eval 3] GPU 2 | n_heads=110, n_state=48, depth=20 | dim=896 | 475.3M params
+  [Eval 3] Loss: 1.5110
+  *** NEW BEST: 1.3543 | {'n_heads': 67, 'n_state': 32, 'depth': 19} | dim=2304 ***
+  *** NEW BEST: 1.3506 | {'n_heads': 72, 'n_state': 32, 'depth': 17} | dim=2432 ***
+  *** NEW BEST: 1.2474 | {'n_heads': 97, 'n_state': 16, 'depth': 12} | dim=5120 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.247395000000000e+00 1.0e+00 1.77e-01  2e-01  2e-01 30:18.1
+  Generation best: 1.2474 | Overall best: 1.2474 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 12] GPU 3 | n_heads=121, n_state=32, depth=19 | dim=1280 | 474.1M params
+  [Eval 12] Loss: 1.3816
+  [Eval 11] GPU 2 | n_heads=90, n_state=32, depth=18 | dim=1792 | 467.9M params
+  [Eval 11] Loss: 1.3706
+  [Eval 16] GPU 7 | n_heads=96, n_state=32, depth=12 | dim=2560 | 475.5M params
+  [Eval 16] Loss: 1.3407
+  [Eval 15] GPU 6 | n_heads=77, n_state=32, depth=17 | dim=2304 | 486.2M params
+  [Eval 15] Loss: 1.2928
+  [Eval 9] GPU 0 | n_heads=119, n_state=16, depth=12 | dim=4096 | 474.9M params
+  [Eval 9] Loss: 1.3424
+  [Eval 10] GPU 1 | n_heads=70, n_state=16, depth=22 | dim=3840 | 480.1M params
+  [Eval 10] Loss: 1.2451
+  [Eval 13] GPU 4 | n_heads=80, n_state=16, depth=17 | dim=4352 | 480.6M params
+  [Eval 13] Loss: 1.3070
+  [Eval 14] GPU 5 | n_heads=109, n_state=32, depth=13 | dim=2048 | 467.8M params
+  [Eval 14] Loss: 1.3467
+  *** NEW BEST: 1.2451 | {'n_heads': 70, 'n_state': 16, 'depth': 22} | dim=3840 ***
+    2     16 1.245139000000000e+00 1.5e+00 2.06e-01  2e-01  3e-01 60:35.6
+  Generation best: 1.2451 | Overall best: 1.2451 | Improvement: 0.0023
+  Improvement 0.0023 < threshold 0.01 (1 consecutive)
+
+*** CONVERGED: improvement 0.0023 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.2451
+Best params: {'n_heads': 70, 'n_state': 16, 'depth': 22}
+Total evaluations: 16
+
+To train with best config:
+python train.py --level E88 --dim 3840 --n_heads 70 --n_state 16 --depth 22 --lr 3e-4 --expansion 1.0 --use_gate 1 --gate_activation silu --train_minutes 30
+
+======================================================================
+Finished: 2026-02-01T20:02:49.910089
+Duration: 1.01 hours
+Return code: 0

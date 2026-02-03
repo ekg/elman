@@ -721,7 +721,40 @@ def get_ladder_level(level):
     }
     if level in levels:
         return levels[level]
-    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2")
+
+    # Dynamic parsing for E75h*n* patterns (E75 Multi-Head variants)
+    # Format: E75h{n_heads}n{n_state} or E75h{n_heads}
+    # Examples: E75h7n24, E75h11n48, E75h4 (uses default n_state=32)
+    if isinstance(level, str) and level.startswith('E75h'):
+        import re
+        # Match E75h{heads}n{state} or E75h{heads}
+        match = re.match(r'E75h(\d+)(?:n(\d+))?', level)
+        if match:
+            n_heads = int(match.group(1))
+            n_state = int(match.group(2)) if match.group(2) else 32  # Default to 32
+
+            # Validate n_state is supported (must be in CUDA kernel instantiations)
+            SUPPORTED_N_STATE = {8, 16, 24, 32, 40, 48, 56, 64}
+            if n_state not in SUPPORTED_N_STATE:
+                raise ValueError(
+                    f"E75 n_state={n_state} not supported. "
+                    f"Supported values: {sorted(SUPPORTED_N_STATE)}. "
+                    f"For larger state sizes, use E88 instead."
+                )
+
+            return lambda **kw: E75MultiHead(**{**kw, 'n_heads': n_heads, 'n_state': n_state})
+
+    # Dynamic parsing for E88h*n* patterns (E88 FLA Hybrid variants)
+    # Format: E88h{n_heads}n{n_state} or E88h{n_heads}
+    if isinstance(level, str) and level.startswith('E88h'):
+        import re
+        match = re.match(r'E88h(\d+)(?:n(\d+))?', level)
+        if match:
+            n_heads = int(match.group(1))
+            n_state = int(match.group(2)) if match.group(2) else 32
+            return lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': n_heads, 'n_state': n_state})
+
+    raise ValueError(f"Invalid level {level}. Available: 0-6, 8-17, 18a/b/e, 19a/b/d/e, 20-26, 28, 30-68, gdn, gdn-vec, fla-gdn, llama, mamba2, E75h*n*, E88h*n*")
 
 
 class LadderLM(nn.Module):

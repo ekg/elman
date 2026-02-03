@@ -1,0 +1,739 @@
+Generating Wave 1: Depth exploration with balanced configs
+Generating Wave 2: Many heads, small state
+Generating Wave 3: Deep models (36, 40 layers)
+Generating Wave 4: Ratio exploration
+Generating Wave 5: New n_state values (36, 40, 44)
+
+Generated 42 configurations to explore
+Target: ~500M parameters
+Training time: 10.0 minutes per config
+Estimated total time: 7.0 hours
+
+============================================================
+STARTING OVERNIGHT EXPLORATION
+Output: benchmark_results/overnight_e88/20260123_051430
+============================================================
+
+[1/42] 
+============================================================
+Running: E88_d20_h68_n32
+  dim=2816, depth=20, n_heads=68, n_state=32
+  params≈494.8M, state/layer=69,632
+  balance ratio=0.77
+============================================================
+  Result: last-100 loss = 2.4727
+  *** NEW BEST: 2.4727 ***
+
+--- Current Results Summary ---
+  1. E88_d20_h68_n32: 2.4727 ***
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[2/42] 
+============================================================
+Running: E88_d20_h52_n40
+  dim=2944, depth=20, n_heads=52, n_state=40
+  params≈493.8M, state/layer=83,200
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 2.3790
+  *** NEW BEST: 2.3790 ***
+
+--- Current Results Summary ---
+  1. E88_d20_h52_n40: 2.3790 ***
+  2. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[3/42] 
+============================================================
+Running: E88_d20_h44_n48
+  dim=2944, depth=20, n_heads=44, n_state=48
+  params≈500.8M, state/layer=101,376
+  balance ratio=0.72
+============================================================
+  Result: last-100 loss = 2.3020
+  *** NEW BEST: 2.3020 ***
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[4/42] 
+============================================================
+Running: E88_d24_h60_n32
+  dim=2688, depth=24, n_heads=60, n_state=32
+  params≈500.1M, state/layer=61,440
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 2.6124
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d20_h68_n32: 2.4727 
+  4. E88_d24_h60_n32: 2.6124 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[5/42] 
+============================================================
+Running: E88_d24_h48_n40
+  dim=2688, depth=24, n_heads=48, n_state=40
+  params≈499.3M, state/layer=76,800
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 2.5322
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d20_h68_n32: 2.4727 
+  4. E88_d24_h48_n40: 2.5322 
+  5. E88_d24_h60_n32: 2.6124 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[6/42] 
+============================================================
+Running: E88_d24_h40_n48
+  dim=2688, depth=24, n_heads=40, n_state=48
+  params≈498.8M, state/layer=92,160
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 2.4024
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[7/42] 
+============================================================
+Running: E88_d28_h56_n32
+  dim=2432, depth=28, n_heads=56, n_state=32
+  params≈492.6M, state/layer=57,344
+  balance ratio=0.74
+============================================================
+  Result: last-100 loss = 2.9265
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[8/42] 
+============================================================
+Running: E88_d28_h48_n40
+  dim=2304, depth=28, n_heads=48, n_state=40
+  params≈499.2M, state/layer=76,800
+  balance ratio=0.83
+============================================================
+  Result: last-100 loss = 2.6791
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[9/42] 
+============================================================
+Running: E88_d28_h40_n48
+  dim=2304, depth=28, n_heads=40, n_state=48
+  params≈498.7M, state/layer=92,160
+  balance ratio=0.83
+============================================================
+  Result: last-100 loss = 2.6043
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[10/42] 
+============================================================
+Running: E88_d32_h52_n32
+  dim=2304, depth=32, n_heads=52, n_state=32
+  params≈495.2M, state/layer=53,248
+  balance ratio=0.72
+============================================================
+  Result: last-100 loss = 2.9727
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[11/42] 
+============================================================
+Running: E88_d32_h44_n40
+  dim=2176, depth=32, n_heads=44, n_state=40
+  params≈493.9M, state/layer=70,400
+  balance ratio=0.81
+============================================================
+  Result: last-100 loss = 2.8304
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[12/42] 
+============================================================
+Running: E88_d32_h36_n48
+  dim=2304, depth=32, n_heads=36, n_state=48
+  params≈512.9M, state/layer=82,944
+  balance ratio=0.75
+============================================================
+  Result: last-100 loss = 2.7743
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[13/42] 
+============================================================
+Running: E88_d24_h120_n16
+  dim=2688, depth=24, n_heads=120, n_state=16
+  params≈504.0M, state/layer=30,720
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 3.2169
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[14/42] 
+============================================================
+Running: E88_d24_h80_n24
+  dim=2688, depth=24, n_heads=80, n_state=24
+  params≈501.4M, state/layer=46,080
+  balance ratio=0.71
+============================================================
+  Result: last-100 loss = 2.8215
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[15/42] 
+============================================================
+Running: E88_d32_h104_n16
+  dim=2304, depth=32, n_heads=104, n_state=16
+  params≈499.1M, state/layer=26,624
+  balance ratio=0.72
+============================================================
+  Result: last-100 loss = 3.7545
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[16/42] 
+============================================================
+Running: E88_d32_h72_n24
+  dim=2176, depth=32, n_heads=72, n_state=24
+  params≈486.9M, state/layer=41,472
+  balance ratio=0.79
+============================================================
+  Result: last-100 loss = 3.2712
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[17/42] 
+============================================================
+Running: E88_d36_h52_n32
+  dim=2048, depth=36, n_heads=52, n_state=32
+  params≈495.2M, state/layer=53,248
+  balance ratio=0.81
+============================================================
+  Result: last-100 loss = 3.1537
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[18/42] 
+============================================================
+Running: E88_d36_h40_n40
+  dim=2176, depth=36, n_heads=40, n_state=40
+  params≈505.1M, state/layer=64,000
+  balance ratio=0.74
+============================================================
+  Result: last-100 loss = 2.9406
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[19/42] 
+============================================================
+Running: E88_d40_h48_n32
+  dim=2048, depth=40, n_heads=48, n_state=32
+  params≈507.9M, state/layer=49,152
+  balance ratio=0.75
+============================================================
+  Result: last-100 loss = 3.3647
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[20/42] 
+============================================================
+Running: E88_d40_h40_n40
+  dim=1920, depth=40, n_heads=40, n_state=40
+  params≈495.2M, state/layer=64,000
+  balance ratio=0.83
+============================================================
+  Result: last-100 loss = 3.1084
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h40_n48: 2.4024 
+  4. E88_d20_h68_n32: 2.4727 
+  5. E88_d24_h48_n40: 2.5322 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[21/42] 
+============================================================
+Running: E88_d24_h44_n32_r5
+  dim=3712, depth=24, n_heads=44, n_state=32
+  params≈506.7M, state/layer=45,056
+  balance ratio=0.38
+============================================================
+  Result: last-100 loss = 2.3897
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h44_n32_r5: 2.3897 
+  4. E88_d24_h40_n48: 2.4024 
+  5. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[22/42] 
+============================================================
+Running: E88_d24_h48_n32_r6
+  dim=3328, depth=24, n_heads=48, n_state=32
+  params≈495.5M, state/layer=49,152
+  balance ratio=0.46
+============================================================
+  Result: last-100 loss = 2.6045
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h44_n32_r5: 2.3897 
+  4. E88_d24_h40_n48: 2.4024 
+  5. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[23/42] 
+============================================================
+Running: E88_d24_h96_n32_r18
+  dim=1664, depth=24, n_heads=96, n_state=32
+  params≈495.0M, state/layer=98,304
+  balance ratio=1.85
+============================================================
+  Result: last-100 loss = 2.6362
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h44_n32_r5: 2.3897 
+  4. E88_d24_h40_n48: 2.4024 
+  5. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[24/42] 
+============================================================
+Running: E88_d24_h100_n32_r20
+  dim=1664, depth=24, n_heads=100, n_state=32
+  params≈515.6M, state/layer=102,400
+  balance ratio=1.92
+============================================================
+  Result: last-100 loss = 2.7090
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h44_n32_r5: 2.3897 
+  4. E88_d24_h40_n48: 2.4024 
+  5. E88_d20_h68_n32: 2.4727 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[25/42] 
+============================================================
+Running: E88_d24_h32_n48_r5
+  dim=3328, depth=24, n_heads=32, n_state=48
+  params≈494.2M, state/layer=73,728
+  balance ratio=0.46
+============================================================
+  Result: last-100 loss = 2.3905
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d20_h52_n40: 2.3790 
+  3. E88_d24_h44_n32_r5: 2.3897 
+  4. E88_d24_h32_n48_r5: 2.3905 
+  5. E88_d24_h40_n48: 2.4024 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[26/42] 
+============================================================
+Running: E88_d24_h32_n48_r6
+  dim=3328, depth=24, n_heads=32, n_state=48
+  params≈494.2M, state/layer=73,728
+  balance ratio=0.46
+============================================================
+  Result: last-100 loss = 2.3570
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[27/42] 
+============================================================
+Running: E88_d24_h64_n48_r18
+  dim=1664, depth=24, n_heads=64, n_state=48
+  params≈493.8M, state/layer=147,456
+  balance ratio=1.85
+============================================================
+  Result: last-100 loss = 2.5477
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[28/42] 
+============================================================
+Running: E88_d24_h68_n48_r20
+  dim=1536, depth=24, n_heads=68, n_state=48
+  params≈484.2M, state/layer=156,672
+  balance ratio=2.12
+============================================================
+  Result: last-100 loss = 2.5378
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[29/42] 
+============================================================
+Running: E88_d32_h40_n32_r5
+  dim=3072, depth=32, n_heads=40, n_state=32
+  params≈508.1M, state/layer=40,960
+  balance ratio=0.42
+============================================================
+  Result: last-100 loss = 2.8068
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[30/42] 
+============================================================
+Running: E88_d32_h44_n32_r6
+  dim=2688, depth=32, n_heads=44, n_state=32
+  params≈489.0M, state/layer=45,056
+  balance ratio=0.52
+============================================================
+  Result: last-100 loss = 2.9679
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[31/42] 
+============================================================
+Running: E88_d32_h80_n32_r18
+  dim=1536, depth=32, n_heads=80, n_state=32
+  params≈507.7M, state/layer=81,920
+  balance ratio=1.67
+============================================================
+  Result: last-100 loss = 3.0868
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[32/42] 
+============================================================
+Running: E88_d32_h84_n32_r20
+  dim=1408, depth=32, n_heads=84, n_state=32
+  params≈488.6M, state/layer=86,016
+  balance ratio=1.91
+============================================================
+  Result: last-100 loss = 2.9748
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[33/42] 
+============================================================
+Running: E88_d32_h28_n48_r5
+  dim=2944, depth=32, n_heads=28, n_state=48
+  params≈510.0M, state/layer=64,512
+  balance ratio=0.46
+============================================================
+  Result: last-100 loss = 2.6306
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[34/42] 
+============================================================
+Running: E88_d32_h28_n48_r6
+  dim=2944, depth=32, n_heads=28, n_state=48
+  params≈510.0M, state/layer=64,512
+  balance ratio=0.46
+============================================================
+  Result: last-100 loss = 2.6113
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[35/42] 
+============================================================
+Running: E88_d32_h56_n48_r18
+  dim=1408, depth=32, n_heads=56, n_state=48
+  params≈487.4M, state/layer=129,024
+  balance ratio=1.91
+============================================================
+  Result: last-100 loss = 2.8331
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[36/42] 
+============================================================
+Running: E88_d32_h56_n48_r20
+  dim=1408, depth=32, n_heads=56, n_state=48
+  params≈487.4M, state/layer=129,024
+  balance ratio=1.91
+============================================================
+  Result: last-100 loss = 2.8443
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[37/42] 
+============================================================
+Running: E88_d24_h56_n36
+  dim=2560, depth=24, n_heads=56, n_state=36
+  params≈499.6M, state/layer=72,576
+  balance ratio=0.79
+============================================================
+  Result: last-100 loss = 2.5696
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[38/42] 
+============================================================
+Running: E88_d24_h44_n44
+  dim=2688, depth=24, n_heads=44, n_state=44
+  params≈503.2M, state/layer=85,184
+  balance ratio=0.72
+============================================================
+  Result: last-100 loss = 2.5227
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[39/42] 
+============================================================
+Running: E88_d28_h52_n36
+  dim=2304, depth=28, n_heads=52, n_state=36
+  params≈487.1M, state/layer=67,392
+  balance ratio=0.81
+============================================================
+  Result: last-100 loss = 2.7488
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[40/42] 
+============================================================
+Running: E88_d28_h44_n44
+  dim=2304, depth=28, n_heads=44, n_state=44
+  params≈503.1M, state/layer=85,184
+  balance ratio=0.84
+============================================================
+  Result: last-100 loss = 2.6741
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[41/42] 
+============================================================
+Running: E88_d32_h48_n36
+  dim=2304, depth=32, n_heads=48, n_state=36
+  params≈513.8M, state/layer=62,208
+  balance ratio=0.75
+============================================================
+  Result: last-100 loss = 2.9533
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+[42/42] 
+============================================================
+Running: E88_d32_h40_n44
+  dim=2176, depth=32, n_heads=40, n_state=44
+  params≈493.6M, state/layer=77,440
+  balance ratio=0.81
+============================================================
+  Result: last-100 loss = 2.7987
+
+--- Current Results Summary ---
+  1. E88_d20_h44_n48: 2.3020 ***
+  2. E88_d24_h32_n48_r6: 2.3570 
+  3. E88_d20_h52_n40: 2.3790 
+  4. E88_d24_h44_n32_r5: 2.3897 
+  5. E88_d24_h32_n48_r5: 2.3905 
+  Baseline targets: Mamba2=1.81, FLA-GDN=1.73
+
+============================================================
+EXPLORATION COMPLETE
+============================================================
+
+Best configuration:
+  Name: E88_d20_h44_n48
+  Loss: 2.3020
+  dim=2944, depth=20
+  n_heads=44, n_state=48
+  balance_ratio=0.72
+
+Vs Baselines:
+  vs Mamba2 (1.81): +0.4920
+  vs FLA-GDN (1.73): +0.5720
+
+Results saved to: benchmark_results/overnight_e88/20260123_051430

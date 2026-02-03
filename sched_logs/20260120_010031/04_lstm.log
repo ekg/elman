@@ -1,0 +1,28 @@
+# Job 4: lstm
+# GPU: 4
+# Command: python train.py --level lstm --dim 1152 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/1b_10min_20260120_010008/lstm
+# Started: 2026-01-20T01:00:31.259566
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/1b_10min_20260120_010008/lstm/levellstm_100m_20260120_010037
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level lstm, 956,226,816 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 8.4441 | lr 2.70e-05 | grad 11.62 | tok/s 1341
+step     20 | loss 3.2433 | lr 5.70e-05 | grad 3.64 | tok/s 1364
+step     30 | loss 3.8439 | lr 8.70e-05 | grad 10.25 | tok/s 1363
+step     40 | loss 3.6610 | lr 1.17e-04 | grad 10.38 | tok/s 1415
+step     50 | loss 5.0479 | lr 1.47e-04 | grad 7.56 | tok/s 1469
+step     60 | loss 4.2008 | lr 1.77e-04 | grad 3.86 | tok/s 1475
+step     70 | loss 4.1137 | lr 2.07e-04 | grad 6.75 | tok/s 1476
+step     80 | loss 4.0775 | lr 2.37e-04 | grad 3.42 | tok/s 1481
+step     90 | loss 3.9528 | lr 2.67e-04 | grad 4.50 | tok/s 1478
+step    100 | loss 3.8769 | lr 2.97e-04 | grad 3.59 | tok/s 1480
+
+Training complete! Final step: 108

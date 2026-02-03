@@ -1,0 +1,35 @@
+{
+  "config": {
+    "data": "data/pile.txt",
+    "dim": 256,
+    "depth": 4,
+    "n_state": 64,
+    "expansion": 2.0,
+    "update_type": "delta",
+    "proj_type": "no_z",
+    "nonlin_type": "tanh",
+    "decay": 0.9,
+    "batch_size": 8,
+    "chunk_size": 128,
+    "steps": 5,
+    "train_minutes": null,
+    "lr": 0.0003,
+    "log_every": 10,
+    "output": "output/e74",
+    "bf16": true,
+    "use_cuda": false,
+    "seed": 42
+  },
+  "n_params": 1049856,
+  "final_loss": 5.537876892089844,
+  "steps": 6,
+  "elapsed_minutes": 0.13746670484542847,
+  "tok_per_sec": 620.7563746383868,
+  "all_losses": [
+    5.983654022216797,
+    5.752593994140625,
+    5.201511383056641,
+    5.421730041503906,
+    5.32989501953125
+  ]
+}

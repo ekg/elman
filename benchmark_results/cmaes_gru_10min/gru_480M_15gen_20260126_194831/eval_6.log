@@ -1,0 +1,68 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_gru_10min/gru_480M_15gen_20260126_194831/eval_6/levelcudagru_100m_20260126_194838
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level cudagru, 638,257,152 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 621, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 519, in train
+    result = model(
+             ^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/cuda_gru.py", line 413, in forward
+    h = h_gru.permute(1, 0, 2).contiguous()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Prefetch error: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+terminate called after throwing an instance of 'c10::AcceleratorError'
+  what():  CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Exception raised from c10_cuda_check_implementation at /pytorch/c10/cuda/CUDAException.cpp:44 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x80 (0x7db082d7cb80 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #1: <unknown function> + 0x11fb7 (0x7db08314efb7 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libc10_cuda.so)
+frame #2: <unknown function> + 0xc77c29 (0x7db024077c29 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: <unknown function> + 0xc72b53 (0x7db024072b53 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xc7a685 (0x7db02407a685 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_cuda.so)
+frame #5: <unknown function> + 0x4827af (0x7db0746827af in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_python.so)
+frame #6: c10::TensorImpl::~TensorImpl() + 0x9 (0x7db082d59d69 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #7: <unknown function> + 0x7cb658 (0x7db0749cb658 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_python.so)
+frame #8: <unknown function> + 0x7cb9c5 (0x7db0749cb9c5 in /home/erikg/.local/lib/python3.12/site-packages/torch/lib/libtorch_python.so)
+frame #9: python() [0x579b72]
+frame #10: python() [0x59ee69]
+frame #11: python() [0x54ca95]
+frame #12: python() [0x558f01]
+frame #13: python() [0x610715]
+frame #14: python() [0x610725]
+frame #15: python() [0x5734f6]
+<omitting python frames>
+frame #17: python() [0x6b7b25]
+frame #18: python() [0x6b1282]
+frame #22: <unknown function> + 0x2a1ca (0x7db083c2a1ca in /lib/x86_64-linux-gnu/libc.so.6)
+frame #23: __libc_start_main + 0x8b (0x7db083c2a28b in /lib/x86_64-linux-gnu/libc.so.6)
+

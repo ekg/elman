@@ -1,0 +1,52 @@
+{
+  "generation": 1,
+  "best_loss": 2.0110111111111113,
+  "best_params": {
+    "n_heads": 84,
+    "config_idx": 1,
+    "depth": 20
+  },
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 84,
+        "config_idx": 5,
+        "depth": 19
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 105,
+        "config_idx": 5,
+        "depth": 30
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "n_heads": 59,
+        "config_idx": 4,
+        "depth": 12
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 2.0110111111111113,
+      "params": {
+        "n_heads": 84,
+        "config_idx": 1,
+        "depth": 20
+      },
+      "dim": 2048,
+      "actual_params": 513234416
+    }
+  ]
+}

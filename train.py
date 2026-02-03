@@ -85,6 +85,12 @@ def parse_args():
     parser.add_argument('--r_h_mode', type=str, default='auto',
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
+    parser.add_argument('--use_conv', type=int, default=0,
+                        help='Use Conv1d before recurrence (0=no, 1=yes)')
+    parser.add_argument('--d_conv', type=int, default=4,
+                        help='Conv kernel size (if use_conv=1)')
+    parser.add_argument('--dropout', type=float, default=0.0,
+                        help='Dropout rate (0.0 to 0.3)')
 
     # Mamba2-specific
     parser.add_argument('--mamba_expand', type=int, default=2,
@@ -371,6 +377,9 @@ def train(args):
             linear_state=bool(args.linear_state),
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,
+            use_conv=bool(args.use_conv),
+            d_conv=args.d_conv,
+            dropout=args.dropout,
         )
     else:
         model = create_ladder_model(

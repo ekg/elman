@@ -1,0 +1,25 @@
+# E75pc (post-conv matching FLA-GDN) vs baselines at ~100M params
+# E75pc has smaller param count at same dim, so using larger dims
+
+# === BASELINES at 100M ===
+python train.py --level mamba2 --dim 896 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/mamba2
+python train.py --level fla-gdn --dim 768 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/fla-gdn
+
+# === E75pc VARIANTS ===
+# E75pch8n32 at dim=4480 -> ~113M params
+python train.py --level E75pch8n32 --dim 4480 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E75pch8n32
+
+# E75pch8n24 at dim=4480 -> ~87M params
+python train.py --level E75pch8n24 --dim 4480 --expansion 2.0 --n_state 24 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E75pch8n24
+
+# E75pch4n48 at dim=4480 -> ~75M params
+python train.py --level E75pch4n48 --dim 4480 --expansion 2.0 --n_state 48 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E75pch4n48
+
+# E75pch4n32 at dim=4480 -> ~57M params
+python train.py --level E75pch4n32 --dim 4480 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E75pch4n32
+
+# === ORIGINAL E75 (no conv) for comparison ===
+python train.py --level E75h8n32 --dim 1280 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E75h8n32
+
+# === Simple Elman baseline ===
+python train.py --level 32 --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75pc_100m/E32

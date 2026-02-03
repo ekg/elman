@@ -1,0 +1,25 @@
+CMA-ES Search for mingru
+Started: 2026-02-02T00:05:16.106537
+Command: python cmaes_search.py --model mingru --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'expansion': 2, 'depth': 20}
+Encoded x0: ['0.333', '0.286']
+======================================================================
+CMA-ES Search for MINGRU
+======================================================================
+Search space (2 dimensions):
+  expansion: [1, 4] (int) - Expansion factor
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 2 (seed=1146864, Mon Feb  2 00:05:16 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---

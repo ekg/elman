@@ -1,0 +1,7 @@
+# Job 7: E75h4n32
+# GPU: 7
+# Command: python train.py --level E75h4n32 --dim 1920 --depth 20 --n_state 32 --expansion 1.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10.0 --output benchmark_results/mega_100m_20260122_155145/E75h4n32
+# Started: 2026-01-22T15:51:53.109521
+============================================================
+
+Killed

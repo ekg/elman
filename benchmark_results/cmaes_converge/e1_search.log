@@ -1,0 +1,85 @@
+CMA-ES Search for e1
+Started: 2026-02-01T20:02:49.933504
+Command: python cmaes_search.py --model e1 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'expansion': 2, 'depth': 20}
+Encoded x0: ['0.500', '0.286']
+======================================================================
+CMA-ES Search for E1
+======================================================================
+Search space (2 dimensions):
+  expansion: [1, 3] (int) - Expansion factor for d_inner
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 2 (seed=1103496, Sun Feb  1 20:02:50 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 1] GPU 0 | expansion=2, depth=19 | dim=1280 | 436.2M params
+  [Eval 1] Loss: 1.3819
+  [Eval 2] GPU 1 | expansion=2, depth=18 | dim=1408 | 500.0M params
+  [Eval 2] Loss: 1.3425
+  [Eval 7] GPU 6 | expansion=2, depth=24 | dim=1152 | 446.3M params
+  [Eval 7] Loss: 1.3761
+  [Eval 3] GPU 2 | expansion=2, depth=19 | dim=1280 | 436.2M params
+  [Eval 3] Loss: 1.3815
+  [Eval 4] GPU 3 | expansion=2, depth=21 | dim=1280 | 482.1M params
+  [Eval 4] Loss: 1.3462
+  [Eval 5] GPU 4 | expansion=2, depth=20 | dim=1280 | 459.2M params
+  [Eval 5] Loss: 1.3707
+  [Eval 8] GPU 7 | expansion=2, depth=17 | dim=1408 | 472.3M params
+  [Eval 8] Loss: 1.3871
+  [Eval 6] GPU 5 | expansion=1, depth=16 | dim=2432 | 473.9M params
+  [Eval 6] Loss: 1.4208
+  *** NEW BEST: 1.3819 | {'expansion': 2, 'depth': 19} | dim=1280 ***
+  *** NEW BEST: 1.3425 | {'expansion': 2, 'depth': 18} | dim=1408 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.342535000000000e+00 1.0e+00 1.17e-01  1e-01  1e-01 30:15.7
+  Generation best: 1.3425 | Overall best: 1.3425 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 16] GPU 7 | expansion=2, depth=18 | dim=1408 | 500.0M params
+  [Eval 16] Loss: 1.3394
+  [Eval 14] GPU 5 | expansion=2, depth=20 | dim=1280 | 459.2M params
+  [Eval 14] Loss: 1.3665
+  [Eval 13] GPU 4 | expansion=2, depth=19 | dim=1280 | 436.2M params
+  [Eval 13] Loss: 1.3852
+  [Eval 10] GPU 1 | expansion=2, depth=17 | dim=1408 | 472.3M params
+  [Eval 10] Loss: 1.3877
+  [Eval 15] GPU 6 | expansion=2, depth=24 | dim=1152 | 446.3M params
+  [Eval 15] Loss: 1.3794
+  [Eval 9] GPU 0 | expansion=2, depth=20 | dim=1280 | 459.2M params
+  [Eval 9] Loss: 1.3705
+  [Eval 11] GPU 2 | expansion=2, depth=21 | dim=1280 | 482.1M params
+  [Eval 11] Loss: 1.3537
+  [Eval 12] GPU 3 | expansion=2, depth=23 | dim=1280 | 528.0M params
+  [Eval 12] Loss: 1.3607
+  *** NEW BEST: 1.3394 | {'expansion': 2, 'depth': 18} | dim=1408 ***
+    2     16 1.339395000000000e+00 1.1e+00 8.39e-02  6e-02  7e-02 60:31.3
+  Generation best: 1.3394 | Overall best: 1.3394 | Improvement: 0.0031
+  Improvement 0.0031 < threshold 0.01 (1 consecutive)
+
+*** CONVERGED: improvement 0.0031 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.3394
+Best params: {'expansion': 2, 'depth': 18}
+Total evaluations: 16
+
+To train with best config:
+python train.py --level 1 --dim 1408 --depth 18 --expansion 2 --lr 3e-4 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-01T21:03:21.865926
+Duration: 1.01 hours
+Return code: 0

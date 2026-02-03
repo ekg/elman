@@ -1,0 +1,134 @@
+CMA-ES 4D Search for e75
+Started: 2026-02-02T22:29:29.592546
+Command: python cmaes_search.py --model e75 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 2048, 'n_heads': 8, 'n_state': 32, 'depth': 20, 'expansion': 1.0, 'lr': 0.0003}
+Encoded x0: ['0.500', '0.429', '0.333', '0.286', '0.333', '0.739']
+======================================================================
+CMA-ES Search for E75
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3072] (int_mult128) - Model dimension
+  n_heads: [2, 16] (int) - Number of heads
+  n_state: [16, 64] (int_mult8) - State dimension per head (must be mult of 8)
+  depth: [12, 40] (int) - Number of layers
+  expansion: [0.5, 2.0] (float) - Value expansion factor
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=164107, Mon Feb  2 22:29:30 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 7] GPU 6 | dim=1920, n_heads=10, n_state=32, depth=13, expansion=0.912, lr=0.0003536 | dim=1920 | 81.4M params
+  [Eval 7] Loss: 1.3405
+  [Eval 5] GPU 4 | dim=1792, n_heads=9, n_state=32, depth=22, expansion=0.8171, lr=0.0001118 | dim=1792 | 106.7M params
+  [Eval 5] Loss: 1.8082
+  [Eval 1] GPU 0 | dim=1920, n_heads=7, n_state=32, depth=21, expansion=1.519, lr=0.0003368 | dim=1920 | 182.0M params
+  [Eval 1] Loss: 1.4652
+  [Eval 8] GPU 7 | dim=1920, n_heads=7, n_state=24, depth=16, expansion=1.051, lr=0.0004702 | dim=1920 | 89.3M params
+  [Eval 8] Loss: 1.3935
+  [Eval 4] GPU 3 | dim=1408, n_heads=6, n_state=48, depth=23, expansion=1.138, lr=0.0002928 | dim=1408 | 104.1M params
+  [Eval 4] Loss: 1.5444
+  [Eval 6] GPU 5 | dim=2048, n_heads=8, n_state=40, depth=21, expansion=0.9137, lr=0.0004453 | dim=2048 | 145.1M params
+  [Eval 6] Loss: 1.4477
+  [Eval 2] GPU 1 | dim=2048, n_heads=11, n_state=40, depth=23, expansion=0.7039, lr=0.0007767 | dim=2048 | 147.5M params
+  [Eval 2] Loss: 1.3972
+  [Eval 3] GPU 2 | dim=1920, n_heads=10, n_state=40, depth=14, expansion=0.8976, lr=0.0002206 | dim=1920 | 96.2M params
+  [Eval 3] Loss: 1.4918
+  *** NEW BEST: 1.4652 | {'dim': 1920, 'n_heads': 7, 'n_state': 32, 'depth': 21, 'expansion': 1.518879941533629, 'lr': 0.00033681535317363467} | dim=1920 ***
+  *** NEW BEST: 1.3972 | {'dim': 2048, 'n_heads': 11, 'n_state': 40, 'depth': 23, 'expansion': 0.7039016689903159, 'lr': 0.0007767298541830645} | dim=2048 ***
+  *** NEW BEST: 1.3405 | {'dim': 1920, 'n_heads': 10, 'n_state': 32, 'depth': 13, 'expansion': 0.9120037467042718, 'lr': 0.0003536471500859217} | dim=1920 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.340548000000000e+00 1.0e+00 1.40e-01  1e-01  1e-01 30:12.5
+  Generation best: 1.3405 | Overall best: 1.3405 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 11] GPU 2 | dim=1792, n_heads=11, n_state=24, depth=20, expansion=0.7261, lr=0.0008272 | dim=1792 | 84.1M params
+  [Eval 11] Loss: 1.1596
+  [Eval 9] GPU 0 | dim=1920, n_heads=6, n_state=24, depth=16, expansion=0.926, lr=0.0002912 | dim=1920 | 75.9M params
+  [Eval 9] Loss: 1.4573
+  [Eval 13] GPU 4 | dim=1664, n_heads=13, n_state=40, depth=14, expansion=0.5643, lr=0.0005496 | dim=1664 | 61.8M params
+  [Eval 13] Loss: 1.2114
+  [Eval 15] GPU 6 | dim=1792, n_heads=7, n_state=40, depth=13, expansion=0.6771, lr=0.0004786 | dim=1792 | 52.9M params
+  [Eval 15] Loss: 1.4003
+  [Eval 16] GPU 7 | dim=2432, n_heads=11, n_state=40, depth=14, expansion=0.9225, lr=0.0004711 | dim=2432 | 147.3M params
+  [Eval 16] Loss: 1.3829
+  [Eval 14] GPU 5 | dim=1408, n_heads=11, n_state=40, depth=16, expansion=1.161, lr=0.0002693 | dim=1408 | 93.1M params
+  [Eval 14] Loss: 1.4688
+  [Eval 12] GPU 3 | dim=2304, n_heads=11, n_state=32, depth=15, expansion=1.057, lr=9.365e-05 | dim=2304 | 148.4M params
+  [Eval 12] Loss: 1.6920
+  [Eval 10] GPU 1 | dim=2048, n_heads=9, n_state=32, depth=12, expansion=1.18, lr=0.0006943 | dim=2048 | 100.4M params
+  [Eval 10] Loss: 1.3463
+  *** NEW BEST: 1.1596 | {'dim': 1792, 'n_heads': 11, 'n_state': 24, 'depth': 20, 'expansion': 0.7260757937211563, 'lr': 0.0008272179226646855} | dim=1792 ***
+    2     16 1.159552000000000e+00 1.2e+00 1.58e-01  1e-01  2e-01 60:24.6
+  Generation best: 1.1596 | Overall best: 1.1596 | Improvement: 0.1810
+
+--- Generation 3 (converge threshold: 0.01) ---
+  [Eval 18] GPU 1 | dim=1408, n_heads=13, n_state=40, depth=17, expansion=0.731, lr=0.0009837 | dim=1408 | 73.9M params
+  [Eval 18] Loss: 1.3253
+  [Eval 24] GPU 7 | dim=1280, n_heads=11, n_state=24, depth=14, expansion=0.538, lr=0.0004829 | dim=1280 | 27.6M params
+  [Eval 24] Loss: 1.4137
+  [Eval 21] GPU 4 | dim=2048, n_heads=11, n_state=48, depth=17, expansion=0.9081, lr=0.0009282 | dim=2048 | 150.4M params
+  [Eval 21] Loss: 1.4366
+  [Eval 20] GPU 3 | dim=2048, n_heads=11, n_state=24, depth=20, expansion=0.5233, lr=0.0009784 | dim=2048 | 77.9M params
+  [Eval 20] Loss: 1.2581
+  [Eval 22] GPU 5 | dim=2048, n_heads=11, n_state=32, depth=16, expansion=1.064, lr=0.0004449 | dim=2048 | 132.6M params
+  [Eval 22] Loss: 1.3357
+  [Eval 23] GPU 6 | dim=1792, n_heads=12, n_state=24, depth=18, expansion=0.703, lr=0.0008584 | dim=1792 | 76.5M params
+  [Eval 23] Loss: 1.3002
+  [Eval 17] GPU 0 | dim=1920, n_heads=11, n_state=24, depth=17, expansion=0.8783, lr=0.0002036 | dim=1920 | 94.4M params
+  [Eval 17] Loss: 1.4478
+  [Eval 19] GPU 2 | dim=2048, n_heads=13, n_state=32, depth=15, expansion=0.8004, lr=0.0002696 | dim=2048 | 104.6M params
+  [Eval 19] Loss: 1.4158
+    3     24 1.258084000000000e+00 1.5e+00 1.63e-01  2e-01  2e-01 90:35.9
+  Generation best: 1.2581 | Overall best: 1.1596 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (1 consecutive)
+
+--- Generation 4 (converge threshold: 0.01) ---
+  [Eval 32] GPU 7 | dim=1920, n_heads=12, n_state=32, depth=13, expansion=0.5033, lr=0.0006168 | dim=1920 | 53.5M params
+  [Eval 32] Loss: 1.3861
+  [Eval 30] GPU 5 | dim=1664, n_heads=13, n_state=24, depth=15, expansion=0.5875, lr=0.000965 | dim=1664 | 50.9M params
+  [Eval 30] Loss: 1.3553
+  [Eval 26] GPU 1 | dim=2048, n_heads=13, n_state=16, depth=21, expansion=0.518, lr=0.0008049 | dim=2048 | 73.6M params
+  [Eval 26] Loss: 1.3424
+  [Eval 29] GPU 4 | dim=2048, n_heads=9, n_state=16, depth=21, expansion=0.6837, lr=0.0009931 | dim=2048 | 83.9M params
+  [Eval 29] Loss: 1.3739
+  [Eval 27] GPU 2 | dim=1664, n_heads=16, n_state=32, depth=13, expansion=0.5388, lr=0.0004745 | dim=1664 | 54.8M params
+  [Eval 27] Loss: 1.3986
+  [Eval 28] GPU 3 | dim=1664, n_heads=9, n_state=16, depth=21, expansion=1.002, lr=0.0007356 | dim=1664 | 83.9M params
+  [Eval 28] Loss: 1.3669
+  [Eval 25] GPU 0 | dim=2048, n_heads=13, n_state=24, depth=17, expansion=0.6905, lr=0.0007732 | dim=2048 | 90.7M params
+  [Eval 25] Loss: 1.2682
+  [Eval 31] GPU 6 | dim=2304, n_heads=7, n_state=24, depth=20, expansion=0.5115, lr=0.0002675 | dim=2304 | 78.5M params
+  [Eval 31] Loss: 1.4839
+    4     32 1.268162000000000e+00 1.7e+00 1.60e-01  1e-01  2e-01 120:47.4
+  Generation best: 1.2682 | Overall best: 1.1596 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (2 consecutive)
+
+*** CONVERGED: improvement 0.0000 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.1596
+Best params: {'dim': 1792, 'n_heads': 11, 'n_state': 24, 'depth': 20, 'expansion': 0.7260757937211563, 'lr': 0.0008272179226646855}
+Total evaluations: 32
+
+Cleaning up 192 checkpoint files...
+Cleanup complete.
+
+To train with best config:
+python train.py --level E75h11n24 --dim 1792 --depth 20 --lr 0.0008272179226646855 --expansion 0.7260757937211563 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-03T00:30:39.570842
+Duration: 2.02 hours
+Return code: 0

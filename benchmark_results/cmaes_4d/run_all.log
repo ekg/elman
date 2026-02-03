@@ -1,0 +1,59 @@
+
+Models to run (4): ['e42', 'mingru', 'minlstm', 'transformer']
+Search space: 4D (expanded from 2-3D)
+Training per eval: 30 minutes
+Convergence: improvement < 0.01
+Target: 480M params
+GPUs: 0,1,2,3,4,5,6,7
+Output: benchmark_results/cmaes_4d
+
+[1/4] 
+======================================================================
+Starting CMA-ES 4D search for E42
+======================================================================
+Time: 2026-02-02 00:23:40
+Log: benchmark_results/cmaes_4d/e42_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e42 completed in 1.51 hours
+
+[2/4] 
+======================================================================
+Starting CMA-ES 4D search for MINGRU
+======================================================================
+Time: 2026-02-02 01:54:30
+Log: benchmark_results/cmaes_4d/mingru_search.log
+Config: train_minutes=30, converge=0.01
+[OK] mingru completed in 1.01 hours
+
+[3/4] 
+======================================================================
+Starting CMA-ES 4D search for MINLSTM
+======================================================================
+Time: 2026-02-02 02:55:01
+Log: benchmark_results/cmaes_4d/minlstm_search.log
+Config: train_minutes=30, converge=0.01
+[OK] minlstm completed in 1.01 hours
+
+[4/4] 
+======================================================================
+Starting CMA-ES 4D search for TRANSFORMER
+======================================================================
+Time: 2026-02-02 03:55:31
+Log: benchmark_results/cmaes_4d/transformer_search.log
+Config: train_minutes=30, converge=0.01
+[OK] transformer completed in 0.00 hours
+
+======================================================================
+CMA-ES 4D SEARCH SUMMARY
+======================================================================
+
+Model           Status          Hours       Loss Config
+----------------------------------------------------------------------
+e42             OK               1.51        N/A 
+mingru          OK               1.01        N/A 
+minlstm         OK               1.01        N/A 
+transformer     OK               0.00        N/A 
+----------------------------------------------------------------------
+
+Total time: 3.53 hours
+Completed: 4/4 models

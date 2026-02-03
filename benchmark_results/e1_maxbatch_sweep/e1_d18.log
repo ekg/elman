@@ -1,5 +1,0 @@
-e1_d18_maxbatch: dim=2112 depth=18 batch=96 params=402,107,904
-Step 100 | 147s | Loss 2.1719 | Avg100 2.7930 | 33448 tok/s | Mem 37.6GB
-Step 200 | 300s | Loss 1.8672 | Avg100 1.9446 | 32771 tok/s | Mem 37.6GB
-Step 300 | 454s | Loss 1.7891 | Avg100 1.7100 | 32505 tok/s | Mem 37.6GB
-DONE: e1_d18_maxbatch | Steps=396 | Time=600s | Last100=1.6185 | 32419 tok/s | PeakMem=37.6GB

@@ -1,7 +1,0 @@
-e9_c128_m4096_d6: core=128 mem=4096 total=4224 params=78,355,200
-Step 100 | 99s | Loss 2.0938 | Avg100 2.5581 | 132723 tok/s
-Step 200 | 203s | Loss 1.8438 | Avg100 1.9453 | 129339 tok/s
-Step 300 | 308s | Loss 1.6875 | Avg100 1.7570 | 127710 tok/s
-Step 400 | 413s | Loss 1.6406 | Avg100 1.6710 | 126954 tok/s
-Step 500 | 518s | Loss 1.6094 | Avg100 1.6128 | 126494 tok/s
-DONE: e9_c128_m4096_d6 | Steps=579 | Time=601s | Last100=1.5836 | 126293 tok/s

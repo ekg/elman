@@ -1,0 +1,86 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+======================================================================
+CMA-ES Search for MOM-E88
+======================================================================
+Search space (4 dimensions):
+  n_heads: [32, 256] (int) - Total number of memory heads
+  top_k: [8, 96] (int) - Active heads per token
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported)
+  depth: [8, 32] (int) - Number of layers
+Target params: 200M ± 50M
+Training time per config: 5.0 min
+Generations: 30
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~240
+Estimated time: ~150 min (2.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 4 (seed=783678, Wed Jan 28 16:53:43 2026)
+
+--- Generation 1/30 ---
+  [Eval 7] GPU 6 | n_heads=245, top_k=19, n_state=48, depth=15 | dim=256 | 182.8M params
+  [Eval 7] NaN/diverged (loss=inf)
+  [Eval 5] GPU 4 | n_heads=241, top_k=65, n_state=32, depth=10 | dim=640 | 200.9M params
+  [Eval 5] Loss: 2.1279
+  [Eval 2] GPU 1 | n_heads=256, top_k=32, n_state=48, depth=19 | dim=256 | 241.9M params
+  [Eval 2] NaN/diverged (loss=inf)
+  [Eval 6] GPU 5 | n_heads=58, top_k=58, n_state=16, depth=18 | dim=2816 | 195.6M params
+  [Eval 6] Loss: 2.0615
+  [Eval 4] GPU 3 | n_heads=66, top_k=65, n_state=32, depth=20 | dim=1152 | 198.7M params
+  [Eval 4] Loss: 2.2637
+  [Eval 8] GPU 7 | n_heads=33, top_k=29, n_state=48, depth=22 | dim=1408 | 200.2M params
+  [Eval 8] Loss: 2.0889
+  [Eval 1] GPU 0 | n_heads=219, top_k=57, n_state=32, depth=15 | dim=512 | 219.0M params
+  [Eval 1] Loss: 2.2335
+  [Eval 3] GPU 2 | n_heads=80, top_k=80, n_state=32, depth=22 | dim=896 | 205.9M params
+  [Eval 3] Loss: 2.2516
+  *** NEW BEST: 2.2335 | {'n_heads': 219, 'top_k': 57, 'n_state': 32, 'depth': 15} | dim=512 ***
+  *** NEW BEST: 2.1279 | {'n_heads': 241, 'top_k': 65, 'n_state': 32, 'depth': 10} | dim=640 ***
+  *** NEW BEST: 2.0615 | {'n_heads': 58, 'top_k': 58, 'n_state': 16, 'depth': 18} | dim=2816 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 2.061489655172414e+00 1.0e+00 2.92e-01  3e-01  3e-01 5:14.2
+
+--- Generation 2/30 ---
+  [Eval 15] GPU 6 | n_heads=256, top_k=72, n_state=48, depth=31 | dim=128 | 197.3M params
+  [Eval 15] NaN/diverged (loss=inf)
+  [Eval 13] GPU 4 | n_heads=33, top_k=25, n_state=32, depth=22 | dim=2048 | 195.3M params
+  [Eval 13] Loss: 2.0584
+  [Eval 10] GPU 1 | n_heads=50, top_k=50, n_state=16, depth=13 | dim=4608 | 199.9M params
+  [Eval 10] Loss: 2.0248
+  [Eval 16] GPU 7 | n_heads=32, top_k=32, n_state=32, depth=12 | dim=3968 | 200.7M params
+  [Eval 16] Loss: 1.9402
+  [Eval 12] GPU 3 | n_heads=35, top_k=23, n_state=32, depth=18 | dim=2432 | 201.3M params
+  [Eval 12] Loss: 1.9744
+  [Eval 11] GPU 2 | n_heads=44, top_k=44, n_state=32, depth=20 | dim=1792 | 206.6M params
+  [Eval 11] Loss: 2.0537
+  [Eval 9] GPU 0 | n_heads=114, top_k=71, n_state=48, depth=19 | dim=512 | 215.8M params
+  [Eval 9] Loss: 2.3268
+  [Eval 14] GPU 5 | n_heads=48, top_k=48, n_state=16, depth=21 | dim=2944 | 197.7M params
+  [Eval 14] Loss: 2.0860
+  *** NEW BEST: 2.0248 | {'n_heads': 50, 'top_k': 50, 'n_state': 16, 'depth': 13} | dim=4608 ***
+  *** NEW BEST: 1.9744 | {'n_heads': 35, 'top_k': 23, 'n_state': 32, 'depth': 18} | dim=2432 ***
+  *** NEW BEST: 1.9402 | {'n_heads': 32, 'top_k': 32, 'n_state': 32, 'depth': 12} | dim=3968 ***
+    2     16 1.940220588235294e+00 1.2e+00 3.08e-01  3e-01  3e-01 10:28.1
+
+--- Generation 3/30 ---
+  [Eval 17] GPU 0 | n_heads=55, top_k=55, n_state=16, depth=20 | dim=2688 | 196.8M params
+  [Eval 17] Loss: 2.1284
+  [Eval 23] GPU 6 | n_heads=54, top_k=54, n_state=16, depth=22 | dim=2560 | 202.3M params
+  [Eval 23] Loss: 2.0429
+  [Eval 21] GPU 4 | n_heads=37, top_k=37, n_state=32, depth=11 | dim=3712 | 198.7M params
+  [Eval 21] Loss: 1.9325
+  [Eval 20] GPU 3 | n_heads=96, top_k=79, n_state=48, depth=19 | dim=512 | 181.8M params
+  [Eval 20] Loss: 2.3536
+  [Eval 18] GPU 1 | n_heads=130, top_k=69, n_state=32, depth=16 | dim=768 | 208.3M params
+  [Eval 18] Loss: 2.1429
+  [Eval 22] GPU 5 | n_heads=68, top_k=63, n_state=16, depth=15 | dim=2944 | 199.7M params
+  [Eval 22] Loss: 2.0370
+  [Eval 24] GPU 7 | n_heads=72, top_k=46, n_state=16, depth=28 | dim=1536 | 205.5M params
+  [Eval 24] Loss: 2.2136
+  [Eval 19] GPU 2 | n_heads=33, top_k=33, n_state=16, depth=22 | dim=4096 | 198.8M params
+  [Eval 19] Loss: 2.0320
+  *** NEW BEST: 1.9325 | {'n_heads': 37, 'top_k': 37, 'n_state': 32, 'depth': 11} | dim=3712 ***
+    3     24 1.932490625000000e+00 1.2e+00 2.77e-01  2e-01  3e-01 15:41.0
+
+--- Generation 4/30 ---

@@ -1,0 +1,23 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'n_heads': 104, 'n_state': 32, 'depth': 32, 'lr': 0.0003}
+Encoded x0: ['0.417', '0.333', '0.500', '0.613']
+======================================================================
+CMA-ES Search for E88
+======================================================================
+Search space (4 dimensions):
+  n_heads: [64, 160] (int) - Number of attention heads
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported by fused kernel)
+  depth: [24, 40] (int) - Number of layers
+  lr: [0.0001, 0.0006] (log) - Learning rate
+Target params: 480M ± 30M
+Training time per config: 3.0 min
+Generations: 20
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~160
+Estimated time: ~60 min (1.0 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 4 (seed=490518, Mon Jan 26 04:33:33 2026)
+
+--- Generation 1/20 ---

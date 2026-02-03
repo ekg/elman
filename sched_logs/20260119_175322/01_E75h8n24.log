@@ -1,0 +1,22 @@
+# Job 1: E75h8n24
+# GPU: 1
+# Command: python train.py --level E75h8n24 --dim 1792 --n_state 24 --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --expansion 1.0 --train_minutes 1 --bf16 --output benchmark_results/sched_test/E75h8n24
+# Started: 2026-01-19T17:53:22.815745
+============================================================
+
+usage: train.py [-h] --data DATA [--val_data VAL_DATA] [--level LEVEL]
+                [--params PARAMS] [--dim DIM] [--depth DEPTH]
+                [--expansion EXPANSION] [--state_expansion STATE_EXPANSION]
+                [--n_groups N_GROUPS] [--n_state N_STATE]
+                [--r_h_mode R_H_MODE] [--batch_size BATCH_SIZE]
+                [--chunk_size CHUNK_SIZE] [--lr LR]
+                [--weight_decay WEIGHT_DECAY] [--grad_accum GRAD_ACCUM]
+                [--grad_clip GRAD_CLIP] [--steps STEPS]
+                [--train_minutes TRAIN_MINUTES] [--warmup_steps WARMUP_STEPS]
+                [--output OUTPUT] [--save_every SAVE_EVERY]
+                [--log_every LOG_EVERY] [--val_every VAL_EVERY]
+                [--keep_checkpoints KEEP_CHECKPOINTS] [--bf16] [--compile]
+                [--seed SEED] [--resume RESUME] [--tbptt]
+                [--orth_reg ORTH_REG] [--orth_sep ORTH_SEP]
+                [--orth_orth ORTH_ORTH]
+train.py: error: the following arguments are required: --data

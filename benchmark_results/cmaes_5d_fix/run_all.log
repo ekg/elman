@@ -1,0 +1,21 @@
+
+Models to run (4): ['fla-gdn', 'e88', 'e23', 'transformer']
+Search space: 4D (expanded from 2-3D)
+Training per eval: 30 minutes
+Convergence: improvement < 0.01
+Target: 480M params
+GPUs: 0,1,2,3,4,5,6,7
+Output: benchmark_results/cmaes_4d
+
+[1/4] 
+======================================================================
+Starting CMA-ES 4D search for FLA-GDN
+======================================================================
+Time: 2026-02-03 05:57:11
+Log: benchmark_results/cmaes_4d/fla-gdn_search.log
+Config: train_minutes=30, converge=0.01
+
+
+Interrupted! Current model: fla-gdn
+State has been saved. Resume with:
+  python run_all_cmaes_v2.py --resume fla-gdn

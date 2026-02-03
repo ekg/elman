@@ -1,0 +1,36 @@
+# Job 0: mamba2
+# GPU: 0
+# Command: python train.py --level mamba2 --dim 896 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --train_minutes 1 --bf16 --output benchmark_results/sched_test/mamba2
+# Started: 2026-01-19T17:53:47.781403
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/sched_test/mamba2/levelmamba2_100m_20260119_175353
+Model: Level mamba2, 101,936,528 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 1.0 minutes
+step     10 | loss 5.4576 | lr 2.70e-05 | grad 5.00 | tok/s 9780
+step     20 | loss 4.3086 | lr 5.70e-05 | grad 6.47 | tok/s 66615
+step     30 | loss 4.5681 | lr 8.70e-05 | grad 3.27 | tok/s 70319
+step     40 | loss 3.1654 | lr 1.17e-04 | grad 1.87 | tok/s 69030
+step     50 | loss 2.3871 | lr 1.47e-04 | grad 1.48 | tok/s 69453
+step     60 | loss 2.7602 | lr 1.77e-04 | grad 3.27 | tok/s 67985
+step     70 | loss 2.4718 | lr 2.07e-04 | grad 1.88 | tok/s 65515
+step     80 | loss 2.8037 | lr 2.37e-04 | grad 3.17 | tok/s 67683
+step     90 | loss 2.7426 | lr 2.67e-04 | grad 4.06 | tok/s 65003
+step    100 | loss 2.2443 | lr 2.97e-04 | grad 1.20 | tok/s 65383
+step    110 | loss 2.2789 | lr 6.94e-06 | grad 1.96 | tok/s 62786
+step    120 | loss 2.4868 | lr 2.69e-05 | grad 1.52 | tok/s 62358
+step    130 | loss 2.3557 | lr 5.89e-05 | grad 1.16 | tok/s 63476
+step    140 | loss 2.0979 | lr 9.99e-05 | grad 1.00 | tok/s 63497
+step    150 | loss 1.9593 | lr 1.46e-04 | grad 1.89 | tok/s 60308
+step    160 | loss 1.8689 | lr 1.92e-04 | grad 1.62 | tok/s 60613
+step    170 | loss 2.0565 | lr 2.35e-04 | grad 3.31 | tok/s 62445
+step    180 | loss 2.0394 | lr 2.69e-04 | grad 1.27 | tok/s 62570
+step    190 | loss 1.7565 | lr 2.91e-04 | grad 1.26 | tok/s 63344
+
+Training complete! Final step: 192

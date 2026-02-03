@@ -1,0 +1,84 @@
+{
+  "model_type": "lstm",
+  "target_params": 480000000,
+  "best_loss": 10.0,
+  "best_params": {
+    "expansion": 1,
+    "depth": 18
+  },
+  "total_evals": 8,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 18
+      },
+      "timeout": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 14
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 26
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 14
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 27
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 13
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 27
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 18
+      },
+      "timeout": true
+    }
+  ]
+}

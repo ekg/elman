@@ -1,0 +1,20 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_e90/e90_500M_20gen_20260129_140231/eval_6/levelE90_100m_20260129_140453
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E90, 468,994,780 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 2.0 minutes
+step     10 | loss 3.8538 | lr 3.00e-04 | grad 3.81 | tok/s 4163
+step     20 | loss 3.4760 | lr 3.00e-04 | grad 19.12 | tok/s 5159
+step     30 | loss 4.2497 | lr 3.00e-04 | grad 8.44 | tok/s 5342
+step     40 | loss 3.0809 | lr 3.00e-04 | grad 4.31 | tok/s 5312
+step     50 | loss 2.7683 | lr 3.00e-04 | grad 2.45 | tok/s 5297
+step     60 | loss 2.9053 | lr 3.00e-04 | grad 1.55 | tok/s 5160
+step     70 | loss 2.7069 | lr 3.00e-04 | grad 3.72 | tok/s 5081
+
+Training complete! Final step: 76

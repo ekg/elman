@@ -1,0 +1,205 @@
+{
+  "generation": 2,
+  "best_loss": 1.60294,
+  "best_params": {
+    "expansion": 1,
+    "depth": 19,
+    "spectral_radius": 0.9998715013638444,
+    "mamba2_init": 0
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.9833189999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9920597852687846,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 468887936
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.892414,
+      "params": {
+        "expansion": 1,
+        "depth": 19,
+        "spectral_radius": 0.9890797357154519,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 494895232
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.902619,
+      "params": {
+        "expansion": 1,
+        "depth": 13,
+        "spectral_radius": 0.9969734790543016,
+        "mamba2_init": 0
+      },
+      "dim": 3456,
+      "actual_params": 466791552
+    },
+    {
+      "eval_id": 4,
+      "loss": 2.036933,
+      "params": {
+        "expansion": 1,
+        "depth": 26,
+        "spectral_radius": 0.9857704998555996,
+        "mamba2_init": 0
+      },
+      "dim": 2432,
+      "actual_params": 462092160
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.979981,
+      "params": {
+        "expansion": 1,
+        "depth": 29,
+        "spectral_radius": 0.9892456297285711,
+        "mamba2_init": 0
+      },
+      "dim": 2304,
+      "actual_params": 462557952
+    },
+    {
+      "eval_id": 6,
+      "loss": 2.052271,
+      "params": {
+        "expansion": 1,
+        "depth": 27,
+        "spectral_radius": 0.991705267572136,
+        "mamba2_init": 0
+      },
+      "dim": 2432,
+      "actual_params": 479840896
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.8989330000000002,
+      "params": {
+        "expansion": 1,
+        "depth": 17,
+        "spectral_radius": 0.9895521080136374,
+        "mamba2_init": 0
+      },
+      "dim": 3072,
+      "actual_params": 482190336
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.8926759999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 15,
+        "spectral_radius": 0.9920766801845876,
+        "mamba2_init": 0
+      },
+      "dim": 3200,
+      "actual_params": 461718400
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.6313659999999999,
+      "params": {
+        "expansion": 1,
+        "depth": 23,
+        "spectral_radius": 0.9988075958174405,
+        "mamba2_init": 0
+      },
+      "dim": 2688,
+      "actual_params": 499363200
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.608854,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9949429368833381,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 468887936
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.6447180000000001,
+      "params": {
+        "expansion": 1,
+        "depth": 16,
+        "spectral_radius": 0.993448066428607,
+        "mamba2_init": 0
+      },
+      "dim": 3200,
+      "actual_params": 492444800
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.642995,
+      "params": {
+        "expansion": 1,
+        "depth": 13,
+        "spectral_radius": 0.9906942718378101,
+        "mamba2_init": 0
+      },
+      "dim": 3456,
+      "actual_params": 466791552
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.661394,
+      "params": {
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.993682856509747,
+        "mamba2_init": 0
+      },
+      "dim": 3584,
+      "actual_params": 463429120
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.60294,
+      "params": {
+        "expansion": 1,
+        "depth": 19,
+        "spectral_radius": 0.9998715013638444,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 494895232
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.6178290000000002,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9945960377924882,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 468887936
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.6222120000000002,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9903857027517378,
+        "mamba2_init": 0
+      },
+      "dim": 2944,
+      "actual_params": 468887936
+    }
+  ]
+}

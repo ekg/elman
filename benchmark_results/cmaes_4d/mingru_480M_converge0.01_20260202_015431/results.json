@@ -1,0 +1,206 @@
+{
+  "model_type": "mingru",
+  "target_params": 480000000,
+  "best_loss": 1.3872280000000001,
+  "best_params": {
+    "expansion": 1,
+    "depth": 19,
+    "use_conv": 0,
+    "d_conv": 3
+  },
+  "total_evals": 16,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.388863,
+      "params": {
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 3200,
+      "actual_params": 492339200
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.396474,
+      "params": {
+        "expansion": 1,
+        "depth": 13,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 3072,
+      "actual_params": 491520000
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.473431,
+      "params": {
+        "expansion": 1,
+        "depth": 15,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2816,
+      "actual_params": 476512256
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.5486119999999999,
+      "params": {
+        "expansion": 2,
+        "depth": 13,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1792,
+      "actual_params": 501415936
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.3899879999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 3200,
+      "actual_params": 492339200
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.3872280000000001,
+      "params": {
+        "expansion": 1,
+        "depth": 19,
+        "use_conv": 0,
+        "d_conv": 3
+      },
+      "dim": 2560,
+      "actual_params": 498728960
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.742426,
+      "params": {
+        "expansion": 2,
+        "depth": 12,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1792,
+      "actual_params": 462880768
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.48206,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2560,
+      "actual_params": 472514560
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.4815379999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 18,
+        "use_conv": 0,
+        "d_conv": 3
+      },
+      "dim": 2560,
+      "actual_params": 472514560
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.4597030000000002,
+      "params": {
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "d_conv": 3
+      },
+      "dim": 2432,
+      "actual_params": 473792512
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.4734340000000001,
+      "params": {
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2688,
+      "actual_params": 463110144
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.4545679999999999,
+      "params": {
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "d_conv": 3
+      },
+      "dim": 2432,
+      "actual_params": 473792512
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.4737909999999999,
+      "params": {
+        "expansion": 1,
+        "depth": 16,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2688,
+      "actual_params": 463110144
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.455075,
+      "params": {
+        "expansion": 1,
+        "depth": 20,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2432,
+      "actual_params": 473792512
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.390154,
+      "params": {
+        "expansion": 1,
+        "depth": 17,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 2688,
+      "actual_params": 492011520
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.399631,
+      "params": {
+        "expansion": 1,
+        "depth": 12,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 3200,
+      "actual_params": 492339200
+    }
+  ]
+}

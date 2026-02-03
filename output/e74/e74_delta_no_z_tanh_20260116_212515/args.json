@@ -1,0 +1,22 @@
+{
+  "data": "data/pile.txt",
+  "dim": 1536,
+  "depth": 20,
+  "n_state": 24,
+  "expansion": 2.0,
+  "update_type": "delta",
+  "proj_type": "no_z",
+  "nonlin_type": "tanh",
+  "state_type": "full",
+  "decay": 0.9,
+  "batch_size": 32,
+  "chunk_size": 512,
+  "steps": 10000,
+  "train_minutes": 10.0,
+  "lr": 0.0003,
+  "log_every": 10,
+  "output": "output/e74",
+  "bf16": true,
+  "no_cuda": false,
+  "seed": 42
+}

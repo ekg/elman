@@ -1,0 +1,38 @@
+# Job 6: E88_h162n32
+# GPU: 6
+# Command: python train.py --level E88_h162n32 --dim 768 --depth 32 --data data/pile.txt --batch_size 16 --grad_accum 2 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v3/E88_h162n32
+# Started: 2026-01-22T17:09:23.367855
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/500m_state_v3/E88_h162n32/levelE88_h162n32_100m_20260122_170929
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88_h162n32, 513,822,592 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 2, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 8.3751 | lr 3.00e-04 | grad 7.75 | tok/s 4880
+step     20 | loss 8.1929 | lr 3.00e-04 | grad 11.81 | tok/s 5395
+step     30 | loss 9.1206 | lr 3.00e-04 | grad 9.50 | tok/s 5577
+step     40 | loss 6.5534 | lr 3.00e-04 | grad 6.38 | tok/s 5500
+step     50 | loss 5.3074 | lr 3.00e-04 | grad 3.27 | tok/s 5462
+step     60 | loss 5.9270 | lr 3.00e-04 | grad 2.36 | tok/s 5347
+step     70 | loss 5.5036 | lr 3.00e-04 | grad 1.80 | tok/s 5154
+step     80 | loss 5.7704 | lr 3.00e-04 | grad 3.44 | tok/s 5346
+step     90 | loss 5.4582 | lr 3.00e-04 | grad 3.19 | tok/s 5164
+step    100 | loss 4.8903 | lr 3.00e-04 | grad 3.19 | tok/s 5223
+step    110 | loss 4.8335 | lr 3.00e-04 | grad 1.89 | tok/s 5151
+step    120 | loss 4.8858 | lr 3.00e-04 | grad 2.06 | tok/s 5089
+step    130 | loss 4.8712 | lr 3.00e-04 | grad 1.27 | tok/s 5213
+step    140 | loss 4.4701 | lr 3.00e-04 | grad 1.22 | tok/s 5215
+step    150 | loss 4.2708 | lr 3.00e-04 | grad 1.77 | tok/s 4977
+step    160 | loss 4.1273 | lr 3.00e-04 | grad 1.23 | tok/s 5013
+step    170 | loss 4.4442 | lr 3.00e-04 | grad 4.28 | tok/s 5186
+step    180 | loss 4.3246 | lr 3.00e-04 | grad 0.90 | tok/s 5206
+step    190 | loss 3.8935 | lr 3.00e-04 | grad 1.52 | tok/s 5292
+
+Training complete! Final step: 199

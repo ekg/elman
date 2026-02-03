@@ -1,0 +1,31 @@
+# Job 69: 70
+# GPU: 1
+# Command: python train.py --level 70 --dim 1408 --expansion 2.0 --n_state 96 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/all_models_20260119_213946/70
+# Started: 2026-01-19T23:01:05.596826
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/all_models_20260119_213946/70/level70_100m_20260119_230111
+Auto r_h_mode: none (level 70 is matrix state - gated update is bounded)
+Model: Level 70, 98,612,116 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.6685 | lr 2.70e-05 | grad 123.50 | tok/s 3045
+step     20 | loss 4.9083 | lr 5.70e-05 | grad 25.62 | tok/s 3361
+step     30 | loss 4.9903 | lr 8.70e-05 | grad 20.50 | tok/s 3562
+step     40 | loss 4.4039 | lr 1.17e-04 | grad 20.25 | tok/s 3562
+step     50 | loss 4.0744 | lr 1.47e-04 | grad 12.00 | tok/s 3561
+step     60 | loss 3.9805 | lr 1.77e-04 | grad 25.88 | tok/s 3488
+step     70 | loss 3.5445 | lr 2.07e-04 | grad 80.00 | tok/s 3368
+step     80 | loss 3.6482 | lr 2.37e-04 | grad 5.59 | tok/s 3499
+step     90 | loss 3.5178 | lr 2.67e-04 | grad 5.47 | tok/s 3380
+step    100 | loss 3.3277 | lr 2.97e-04 | grad 2.17 | tok/s 3414
+step    110 | loss 3.2518 | lr 6.94e-06 | grad 3.95 | tok/s 3354
+step    120 | loss 3.6158 | lr 2.69e-05 | grad 2.58 | tok/s 3308
+step    130 | loss 3.3940 | lr 5.89e-05 | grad 1.84 | tok/s 3388
+
+Training complete! Final step: 130

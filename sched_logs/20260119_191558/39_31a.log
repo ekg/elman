@@ -1,0 +1,31 @@
+# Job 39: 31a
+# GPU: 2
+# Command: python train.py --level 31a --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/elman48_20260119_191441/31a
+# Started: 2026-01-19T19:56:48.530602
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/elman48_20260119_191441/31a/level31a_100m_20260119_195654
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level 31a, 114,890,880 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.5029 | lr 2.70e-05 | grad 9.75 | tok/s 3094
+step     20 | loss 4.8455 | lr 5.70e-05 | grad 3.91 | tok/s 3496
+step     30 | loss 4.8478 | lr 8.70e-05 | grad 2.95 | tok/s 3687
+step     40 | loss 3.8070 | lr 1.17e-04 | grad 1.93 | tok/s 3737
+step     50 | loss 2.9049 | lr 1.47e-04 | grad 1.25 | tok/s 3725
+step     60 | loss 2.9988 | lr 1.77e-04 | grad 1.99 | tok/s 3665
+step     70 | loss 2.6795 | lr 2.07e-04 | grad 2.56 | tok/s 3536
+step     80 | loss 2.9732 | lr 2.37e-04 | grad 2.45 | tok/s 3637
+step     90 | loss 2.8767 | lr 2.67e-04 | grad 3.62 | tok/s 3387
+step    100 | loss 2.4818 | lr 2.97e-04 | grad 1.22 | tok/s 3364
+step    110 | loss 2.4400 | lr 6.94e-06 | grad 1.58 | tok/s 3294
+step    120 | loss 2.6470 | lr 2.69e-05 | grad 1.17 | tok/s 3381
+step    130 | loss 2.5179 | lr 5.89e-05 | grad 1.09 | tok/s 3513
+
+Training complete! Final step: 133

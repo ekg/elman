@@ -1,0 +1,105 @@
+CMA-ES Search for e75
+Started: 2026-02-01T22:34:11.636577
+Command: python cmaes_search.py --model e75 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'n_heads': 8, 'n_state': 32, 'depth': 20}
+Encoded x0: ['0.429', '0.333', '0.286']
+======================================================================
+CMA-ES Search for E75
+======================================================================
+Search space (3 dimensions):
+  n_heads: [2, 16] (int) - Number of heads
+  n_state: [16, 64] (int_mult8) - State dimension per head (must be mult of 8)
+  depth: [12, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 3 (seed=1086601, Sun Feb  1 22:34:12 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 8] GPU 7 | n_heads=8, n_state=40, depth=18 | dim=4480 | 491.5M params
+  [Eval 8] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | n_heads=11, n_state=48, depth=12 | dim=5120 | 478.2M params
+  [Eval 4] NaN/diverged (loss=inf)
+  [Eval 3] GPU 2 | n_heads=7, n_state=24, depth=25 | dim=3968 | 478.1M params
+  [Eval 3] NaN/diverged (loss=inf)
+  [Eval 7] GPU 6 | n_heads=11, n_state=24, depth=22 | dim=4096 | 489.2M params
+  [Eval 7] NaN/diverged (loss=inf)
+  [Eval 6] GPU 5 | n_heads=11, n_state=48, depth=16 | dim=4352 | 488.1M params
+  [Eval 6] NaN/diverged (loss=inf)
+  [Eval 2] GPU 1 | n_heads=7, n_state=32, depth=15 | dim=5120 | 480.6M params
+  [Eval 2] NaN/diverged (loss=inf)
+  [Eval 1] GPU 0 | n_heads=8, n_state=32, depth=24 | dim=3840 | 472.9M params
+  [Eval 1] Loss: 1.4095
+  [Eval 5] GPU 4 | n_heads=5, n_state=40, depth=27 | dim=3712 | 473.3M params
+  [Eval 5] NaN/diverged (loss=inf)
+  *** NEW BEST: 1.4095 | {'n_heads': 8, 'n_state': 32, 'depth': 24} | dim=3840 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.409509000000000e+00 1.0e+00 1.24e-01  1e-01  1e-01 30:13.7
+  Generation best: 1.4095 | Overall best: 1.4095 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 11] GPU 2 | n_heads=7, n_state=32, depth=26 | dim=3712 | 467.4M params
+  [Eval 11] NaN/diverged (loss=inf)
+  [Eval 15] GPU 6 | n_heads=7, n_state=24, depth=22 | dim=4224 | 471.8M params
+  [Eval 15] NaN/diverged (loss=inf)
+  [Eval 12] GPU 3 | n_heads=7, n_state=24, depth=20 | dim=4480 | 477.9M params
+  [Eval 12] NaN/diverged (loss=inf)
+  [Eval 13] GPU 4 | n_heads=5, n_state=32, depth=22 | dim=4224 | 468.1M params
+  [Eval 13] Loss: 1.4026
+  [Eval 14] GPU 5 | n_heads=8, n_state=24, depth=26 | dim=3840 | 480.3M params
+  [Eval 14] Loss: 1.4001
+  [Eval 9] GPU 0 | n_heads=5, n_state=24, depth=20 | dim=4608 | 481.2M params
+  [Eval 9] Loss: 1.4108
+  [Eval 10] GPU 1 | n_heads=8, n_state=32, depth=20 | dim=4352 | 491.4M params
+  [Eval 10] Loss: 1.3936
+  [Eval 16] GPU 7 | n_heads=5, n_state=32, depth=24 | dim=4096 | 482.5M params
+  [Eval 16] Loss: 1.3978
+  *** NEW BEST: 1.3936 | {'n_heads': 8, 'n_state': 32, 'depth': 20} | dim=4352 ***
+    2     16 1.393561000000000e+00 1.3e+00 1.06e-01  8e-02  1e-01 60:35.3
+  Generation best: 1.3936 | Overall best: 1.3936 | Improvement: 0.0159
+
+--- Generation 3 (converge threshold: 0.01) ---
+  [Eval 19] GPU 2 | n_heads=6, n_state=40, depth=21 | dim=4224 | 482.3M params
+  [Eval 19] NaN/diverged (loss=inf)
+  [Eval 21] GPU 4 | n_heads=7, n_state=24, depth=25 | dim=3968 | 478.1M params
+  [Eval 21] NaN/diverged (loss=inf)
+  [Eval 20] GPU 3 | n_heads=7, n_state=32, depth=19 | dim=4480 | 477.9M params
+  [Eval 20] NaN/diverged (loss=inf)
+  [Eval 23] GPU 6 | n_heads=8, n_state=24, depth=25 | dim=3968 | 490.0M params
+  [Eval 23] Loss: 1.4342
+  [Eval 18] GPU 1 | n_heads=7, n_state=32, depth=20 | dim=4352 | 477.5M params
+  [Eval 18] NaN/diverged (loss=inf)
+  [Eval 24] GPU 7 | n_heads=6, n_state=32, depth=25 | dim=3968 | 490.0M params
+  [Eval 24] Loss: 1.3995
+  [Eval 22] GPU 5 | n_heads=8, n_state=32, depth=22 | dim=4096 | 485.6M params
+  [Eval 22] Loss: 1.4061
+  [Eval 17] GPU 0 | n_heads=8, n_state=32, depth=20 | dim=4352 | 491.4M params
+  [Eval 17] Loss: 1.4016
+    3     24 1.399530000000000e+00 1.4e+00 9.23e-02  6e-02  8e-02 90:55.1
+  Generation best: 1.3995 | Overall best: 1.3936 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (1 consecutive)
+
+*** CONVERGED: improvement 0.0000 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.3936
+Best params: {'n_heads': 8, 'n_state': 32, 'depth': 20}
+Total evaluations: 24
+
+To train with best config:
+python train.py --level E75h8n32 --dim 4352 --depth 20 --lr 3e-4 --expansion 1.0 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-02T00:05:07.341677
+Duration: 1.52 hours
+Return code: 0

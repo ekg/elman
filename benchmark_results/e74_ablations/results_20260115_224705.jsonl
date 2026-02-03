@@ -1,1 +1,0 @@
-{"config_id": 10, "config_desc": "Lowrank-8", "state": "lowrank", "proj": "no_z", "nonlin": "tanh", "gate": "output", "parameters": 393728, "memory_mb": 33.68310546875, "mean_loss": 6.90625, "final_loss": 6.90625, "mean_time_ms": 322.81468622386456, "tokens_per_sec": 3172.098555918486, "mean_grad_norm": 0.0, "max_grad_norm": 0.0, "checkpointed": false}

@@ -1,0 +1,311 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'d_state': 64, 'expand': 2, 'depth': 28}
+Encoded x0: ['0.000', '0.500', '0.500']
+======================================================================
+CMA-ES Search for MAMBA2
+======================================================================
+Search space (3 dimensions):
+  d_state: [64, 256] (int_mult16) - SSM state dimension
+  expand: [1, 3] (int) - Expansion factor
+  depth: [16, 40] (int) - Number of layers
+Target params: 480M ± 30M
+Training time per config: 10.0 min
+Generations: 15
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~120
+Estimated time: ~150 min (2.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 3 (seed=585387, Tue Jan 27 03:15:32 2026)
+
+--- Generation 1/15 ---
+  [Eval 3] Skip - params 510.3M vs target 480M
+  [Eval 2] Skip - params 512.2M vs target 480M
+  [Eval 4] Skip - params 442.2M vs target 480M
+  [Eval 7] GPU 6 | d_state=96, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 7] Loss: 1.2916
+  [Eval 1] GPU 0 | d_state=128, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 1] Loss: 1.2961
+  [Eval 6] Skip - params 512.2M vs target 480M
+  [Eval 5] GPU 4 | d_state=128, expand=2, depth=29 | dim=1664 | 495.1M params
+  [Eval 5] Loss: 1.3045
+  [Eval 8] GPU 7 | d_state=80, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 8] Loss: 1.4071
+  *** NEW BEST: 1.2961 | {'d_state': 128, 'expand': 2, 'depth': 22} | dim=1920 ***
+  *** NEW BEST: 1.2916 | {'d_state': 96, 'expand': 2, 'depth': 25} | dim=1792 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.291602000000000e+00 1.0e+00 1.51e-01  1e-01  2e-01 10:14.9
+
+--- Generation 2/15 ---
+  [Eval 11] GPU 2 | d_state=64, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 11] Loss: 1.4141
+  [Eval 13] GPU 4 | d_state=96, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 13] Loss: 1.4043
+  [Eval 15] GPU 6 | d_state=64, expand=2, depth=29 | dim=1664 | 495.1M params
+  [Eval 15] Loss: 1.3059
+  [Eval 10] Skip - params 513.9M vs target 480M
+  [Eval 16] GPU 7 | d_state=80, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 16] Loss: 1.4086
+  [Eval 12] GPU 3 | d_state=80, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 12] Loss: 1.3869
+  [Eval 9] GPU 0 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 9] Loss: 1.3004
+  [Eval 14] GPU 5 | d_state=112, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 14] Loss: 1.2951
+    2     16 1.295062000000000e+00 1.4e+00 1.74e-01  2e-01  2e-01 20:31.3
+
+--- Generation 3/15 ---
+  [Eval 18] Skip - params 513.9M vs target 480M
+  [Eval 17] GPU 0 | d_state=144, expand=2, depth=27 | dim=1664 | 461.0M params
+  [Eval 17] Loss: 1.4155
+  [Eval 19] Skip - params 515.8M vs target 480M
+  [Eval 23] GPU 6 | d_state=128, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 23] Loss: 1.2946
+  [Eval 20] GPU 3 | d_state=64, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 20] Loss: 1.2862
+  [Eval 22] GPU 5 | d_state=160, expand=2, depth=16 | dim=2176 | 464.4M params
+  [Eval 22] Loss: 1.4191
+  [Eval 24] GPU 7 | d_state=64, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 24] Loss: 1.4087
+  [Eval 21] GPU 4 | d_state=96, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 21] Loss: 1.4033
+  *** NEW BEST: 1.2862 | {'d_state': 64, 'expand': 2, 'depth': 25} | dim=1792 ***
+    3     24 1.286229000000000e+00 1.5e+00 1.60e-01  1e-01  2e-01 30:47.1
+
+--- Generation 4/15 ---
+  [Eval 31] Skip - params 513.9M vs target 480M
+  [Eval 27] GPU 2 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 27] Loss: 1.4071
+  [Eval 28] GPU 3 | d_state=96, expand=2, depth=27 | dim=1664 | 461.0M params
+  [Eval 28] Loss: 1.4011
+  [Eval 29] GPU 4 | d_state=112, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 29] Loss: 1.4130
+  [Eval 32] GPU 7 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 32] Loss: 1.2950
+  [Eval 26] GPU 1 | d_state=112, expand=1, depth=28 | dim=2304 | 455.1M params
+  [Eval 26] Loss: 1.5104
+  [Eval 30] GPU 5 | d_state=112, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 30] Loss: 1.4068
+  [Eval 25] GPU 0 | d_state=64, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 25] Loss: 1.4075
+    4     32 1.294970000000000e+00 1.4e+00 1.74e-01  2e-01  2e-01 41:09.7
+
+--- Generation 5/15 ---
+  [Eval 33] Skip - params 513.9M vs target 480M
+  [Eval 36] Skip - params 513.9M vs target 480M
+  [Eval 35] GPU 2 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 35] Loss: 1.4058
+  [Eval 40] GPU 7 | d_state=144, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 40] Loss: 1.4166
+  [Eval 39] GPU 6 | d_state=80, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 39] Loss: 1.4146
+  [Eval 37] GPU 4 | d_state=64, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 37] Loss: 1.2931
+  [Eval 38] GPU 5 | d_state=96, expand=1, depth=24 | dim=2560 | 480.7M params
+  [Eval 38] Loss: 1.5530
+  [Eval 34] GPU 1 | d_state=144, expand=1, depth=25 | dim=2560 | 500.8M params
+  [Eval 34] Loss: 1.4555
+    5     40 1.293120000000000e+00 1.3e+00 1.43e-01  1e-01  1e-01 51:33.6
+
+--- Generation 6/15 ---
+  [Eval 42] GPU 1 | d_state=64, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 42] Loss: 1.4062
+  [Eval 46] GPU 5 | d_state=96, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 46] Loss: 1.4040
+  [Eval 43] GPU 2 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 43] Loss: 1.3003
+  [Eval 47] GPU 6 | d_state=64, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 47] Loss: 1.4081
+  [Eval 41] GPU 0 | d_state=64, expand=1, depth=22 | dim=2688 | 485.5M params
+  [Eval 41] Loss: 1.4501
+  [Eval 44] GPU 3 | d_state=112, expand=2, depth=16 | dim=2176 | 464.4M params
+  [Eval 44] Loss: 1.4310
+  [Eval 48] GPU 7 | d_state=80, expand=1, depth=21 | dim=2688 | 463.4M params
+  [Eval 48] Loss: 1.5347
+  [Eval 45] GPU 4 | d_state=112, expand=2, depth=16 | dim=2176 | 464.4M params
+  [Eval 45] Loss: 1.4250
+    6     48 1.300312000000000e+00 1.5e+00 1.24e-01  1e-01  1e-01 61:59.4
+
+--- Generation 7/15 ---
+  [Eval 56] GPU 7 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 56] Loss: 1.2951
+  [Eval 50] GPU 1 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 50] Loss: 1.2818
+  [Eval 54] GPU 5 | d_state=144, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 54] Loss: 1.4036
+  [Eval 55] GPU 6 | d_state=80, expand=2, depth=19 | dim=2048 | 489.1M params
+  [Eval 55] Loss: 1.3249
+  [Eval 49] GPU 0 | d_state=112, expand=1, depth=27 | dim=2432 | 488.5M params
+  [Eval 49] Loss: 1.5365
+  [Eval 51] GPU 2 | d_state=128, expand=1, depth=21 | dim=2688 | 463.4M params
+  [Eval 51] Loss: 1.5149
+  [Eval 53] GPU 4 | d_state=112, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 53] Loss: 1.4212
+  [Eval 52] GPU 3 | d_state=112, expand=1, depth=25 | dim=2560 | 500.8M params
+  [Eval 52] Loss: 1.4062
+  *** NEW BEST: 1.2818 | {'d_state': 80, 'expand': 2, 'depth': 22} | dim=1920 ***
+    7     56 1.281752000000000e+00 1.6e+00 1.25e-01  1e-01  1e-01 72:24.0
+
+--- Generation 8/15 ---
+  [Eval 63] GPU 6 | d_state=96, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 63] Loss: 1.4210
+  [Eval 62] GPU 5 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 62] Loss: 1.4090
+  [Eval 58] GPU 1 | d_state=112, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 58] Loss: 1.3930
+  [Eval 59] GPU 2 | d_state=112, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 59] Loss: 1.4201
+  [Eval 60] GPU 3 | d_state=112, expand=2, depth=19 | dim=2048 | 489.1M params
+  [Eval 60] Loss: 1.3134
+  [Eval 64] GPU 7 | d_state=80, expand=1, depth=21 | dim=2688 | 463.4M params
+  [Eval 64] Loss: 1.4921
+  [Eval 57] GPU 0 | d_state=64, expand=1, depth=24 | dim=2560 | 480.7M params
+  [Eval 57] Loss: 1.4915
+  [Eval 61] GPU 4 | d_state=112, expand=1, depth=22 | dim=2688 | 485.5M params
+  [Eval 61] Loss: 1.5367
+    8     64 1.313415000000000e+00 1.6e+00 1.28e-01  9e-02  1e-01 82:48.4
+
+--- Generation 9/15 ---
+  [Eval 67] GPU 2 | d_state=112, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 67] Loss: 1.4174
+  [Eval 72] GPU 7 | d_state=112, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 72] Loss: 1.4074
+  [Eval 71] GPU 6 | d_state=112, expand=2, depth=16 | dim=2176 | 464.4M params
+  [Eval 71] Loss: 1.4225
+  [Eval 66] GPU 1 | d_state=96, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 66] Loss: 1.2713
+  [Eval 69] GPU 4 | d_state=112, expand=2, depth=17 | dim=2176 | 493.4M params
+  [Eval 69] Loss: 1.3210
+  [Eval 65] GPU 0 | d_state=80, expand=1, depth=24 | dim=2560 | 480.7M params
+  [Eval 65] Loss: 1.4620
+  [Eval 68] GPU 3 | d_state=144, expand=1, depth=19 | dim=2816 | 459.9M params
+  [Eval 68] Loss: 1.5045
+  [Eval 70] GPU 5 | d_state=112, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 70] Loss: 1.2935
+  *** NEW BEST: 1.2713 | {'d_state': 96, 'expand': 2, 'depth': 25} | dim=1792 ***
+    9     72 1.271332000000000e+00 1.7e+00 1.09e-01  7e-02  9e-02 93:11.5
+
+--- Generation 10/15 ---
+  [Eval 74] GPU 1 | d_state=96, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 74] Loss: 1.4194
+  [Eval 79] GPU 6 | d_state=112, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 79] Loss: 1.3003
+  [Eval 80] GPU 7 | d_state=128, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 80] Loss: 1.4137
+  [Eval 73] GPU 0 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 73] Loss: 1.2998
+  [Eval 78] GPU 5 | d_state=64, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 78] Loss: 1.4047
+  [Eval 77] GPU 4 | d_state=112, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 77] Loss: 1.4071
+  [Eval 76] GPU 3 | d_state=128, expand=1, depth=21 | dim=2688 | 463.4M params
+  [Eval 76] Loss: 1.4893
+  [Eval 75] GPU 2 | d_state=128, expand=1, depth=20 | dim=2816 | 484.1M params
+  [Eval 75] Loss: 1.4101
+   10     80 1.299755000000000e+00 1.6e+00 8.41e-02  5e-02  7e-02 103:36.6
+
+--- Generation 11/15 ---
+  [Eval 86] GPU 5 | d_state=80, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 86] Loss: 1.4049
+  [Eval 81] GPU 0 | d_state=96, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 81] Loss: 1.4168
+  [Eval 87] GPU 6 | d_state=96, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 87] Loss: 1.4166
+  [Eval 83] GPU 2 | d_state=112, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 83] Loss: 1.4155
+  [Eval 85] GPU 4 | d_state=80, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 85] Loss: 1.4039
+  [Eval 88] GPU 7 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 88] Loss: 1.3996
+  [Eval 82] GPU 1 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 82] Loss: 1.2882
+  [Eval 84] GPU 3 | d_state=96, expand=1, depth=22 | dim=2688 | 485.5M params
+  [Eval 84] Loss: 1.5209
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+   11     88 1.288184000000000e+00 1.9e+00 6.75e-02  3e-02  5e-02 113:59.4
+
+--- Generation 12/15 ---
+  [Eval 93] GPU 4 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 93] Loss: 1.2985
+  [Eval 94] GPU 5 | d_state=96, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 94] Loss: 1.4035
+  [Eval 96] GPU 7 | d_state=80, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 96] Loss: 1.3997
+  [Eval 91] GPU 2 | d_state=64, expand=2, depth=27 | dim=1664 | 461.0M params
+  [Eval 91] Loss: 1.4133
+  [Eval 90] GPU 1 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 90] Loss: 1.2889
+  [Eval 95] GPU 6 | d_state=112, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 95] Loss: 1.4100
+  [Eval 89] GPU 0 | d_state=96, expand=1, depth=22 | dim=2688 | 485.5M params
+  [Eval 89] Loss: 1.5361
+  [Eval 92] GPU 3 | d_state=112, expand=1, depth=21 | dim=2688 | 463.4M params
+  [Eval 92] Loss: 1.5778
+   12     96 1.288909000000000e+00 2.4e+00 8.51e-02  5e-02  6e-02 124:21.9
+
+--- Generation 13/15 ---
+  [Eval 97] GPU 0 | d_state=80, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 97] Loss: 1.3956
+  [Eval 99] GPU 2 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 99] Loss: 1.2995
+  [Eval 104] GPU 7 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 104] Loss: 1.2975
+  [Eval 103] GPU 6 | d_state=96, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 103] Loss: 1.2923
+  [Eval 101] GPU 4 | d_state=80, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 101] Loss: 1.4127
+  [Eval 100] GPU 3 | d_state=112, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 100] Loss: 1.2894
+  [Eval 98] GPU 1 | d_state=96, expand=2, depth=19 | dim=2048 | 489.1M params
+  [Eval 98] Loss: 1.3159
+  [Eval 102] GPU 5 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 102] Loss: 1.2980
+   13    104 1.289393000000000e+00 1.7e+00 9.84e-02  6e-02  8e-02 134:38.0
+
+--- Generation 14/15 ---
+  [Eval 109] Skip - params 513.9M vs target 480M
+  [Eval 111] GPU 6 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 111] Loss: 1.4109
+  [Eval 107] GPU 2 | d_state=112, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 107] Loss: 1.3013
+  [Eval 110] GPU 5 | d_state=112, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 110] Loss: 1.4006
+  [Eval 106] GPU 1 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 106] Loss: 1.3944
+  [Eval 108] GPU 3 | d_state=96, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 108] Loss: 1.3927
+  [Eval 105] GPU 0 | d_state=96, expand=1, depth=25 | dim=2560 | 500.8M params
+  [Eval 105] Loss: 1.4330
+  [Eval 112] GPU 7 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 112] Loss: 1.2965
+   14    112 1.296538000000000e+00 1.8e+00 9.75e-02  6e-02  8e-02 145:01.5
+
+--- Generation 15/15 ---
+  [Eval 118] GPU 5 | d_state=112, expand=2, depth=24 | dim=1792 | 474.4M params
+  [Eval 118] Loss: 1.4072
+  [Eval 115] GPU 2 | d_state=128, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 115] Loss: 1.4184
+  [Eval 117] GPU 4 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 117] Loss: 1.3010
+  [Eval 116] GPU 3 | d_state=96, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 116] Loss: 1.4290
+  [Eval 113] GPU 0 | d_state=112, expand=2, depth=21 | dim=1920 | 475.8M params
+  [Eval 113] Loss: 1.4171
+  [Eval 120] GPU 7 | d_state=112, expand=2, depth=23 | dim=1792 | 454.7M params
+  [Eval 120] Loss: 1.4001
+  [Eval 114] GPU 1 | d_state=96, expand=2, depth=19 | dim=2048 | 489.1M params
+  [Eval 114] Loss: 1.3168
+  [Eval 119] GPU 6 | d_state=96, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 119] Loss: 1.3015
+   15    120 1.300981000000000e+00 1.8e+00 1.35e-01  8e-02  1e-01 155:17.3
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.2713
+Best params: {'d_state': 96, 'expand': 2, 'depth': 25}
+Total evaluations: 120
+
+To train with best config:
+python train.py --level mamba2 --dim 1792 --depth 25 --lr 3e-4 --train_minutes 30

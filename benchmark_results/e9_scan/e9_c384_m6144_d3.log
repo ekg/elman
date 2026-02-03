@@ -1,9 +1,0 @@
-e9_c384_m6144_d3: core=384 mem=6144 total=6528 params=61,336,704
-Step 100 | 79s | Loss 1.9844 | Avg100 2.4239 | 165358 tok/s
-Step 200 | 161s | Loss 1.7734 | Avg100 1.8568 | 162435 tok/s
-Step 300 | 244s | Loss 1.6406 | Avg100 1.7000 | 160839 tok/s
-Step 400 | 328s | Loss 1.5781 | Avg100 1.6286 | 160051 tok/s
-Step 500 | 411s | Loss 1.5938 | Avg100 1.5824 | 159590 tok/s
-Step 600 | 494s | Loss 1.5156 | Avg100 1.5534 | 159221 tok/s
-Step 700 | 577s | Loss 1.5312 | Avg100 1.5318 | 159013 tok/s
-DONE: e9_c384_m6144_d3 | Steps=728 | Time=600s | Last100=1.5263 | 158945 tok/s

@@ -1,5 +1,0 @@
-mamba2_d32: dim=1440 depth=32 batch=80 params=407,144,480
-Step 100 | 197s | Loss 1.6484 | Avg100 2.4548 | 20800 tok/s | Mem 35.7GB
-Step 200 | 384s | Loss 1.5859 | Avg100 1.6052 | 21327 tok/s | Mem 35.7GB
-Step 300 | 570s | Loss 1.4375 | Avg100 1.5003 | 21546 tok/s | Mem 35.7GB
-DONE: mamba2_d32 | Steps=317 | Time=602s | Last100=1.4920 | 21575 tok/s | PeakMem=35.7GB

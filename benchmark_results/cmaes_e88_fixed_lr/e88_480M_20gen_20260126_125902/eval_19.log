@@ -1,0 +1,39 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_e88_fixed_lr/e88_480M_20gen_20260126_125902/eval_19/levelE88_100m_20260126_130544
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88, 479,164,928 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 3.0 minutes
+step     10 | loss 4.2826 | lr 3.00e-04 | grad 10.88 | tok/s 7719
+step     20 | loss 2.7272 | lr 3.00e-04 | grad 2.80 | tok/s 11895
+step     30 | loss 3.0287 | lr 3.00e-04 | grad 5.47 | tok/s 12521
+step     40 | loss 4.2937 | lr 3.00e-04 | grad 40.75 | tok/s 12681
+step     50 | loss 4.7337 | lr 3.00e-04 | grad 18.12 | tok/s 12763
+step     60 | loss 3.8358 | lr 3.00e-04 | grad 13.81 | tok/s 12690
+step     70 | loss 3.0211 | lr 3.00e-04 | grad 8.06 | tok/s 12597
+step     80 | loss 2.6464 | lr 3.00e-04 | grad 6.34 | tok/s 12543
+step     90 | loss 2.4419 | lr 3.00e-04 | grad 4.31 | tok/s 12471
+step    100 | loss 2.2367 | lr 3.00e-04 | grad 2.19 | tok/s 12404
+step    110 | loss 2.2658 | lr 3.00e-04 | grad 2.42 | tok/s 12282
+step    120 | loss 2.7281 | lr 3.00e-04 | grad 1.52 | tok/s 11667
+step    130 | loss 2.1329 | lr 3.00e-04 | grad 4.41 | tok/s 11903
+step    140 | loss 2.3886 | lr 3.00e-04 | grad 6.47 | tok/s 11931
+step    150 | loss 1.4362 | lr 3.00e-04 | grad 4.25 | tok/s 12178
+step    160 | loss 2.3366 | lr 3.00e-04 | grad 1.77 | tok/s 11760
+step    170 | loss 2.2948 | lr 3.00e-04 | grad 1.40 | tok/s 11551
+step    180 | loss 1.9373 | lr 3.00e-04 | grad 2.45 | tok/s 11808
+step    190 | loss 1.9380 | lr 3.00e-04 | grad 1.67 | tok/s 11572
+step    200 | loss 1.6884 | lr 3.00e-04 | grad 1.41 | tok/s 12077
+step    210 | loss 1.9085 | lr 3.00e-04 | grad 3.73 | tok/s 11450
+step    220 | loss 2.2198 | lr 3.00e-04 | grad 2.36 | tok/s 11560
+step    230 | loss 1.9841 | lr 3.00e-04 | grad 2.34 | tok/s 11548
+step    240 | loss 2.2890 | lr 3.00e-04 | grad 4.38 | tok/s 11679
+step    250 | loss 1.7912 | lr 3.00e-04 | grad 1.38 | tok/s 11600
+step    260 | loss 1.9186 | lr 3.00e-04 | grad 2.64 | tok/s 11919
+
+Training complete! Final step: 265

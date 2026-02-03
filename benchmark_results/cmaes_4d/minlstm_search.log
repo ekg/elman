@@ -1,0 +1,176 @@
+CMA-ES 4D Search for minlstm
+Started: 2026-02-03T02:02:53.222712
+Command: python cmaes_search.py --model minlstm --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 1792, 'expansion': 1, 'depth': 31, 'use_conv': 0, 'd_conv': 4, 'lr': 0.0003}
+Encoded x0: ['0.300', '0.000', '0.679', '0.250', '0.250', '0.739']
+======================================================================
+CMA-ES Search for MINLSTM
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3584] (int_mult128) - Model dimension
+  expansion: [1, 4] (int) - Expansion factor
+  depth: [12, 40] (int) - Number of layers
+  use_conv: [0, 1] (binary) - Use Conv1d (0=no, 1=yes)
+  d_conv: [3, 7] (int) - Conv kernel size (if use_conv=1)
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=234681, Tue Feb  3 02:02:53 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 3] GPU 2 | dim=1280, expansion=1, depth=27, use_conv=0, d_conv=4, lr=0.0001465 | dim=1280 | 221.5M params
+  [Eval 3] Loss: 1.8611
+  [Eval 6] GPU 5 | dim=1536, expansion=1, depth=30, use_conv=0, d_conv=4, lr=0.0005271 | dim=1536 | 354.3M params
+  [Eval 6] Loss: 1.4478
+  [Eval 2] GPU 1 | dim=1152, expansion=1, depth=35, use_conv=0, d_conv=5, lr=0.0005107 | dim=1152 | 232.5M params
+  [Eval 2] Loss: 1.5360
+  [Eval 1] GPU 0 | dim=2176, expansion=1, depth=33, use_conv=0, d_conv=3, lr=0.0002018 | dim=2176 | 781.8M params
+  [Eval 1] Loss: 1.5042
+  [Eval 4] GPU 3 | dim=2176, expansion=1, depth=32, use_conv=0, d_conv=4, lr=0.0001746 | dim=2176 | 758.2M params
+  [Eval 4] Loss: 1.5433
+  [Eval 5] GPU 4 | dim=2176, expansion=1, depth=22, use_conv=0, d_conv=4, lr=0.0002442 | dim=2176 | 521.4M params
+  [Eval 5] Loss: 1.4144
+  [Eval 7] GPU 6 | dim=1664, expansion=2, depth=31, use_conv=0, d_conv=3, lr=0.0005785 | dim=1664 | 1373.8M params
+  [Eval 7] Loss: 1.7443
+  [Eval 8] GPU 7 | dim=2432, expansion=2, depth=28, use_conv=0, d_conv=5, lr=0.0002119 | dim=2432 | 2650.4M params
+  [Eval 8] Loss: 2.0424
+  *** NEW BEST: 1.5042 | {'dim': 2176, 'expansion': 1, 'depth': 33, 'use_conv': 0, 'd_conv': 3, 'lr': 0.00020176854687026105} | dim=2176 ***
+  *** NEW BEST: 1.4144 | {'dim': 2176, 'expansion': 1, 'depth': 22, 'use_conv': 0, 'd_conv': 4, 'lr': 0.00024424333116484316} | dim=2176 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.414406000000000e+00 1.0e+00 1.38e-01  1e-01  1e-01 30:34.4
+  Generation best: 1.4144 | Overall best: 1.4144 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 16] GPU 7 | dim=1792, expansion=1, depth=27, use_conv=0, d_conv=3, lr=0.0001473 | dim=1792 | 434.0M params
+  [Eval 16] Loss: 1.6363
+  [Eval 14] GPU 5 | dim=1536, expansion=1, depth=28, use_conv=0, d_conv=4, lr=0.0006773 | dim=1536 | 330.7M params
+  [Eval 14] Loss: 1.5292
+  [Eval 12] GPU 3 | dim=1920, expansion=1, depth=30, use_conv=0, d_conv=5, lr=0.0004435 | dim=1920 | 553.5M params
+  [Eval 12] Loss: 1.3381
+  [Eval 11] GPU 2 | dim=1664, expansion=1, depth=27, use_conv=0, d_conv=4, lr=0.0002278 | dim=1664 | 374.2M params
+  [Eval 11] Loss: 1.5596
+  [Eval 10] GPU 1 | dim=1920, expansion=1, depth=28, use_conv=0, d_conv=3, lr=0.0003279 | dim=1920 | 516.6M params
+  [Eval 10] Loss: 1.3693
+  [Eval 13] GPU 4 | dim=1664, expansion=1, depth=37, use_conv=0, d_conv=5, lr=0.0002266 | dim=1664 | 512.7M params
+  [Eval 13] Loss: 1.4286
+  [Eval 9] GPU 0 | dim=1920, expansion=1, depth=27, use_conv=0, d_conv=4, lr=0.0001521 | dim=1920 | 498.2M params
+  [Eval 9] Loss: 1.5435
+  [Eval 15] GPU 6 | dim=2048, expansion=2, depth=26, use_conv=0, d_conv=4, lr=0.0001947 | dim=2048 | 1745.4M params
+  [Eval 15] Loss: 1.9809
+  *** NEW BEST: 1.3693 | {'dim': 1920, 'expansion': 1, 'depth': 28, 'use_conv': 0, 'd_conv': 3, 'lr': 0.0003279487717031304} | dim=1920 ***
+  *** NEW BEST: 1.3381 | {'dim': 1920, 'expansion': 1, 'depth': 30, 'use_conv': 0, 'd_conv': 5, 'lr': 0.00044352573244449645} | dim=1920 ***
+    2     16 1.338106000000000e+00 1.2e+00 1.30e-01  1e-01  1e-01 60:59.3
+  Generation best: 1.3381 | Overall best: 1.3381 | Improvement: 0.0763
+
+--- Generation 3 (converge threshold: 0.01) ---
+  [Eval 23] GPU 6 | dim=1408, expansion=1, depth=27, use_conv=0, d_conv=4, lr=0.0001934 | dim=1408 | 268.0M params
+  [Eval 23] Loss: 1.7146
+  [Eval 21] GPU 4 | dim=1920, expansion=1, depth=25, use_conv=0, d_conv=5, lr=0.0004168 | dim=1920 | 461.3M params
+  [Eval 21] Loss: 1.4321
+  [Eval 20] GPU 3 | dim=1792, expansion=1, depth=31, use_conv=0, d_conv=5, lr=0.0007344 | dim=1792 | 498.2M params
+  [Eval 20] Loss: 1.3276
+  [Eval 22] GPU 5 | dim=1792, expansion=1, depth=30, use_conv=0, d_conv=4, lr=0.0004112 | dim=1792 | 482.1M params
+  [Eval 22] Loss: 1.3527
+  [Eval 19] GPU 2 | dim=1920, expansion=1, depth=31, use_conv=0, d_conv=5, lr=0.0004706 | dim=1920 | 571.9M params
+  [Eval 19] Loss: 1.3212
+  [Eval 24] GPU 7 | dim=2304, expansion=1, depth=28, use_conv=0, d_conv=5, lr=0.0006973 | dim=2304 | 743.8M params
+  [Eval 24] Loss: 1.4076
+  [Eval 18] GPU 1 | dim=2176, expansion=1, depth=24, use_conv=0, d_conv=4, lr=0.0003577 | dim=2176 | 568.8M params
+  [Eval 18] Loss: 1.3572
+  [Eval 17] GPU 0 | dim=1920, expansion=1, depth=34, use_conv=0, d_conv=4, lr=0.0002505 | dim=1920 | 627.2M params
+  [Eval 17] Loss: 1.4497
+  *** NEW BEST: 1.3212 | {'dim': 1920, 'expansion': 1, 'depth': 31, 'use_conv': 0, 'd_conv': 5, 'lr': 0.00047064219574006534} | dim=1920 ***
+    3     24 1.321157000000000e+00 1.4e+00 1.23e-01  1e-01  1e-01 91:16.7
+  Generation best: 1.3212 | Overall best: 1.3212 | Improvement: 0.0169
+
+--- Generation 4 (converge threshold: 0.01) ---
+  [Eval 27] GPU 2 | dim=1408, expansion=1, depth=28, use_conv=0, d_conv=5, lr=0.0003523 | dim=1408 | 277.9M params
+  [Eval 27] Loss: 1.5711
+  [Eval 31] GPU 6 | dim=1664, expansion=1, depth=30, use_conv=0, d_conv=5, lr=0.0002238 | dim=1664 | 415.8M params
+  [Eval 31] Loss: 1.5261
+  [Eval 30] GPU 5 | dim=1920, expansion=1, depth=25, use_conv=0, d_conv=5, lr=0.0003852 | dim=1920 | 461.3M params
+  [Eval 30] Loss: 1.4328
+  [Eval 28] GPU 3 | dim=1664, expansion=1, depth=36, use_conv=0, d_conv=5, lr=0.0002361 | dim=1664 | 498.8M params
+  [Eval 28] Loss: 1.4439
+  [Eval 29] GPU 4 | dim=2048, expansion=2, depth=28, use_conv=0, d_conv=5, lr=0.0003894 | dim=2048 | 1879.6M params
+  [Eval 29] Loss: 1.8985
+  [Eval 32] GPU 7 | dim=2432, expansion=1, depth=34, use_conv=0, d_conv=5, lr=0.0009951 | dim=2432 | 1006.1M params
+  [Eval 32] Loss: 1.3856
+  [Eval 26] GPU 1 | dim=2048, expansion=1, depth=29, use_conv=0, d_conv=4, lr=0.0005366 | dim=2048 | 608.7M params
+  [Eval 26] Loss: 1.3140
+  [Eval 25] GPU 0 | dim=1792, expansion=1, depth=32, use_conv=0, d_conv=6, lr=0.0007723 | dim=1792 | 514.3M params
+  [Eval 25] Loss: 1.2966
+  *** NEW BEST: 1.2966 | {'dim': 1792, 'expansion': 1, 'depth': 32, 'use_conv': 0, 'd_conv': 6, 'lr': 0.0007723228876505773} | dim=1792 ***
+    4     32 1.296591000000000e+00 1.5e+00 1.27e-01  1e-01  2e-01 121:42.4
+  Generation best: 1.2966 | Overall best: 1.2966 | Improvement: 0.0246
+
+--- Generation 5 (converge threshold: 0.01) ---
+  [Eval 34] GPU 1 | dim=1792, expansion=1, depth=30, use_conv=0, d_conv=5, lr=0.0002797 | dim=1792 | 482.1M params
+  [Eval 34] Loss: 1.4105
+  [Eval 38] GPU 5 | dim=2304, expansion=1, depth=26, use_conv=0, d_conv=4, lr=0.0002786 | dim=2304 | 690.7M params
+  [Eval 38] Loss: 1.4353
+  [Eval 33] GPU 0 | dim=1920, expansion=1, depth=27, use_conv=0, d_conv=5, lr=0.000507 | dim=1920 | 498.2M params
+  [Eval 33] Loss: 1.3492
+  [Eval 40] GPU 7 | dim=2304, expansion=1, depth=24, use_conv=0, d_conv=6, lr=0.0005578 | dim=2304 | 637.6M params
+  [Eval 40] Loss: 1.3274
+  [Eval 37] GPU 4 | dim=2048, expansion=1, depth=32, use_conv=0, d_conv=4, lr=0.0007186 | dim=2048 | 671.6M params
+  [Eval 37] Loss: 1.3906
+  [Eval 35] GPU 2 | dim=2560, expansion=1, depth=34, use_conv=0, d_conv=6, lr=0.0008953 | dim=2560 | 1114.8M params
+  [Eval 35] Loss: 1.4326
+  [Eval 39] GPU 6 | dim=1920, expansion=1, depth=32, use_conv=0, d_conv=6, lr=0.0006055 | dim=1920 | 590.3M params
+  [Eval 39] Loss: 1.3284
+  [Eval 36] GPU 3 | dim=2176, expansion=1, depth=29, use_conv=0, d_conv=5, lr=0.0008765 | dim=2176 | 687.1M params
+  [Eval 36] Loss: 1.3770
+    5     40 1.327384000000000e+00 1.7e+00 1.35e-01  1e-01  2e-01 152:03.8
+  Generation best: 1.3274 | Overall best: 1.2966 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (1 consecutive)
+
+--- Generation 6 (converge threshold: 0.01) ---
+  [Eval 44] GPU 3 | dim=1920, expansion=1, depth=26, use_conv=0, d_conv=5, lr=0.0005881 | dim=1920 | 479.7M params
+  [Eval 44] Loss: 1.4176
+  [Eval 41] GPU 0 | dim=2048, expansion=1, depth=26, use_conv=0, d_conv=6, lr=0.0007805 | dim=2048 | 545.8M params
+  [Eval 41] Loss: 1.3161
+  [Eval 48] GPU 7 | dim=2176, expansion=1, depth=26, use_conv=0, d_conv=6, lr=0.0004851 | dim=2176 | 616.1M params
+  [Eval 48] Loss: 1.3351
+  [Eval 42] GPU 1 | dim=1920, expansion=1, depth=36, use_conv=0, d_conv=5, lr=0.0003722 | dim=1920 | 664.0M params
+  [Eval 42] Loss: 1.4100
+  [Eval 46] GPU 5 | dim=2560, expansion=1, depth=23, use_conv=0, d_conv=6, lr=0.0004143 | dim=2560 | 754.3M params
+  [Eval 46] Loss: 1.4147
+  [Eval 43] GPU 2 | dim=2304, expansion=1, depth=23, use_conv=0, d_conv=4, lr=0.0007723 | dim=2304 | 611.1M params
+  [Eval 43] Loss: 1.3003
+  [Eval 45] GPU 4 | dim=2176, expansion=1, depth=35, use_conv=0, d_conv=5, lr=0.0002584 | dim=2176 | 829.2M params
+  [Eval 45] Loss: 1.4645
+  [Eval 47] GPU 6 | dim=1536, expansion=1, depth=31, use_conv=0, d_conv=5, lr=0.0003198 | dim=1536 | 366.1M params
+  [Eval 47] Loss: 1.4754
+    6     48 1.300287000000000e+00 1.7e+00 1.28e-01  1e-01  2e-01 182:22.4
+  Generation best: 1.3003 | Overall best: 1.2966 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (2 consecutive)
+
+*** CONVERGED: improvement 0.0000 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.2966
+Best params: {'dim': 1792, 'expansion': 1, 'depth': 32, 'use_conv': 0, 'd_conv': 6, 'lr': 0.0007723228876505773}
+Total evaluations: 48
+
+Cleaning up 276 checkpoint files...
+Cleanup complete.
+
+To train with best config:
+python train.py --level minlstm --dim 1792 --depth 32 --expansion 1 --lr 0.0007723228876505773 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-03T05:06:45.298075
+Duration: 3.06 hours
+Return code: 0

@@ -1,0 +1,44 @@
+{
+  "mamba2": {
+    "success": true,
+    "hours": 1.012403689291742,
+    "best_loss": null,
+    "best_params": null
+  },
+  "fla-gdn": {
+    "success": true,
+    "hours": 2.0193811196751064,
+    "best_loss": null,
+    "best_params": null
+  },
+  "e88": {
+    "success": true,
+    "hours": 1.010063683523072,
+    "best_loss": null,
+    "best_params": null
+  },
+  "e1": {
+    "success": true,
+    "hours": 1.0088701438241534,
+    "best_loss": null,
+    "best_params": null
+  },
+  "e42": {
+    "success": false,
+    "hours": 1.5138139290279813,
+    "best_loss": null,
+    "best_params": null
+  },
+  "e75": {
+    "success": true,
+    "hours": 1.515473668045468,
+    "best_loss": null,
+    "best_params": null
+  },
+  "e23": {
+    "success": true,
+    "hours": 0.0024220176537831624,
+    "best_loss": null,
+    "best_params": null
+  }
+}

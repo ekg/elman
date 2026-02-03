@@ -1,4 +1,0 @@
-e1_d6: dim=3648 depth=6 batch=192 params=400,243,968
-Step 100 | 275s | Loss 2.2812 | Avg100 3.0522 | 35701 tok/s | Mem 45.7GB
-Step 200 | 556s | Loss 2.0312 | Avg100 2.1259 | 35385 tok/s | Mem 45.7GB
-DONE: e1_d6 | Steps=216 | Time=600s | Last100=2.0850 | 35364 tok/s | PeakMem=45.7GB

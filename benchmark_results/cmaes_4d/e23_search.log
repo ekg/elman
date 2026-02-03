@@ -1,0 +1,56 @@
+CMA-ES 4D Search for e23
+Started: 2026-02-03T00:30:39.572203
+Command: python cmaes_search.py --model e23 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 2048, 'n_slots': 64, 'expansion': 1.0, 'depth': 20, 'w_h_init_scale': 0.9, 'lr': 0.0003}
+Encoded x0: ['0.500', '0.333', '0.000', '0.286', '0.800', '0.739']
+======================================================================
+CMA-ES Search for E23
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3072] (int_mult128) - Model dimension
+  n_slots: [32, 128] (int) - Number of tape memory slots
+  expansion: [1, 3] (float) - Hidden expansion factor
+  depth: [12, 40] (int) - Number of layers
+  w_h_init_scale: [0.5, 1.0] (float) - W_h orthogonal init scale (stability)
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=145421, Tue Feb  3 00:30:40 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 6] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 8] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 4] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 7] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 5] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 3] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 2] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  [Eval 1] Worker failed: calc_e23_params() got an unexpected keyword argument 'expansion'
+  *** NEW BEST: 10.0000 | {'dim': 1664, 'n_slots': 48, 'expansion': 1.3944047269044235, 'depth': 23, 'w_h_init_scale': 0.9992189899947103, 'lr': 0.00029330167227491715} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 1.58e-01  2e-01  2e-01 0:00.1
+  Generation best: 10.0000 | Overall best: 10.0000 | Improvement: inf
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'dim': 1664, 'n_slots': 48, 'expansion': 1.3944047269044235, 'depth': 23, 'w_h_init_scale': 0.9992189899947103, 'lr': 0.00029330167227491715}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level 23 --dim 1664 --depth 23 --n_slots 48 --lr 0.00029330167227491715 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-03T00:30:40.573342
+Duration: 0.00 hours
+Return code: 0

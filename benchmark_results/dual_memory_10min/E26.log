@@ -1,9 +1,0 @@
-Created Level 26 model: dim=512, depth=17, params=50,288,384
-Created Level 26 model: dim=512, depth=17, params=50,288,384
-E26: 50,288,384 params, fused=False
-
-=== FINAL: E26 ===
-Params: 50,288,384
-Steps: 39
-Final Avg100 Loss: 3.1916
-Throughput: 0.1K tok/s

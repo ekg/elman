@@ -1,0 +1,35 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_e88_tight/e88_480M_20gen_20260126_044421/eval_99/levelE88_100m_20260126_052411
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88, 467,718,192 parameters
+Using schedule-free AdamW (lr=0.000316239967523357)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 3.0 minutes
+step     10 | loss 4.3691 | lr 3.16e-04 | grad 9.56 | tok/s 6804
+step     20 | loss 2.7152 | lr 3.16e-04 | grad 2.25 | tok/s 9797
+step     30 | loss 3.0337 | lr 3.16e-04 | grad 5.31 | tok/s 10325
+step     40 | loss 4.1622 | lr 3.16e-04 | grad 30.62 | tok/s 10492
+step     50 | loss 4.5708 | lr 3.16e-04 | grad 14.75 | tok/s 10595
+step     60 | loss 3.7097 | lr 3.16e-04 | grad 10.38 | tok/s 10565
+step     70 | loss 2.9201 | lr 3.16e-04 | grad 6.03 | tok/s 10539
+step     80 | loss 2.5325 | lr 3.16e-04 | grad 4.56 | tok/s 10527
+step     90 | loss 2.4203 | lr 3.16e-04 | grad 3.59 | tok/s 10516
+step    100 | loss 2.1871 | lr 3.16e-04 | grad 1.73 | tok/s 10495
+step    110 | loss 2.2334 | lr 3.16e-04 | grad 2.22 | tok/s 10412
+step    120 | loss 2.7085 | lr 3.16e-04 | grad 1.31 | tok/s 9910
+step    130 | loss 2.1394 | lr 3.16e-04 | grad 3.94 | tok/s 9511
+step    140 | loss 2.4189 | lr 3.16e-04 | grad 6.19 | tok/s 10167
+step    150 | loss 1.4990 | lr 3.16e-04 | grad 2.48 | tok/s 10417
+step    160 | loss 2.2610 | lr 3.16e-04 | grad 1.40 | tok/s 9974
+step    170 | loss 2.3036 | lr 3.16e-04 | grad 1.41 | tok/s 9987
+step    180 | loss 1.9125 | lr 3.16e-04 | grad 2.14 | tok/s 10022
+step    190 | loss 1.8901 | lr 3.16e-04 | grad 1.81 | tok/s 10083
+step    200 | loss 1.6711 | lr 3.16e-04 | grad 1.30 | tok/s 10411
+step    210 | loss 1.9660 | lr 3.16e-04 | grad 1.59 | tok/s 9861
+step    220 | loss 2.2659 | lr 3.16e-04 | grad 9.06 | tok/s 10009
+
+Training complete! Final step: 225

@@ -1,0 +1,37 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_e88_refine/e88_480M_20gen_20260126_043625/eval_2/levelE88_100m_20260126_043631
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88, 471,060,180 parameters
+Using schedule-free AdamW (lr=0.0002415424331261158)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 3.0 minutes
+step     10 | loss 4.6273 | lr 2.42e-04 | grad 11.12 | tok/s 7270
+step     20 | loss 2.7725 | lr 2.42e-04 | grad 3.50 | tok/s 10778
+step     30 | loss 3.1513 | lr 2.42e-04 | grad 9.06 | tok/s 11375
+step     40 | loss 4.1543 | lr 2.42e-04 | grad 56.50 | tok/s 11551
+step     50 | loss 5.0100 | lr 2.42e-04 | grad 33.25 | tok/s 11638
+step     60 | loss 4.4990 | lr 2.42e-04 | grad 30.12 | tok/s 11575
+step     70 | loss 3.8309 | lr 2.42e-04 | grad 18.88 | tok/s 11501
+step     80 | loss 3.5821 | lr 2.42e-04 | grad 16.50 | tok/s 11462
+step     90 | loss 3.0554 | lr 2.42e-04 | grad 14.88 | tok/s 11435
+step    100 | loss 2.7506 | lr 2.42e-04 | grad 6.72 | tok/s 11390
+step    110 | loss 2.5493 | lr 2.42e-04 | grad 3.70 | tok/s 11298
+step    120 | loss 2.8543 | lr 2.42e-04 | grad 1.91 | tok/s 10733
+step    130 | loss 2.2409 | lr 2.42e-04 | grad 5.94 | tok/s 10791
+step    140 | loss 2.4933 | lr 2.42e-04 | grad 8.19 | tok/s 10990
+step    150 | loss 1.6672 | lr 2.42e-04 | grad 4.59 | tok/s 11262
+step    160 | loss 2.4535 | lr 2.42e-04 | grad 2.30 | tok/s 10897
+step    170 | loss 2.3884 | lr 2.42e-04 | grad 1.80 | tok/s 10743
+step    180 | loss 2.3776 | lr 2.42e-04 | grad 3.16 | tok/s 10994
+step    190 | loss 2.0790 | lr 2.42e-04 | grad 1.70 | tok/s 10785
+step    200 | loss 1.8665 | lr 2.42e-04 | grad 1.99 | tok/s 11288
+step    210 | loss 2.0482 | lr 2.42e-04 | grad 3.80 | tok/s 10709
+step    220 | loss 2.3826 | lr 2.42e-04 | grad 3.47 | tok/s 10825
+step    230 | loss 2.0854 | lr 2.42e-04 | grad 2.83 | tok/s 10810
+step    240 | loss 2.4895 | lr 2.42e-04 | grad 6.53 | tok/s 10943
+
+Training complete! Final step: 245

@@ -1,0 +1,29 @@
+# Job 3: gru
+# GPU: 3
+# Command: python train.py --level gru --dim 1280 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/1b_10min_20260120_010008/gru
+# Started: 2026-01-20T01:00:31.258837
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/1b_10min_20260120_010008/gru/levelgru_100m_20260120_010037
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level gru, 918,192,640 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 9.2819 | lr 2.70e-05 | grad 19.50 | tok/s 1368
+step     20 | loss 3.1711 | lr 5.70e-05 | grad 6.34 | tok/s 1406
+step     30 | loss 3.8366 | lr 8.70e-05 | grad 8.19 | tok/s 1401
+step     40 | loss 3.6687 | lr 1.17e-04 | grad 13.12 | tok/s 1452
+step     50 | loss 4.9721 | lr 1.47e-04 | grad 8.94 | tok/s 1514
+step     60 | loss 4.3288 | lr 1.77e-04 | grad 4.62 | tok/s 1515
+step     70 | loss 4.0835 | lr 2.07e-04 | grad 7.81 | tok/s 1515
+step     80 | loss 4.0156 | lr 2.37e-04 | grad 4.28 | tok/s 1515
+step     90 | loss 3.8526 | lr 2.67e-04 | grad 4.47 | tok/s 1520
+step    100 | loss 3.7677 | lr 2.97e-04 | grad 4.50 | tok/s 1509
+step    110 | loss 3.5615 | lr 6.94e-06 | grad 3.72 | tok/s 1501
+
+Training complete! Final step: 110

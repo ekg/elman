@@ -1,0 +1,83 @@
+{
+  "generation": 1,
+  "best_loss": 10.0,
+  "best_params": {
+    "n_slots": 66,
+    "depth": 13
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 66,
+        "depth": 13
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 46,
+        "depth": 21
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 50,
+        "depth": 25
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 55,
+        "depth": 28
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 78,
+        "depth": 23
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 80,
+        "depth": 12
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 72,
+        "depth": 22
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "params": {
+        "n_slots": 63,
+        "depth": 16
+      },
+      "diverged": true
+    }
+  ]
+}

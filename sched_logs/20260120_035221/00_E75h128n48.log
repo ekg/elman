@@ -1,0 +1,47 @@
+# Job 0: E75h128n48
+# GPU: 0
+# Command: python train.py --level E75h128n48 --dim 896 --expansion 2.0 --n_state 48 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_128head/E75h128n48
+# Started: 2026-01-20T03:52:21.126021
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/e75_128head/E75h128n48/levelE75h128n48_100m_20260120_035227
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E75h128n48, 1,023,388,032 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.5292 | lr 2.70e-05 | grad 113.50 | tok/s 3526
+step     20 | loss 4.1903 | lr 5.70e-05 | grad 24.38 | tok/s 4045
+step     30 | loss 3.9068 | lr 8.70e-05 | grad 7.56 | tok/s 3899
+step     40 | loss 3.6773 | lr 1.17e-04 | grad 8.19 | tok/s 4010
+step     50 | loss 4.8294 | lr 1.47e-04 | grad 6.97 | tok/s 4149
+step     60 | loss 3.8695 | lr 1.77e-04 | grad 4.19 | tok/s 4128
+step     70 | loss 3.4885 | lr 2.07e-04 | grad 4.97 | tok/s 4098
+step     80 | loss 3.2741 | lr 2.37e-04 | grad 4.12 | tok/s 4064
+step     90 | loss 2.7495 | lr 2.67e-04 | grad 3.55 | tok/s 4059
+step    100 | loss 2.6136 | lr 2.97e-04 | grad 2.47 | tok/s 4055
+step    110 | loss 2.5378 | lr 6.94e-06 | grad 7.75 | tok/s 4036
+step    120 | loss 3.8729 | lr 2.69e-05 | grad 14.56 | tok/s 3922
+step    130 | loss 2.9656 | lr 5.89e-05 | grad 1.59 | tok/s 3827
+step    140 | loss 2.7617 | lr 9.99e-05 | grad 2.25 | tok/s 3848
+step    150 | loss 2.9957 | lr 1.46e-04 | grad 2.61 | tok/s 3974
+step    160 | loss 2.5976 | lr 1.92e-04 | grad 1.79 | tok/s 3971
+step    170 | loss 2.7539 | lr 2.35e-04 | grad 3.31 | tok/s 3775
+step    180 | loss 2.7084 | lr 2.69e-04 | grad 1.80 | tok/s 3912
+step    190 | loss 2.5442 | lr 2.91e-04 | grad 2.42 | tok/s 3749
+step    200 | loss 2.1928 | lr 3.00e-04 | grad 1.23 | tok/s 4010
+step    210 | loss 2.1239 | lr 2.94e-04 | grad 2.45 | tok/s 3891
+step    220 | loss 2.5327 | lr 2.74e-04 | grad 2.84 | tok/s 3753
+step    230 | loss 3.0130 | lr 2.42e-04 | grad 1.06 | tok/s 3758
+step    240 | loss 2.2929 | lr 2.01e-04 | grad 1.68 | tok/s 3773
+step    250 | loss 2.4396 | lr 1.55e-04 | grad 1.10 | tok/s 3793
+step    260 | loss 2.0979 | lr 1.09e-04 | grad 0.85 | tok/s 3911
+step    270 | loss 2.2262 | lr 6.65e-05 | grad 0.93 | tok/s 3916
+step    280 | loss 1.9501 | lr 3.24e-05 | grad 1.03 | tok/s 3793
+step    290 | loss 1.9626 | lr 9.84e-06 | grad 1.34 | tok/s 3643
+
+Training complete! Final step: 297

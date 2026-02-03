@@ -1,0 +1,684 @@
+{
+  "generation": 6,
+  "best_loss": 1.191347,
+  "best_params": {
+    "dim": 1280,
+    "expansion": 1,
+    "depth": 16,
+    "spectral_radius": 0.9972498962469003,
+    "mamba2_init": 0,
+    "lr": 0.00020154051750796476
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "params": {
+        "dim": 3072,
+        "expansion": 1,
+        "depth": 16,
+        "spectral_radius": 0.9922387788025994,
+        "mamba2_init": 1,
+        "lr": 0.00029781525064105787
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.728562,
+      "params": {
+        "dim": 3072,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.989540767057889,
+        "mamba2_init": 0,
+        "lr": 0.000683730717697503
+      },
+      "dim": 3072,
+      "actual_params": 340601856
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.495822,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9898648379375575,
+        "mamba2_init": 0,
+        "lr": 0.0001177552169072427
+      },
+      "dim": 2816,
+      "actual_params": 286266112
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.578734,
+      "params": {
+        "dim": 3072,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9951520631933786,
+        "mamba2_init": 0,
+        "lr": 0.00018718758439586155
+      },
+      "dim": 3072,
+      "actual_params": 340601856
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.665882,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 17,
+        "spectral_radius": 0.9884409292729065,
+        "mamba2_init": 0,
+        "lr": 0.00036418971922824234
+      },
+      "dim": 2816,
+      "actual_params": 405242112
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.632822,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9945624121229656,
+        "mamba2_init": 0,
+        "lr": 0.00040152558638496854
+      },
+      "dim": 2816,
+      "actual_params": 429037312
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.680671,
+      "params": {
+        "dim": 2944,
+        "expansion": 1,
+        "depth": 26,
+        "spectral_radius": 0.9837941304159991,
+        "mamba2_init": 0,
+        "lr": 0.0002071585232764204
+      },
+      "dim": 2944,
+      "actual_params": 676946304
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.582611,
+      "params": {
+        "dim": 2688,
+        "expansion": 1,
+        "depth": 22,
+        "spectral_radius": 0.993657203872997,
+        "mamba2_init": 0,
+        "lr": 0.0001615134357955232
+      },
+      "dim": 2688,
+      "actual_params": 477681792
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.560783,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 22,
+        "spectral_radius": 0.9967343187785275,
+        "mamba2_init": 0,
+        "lr": 0.00016741738732672812
+      },
+      "dim": 2816,
+      "actual_params": 524218112
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.540023,
+      "params": {
+        "dim": 2560,
+        "expansion": 1,
+        "depth": 33,
+        "spectral_radius": 0.9934905073878277,
+        "mamba2_init": 0,
+        "lr": 0.00010766882293336533
+      },
+      "dim": 2560,
+      "actual_params": 649633280
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.439699,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9998232415600209,
+        "mamba2_init": 0,
+        "lr": 0.0003302951185930548
+      },
+      "dim": 2304,
+      "actual_params": 191750400
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.538784,
+      "params": {
+        "dim": 2688,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9997388921868086,
+        "mamba2_init": 0,
+        "lr": 0.0003548524548676314
+      },
+      "dim": 2688,
+      "actual_params": 260867712
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.508578,
+      "params": {
+        "dim": 2944,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9807528250492997,
+        "mamba2_init": 0,
+        "lr": 3.508312088591363e-05
+      },
+      "dim": 2944,
+      "actual_params": 312844160
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.5647419999999999,
+      "params": {
+        "dim": 3072,
+        "expansion": 1,
+        "depth": 14,
+        "spectral_radius": 0.9998421676370699,
+        "mamba2_init": 0,
+        "lr": 6.393089725849513e-05
+      },
+      "dim": 3072,
+      "actual_params": 397237248
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.4895150000000001,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 17,
+        "spectral_radius": 0.9992049026851733,
+        "mamba2_init": 0,
+        "lr": 4.245663692047824e-05
+      },
+      "dim": 2816,
+      "actual_params": 405242112
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.5663960000000001,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 19,
+        "spectral_radius": 0.989936535227331,
+        "mamba2_init": 0,
+        "lr": 0.00018171868853894053
+      },
+      "dim": 2816,
+      "actual_params": 452832512
+    },
+    {
+      "eval_id": 17,
+      "loss": 1.5113329999999998,
+      "params": {
+        "dim": 2688,
+        "expansion": 1,
+        "depth": 14,
+        "spectral_radius": 0.9997036436528848,
+        "mamba2_init": 0,
+        "lr": 5.4668943132556304e-05
+      },
+      "dim": 2688,
+      "actual_params": 304230528
+    },
+    {
+      "eval_id": 18,
+      "loss": 1.423047,
+      "params": {
+        "dim": 2432,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9993990297587135,
+        "mamba2_init": 0,
+        "lr": 0.00013494201480698722
+      },
+      "dim": 2432,
+      "actual_params": 213609856
+    },
+    {
+      "eval_id": 19,
+      "loss": 1.642523,
+      "params": {
+        "dim": 2816,
+        "expansion": 2,
+        "depth": 13,
+        "spectral_radius": 0.9983484521501842,
+        "mamba2_init": 0,
+        "lr": 5.110150713619061e-05
+      },
+      "dim": 2816,
+      "actual_params": 825538560
+    },
+    {
+      "eval_id": 20,
+      "loss": 1.397274,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 13,
+        "spectral_radius": 0.9948038090766461,
+        "mamba2_init": 0,
+        "lr": 0.00014899027573940683
+      },
+      "dim": 2176,
+      "actual_params": 185279872
+    },
+    {
+      "eval_id": 21,
+      "loss": 1.5206209999999998,
+      "params": {
+        "dim": 2304,
+        "expansion": 1,
+        "depth": 21,
+        "spectral_radius": 0.9994921499613653,
+        "mamba2_init": 0,
+        "lr": 0.00014392157208230225
+      },
+      "dim": 2304,
+      "actual_params": 335119104
+    },
+    {
+      "eval_id": 22,
+      "loss": 1.4855170000000002,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 15,
+        "spectral_radius": 0.9988763125197029,
+        "mamba2_init": 0,
+        "lr": 5.667642957969071e-05
+      },
+      "dim": 2816,
+      "actual_params": 357651712
+    },
+    {
+      "eval_id": 23,
+      "loss": 1.4342920000000001,
+      "params": {
+        "dim": 2048,
+        "expansion": 1,
+        "depth": 15,
+        "spectral_radius": 0.9939426051391252,
+        "mamba2_init": 0,
+        "lr": 9.01197461056037e-05
+      },
+      "dim": 2048,
+      "actual_params": 189331456
+    },
+    {
+      "eval_id": 24,
+      "loss": 1.708953,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 22,
+        "spectral_radius": 0.9872220460084943,
+        "mamba2_init": 0,
+        "lr": 0.0006034428027577578
+      },
+      "dim": 2816,
+      "actual_params": 524218112
+    },
+    {
+      "eval_id": 25,
+      "loss": 1.3738059999999999,
+      "params": {
+        "dim": 2048,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9998996885416451,
+        "mamba2_init": 0,
+        "lr": 0.00019227808503650078
+      },
+      "dim": 2048,
+      "actual_params": 151570432
+    },
+    {
+      "eval_id": 26,
+      "loss": 1.424959,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 21,
+        "spectral_radius": 0.9969652570387976,
+        "mamba2_init": 0,
+        "lr": 6.224715337379716e-05
+      },
+      "dim": 1920,
+      "actual_params": 232817280
+    },
+    {
+      "eval_id": 27,
+      "loss": 10.0,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 16,
+        "spectral_radius": 0.9943263135083602,
+        "mamba2_init": 0,
+        "lr": 0.000110349121283343
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 28,
+      "loss": 1.3896549999999999,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.989419440171632,
+        "mamba2_init": 0,
+        "lr": 0.00022656450768933193
+      },
+      "dim": 1792,
+      "actual_params": 173933312
+    },
+    {
+      "eval_id": 29,
+      "loss": 1.376559,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 18,
+        "spectral_radius": 0.9906462379104057,
+        "mamba2_init": 0,
+        "lr": 7.376949380485163e-05
+      },
+      "dim": 1792,
+      "actual_params": 173933312
+    },
+    {
+      "eval_id": 30,
+      "loss": 1.524958,
+      "params": {
+        "dim": 2176,
+        "expansion": 1,
+        "depth": 22,
+        "spectral_radius": 0.999871204877646,
+        "mamba2_init": 0,
+        "lr": 0.00011190458792827088
+      },
+      "dim": 2176,
+      "actual_params": 313163392
+    },
+    {
+      "eval_id": 31,
+      "loss": 1.227869,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9951902830536646,
+        "mamba2_init": 0,
+        "lr": 0.00010380378863187945
+      },
+      "dim": 1664,
+      "actual_params": 100147840
+    },
+    {
+      "eval_id": 32,
+      "loss": 1.532443,
+      "params": {
+        "dim": 2560,
+        "expansion": 1,
+        "depth": 20,
+        "spectral_radius": 0.9969012147784823,
+        "mamba2_init": 0,
+        "lr": 0.00018411327127201732
+      },
+      "dim": 2560,
+      "actual_params": 393976320
+    },
+    {
+      "eval_id": 33,
+      "loss": 1.359712,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 21,
+        "spectral_radius": 0.9894036549583622,
+        "mamba2_init": 0,
+        "lr": 0.00011856330833867956
+      },
+      "dim": 1408,
+      "actual_params": 125316224
+    },
+    {
+      "eval_id": 34,
+      "loss": 1.567161,
+      "params": {
+        "dim": 1664,
+        "expansion": 1,
+        "depth": 15,
+        "spectral_radius": 0.9943074303571194,
+        "mamba2_init": 0,
+        "lr": 1.913526237902476e-05
+      },
+      "dim": 1664,
+      "actual_params": 125077888
+    },
+    {
+      "eval_id": 35,
+      "loss": 1.4105969999999999,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 21,
+        "spectral_radius": 0.9916112407100629,
+        "mamba2_init": 0,
+        "lr": 0.0002771717303158556
+      },
+      "dim": 1408,
+      "actual_params": 125316224
+    },
+    {
+      "eval_id": 36,
+      "loss": 1.191347,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 16,
+        "spectral_radius": 0.9972498962469003,
+        "mamba2_init": 0,
+        "lr": 0.00020154051750796476
+      },
+      "dim": 1280,
+      "actual_params": 79013120
+    },
+    {
+      "eval_id": 37,
+      "loss": 1.451633,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9930471347019854,
+        "mamba2_init": 0,
+        "lr": 4.6364481569856026e-05
+      },
+      "dim": 1280,
+      "actual_params": 59342080
+    },
+    {
+      "eval_id": 38,
+      "loss": 1.370882,
+      "params": {
+        "dim": 1920,
+        "expansion": 1,
+        "depth": 13,
+        "spectral_radius": 0.9855326248470047,
+        "mamba2_init": 0,
+        "lr": 4.9386963308808574e-05
+      },
+      "dim": 1920,
+      "actual_params": 144312960
+    },
+    {
+      "eval_id": 39,
+      "loss": 1.630116,
+      "params": {
+        "dim": 2816,
+        "expansion": 1,
+        "depth": 23,
+        "spectral_radius": 0.9897946140891822,
+        "mamba2_init": 0,
+        "lr": 0.0003777454502219463
+      },
+      "dim": 2816,
+      "actual_params": 548013312
+    },
+    {
+      "eval_id": 40,
+      "loss": 1.284788,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 17,
+        "spectral_radius": 0.9998979820669786,
+        "mamba2_init": 0,
+        "lr": 0.00021239705299264182
+      },
+      "dim": 1408,
+      "actual_params": 101515392
+    },
+    {
+      "eval_id": 41,
+      "loss": 10.0,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 17,
+        "spectral_radius": 0.9990003096034751,
+        "mamba2_init": 0,
+        "lr": 0.00017252525042584876
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 42,
+      "loss": 1.233168,
+      "params": {
+        "dim": 1792,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9847002045768767,
+        "mamba2_init": 0,
+        "lr": 0.0003139076683259117
+      },
+      "dim": 1792,
+      "actual_params": 116109056
+    },
+    {
+      "eval_id": 43,
+      "loss": 1.440876,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 39,
+        "spectral_radius": 0.9959230832872282,
+        "mamba2_init": 0,
+        "lr": 0.0001206909813041952
+      },
+      "dim": 1280,
+      "actual_params": 192121600
+    },
+    {
+      "eval_id": 44,
+      "loss": 1.393761,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 22,
+        "spectral_radius": 0.9866396852615388,
+        "mamba2_init": 0,
+        "lr": 7.459479660804049e-05
+      },
+      "dim": 1024,
+      "actual_params": 69514240
+    },
+    {
+      "eval_id": 45,
+      "loss": 1.4672319999999999,
+      "params": {
+        "dim": 1408,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.9934555782401996,
+        "mamba2_init": 0,
+        "lr": 0.0009781725252774485
+      },
+      "dim": 1408,
+      "actual_params": 71764352
+    },
+    {
+      "eval_id": 46,
+      "loss": 1.4180279999999998,
+      "params": {
+        "dim": 1280,
+        "expansion": 1,
+        "depth": 12,
+        "spectral_radius": 0.987777252759339,
+        "mamba2_init": 0,
+        "lr": 0.0005484307166468273
+      },
+      "dim": 1280,
+      "actual_params": 59342080
+    },
+    {
+      "eval_id": 47,
+      "loss": 1.522085,
+      "params": {
+        "dim": 1408,
+        "expansion": 2,
+        "depth": 18,
+        "spectral_radius": 0.9993314974194912,
+        "mamba2_init": 0,
+        "lr": 0.0002526775223287609
+      },
+      "dim": 1408,
+      "actual_params": 285912704
+    },
+    {
+      "eval_id": 48,
+      "loss": 1.3764089999999998,
+      "params": {
+        "dim": 1024,
+        "expansion": 1,
+        "depth": 20,
+        "spectral_radius": 0.9960460715266996,
+        "mamba2_init": 0,
+        "lr": 0.00029665535202169093
+      },
+      "dim": 1024,
+      "actual_params": 63218688
+    }
+  ]
+}

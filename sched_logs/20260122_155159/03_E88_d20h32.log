@@ -1,0 +1,68 @@
+# Job 3: E88_d20h32
+# GPU: 3
+# Command: python train.py --level E88d_h20 --dim 1920 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10.0 --output benchmark_results/mega_100m_20260122_155145/E88_d20h32
+# Started: 2026-01-22T15:51:59.383275
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/mega_100m_20260122_155145/E88_d20h32/levelE88d_h20_100m_20260122_155206
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88d_h20, 99,605,280 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 4.0835 | lr 3.00e-04 | grad 6.59 | tok/s 10729
+step     20 | loss 3.2476 | lr 3.00e-04 | grad 11.56 | tok/s 18328
+step     30 | loss 4.1768 | lr 3.00e-04 | grad 4.44 | tok/s 20636
+step     40 | loss 2.9956 | lr 3.00e-04 | grad 2.72 | tok/s 19706
+step     50 | loss 2.4677 | lr 3.00e-04 | grad 2.58 | tok/s 19929
+step     60 | loss 2.7906 | lr 3.00e-04 | grad 3.31 | tok/s 19758
+step     70 | loss 2.5103 | lr 3.00e-04 | grad 2.48 | tok/s 18740
+step     80 | loss 2.5400 | lr 3.00e-04 | grad 3.83 | tok/s 19001
+step     90 | loss 2.5737 | lr 3.00e-04 | grad 6.28 | tok/s 18129
+step    100 | loss 2.2659 | lr 3.00e-04 | grad 2.17 | tok/s 18353
+step    110 | loss 2.2655 | lr 3.00e-04 | grad 2.39 | tok/s 18039
+step    120 | loss 2.2501 | lr 3.00e-04 | grad 1.87 | tok/s 17877
+step    130 | loss 2.2925 | lr 3.00e-04 | grad 1.84 | tok/s 18294
+step    140 | loss 2.1114 | lr 3.00e-04 | grad 1.80 | tok/s 18234
+step    150 | loss 1.9983 | lr 3.00e-04 | grad 2.88 | tok/s 17408
+step    160 | loss 1.9445 | lr 3.00e-04 | grad 2.05 | tok/s 17540
+step    170 | loss 2.1078 | lr 3.00e-04 | grad 7.56 | tok/s 18171
+step    180 | loss 2.0679 | lr 3.00e-04 | grad 1.34 | tok/s 18333
+step    190 | loss 1.8130 | lr 3.00e-04 | grad 1.99 | tok/s 18647
+step    200 | loss 1.5206 | lr 3.00e-04 | grad 1.80 | tok/s 19066
+step    210 | loss 2.0249 | lr 3.00e-04 | grad 2.66 | tok/s 18208
+step    220 | loss 1.9047 | lr 3.00e-04 | grad 1.77 | tok/s 18771
+step    230 | loss 1.8432 | lr 3.00e-04 | grad 3.09 | tok/s 18138
+step    240 | loss 1.8362 | lr 3.00e-04 | grad 2.84 | tok/s 18502
+step    250 | loss 1.8241 | lr 3.00e-04 | grad 2.20 | tok/s 19139
+step    260 | loss 1.9025 | lr 3.00e-04 | grad 1.64 | tok/s 15469
+step    270 | loss 1.7911 | lr 3.00e-04 | grad 1.73 | tok/s 12442
+step    280 | loss 1.6854 | lr 3.00e-04 | grad 2.75 | tok/s 12211
+step    290 | loss 1.5893 | lr 3.00e-04 | grad 1.85 | tok/s 12743
+step    300 | loss 1.5262 | lr 3.00e-04 | grad 1.77 | tok/s 14021
+step    310 | loss 1.4744 | lr 3.00e-04 | grad 1.45 | tok/s 9739
+step    320 | loss 1.6617 | lr 3.00e-04 | grad 3.66 | tok/s 9172
+step    330 | loss 1.7665 | lr 3.00e-04 | grad 1.88 | tok/s 9061
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 584, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 510, in train
+    scaled_loss.backward()
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/_tensor.py", line 625, in backward
+    torch.autograd.backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/__init__.py", line 354, in backward
+    _engine_run_backward(
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/graph.py", line 841, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

@@ -1,0 +1,37 @@
+# Job 16: 61b
+# GPU: 4
+# Command: python train.py --level 61b --dim 640 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/elman48_20260119_191441/61b
+# Started: 2026-01-19T19:36:15.213121
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/elman48_20260119_191441/61b/level61b_100m_20260119_193621
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level 61b, 98,532,480 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 4.9129 | lr 2.70e-05 | grad 171.00 | tok/s 4240
+step     20 | loss 4.1027 | lr 5.70e-05 | grad 39.00 | tok/s 5012
+step     30 | loss 4.6194 | lr 8.70e-05 | grad 23.38 | tok/s 5303
+step     40 | loss 3.9937 | lr 1.17e-04 | grad 22.50 | tok/s 5310
+step     50 | loss 3.7297 | lr 1.47e-04 | grad 29.75 | tok/s 5313
+step     60 | loss 3.7314 | lr 1.77e-04 | grad 65.00 | tok/s 5202
+step     70 | loss 3.4362 | lr 2.07e-04 | grad 2.83 | tok/s 4936
+step     80 | loss 4.0029 | lr 2.37e-04 | grad 115.50 | tok/s 5076
+step     90 | loss 3.7358 | lr 2.67e-04 | grad 22.75 | tok/s 5030
+step    100 | loss 3.7386 | lr 2.97e-04 | grad 72.00 | tok/s 5085
+step    110 | loss 3.4756 | lr 6.94e-06 | grad 22.00 | tok/s 4960
+step    120 | loss 3.6344 | lr 2.69e-05 | grad 6.16 | tok/s 4847
+step    130 | loss 3.4423 | lr 5.89e-05 | grad 2.39 | tok/s 5001
+step    140 | loss 3.2309 | lr 9.99e-05 | grad 0.88 | tok/s 5022
+step    150 | loss 3.1496 | lr 1.46e-04 | grad 3.50 | tok/s 4768
+step    160 | loss 3.0947 | lr 1.92e-04 | grad 1.28 | tok/s 4820
+step    170 | loss 3.2676 | lr 2.35e-04 | grad 11.81 | tok/s 4981
+step    180 | loss 3.4523 | lr 2.69e-04 | grad 4.19 | tok/s 4998
+step    190 | loss 3.3632 | lr 2.91e-04 | grad 7.47 | tok/s 5074
+
+Training complete! Final step: 191

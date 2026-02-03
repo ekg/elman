@@ -1,0 +1,7 @@
+# Job 6: E88_h8n64
+# GPU: 6
+# Command: python train.py --level E88c_h8n64 --dim 2432 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10.0 --output benchmark_results/mega_100m_20260122_155145/E88_h8n64
+# Started: 2026-01-22T15:51:59.383523
+============================================================
+
+Killed

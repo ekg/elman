@@ -1,0 +1,12 @@
+# E75 100M benchmark with expansion=2.0 for all models
+# mamba2: expand=2 (hardcoded in Mamba2LM)
+# fla-gdn: expansion=2.0
+# E75: expansion=2.0 (narrower dims to hit 100M)
+
+python train.py --level mamba2 --dim 896 --depth 20 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/mamba2
+python train.py --level fla-gdn --dim 768 --depth 20 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/fla-gdn
+python train.py --level E75h4n16 --dim 1408 --depth 20 --n_state 16 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/E75h4n16
+python train.py --level E75h4n24 --dim 1408 --depth 20 --n_state 24 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/E75h4n24
+python train.py --level E75h4n32 --dim 1280 --depth 20 --n_state 32 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/E75h4n32
+python train.py --level E75h8n16 --dim 1280 --depth 20 --n_state 16 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/E75h8n16
+python train.py --level E75h8n24 --dim 1152 --depth 20 --n_state 24 --expansion 2.0 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e75_exp2_20260119/E75h8n24

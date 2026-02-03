@@ -3,7 +3,7 @@
 # Also testing head combination alternatives
 
 # Reference: h8 winner from round 6 (~1.63 loss)
-E88g_h8_ref:python train.py --level E88f_h8_75m --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h8_ref
+E88g_h8_ref:python train.py --level E88e_h8_75m --dim 2176 --expansion 1.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_ablation_r7/E88g_h8_ref
 
 # Many heads with tiny 8x8 matrices
 # h64n8: 64 heads × 8×8 = 4096 total state elements

@@ -1,0 +1,56 @@
+{
+  "model_type": "e23",
+  "target_params": 480000000,
+  "best_loss": 10.0,
+  "best_params": {
+    "dim": 1664,
+    "n_slots": 48,
+    "expansion": 1.3944047269044235,
+    "depth": 23,
+    "w_h_init_scale": 0.9992189899947103,
+    "lr": 0.00029330167227491715
+  },
+  "total_evals": 8,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 3,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 4,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 6,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 7,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    },
+    {
+      "eval_id": 8,
+      "loss": 10.0,
+      "error": "calc_e23_params() got an unexpected keyword argument 'expansion'"
+    }
+  ]
+}

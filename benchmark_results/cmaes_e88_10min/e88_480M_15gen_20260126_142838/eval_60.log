@@ -1,0 +1,134 @@
+Using device: cuda
+Output directory: benchmark_results/cmaes_e88_10min/e88_480M_15gen_20260126_142838/eval_60/levelE88_100m_20260126_154048
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88, 468,741,136 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 4.2144 | lr 3.00e-04 | grad 16.25 | tok/s 8996
+step     20 | loss 2.8829 | lr 3.00e-04 | grad 6.50 | tok/s 15628
+step     30 | loss 3.1418 | lr 3.00e-04 | grad 9.88 | tok/s 16443
+step     40 | loss 4.5843 | lr 3.00e-04 | grad 70.50 | tok/s 16742
+step     50 | loss 4.9432 | lr 3.00e-04 | grad 26.38 | tok/s 16917
+step     60 | loss 3.9413 | lr 3.00e-04 | grad 20.12 | tok/s 16830
+step     70 | loss 3.0982 | lr 3.00e-04 | grad 11.19 | tok/s 16764
+step     80 | loss 2.7874 | lr 3.00e-04 | grad 9.19 | tok/s 16767
+step     90 | loss 2.5304 | lr 3.00e-04 | grad 6.81 | tok/s 16733
+step    100 | loss 2.3321 | lr 3.00e-04 | grad 3.73 | tok/s 16750
+step    110 | loss 2.3174 | lr 3.00e-04 | grad 3.72 | tok/s 16620
+step    120 | loss 2.7909 | lr 3.00e-04 | grad 2.48 | tok/s 15815
+step    130 | loss 2.1198 | lr 3.00e-04 | grad 6.69 | tok/s 16204
+step    140 | loss 2.4057 | lr 3.00e-04 | grad 9.38 | tok/s 16240
+step    150 | loss 1.5565 | lr 3.00e-04 | grad 5.47 | tok/s 16616
+step    160 | loss 2.3203 | lr 3.00e-04 | grad 2.67 | tok/s 16087
+step    170 | loss 2.3136 | lr 3.00e-04 | grad 2.12 | tok/s 15850
+step    180 | loss 1.8861 | lr 3.00e-04 | grad 3.70 | tok/s 16226
+step    190 | loss 1.9370 | lr 3.00e-04 | grad 2.61 | tok/s 15927
+step    200 | loss 1.6686 | lr 3.00e-04 | grad 2.00 | tok/s 16676
+step    210 | loss 1.9148 | lr 3.00e-04 | grad 5.94 | tok/s 15800
+step    220 | loss 2.2266 | lr 3.00e-04 | grad 3.42 | tok/s 15970
+step    230 | loss 1.9901 | lr 3.00e-04 | grad 3.23 | tok/s 15392
+step    240 | loss 2.2976 | lr 3.00e-04 | grad 6.16 | tok/s 16165
+step    250 | loss 1.7861 | lr 3.00e-04 | grad 1.84 | tok/s 16064
+step    260 | loss 1.9144 | lr 3.00e-04 | grad 3.64 | tok/s 16519
+step    270 | loss 1.8416 | lr 3.00e-04 | grad 2.16 | tok/s 16136
+step    280 | loss 1.7987 | lr 3.00e-04 | grad 2.05 | tok/s 15144
+step    290 | loss 1.6949 | lr 3.00e-04 | grad 2.52 | tok/s 15664
+step    300 | loss 2.0039 | lr 3.00e-04 | grad 2.33 | tok/s 15785
+step    310 | loss 1.6813 | lr 3.00e-04 | grad 2.05 | tok/s 15719
+step    320 | loss 1.9043 | lr 3.00e-04 | grad 3.38 | tok/s 15903
+step    330 | loss 1.7355 | lr 3.00e-04 | grad 2.05 | tok/s 16071
+step    340 | loss 2.0781 | lr 3.00e-04 | grad 2.27 | tok/s 16000
+step    350 | loss 1.7551 | lr 3.00e-04 | grad 2.11 | tok/s 16469
+step    360 | loss 1.6066 | lr 3.00e-04 | grad 2.30 | tok/s 15745
+step    370 | loss 1.5021 | lr 3.00e-04 | grad 1.91 | tok/s 16569
+step    380 | loss 1.2326 | lr 3.00e-04 | grad 1.74 | tok/s 16716
+step    390 | loss 1.1375 | lr 3.00e-04 | grad 1.59 | tok/s 16736
+step    400 | loss 1.7728 | lr 3.00e-04 | grad 2.02 | tok/s 15854
+step    410 | loss 1.7897 | lr 3.00e-04 | grad 2.64 | tok/s 16000
+step    420 | loss 1.6277 | lr 3.00e-04 | grad 3.52 | tok/s 16700
+step    430 | loss 1.6354 | lr 3.00e-04 | grad 2.05 | tok/s 16396
+step    440 | loss 1.7288 | lr 3.00e-04 | grad 2.47 | tok/s 15905
+step    450 | loss 1.6563 | lr 3.00e-04 | grad 1.65 | tok/s 16085
+step    460 | loss 1.6211 | lr 3.00e-04 | grad 2.27 | tok/s 16323
+step    470 | loss 1.5897 | lr 3.00e-04 | grad 3.80 | tok/s 16199
+step    480 | loss 1.6098 | lr 3.00e-04 | grad 3.00 | tok/s 16537
+step    490 | loss 1.7304 | lr 3.00e-04 | grad 2.61 | tok/s 15892
+step    500 | loss 1.8326 | lr 3.00e-04 | grad 1.95 | tok/s 16138
+step    510 | loss 1.7007 | lr 3.00e-04 | grad 1.70 | tok/s 15427
+step    520 | loss 1.5494 | lr 3.00e-04 | grad 2.30 | tok/s 16170
+step    530 | loss 1.7414 | lr 3.00e-04 | grad 2.20 | tok/s 15892
+step    540 | loss 1.6164 | lr 3.00e-04 | grad 1.77 | tok/s 15553
+step    550 | loss 1.3959 | lr 3.00e-04 | grad 2.83 | tok/s 16232
+step    560 | loss 1.4599 | lr 3.00e-04 | grad 1.88 | tok/s 16744
+step    570 | loss 1.3613 | lr 3.00e-04 | grad 1.87 | tok/s 16745
+step    580 | loss 1.3178 | lr 3.00e-04 | grad 1.47 | tok/s 16743
+step    590 | loss 1.3509 | lr 3.00e-04 | grad 1.41 | tok/s 16747
+step    600 | loss 1.2865 | lr 3.00e-04 | grad 1.77 | tok/s 16746
+step    610 | loss 1.3197 | lr 3.00e-04 | grad 1.62 | tok/s 16744
+step    620 | loss 1.3132 | lr 3.00e-04 | grad 1.83 | tok/s 16676
+step    630 | loss 1.7060 | lr 3.00e-04 | grad 4.75 | tok/s 15730
+step    640 | loss 1.7708 | lr 3.00e-04 | grad 1.95 | tok/s 15954
+step    650 | loss 1.5768 | lr 3.00e-04 | grad 1.88 | tok/s 15938
+step    660 | loss 1.6237 | lr 3.00e-04 | grad 1.89 | tok/s 16558
+step    670 | loss 1.6588 | lr 3.00e-04 | grad 5.47 | tok/s 15606
+step    680 | loss 1.6638 | lr 3.00e-04 | grad 2.14 | tok/s 15747
+step    690 | loss 1.6049 | lr 3.00e-04 | grad 2.05 | tok/s 15625
+step    700 | loss 1.5072 | lr 3.00e-04 | grad 1.48 | tok/s 15970
+step    710 | loss 1.6822 | lr 3.00e-04 | grad 2.86 | tok/s 15718
+step    720 | loss 1.3300 | lr 3.00e-04 | grad 1.73 | tok/s 16339
+step    730 | loss 1.5053 | lr 3.00e-04 | grad 1.61 | tok/s 16069
+step    740 | loss 1.8214 | lr 3.00e-04 | grad 3.78 | tok/s 16514
+step    750 | loss 1.5650 | lr 3.00e-04 | grad 1.63 | tok/s 16708
+step    760 | loss 1.5731 | lr 3.00e-04 | grad 3.22 | tok/s 16345
+step    770 | loss 1.6204 | lr 3.00e-04 | grad 2.08 | tok/s 16074
+step    780 | loss 1.5109 | lr 3.00e-04 | grad 2.05 | tok/s 16185
+step    790 | loss 1.6754 | lr 3.00e-04 | grad 4.88 | tok/s 16510
+step    800 | loss 1.3502 | lr 3.00e-04 | grad 1.33 | tok/s 16160
+step    810 | loss 1.3465 | lr 3.00e-04 | grad 3.06 | tok/s 15228
+step    820 | loss 1.4423 | lr 3.00e-04 | grad 2.16 | tok/s 16016
+step    830 | loss 1.5258 | lr 3.00e-04 | grad 1.54 | tok/s 15802
+step    840 | loss 1.6584 | lr 3.00e-04 | grad 1.72 | tok/s 15731
+step    850 | loss 1.5917 | lr 3.00e-04 | grad 1.67 | tok/s 16063
+step    860 | loss 1.6172 | lr 3.00e-04 | grad 2.42 | tok/s 16336
+step    870 | loss 1.4427 | lr 3.00e-04 | grad 1.97 | tok/s 16456
+step    880 | loss 1.6186 | lr 3.00e-04 | grad 1.83 | tok/s 16138
+step    890 | loss 1.5162 | lr 3.00e-04 | grad 1.48 | tok/s 16061
+step    900 | loss 1.5678 | lr 3.00e-04 | grad 1.80 | tok/s 15997
+step    910 | loss 1.5665 | lr 3.00e-04 | grad 6.03 | tok/s 15779
+step    920 | loss 1.5160 | lr 3.00e-04 | grad 1.83 | tok/s 15983
+step    930 | loss 1.4130 | lr 3.00e-04 | grad 2.09 | tok/s 16171
+step    940 | loss 1.3839 | lr 3.00e-04 | grad 1.98 | tok/s 15814
+step    950 | loss 1.5276 | lr 3.00e-04 | grad 2.42 | tok/s 15553
+step    960 | loss 1.4758 | lr 3.00e-04 | grad 1.47 | tok/s 15995
+step    970 | loss 1.4998 | lr 3.00e-04 | grad 1.71 | tok/s 15997
+step    980 | loss 1.9432 | lr 3.00e-04 | grad 3.52 | tok/s 16659
+step    990 | loss 1.6157 | lr 3.00e-04 | grad 1.83 | tok/s 15757
+step   1000 | loss 1.6166 | lr 3.00e-04 | grad 1.79 | tok/s 15989
+  >>> saved checkpoint: checkpoint_step_001000_loss_1.6166.pt
+step   1010 | loss 1.3887 | lr 3.00e-04 | grad 2.58 | tok/s 10174
+step   1020 | loss 1.2349 | lr 3.00e-04 | grad 1.50 | tok/s 16759
+step   1030 | loss 1.5676 | lr 3.00e-04 | grad 2.00 | tok/s 15927
+step   1040 | loss 2.1959 | lr 3.00e-04 | grad 3.36 | tok/s 16295
+step   1050 | loss 1.5341 | lr 3.00e-04 | grad 2.86 | tok/s 16432
+step   1060 | loss 1.1969 | lr 3.00e-04 | grad 2.56 | tok/s 16202
+step   1070 | loss 1.4792 | lr 3.00e-04 | grad 1.90 | tok/s 16169
+step   1080 | loss 1.2932 | lr 3.00e-04 | grad 1.52 | tok/s 16748
+step   1090 | loss 1.2491 | lr 3.00e-04 | grad 1.37 | tok/s 16746
+step   1100 | loss 1.2355 | lr 3.00e-04 | grad 1.27 | tok/s 16745
+step   1110 | loss 1.1750 | lr 3.00e-04 | grad 1.32 | tok/s 16746
+step   1120 | loss 1.4771 | lr 3.00e-04 | grad 4.19 | tok/s 16284
+step   1130 | loss 1.7203 | lr 3.00e-04 | grad 1.60 | tok/s 16458
+step   1140 | loss 1.7907 | lr 3.00e-04 | grad 1.98 | tok/s 16637
+step   1150 | loss 1.6287 | lr 3.00e-04 | grad 2.19 | tok/s 16117
+step   1160 | loss 1.7738 | lr 3.00e-04 | grad 2.34 | tok/s 15873
+step   1170 | loss 1.5376 | lr 3.00e-04 | grad 2.12 | tok/s 15693
+step   1180 | loss 1.3764 | lr 3.00e-04 | grad 2.98 | tok/s 16504
+step   1190 | loss 1.6478 | lr 3.00e-04 | grad 2.67 | tok/s 16636
+step   1200 | loss 1.1415 | lr 3.00e-04 | grad 2.31 | tok/s 16725
+
+Training complete! Final step: 1203

@@ -1,0 +1,18 @@
+# Job 5: E88h16n32
+# GPU: 5
+# Command: python train.py --level E88h16n32 --dim 512 --expansion 2.0 --n_state 32 --data data/pile.txt --depth 20 --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/e88_100m/E88h16n32
+# Started: 2026-01-20T14:12:46.618060
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/e88_100m/E88h16n32/levelE88h16n32_100m_20260120_141251
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88h16n32, 42,414,464 parameters
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+
+Training complete! Final step: 3

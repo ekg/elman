@@ -1,0 +1,50 @@
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'expansion': 1, 'depth': 20}
+Encoded x0: ['0.000', '0.222']
+======================================================================
+CMA-ES Search for GRU
+======================================================================
+Search space (2 dimensions):
+  expansion: [1, 3] (int) - Expansion factor for dim_inner
+  depth: [12, 48] (int) - Number of layers
+Target params: 480M ± 30M
+Training time per config: 10.0 min
+Generations: 15
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+Total evaluations: ~120
+Estimated time: ~150 min (2.5 hours)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 2 (seed=548774, Tue Jan 27 02:36:41 2026)
+
+--- Generation 1/15 ---
+  [Eval 6] GPU 5 | expansion=1, depth=13 | dim=2688 | 471.2M params
+  [Eval 6] NaN/diverged (loss=inf)
+  [Eval 1] GPU 0 | expansion=1, depth=16 | dim=2432 | 474.6M params
+  [Eval 1] NaN/diverged (loss=inf)
+  [Eval 7] GPU 6 | expansion=1, depth=17 | dim=2432 | 504.2M params
+  [Eval 7] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | expansion=1, depth=29 | dim=1792 | 466.8M params
+  [Eval 4] NaN/diverged (loss=inf)
+  [Eval 3] GPU 2 | expansion=1, depth=21 | dim=2176 | 498.5M params
+  [Eval 3] NaN/diverged (loss=inf)
+  [Eval 2] GPU 1 | expansion=1, depth=24 | dim=2048 | 504.6M params
+  [Eval 2] Timeout
+  [Eval 8] GPU 7 | expansion=1, depth=19 | dim=2304 | 505.7M params
+  [Eval 8] Timeout
+  [Eval 5] GPU 4 | expansion=1, depth=22 | dim=2048 | 462.6M params
+  [Eval 5] NaN/diverged (loss=inf)
+  *** NEW BEST: 10.0000 | {'expansion': 1, 'depth': 16} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 1.32e-01  1e-01  1e-01 13:00.6
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'expansion': 1, 'depth': 16}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level cudagru --dim 2432 --depth 16 --expansion 1 --lr 3e-4 --train_minutes 30

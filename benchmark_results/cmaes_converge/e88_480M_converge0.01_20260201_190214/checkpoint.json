@@ -1,0 +1,100 @@
+{
+  "generation": 1,
+  "best_loss": 1.247395,
+  "best_params": {
+    "n_heads": 97,
+    "n_state": 16,
+    "depth": 12
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.354302,
+      "params": {
+        "n_heads": 67,
+        "n_state": 32,
+        "depth": 19
+      },
+      "dim": 2304,
+      "actual_params": 472850770
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.3506460000000002,
+      "params": {
+        "n_heads": 72,
+        "n_state": 32,
+        "depth": 17
+      },
+      "dim": 2432,
+      "actual_params": 479929008
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.5109719999999998,
+      "params": {
+        "n_heads": 110,
+        "n_state": 48,
+        "depth": 20
+      },
+      "dim": 896,
+      "actual_params": 475312752
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.247395,
+      "params": {
+        "n_heads": 97,
+        "n_state": 16,
+        "depth": 12
+      },
+      "dim": 5120,
+      "actual_params": 484113880
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.32262,
+      "params": {
+        "n_heads": 90,
+        "n_state": 16,
+        "depth": 25
+      },
+      "dim": 2688,
+      "actual_params": 490650916
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.3593350000000002,
+      "params": {
+        "n_heads": 111,
+        "n_state": 32,
+        "depth": 16
+      },
+      "dim": 1664,
+      "actual_params": 476255840
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.356988,
+      "params": {
+        "n_heads": 79,
+        "n_state": 32,
+        "depth": 17
+      },
+      "dim": 2176,
+      "actual_params": 471100702
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.290051,
+      "params": {
+        "n_heads": 86,
+        "n_state": 32,
+        "depth": 12
+      },
+      "dim": 2944,
+      "actual_params": 489945872
+    }
+  ]
+}

@@ -1,4 +1,0 @@
-{"type": "header", "timestamp": "2026-01-04T14:23:43.769351", "model": "2", "num_params": 50014656, "batch_size": 4, "chunk_size": 512, "lr": 0.0003}
-{"type": "step", "step": 1, "loss": 8.5625, "perplexity": 5231.744197360583, "grad_norm": 9.0625, "lr": 2.9999999999999997e-06, "tokens_seen": 2048, "tokens_per_sec": 1415.912470558604, "elapsed_s": 1.4464170932769775, "step_time_ms": 1444.2756175994873}
-{"type": "step", "step": 50, "loss": 2.8125, "perplexity": 16.651494963610144, "grad_norm": 1.4375, "lr": 0.00015, "tokens_seen": 102400, "tokens_per_sec": 1953.7116364078477, "elapsed_s": 52.41305732727051, "step_time_ms": 1042.8857803344727}
-{"type": "step", "step": 100, "loss": 2.703125, "perplexity": 14.926303617194517, "grad_norm": 2.0, "lr": 0.0003, "tokens_seen": 204800, "tokens_per_sec": 1958.3111395223666, "elapsed_s": 104.57990860939026, "step_time_ms": 1043.9491271972656}

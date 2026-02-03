@@ -1,5 +1,0 @@
-e1_d12_maxbatch: dim=2592 depth=12 batch=112 params=403,869,888
-Step 100 | 160s | Loss 2.2500 | Avg100 2.9497 | 35835 tok/s | Mem 36.6GB
-Step 200 | 323s | Loss 1.9609 | Avg100 2.0946 | 35535 tok/s | Mem 36.6GB
-Step 300 | 485s | Loss 1.7109 | Avg100 1.7909 | 35487 tok/s | Mem 36.6GB
-DONE: e1_d12_maxbatch | Steps=372 | Time=601s | Last100=1.6942 | 35472 tok/s | PeakMem=36.6GB

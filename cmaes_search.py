@@ -60,21 +60,22 @@ E90_CONFIGS = [
 # - lr: 1e-5 to 1e-3 (log scale) - learning rate
 SEARCH_SPACES = {
     'e88': {
-        # 5D: capacity (dim, depth) + architecture (n_heads, n_state) + lr
+        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, use_gate) + lr
         # Note: expansion fixed at 1.0 (head_v_dim = n_state) to avoid shape issues
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
         'depth': (12, 40, 'int', 'Number of layers'),
+        'use_gate': (0, 1, 'binary', 'Use output gating (0=no, 1=yes)'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'fla-gdn': {
-        # 5D: capacity (dim, depth) + architecture (expansion, n_heads) + lr
-        # Note: conv_size not searchable (hardcoded in FLA library)
+        # 6D: capacity (dim, depth) + architecture (expansion, n_heads, use_conv) + lr
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
         'depth': (12, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
+        'use_conv': (0, 1, 'binary', 'Use short convolution (0=no, 1=yes)'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'mamba2': {
@@ -87,12 +88,13 @@ SEARCH_SPACES = {
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'transformer': {
-        # 5D: capacity (dim, depth) + attention (n_heads, expansion) + lr
+        # 6D: capacity (dim, depth) + attention (n_heads, expansion) + regularization (dropout) + lr
         # Note: head_dim = dim / n_heads (computed automatically)
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (12, 36, 'int', 'Number of layers'),
+        'dropout': (0.0, 0.15, 'float', 'Dropout rate'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
     'gru': {
@@ -282,6 +284,7 @@ BEST_CONFIGS = {
         'n_heads': 98,
         'n_state': 32,
         'depth': 14,
+        'use_gate': 1,  # SiLU gating helps at 480M scale
         'lr': 3e-4,
     },
     'fla-gdn': {
@@ -289,6 +292,7 @@ BEST_CONFIGS = {
         'expansion': 2,
         'depth': 17,
         'n_heads': 24,
+        'use_conv': 1,  # FLA-GDN typically uses short conv
         'lr': 3e-4,
     },
     'mamba2': {
@@ -304,6 +308,7 @@ BEST_CONFIGS = {
         'n_heads': 16,
         'expansion': 4,
         'depth': 24,
+        'dropout': 0.0,  # No dropout for short training runs
         'lr': 1e-4,  # Transformers often need lower LR
     },
     'gru': {
@@ -655,21 +660,24 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
     ]
 
     if model_type == 'e88':
+        use_gate = params.get('use_gate', 1)
         cmd.extend([
             '--level', 'E88',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
             '--expansion', str(params.get('expansion', 1.0)),
-            '--use_gate', '1',
-            '--gate_activation', 'silu',
+            '--use_gate', str(use_gate),
         ])
+        if use_gate:
+            cmd.extend(['--gate_activation', 'silu'])
     elif model_type == 'fla-gdn':
+        use_conv = params.get('use_conv', 1)
         cmd.extend([
             '--level', 'fla-gdn',
             '--expansion', str(params['expansion']),
             '--n_heads', str(params.get('n_heads', 16)),
+            '--use_conv', str(use_conv),
         ])
-        # Note: conv_size is not passed to train.py - FLA-GDN uses hardcoded conv
     elif model_type == 'mamba2':
         cmd.extend([
             '--level', 'mamba2',
@@ -677,12 +685,13 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
         # Note: headdim passed via Mamba2 config, not train.py flag
         # Mamba2 calculates nheads from d_inner // headdim internally
     elif model_type == 'transformer':
+        dropout = params.get('dropout', 0.0)
         cmd.extend([
             '--level', 'llama',
             '--n_heads', str(params.get('n_heads', 16)),
             '--expansion', str(params.get('expansion', 4)),
+            '--dropout', str(dropout),
         ])
-        # Note: head_dim is not passed to train.py - computed from dim/n_heads
     elif model_type == 'gru':
         cmd.extend([
             '--level', 'cudagru',

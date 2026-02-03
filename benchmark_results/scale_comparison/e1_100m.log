@@ -1,6 +1,0 @@
-e1_100m: dim=1792 depth=6 batch=384 params=96,832,512
-Step 100 | 142s | Loss 1.8516 | Avg100 2.2666 | 138352 tok/s | Mem 43.0GB
-Step 200 | 291s | Loss 1.6016 | Avg100 1.6804 | 135082 tok/s | Mem 43.0GB
-Step 300 | 439s | Loss 1.5547 | Avg100 1.5806 | 134217 tok/s | Mem 43.0GB
-Step 400 | 588s | Loss 1.4766 | Avg100 1.5314 | 133673 tok/s | Mem 43.0GB
-DONE: e1_100m | Steps=408 | Time=600s | Last100=1.5289 | 133632 tok/s | PeakMem=43.0GB

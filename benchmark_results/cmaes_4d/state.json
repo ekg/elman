@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-02-03T06:09:28.925423",
+  "completed": {
+    "fla-gdn": {
+      "success": false,
+      "hours": 0,
+      "best_loss": null,
+      "best_params": null,
+      "status": "interrupted"
+    }
+  },
+  "remaining": [
+    "e88",
+    "e23",
+    "transformer"
+  ]
+}

@@ -1,6 +1,0 @@
-mamba2_d32_b48: dim=1440 depth=32 batch=48 params=407,144,480
-Step 100 | 132s | Loss 1.7734 | Avg100 2.3774 | 18660 tok/s | Mem 22.4GB
-Step 200 | 257s | Loss 1.6562 | Avg100 1.6579 | 19123 tok/s | Mem 22.4GB
-Step 300 | 383s | Loss 1.5078 | Avg100 1.5359 | 19267 tok/s | Mem 22.4GB
-Step 400 | 508s | Loss 1.4141 | Avg100 1.4883 | 19360 tok/s | Mem 22.4GB
-DONE: mamba2_d32_b48 | Steps=474 | Time=600s | Last100=1.4611 | 19402 tok/s | PeakMem=22.4GB

@@ -1,9 +1,0 @@
-Config: E25 D=512, N=64, depth=32, batch=48
-============================================================
-
-E25 D=512 N=64 depth=32 batch=48: params=50,479,616
-Step 50 | 143s | Loss 7.1562 | Avg100 66.0031 | 8.6K tok/s
-Step 100 | 286s | Loss 5.3125 | Avg100 36.6587 | 8.6K tok/s
-Step 150 | 429s | Loss 4.6562 | Avg100 6.4488 | 8.6K tok/s
-Step 200 | 572s | Loss 4.0000 | Avg100 5.2503 | 8.6K tok/s
-FINAL: steps=210, params=50.5M, loss=5.1277, tok/s=8.6K

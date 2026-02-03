@@ -1,0 +1,113 @@
+CMA-ES 4D Search for mingru
+Started: 2026-02-03T00:30:40.574375
+Command: python cmaes_search.py --model mingru --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 2944, 'expansion': 1, 'depth': 14, 'use_conv': 0, 'd_conv': 4, 'lr': 0.0003}
+Encoded x0: ['0.750', '0.000', '0.071', '0.250', '0.250', '0.739']
+======================================================================
+CMA-ES Search for MINGRU
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3584] (int_mult128) - Model dimension
+  expansion: [1, 4] (int) - Expansion factor
+  depth: [12, 40] (int) - Number of layers
+  use_conv: [0, 1] (binary) - Use Conv1d (0=no, 1=yes)
+  d_conv: [3, 7] (int) - Conv kernel size (if use_conv=1)
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=149100, Tue Feb  3 00:30:41 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 1] GPU 0 | dim=2944, expansion=1, depth=12, use_conv=0, d_conv=3, lr=0.0002404 | dim=2944 | 416.8M params
+  [Eval 1] Loss: 1.5320
+  [Eval 4] GPU 3 | dim=2816, expansion=1, depth=13, use_conv=0, d_conv=4, lr=0.0003165 | dim=2816 | 413.1M params
+  [Eval 4] Loss: 1.4834
+  [Eval 5] GPU 4 | dim=2688, expansion=1, depth=17, use_conv=0, d_conv=3, lr=8.147e-05 | dim=2688 | 492.0M params
+  [Eval 5] Loss: 1.7520
+  [Eval 8] GPU 7 | dim=3328, expansion=1, depth=14, use_conv=0, d_conv=3, lr=0.0005283 | dim=3328 | 621.1M params
+  [Eval 8] Loss: 1.3614
+  [Eval 7] GPU 6 | dim=3456, expansion=1, depth=13, use_conv=0, d_conv=4, lr=0.0002136 | dim=3456 | 622.0M params
+  [Eval 7] Loss: 1.4398
+  [Eval 6] GPU 5 | dim=3456, expansion=1, depth=14, use_conv=0, d_conv=4, lr=0.0009874 | dim=3456 | 669.7M params
+  [Eval 6] Loss: 1.3151
+  [Eval 2] GPU 1 | dim=3328, expansion=1, depth=17, use_conv=0, d_conv=5, lr=0.0004919 | dim=3328 | 754.0M params
+  [Eval 2] Loss: 1.3320
+  [Eval 3] GPU 2 | dim=2944, expansion=1, depth=18, use_conv=0, d_conv=3, lr=0.0001707 | dim=2944 | 624.8M params
+  [Eval 3] Loss: 1.4750
+  *** NEW BEST: 1.5320 | {'dim': 2944, 'expansion': 1, 'depth': 12, 'use_conv': 0, 'd_conv': 3, 'lr': 0.0002404397399334362} | dim=2944 ***
+  *** NEW BEST: 1.3320 | {'dim': 3328, 'expansion': 1, 'depth': 17, 'use_conv': 0, 'd_conv': 5, 'lr': 0.0004919014507634022} | dim=3328 ***
+  *** NEW BEST: 1.3151 | {'dim': 3456, 'expansion': 1, 'depth': 14, 'use_conv': 0, 'd_conv': 4, 'lr': 0.0009874216363043545} | dim=3456 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.315066000000000e+00 1.0e+00 1.59e-01  2e-01  2e-01 30:17.9
+  Generation best: 1.3151 | Overall best: 1.3151 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 10] GPU 1 | dim=3072, expansion=1, depth=12, use_conv=1, d_conv=6, lr=0.0001893 | dim=3072 | 453.8M params
+  [Eval 10] NaN/diverged (loss=inf)
+  [Eval 15] GPU 6 | dim=2944, expansion=1, depth=17, use_conv=1, d_conv=4, lr=0.0009679 | dim=2944 | 590.1M params
+  [Eval 15] NaN/diverged (loss=inf)
+  [Eval 12] GPU 3 | dim=3200, expansion=1, depth=18, use_conv=1, d_conv=4, lr=0.0009605 | dim=3200 | 738.1M params
+  [Eval 12] NaN/diverged (loss=inf)
+  [Eval 13] GPU 4 | dim=3200, expansion=2, depth=14, use_conv=0, d_conv=4, lr=0.0004314 | dim=3200 | 1721.1M params
+  [Eval 13] Loss: 1.8595
+  [Eval 11] GPU 2 | dim=3072, expansion=2, depth=17, use_conv=0, d_conv=6, lr=0.0004032 | dim=3072 | 1926.0M params
+  [Eval 11] Loss: 1.9197
+  [Eval 16] GPU 7 | dim=3584, expansion=2, depth=17, use_conv=0, d_conv=4, lr=0.0009238 | dim=3584 | 2621.3M params
+  [Eval 16] Loss: 1.8949
+  [Eval 9] GPU 0 | dim=3456, expansion=2, depth=19, use_conv=0, d_conv=5, lr=0.0003185 | dim=3456 | 2724.1M params
+  [Eval 9] Loss: 1.9865
+  [Eval 14] GPU 5 | dim=3200, expansion=1, depth=12, use_conv=0, d_conv=4, lr=0.000972 | dim=3200 | 492.3M params
+  [Eval 14] Loss: 1.3434
+    2     16 1.343356000000000e+00 1.3e+00 1.54e-01  1e-01  2e-01 60:54.9
+  Generation best: 1.3434 | Overall best: 1.3151 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (1 consecutive)
+
+--- Generation 3 (converge threshold: 0.01) ---
+  [Eval 17] GPU 0 | dim=2944, expansion=1, depth=14, use_conv=0, d_conv=4, lr=0.0008133 | dim=2944 | 486.1M params
+  [Eval 17] Loss: 1.3483
+  [Eval 21] GPU 4 | dim=3328, expansion=1, depth=13, use_conv=0, d_conv=4, lr=0.0009839 | dim=3328 | 576.8M params
+  [Eval 21] Loss: 1.3359
+  [Eval 22] GPU 5 | dim=3072, expansion=1, depth=13, use_conv=0, d_conv=4, lr=0.0008434 | dim=3072 | 491.5M params
+  [Eval 22] Loss: 1.3351
+  [Eval 19] GPU 2 | dim=3200, expansion=1, depth=14, use_conv=0, d_conv=5, lr=0.0008107 | dim=3200 | 574.3M params
+  [Eval 19] Loss: 1.3374
+  [Eval 20] GPU 3 | dim=3328, expansion=1, depth=16, use_conv=0, d_conv=4, lr=0.0003582 | dim=3328 | 709.7M params
+  [Eval 20] Loss: 1.3346
+  [Eval 18] GPU 1 | dim=2816, expansion=1, depth=21, use_conv=0, d_conv=5, lr=0.0004896 | dim=2816 | 666.8M params
+  [Eval 18] Loss: 1.3408
+  [Eval 23] GPU 6 | dim=3584, expansion=1, depth=23, use_conv=0, d_conv=5, lr=0.0008179 | dim=3584 | 1182.7M params
+  [Eval 23] Loss: 1.4014
+  [Eval 24] GPU 7 | dim=3584, expansion=1, depth=22, use_conv=0, d_conv=4, lr=0.0004672 | dim=3584 | 1131.3M params
+  [Eval 24] Loss: 1.4127
+    3     24 1.334638000000000e+00 1.4e+00 1.34e-01  1e-01  1e-01 91:16.4
+  Generation best: 1.3346 | Overall best: 1.3151 | Improvement: 0.0000
+  Improvement 0.0000 < threshold 0.01 (2 consecutive)
+
+*** CONVERGED: improvement 0.0000 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.3151
+Best params: {'dim': 3456, 'expansion': 1, 'depth': 14, 'use_conv': 0, 'd_conv': 4, 'lr': 0.0009874216363043545}
+Total evaluations: 24
+
+Cleaning up 121 checkpoint files...
+Cleanup complete.
+
+To train with best config:
+python train.py --level mingru --dim 3456 --depth 14 --expansion 1 --lr 0.0009874216363043545 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-03T02:02:53.220220
+Duration: 1.54 hours
+Return code: 0

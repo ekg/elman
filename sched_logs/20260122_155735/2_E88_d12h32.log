@@ -1,0 +1,39 @@
+Using device: cuda
+Output directory: benchmark_results/mega_100m_20260122_155533/E88_d12h32/levelE88d_h12_100m_20260122_155742
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88d_h12, 99,959,520 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 32, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 32
+
+Time-based training: 10.0 minutes
+Traceback (most recent call last):
+  File "/home/erikg/elman/train.py", line 584, in <module>
+    train(args)
+  File "/home/erikg/elman/train.py", line 486, in train
+    result = model(
+             ^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/elman/elman/models/ladder_lm.py", line 769, in forward
+    x, residual = rms_norm_fn(
+                  ^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 935, in rms_norm_fn
+    return LayerNormFn.apply(
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/torch/autograd/function.py", line 581, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 775, in forward
+    y, y1, mean, rstd, residual_out, seeds, dropout_mask, dropout_mask1 = _layer_norm_fwd(
+                                                                          ^^^^^^^^^^^^^^^^
+  File "/home/erikg/.local/lib/python3.12/site-packages/mamba_ssm/ops/triton/layer_norm.py", line 345, in _layer_norm_fwd
+    residual_out = torch.empty(
+                   ^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 200.00 MiB. GPU 0 has a total capacity of 47.38 GiB of which 157.44 MiB is free. Process 3293821 has 11.11 GiB memory in use. Process 3294432 has 11.11 GiB memory in use. Process 3298582 has 11.11 GiB memory in use. Process 3299281 has 11.11 GiB memory in use. Including non-PyTorch memory, this process has 2.77 GiB memory in use. Of the allocated memory 2.11 GiB is allocated by PyTorch, and 171.52 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

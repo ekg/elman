@@ -1,0 +1,64 @@
+CMA-ES 4D Search for e88
+Started: 2026-02-02T12:21:04.256663
+Command: python cmaes_search.py --model e88 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 2176, 'n_heads': 98, 'n_state': 32, 'depth': 14, 'expansion': 1.0, 'lr': 0.0003}
+Encoded x0: ['0.562', '0.516', '0.333', '0.071', '0.333', '0.739']
+======================================================================
+CMA-ES Search for E88
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3072] (int_mult128) - Model dimension
+  n_heads: [32, 160] (int) - Number of attention heads
+  n_state: [16, 64] (e88_n_state) - State dimension (only 16,32,48,64 supported)
+  depth: [12, 40] (int) - Number of layers
+  expansion: [0.5, 2.0] (float) - Value expansion: head_v_dim = n_state * expansion
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=161677, Mon Feb  2 12:21:04 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 2] GPU 1 | dim=1408, n_heads=107, n_state=16, depth=21, expansion=0.7298, lr=0.0001545 | dim=1408 | 215.6M params
+  [Eval 2] NaN/diverged (loss=inf)
+  [Eval 6] GPU 5 | dim=1792, n_heads=117, n_state=16, depth=12, expansion=1.039, lr=0.0005883 | dim=1792 | 208.9M params
+  [Eval 6] NaN/diverged (loss=inf)
+  [Eval 7] GPU 6 | dim=2304, n_heads=82, n_state=16, depth=15, expansion=1.183, lr=0.0003005 | dim=2304 | 255.0M params
+  [Eval 7] NaN/diverged (loss=inf)
+  [Eval 1] GPU 0 | dim=2304, n_heads=75, n_state=32, depth=18, expansion=0.8085, lr=0.0002944 | dim=2304 | 444.2M params
+  [Eval 1] NaN/diverged (loss=inf)
+  [Eval 8] GPU 7 | dim=2176, n_heads=87, n_state=32, depth=14, expansion=1.092, lr=0.000428 | dim=2176 | 450.5M params
+  [Eval 8] NaN/diverged (loss=inf)
+  [Eval 3] GPU 2 | dim=2048, n_heads=118, n_state=32, depth=12, expansion=1.123, lr=0.0007335 | dim=2048 | 501.6M params
+  [Eval 3] NaN/diverged (loss=inf)
+  [Eval 5] GPU 4 | dim=2176, n_heads=110, n_state=32, depth=21, expansion=1.312, lr=0.0001475 | dim=2176 | 960.5M params
+  [Eval 5] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | dim=2688, n_heads=104, n_state=32, depth=13, expansion=1.052, lr=0.0001676 | dim=2688 | 603.9M params
+  [Eval 4] NaN/diverged (loss=inf)
+  *** NEW BEST: 10.0000 | {'dim': 2304, 'n_heads': 75, 'n_state': 32, 'depth': 18, 'expansion': 0.8084725573549135, 'lr': 0.00029436033862753673} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 1.46e-01  1e-01  2e-01 0:18.3
+  Generation best: 10.0000 | Overall best: 10.0000 | Improvement: inf
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'dim': 2304, 'n_heads': 75, 'n_state': 32, 'depth': 18, 'expansion': 0.8084725573549135, 'lr': 0.00029436033862753673}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level E88 --dim 2304 --n_heads 75 --n_state 32 --depth 18 --lr 0.00029436033862753673 --expansion 0.8084725573549135 --use_gate 1 --gate_activation silu --train_minutes 30
+
+======================================================================
+Finished: 2026-02-02T12:21:23.260399
+Duration: 0.01 hours
+Return code: 0

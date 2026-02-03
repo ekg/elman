@@ -1,6 +1,0 @@
-e1_400m_fixed: params=393,968,640
-Step 100 | 138s | Loss 2.0781 | Avg100 2.7848 | 35606 tok/s | Mem 31.3GB
-Step 200 | 284s | Loss 1.7891 | Avg100 1.9535 | 34614 tok/s | Mem 31.3GB
-Step 300 | 430s | Loss 1.6875 | Avg100 1.7423 | 34295 tok/s | Mem 31.3GB
-Step 400 | 576s | Loss 1.6406 | Avg100 1.6537 | 34138 tok/s | Mem 31.3GB
-DONE: e1_400m_fixed | Steps=417 | Time=601s | Last100=1.6355 | 34119 tok/s | PeakMem=31.3GB

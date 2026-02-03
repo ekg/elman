@@ -1,0 +1,107 @@
+{
+  "generation": 1,
+  "best_loss": 1.34651,
+  "best_params": {
+    "expansion": 1,
+    "depth": 32,
+    "use_conv": 0,
+    "d_conv": 4
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.3883789999999998,
+      "params": {
+        "expansion": 1,
+        "depth": 27,
+        "use_conv": 0,
+        "d_conv": 5
+      },
+      "dim": 1920,
+      "actual_params": 498155520
+    },
+    {
+      "eval_id": 2,
+      "loss": 10.0,
+      "params": {
+        "expansion": 1,
+        "depth": 39,
+        "use_conv": 1,
+        "d_conv": 4
+      },
+      "diverged": true
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.6029220000000002,
+      "params": {
+        "expansion": 2,
+        "depth": 30,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1024,
+      "actual_params": 503578624
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.605891,
+      "params": {
+        "expansion": 2,
+        "depth": 38,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 896,
+      "actual_params": 488341504
+    },
+    {
+      "eval_id": 5,
+      "loss": 10.0,
+      "params": {
+        "expansion": 2,
+        "depth": 33,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "skipped": true
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.4675880000000001,
+      "params": {
+        "expansion": 1,
+        "depth": 28,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1792,
+      "actual_params": 450035712
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.34651,
+      "params": {
+        "expansion": 1,
+        "depth": 32,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1792,
+      "actual_params": 514260992
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.460817,
+      "params": {
+        "expansion": 1,
+        "depth": 29,
+        "use_conv": 0,
+        "d_conv": 4
+      },
+      "dim": 1792,
+      "actual_params": 466092032
+    }
+  ]
+}

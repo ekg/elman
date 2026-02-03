@@ -1,0 +1,85 @@
+# Job 11: 52
+# GPU: 6
+# Command: python train.py --level 52 --dim 2560 --expansion 2.0 --data data/pile.txt --depth 20 --batch_size 16 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/1b_10min_20260120_013342/52
+# Started: 2026-01-20T01:44:11.746489
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/1b_10min_20260120_013342/52/level52_100m_20260120_014416
+Auto r_h_mode: spectral_norm (level 52 has full W_h)
+Model: Level 52, 1,049,387,520 parameters
+
+Starting training from step 0...
+Batch size: 16, Chunk size: 512
+Gradient accumulation: 1, Effective batch: 16
+
+Time-based training: 10.0 minutes
+step     10 | loss 5.0507 | lr 2.70e-05 | grad 107.00 | tok/s 5189
+step     20 | loss nan | lr 5.70e-05 | grad nan | tok/s 8292
+step     30 | loss nan | lr 8.70e-05 | grad nan | tok/s 8641
+step     40 | loss nan | lr 1.17e-04 | grad nan | tok/s 8953
+step     50 | loss nan | lr 1.47e-04 | grad nan | tok/s 9290
+step     60 | loss nan | lr 1.77e-04 | grad nan | tok/s 9271
+step     70 | loss nan | lr 2.07e-04 | grad nan | tok/s 9262
+step     80 | loss nan | lr 2.37e-04 | grad nan | tok/s 9257
+step     90 | loss nan | lr 2.67e-04 | grad nan | tok/s 9251
+step    100 | loss nan | lr 2.97e-04 | grad nan | tok/s 9251
+step    110 | loss nan | lr 6.94e-06 | grad nan | tok/s 9327
+step    120 | loss nan | lr 2.69e-05 | grad nan | tok/s 9068
+step    130 | loss nan | lr 5.89e-05 | grad nan | tok/s 8875
+step    140 | loss nan | lr 9.99e-05 | grad nan | tok/s 8916
+step    150 | loss nan | lr 1.46e-04 | grad nan | tok/s 9211
+step    160 | loss nan | lr 1.92e-04 | grad nan | tok/s 9268
+step    170 | loss nan | lr 2.35e-04 | grad nan | tok/s 8765
+step    180 | loss nan | lr 2.69e-04 | grad nan | tok/s 9081
+step    190 | loss nan | lr 2.91e-04 | grad nan | tok/s 8695
+step    200 | loss nan | lr 3.00e-04 | grad nan | tok/s 9315
+step    210 | loss nan | lr 2.94e-04 | grad nan | tok/s 9035
+step    220 | loss nan | lr 2.74e-04 | grad nan | tok/s 8716
+step    230 | loss nan | lr 2.42e-04 | grad nan | tok/s 8731
+step    240 | loss nan | lr 2.01e-04 | grad nan | tok/s 8775
+step    250 | loss nan | lr 1.55e-04 | grad nan | tok/s 8804
+step    260 | loss nan | lr 1.09e-04 | grad nan | tok/s 9110
+step    270 | loss nan | lr 6.65e-05 | grad nan | tok/s 9112
+step    280 | loss nan | lr 3.24e-05 | grad nan | tok/s 8845
+step    290 | loss nan | lr 9.84e-06 | grad nan | tok/s 8494
+step    300 | loss nan | lr 1.07e-06 | grad nan | tok/s 8630
+step    310 | loss nan | lr 6.94e-06 | grad nan | tok/s 8825
+step    320 | loss nan | lr 2.69e-05 | grad nan | tok/s 8446
+step    330 | loss nan | lr 5.89e-05 | grad nan | tok/s 8850
+step    340 | loss nan | lr 9.99e-05 | grad nan | tok/s 9030
+step    350 | loss nan | lr 1.46e-04 | grad nan | tok/s 8856
+step    360 | loss nan | lr 1.92e-04 | grad nan | tok/s 9080
+step    370 | loss nan | lr 2.35e-04 | grad nan | tok/s 8906
+step    380 | loss nan | lr 2.69e-04 | grad nan | tok/s 9317
+step    390 | loss nan | lr 2.91e-04 | grad nan | tok/s 9400
+step    400 | loss nan | lr 3.00e-04 | grad nan | tok/s 9253
+step    410 | loss nan | lr 2.94e-04 | grad nan | tok/s 8930
+step    420 | loss nan | lr 2.74e-04 | grad nan | tok/s 8921
+step    430 | loss nan | lr 2.42e-04 | grad nan | tok/s 9374
+step    440 | loss nan | lr 2.01e-04 | grad nan | tok/s 9079
+step    450 | loss nan | lr 1.55e-04 | grad nan | tok/s 8945
+step    460 | loss nan | lr 1.09e-04 | grad nan | tok/s 8862
+step    470 | loss nan | lr 6.65e-05 | grad nan | tok/s 8871
+step    480 | loss nan | lr 3.24e-05 | grad nan | tok/s 9305
+step    490 | loss nan | lr 9.84e-06 | grad nan | tok/s 8990
+step    500 | loss nan | lr 1.07e-06 | grad nan | tok/s 8935
+step    510 | loss nan | lr 6.94e-06 | grad nan | tok/s 8788
+step    520 | loss nan | lr 2.69e-05 | grad nan | tok/s 8410
+step    530 | loss nan | lr 5.89e-05 | grad nan | tok/s 8935
+step    540 | loss nan | lr 9.99e-05 | grad nan | tok/s 8915
+step    550 | loss nan | lr 1.46e-04 | grad nan | tok/s 8709
+step    560 | loss nan | lr 1.92e-04 | grad nan | tok/s 9100
+step    570 | loss nan | lr 2.35e-04 | grad nan | tok/s 9399
+step    580 | loss nan | lr 2.69e-04 | grad nan | tok/s 9397
+step    590 | loss nan | lr 2.91e-04 | grad nan | tok/s 9398
+step    600 | loss nan | lr 3.00e-04 | grad nan | tok/s 9389
+step    610 | loss nan | lr 2.94e-04 | grad nan | tok/s 9394
+step    620 | loss nan | lr 2.74e-04 | grad nan | tok/s 9399
+step    630 | loss nan | lr 2.42e-04 | grad nan | tok/s 9264
+step    640 | loss nan | lr 2.01e-04 | grad nan | tok/s 8825
+step    650 | loss nan | lr 1.55e-04 | grad nan | tok/s 8773
+step    660 | loss nan | lr 1.09e-04 | grad nan | tok/s 8852
+step    670 | loss nan | lr 6.65e-05 | grad nan | tok/s 9176
+
+Training complete! Final step: 676

@@ -1,0 +1,88 @@
+CMA-ES Search for mamba2
+Started: 2026-02-01T16:00:19.204039
+Command: python cmaes_search.py --model mamba2 --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_converge --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'d_state': 64, 'expand': 2, 'depth': 28}
+Encoded x0: ['0.000', '0.500', '0.500']
+======================================================================
+CMA-ES Search for MAMBA2
+======================================================================
+Search space (3 dimensions):
+  d_state: [64, 256] (int_mult16) - SSM state dimension
+  expand: [1, 3] (int) - Expansion factor
+  depth: [16, 40] (int) - Number of layers
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 3 (seed=1071035, Sun Feb  1 16:00:19 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 5] GPU 4 | d_state=64, expand=2, depth=27 | dim=1664 | 461.0M params
+  [Eval 5] Loss: 1.2454
+  [Eval 1] GPU 0 | d_state=80, expand=2, depth=32 | dim=1536 | 466.6M params
+  [Eval 1] Loss: 1.2430
+  [Eval 7] GPU 6 | d_state=80, expand=2, depth=32 | dim=1536 | 466.6M params
+  [Eval 7] Loss: 1.2429
+  [Eval 2] GPU 1 | d_state=64, expand=2, depth=28 | dim=1664 | 478.1M params
+  [Eval 2] Loss: 1.2268
+  [Eval 6] GPU 5 | d_state=80, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 6] Loss: 1.1854
+  [Eval 4] GPU 3 | d_state=80, expand=1, depth=20 | dim=2816 | 484.1M params
+  [Eval 4] Loss: 1.2714
+  [Eval 8] GPU 7 | d_state=64, expand=2, depth=26 | dim=1792 | 513.9M params
+  [Eval 8] Loss: 1.1640
+  [Eval 3] GPU 2 | d_state=144, expand=2, depth=26 | dim=1792 | 513.9M params
+  [Eval 3] Loss: 1.1755
+  *** NEW BEST: 1.2430 | {'d_state': 80, 'expand': 2, 'depth': 32} | dim=1536 ***
+  *** NEW BEST: 1.2268 | {'d_state': 64, 'expand': 2, 'depth': 28} | dim=1664 ***
+  *** NEW BEST: 1.1755 | {'d_state': 144, 'expand': 2, 'depth': 26} | dim=1792 ***
+  *** NEW BEST: 1.1640 | {'d_state': 64, 'expand': 2, 'depth': 26} | dim=1792 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.164035000000000e+00 1.0e+00 1.47e-01  1e-01  2e-01 30:22.7
+  Generation best: 1.1640 | Overall best: 1.1640 | Improvement: inf
+
+--- Generation 2 (converge threshold: 0.01) ---
+  [Eval 16] GPU 7 | d_state=96, expand=2, depth=27 | dim=1664 | 461.0M params
+  [Eval 16] Loss: 1.2416
+  [Eval 12] GPU 3 | d_state=80, expand=2, depth=22 | dim=1920 | 498.4M params
+  [Eval 12] Loss: 1.1691
+  [Eval 15] GPU 6 | d_state=112, expand=2, depth=31 | dim=1536 | 452.0M params
+  [Eval 15] Loss: 1.2295
+  [Eval 13] GPU 4 | d_state=128, expand=2, depth=25 | dim=1792 | 494.2M params
+  [Eval 13] Loss: 1.1555
+  [Eval 11] GPU 2 | d_state=128, expand=2, depth=19 | dim=2048 | 489.1M params
+  [Eval 11] Loss: 1.1993
+  [Eval 10] GPU 1 | d_state=96, expand=1, depth=23 | dim=2560 | 460.7M params
+  [Eval 10] Loss: 1.3538
+  [Eval 14] GPU 5 | d_state=80, expand=2, depth=30 | dim=1664 | 512.2M params
+  [Eval 14] Loss: 1.1869
+  [Eval 9] GPU 0 | d_state=80, expand=2, depth=20 | dim=1920 | 453.2M params
+  [Eval 9] Loss: 1.2544
+  *** NEW BEST: 1.1555 | {'d_state': 128, 'expand': 2, 'depth': 25} | dim=1792 ***
+    2     16 1.155474000000000e+00 1.4e+00 1.54e-01  1e-01  2e-01 60:44.1
+  Generation best: 1.1555 | Overall best: 1.1555 | Improvement: 0.0086
+  Improvement 0.0086 < threshold 0.01 (1 consecutive)
+
+*** CONVERGED: improvement 0.0086 < 0.01 ***
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 1.1555
+Best params: {'d_state': 128, 'expand': 2, 'depth': 25}
+Total evaluations: 16
+
+To train with best config:
+python train.py --level mamba2 --dim 1792 --depth 25 --lr 3e-4 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-01T17:01:03.857276
+Duration: 1.01 hours
+Return code: 0

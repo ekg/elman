@@ -1,0 +1,64 @@
+CMA-ES 4D Search for transformer
+Started: 2026-02-03T05:06:45.300534
+Command: python cmaes_search.py --model transformer --train_minutes 30 --converge 0.01 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_4d --start_from_best
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+Starting from known best config: {'dim': 1536, 'n_heads': 16, 'head_dim': 64, 'expansion': 4, 'depth': 24, 'lr': 0.0001}
+Encoded x0: ['0.250', '0.333', '0.333', '0.500', '0.500', '0.500']
+======================================================================
+CMA-ES Search for TRANSFORMER
+======================================================================
+Search space (6 dimensions):
+  dim: [1024, 3072] (int_mult128) - Model dimension
+  n_heads: [8, 32] (int) - Number of attention heads
+  head_dim: [32, 128] (int_mult16) - Head dimension
+  expansion: [2, 6] (int) - FFN expansion factor
+  depth: [12, 36] (int) - Number of layers
+  lr: [1e-05, 0.001] (log) - Learning rate (log scale)
+Target params: 480M ± 50M
+Training time per config: 30.0 min
+Convergence mode: stop when improvement < 0.01
+Max generations: 1000
+Population: 8
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7] (8 parallel)
+======================================================================
+(4_w,8)-aCMA-ES (mu_w=2.6,w_1=52%) in dimension 6 (seed=189492, Tue Feb  3 05:06:45 2026)
+
+--- Generation 1 (converge threshold: 0.01) ---
+  [Eval 2] GPU 1 | dim=1408, n_heads=14, head_dim=80, expansion=4, depth=23, lr=6.836e-05 | dim=1408 | 730.0M params
+  [Eval 2] NaN/diverged (loss=inf)
+  [Eval 6] GPU 5 | dim=2048, n_heads=16, head_dim=64, expansion=4, depth=24, lr=0.0001939 | dim=2048 | 1611.2M params
+  [Eval 6] NaN/diverged (loss=inf)
+  [Eval 7] GPU 6 | dim=1664, n_heads=13, head_dim=80, expansion=6, depth=26, lr=4.241e-05 | dim=1664 | 1584.3M params
+  [Eval 7] NaN/diverged (loss=inf)
+  [Eval 8] GPU 7 | dim=1664, n_heads=25, head_dim=48, expansion=3, depth=31, lr=7.284e-05 | dim=1664 | 1116.4M params
+  [Eval 8] NaN/diverged (loss=inf)
+  [Eval 5] GPU 4 | dim=1152, n_heads=17, head_dim=64, expansion=4, depth=20, lr=4.426e-05 | dim=1152 | 425.0M params
+  [Eval 5] NaN/diverged (loss=inf)
+  [Eval 1] GPU 0 | dim=1664, n_heads=11, head_dim=80, expansion=3, depth=23, lr=5.905e-05 | dim=1664 | 828.4M params
+  [Eval 1] NaN/diverged (loss=inf)
+  [Eval 3] GPU 2 | dim=2048, n_heads=16, head_dim=80, expansion=5, depth=26, lr=0.0002112 | dim=2048 | 2072.6M params
+  [Eval 3] NaN/diverged (loss=inf)
+  [Eval 4] GPU 3 | dim=1536, n_heads=19, head_dim=64, expansion=3, depth=21, lr=0.0001079 | dim=1536 | 644.5M params
+  [Eval 4] NaN/diverged (loss=inf)
+  *** NEW BEST: 10.0000 | {'dim': 1664, 'n_heads': 11, 'head_dim': 80, 'expansion': 3, 'depth': 23, 'lr': 5.905080172053025e-05} | dim=0 ***
+Iterat #Fevals   function value  axis ratio  sigma  min&max std  t[m:s]
+    1      8 1.000000000000000e+01 1.0e+00 1.39e-01  1e-01  1e-01 0:08.4
+  Generation best: 10.0000 | Overall best: 10.0000 | Improvement: inf
+
+======================================================================
+SEARCH COMPLETE
+======================================================================
+Best loss: 10.0000
+Best params: {'dim': 1664, 'n_heads': 11, 'head_dim': 80, 'expansion': 3, 'depth': 23, 'lr': 5.905080172053025e-05}
+Total evaluations: 8
+
+To train with best config:
+python train.py --level llama --dim 1664 --depth 23 --n_heads 11 --expansion 3 --lr 5.905080172053025e-05 --train_minutes 30
+
+======================================================================
+Finished: 2026-02-03T05:06:54.302691
+Duration: 0.00 hours
+Return code: 0

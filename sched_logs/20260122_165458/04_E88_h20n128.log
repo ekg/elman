@@ -1,0 +1,24 @@
+# Job 4: E88_h20n128
+# GPU: 4
+# Command: python train.py --level E88_h20n128 --dim 1536 --depth 32 --data data/pile.txt --batch_size 8 --grad_accum 4 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_v2/E88_h20n128
+# Started: 2026-01-22T16:54:58.401763
+============================================================
+
+Using device: cuda
+Output directory: benchmark_results/500m_state_v2/E88_h20n128/levelE88_h20n128_100m_20260122_165504
+Auto r_h_mode: none (level 0 has bounded/no W_h)
+Model: Level E88_h20n128, 504,748,800 parameters
+Using schedule-free AdamW (lr=0.0003)
+
+Starting training from step 0...
+Batch size: 8, Chunk size: 512
+Gradient accumulation: 4, Effective batch: 32
+
+Time-based training: 10.0 minutes
+step     10 | loss 20.6639 | lr 3.00e-04 | grad 12.31 | tok/s 1405
+step     20 | loss 16.7939 | lr 3.00e-04 | grad 14.75 | tok/s 1453
+step     30 | loss 16.0431 | lr 3.00e-04 | grad 8.81 | tok/s 1539
+step     40 | loss 12.4924 | lr 3.00e-04 | grad 2.45 | tok/s 1539
+step     50 | loss 10.0866 | lr 3.00e-04 | grad 2.42 | tok/s 1540
+
+Training complete! Final step: 56

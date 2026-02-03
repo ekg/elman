@@ -1,0 +1,6 @@
+# Job 0: mamba2
+# GPU: 0
+# Command: python train.py --level mamba2 --dim 1600 --depth 32 --data data/pile.txt --batch_size 32 --chunk_size 512 --lr 3e-4 --warmup_steps 100 --seed 42 --bf16 --train_minutes 10 --output benchmark_results/500m_state_matched_d32/mamba2
+# Started: 2026-01-22T16:53:01.051553
+============================================================
+
