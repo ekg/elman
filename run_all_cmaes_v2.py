@@ -121,7 +121,7 @@ def run_cmaes_search(model, retry_count=0):
     pid_file = f'{OUTPUT_DIR}/{model}.pid'
 
     print(f"\n{'='*70}")
-    print(f"Starting CMA-ES 4D search for {model.upper()}")
+    print(f"Starting CMA-ES 6D search for {model.upper()}")
     print(f"{'='*70}")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Log: {log_file}")
@@ -145,7 +145,7 @@ def run_cmaes_search(model, retry_count=0):
     start_time = time.time()
 
     with open(log_file, 'w') as f:
-        f.write(f"CMA-ES 4D Search for {model}\n")
+        f.write(f"CMA-ES 6D Search for {model}\n")
         f.write(f"Started: {datetime.now().isoformat()}\n")
         f.write(f"Command: {' '.join(cmd)}\n")
         if retry_count > 0:
@@ -245,7 +245,7 @@ def get_completed_models():
 def print_summary(results):
     """Print summary of all results."""
     print(f"\n{'='*70}")
-    print("CMA-ES 4D SEARCH SUMMARY")
+    print("CMA-ES 6D SEARCH SUMMARY")
     print(f"{'='*70}\n")
 
     print(f"{'Model':<15} {'Status':<12} {'Hours':>8} {'Loss':>10} {'Config'}")
@@ -292,7 +292,7 @@ def save_state(results, models_remaining):
 def main():
     global interrupted
 
-    parser = argparse.ArgumentParser(description='Run CMA-ES 4D searches for all models')
+    parser = argparse.ArgumentParser(description='Run CMA-ES 6D searches for all models')
     parser.add_argument('--resume', type=str, default=None,
                         help='Resume from this model (skip earlier ones)')
     parser.add_argument('--only', type=str, default=None,
@@ -353,7 +353,7 @@ def main():
         return
 
     print(f"\nModels to run ({len(models_to_run)}): {models_to_run}")
-    print(f"Search space: 4D (expanded from 2-3D)")
+    print(f"Search space: 6D (expanded from 2-3D)")
     print(f"Training per eval: {TRAIN_MINUTES} minutes")
     print(f"Convergence: improvement < {CONVERGE_THRESHOLD}")
     print(f"Target: {TARGET_PARAMS} params")
