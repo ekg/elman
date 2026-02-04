@@ -629,32 +629,36 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             # Convert to configs
             configs = [decode_params(s, model_type, fixed_params) for s in solutions]
 
-            # Filter by param count
+            # Filter by param count - only train valid configs
             valid_mask = [is_valid_param_count(c, model_type, target_params, 0.20) for c in configs]
+            valid_configs = [c for c, v in zip(configs, valid_mask) if v]
+            valid_indices = [i for i, v in enumerate(valid_mask) if v]
 
-            # Evaluate in batches
-            print(f"\n  Generation {gen + 1}:")
+            n_valid = len(valid_configs)
+            n_invalid = len(configs) - n_valid
+            print(f"\n  Generation {gen + 1}: {n_valid} valid configs, {n_invalid} skipped (wrong params)")
+
+            # Only evaluate valid configs
             gen_results = []
+            if valid_configs:
+                for batch_start in range(0, len(valid_configs), len(gpus)):
+                    batch_configs = valid_configs[batch_start:batch_start + len(gpus)]
+                    batch_results = evaluate_batch(
+                        batch_configs, model_type, train_minutes, output_dir,
+                        gpus, start_eval_id=eval_counter
+                    )
+                    gen_results.extend(batch_results)
+                    eval_counter += len(batch_results)
 
-            for batch_start in range(0, len(configs), len(gpus)):
-                batch_configs = configs[batch_start:batch_start + len(gpus)]
-                batch_results = evaluate_batch(
-                    batch_configs, model_type, train_minutes, output_dir,
-                    gpus, start_eval_id=eval_counter
-                )
-                gen_results.extend(batch_results)
-                eval_counter += len(batch_results)
-
-            # Assign fitness (loss, or penalty if invalid params)
+            # Assign fitness: real loss for valid, penalty for invalid
             fitnesses = []
+            result_idx = 0
             for i, (cfg, valid) in enumerate(zip(configs, valid_mask)):
-                if i < len(gen_results):
-                    loss = gen_results[i]['loss']
-                    if not valid:
-                        loss = max(loss, 5.0)  # Penalty for wrong param count
-                    fitnesses.append(loss)
+                if valid and result_idx < len(gen_results):
+                    fitnesses.append(gen_results[result_idx]['loss'])
+                    result_idx += 1
                 else:
-                    fitnesses.append(10.0)
+                    fitnesses.append(10.0)  # Penalty for wrong param count (not trained)
 
             es.tell(solutions, fitnesses)
 
