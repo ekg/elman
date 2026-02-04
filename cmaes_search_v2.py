@@ -537,23 +537,35 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
                   target_params=480_000_000, fixed_params=None, seed=42):
     """Run LHS exploration phase."""
     print(f"\n{'='*70}")
-    print(f"PHASE 1: Latin Hypercube Sampling ({n_samples} samples)")
+    print(f"PHASE 1: Latin Hypercube Sampling ({n_samples} valid samples)")
     print(f"{'='*70}")
 
-    # Generate LHS configs
-    configs = generate_lhs_configs(model_type, n_samples, fixed_params, seed)
-    print(f"Generated {len(configs)} LHS configurations")
+    # Keep sampling until we have enough valid configs
+    valid_configs = []
+    attempt = 0
+    max_attempts = 10
 
-    # Filter by param count (allow 10% tolerance: 432M-528M for 480M target)
-    valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.10)]
-    print(f"Valid configs (within 15% of {target_params/1e6:.0f}M): {len(valid_configs)}")
+    while len(valid_configs) < n_samples and attempt < max_attempts:
+        # Generate more samples each attempt to get enough valid ones
+        batch_size = n_samples * (2 ** attempt)  # 64, 128, 256, ...
+        configs = generate_lhs_configs(model_type, batch_size, fixed_params, seed + attempt)
 
-    # If too few valid, regenerate with more samples
-    if len(valid_configs) < n_samples // 2:
-        print(f"Warning: Only {len(valid_configs)} valid configs, regenerating with 2x samples...")
-        configs = generate_lhs_configs(model_type, n_samples * 2, fixed_params, seed + 1)
-        valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.10)]
-        valid_configs = valid_configs[:n_samples]
+        # Filter by param count (10% tolerance: 432M-528M for 480M target)
+        for c in configs:
+            if is_valid_param_count(c, model_type, target_params, 0.10):
+                # Avoid duplicates by checking dim+depth+key params
+                key = (c.get('dim'), c.get('depth'), c.get('n_heads', 0), c.get('n_state', 0))
+                existing_keys = [(v.get('dim'), v.get('depth'), v.get('n_heads', 0), v.get('n_state', 0))
+                                 for v in valid_configs]
+                if key not in existing_keys:
+                    valid_configs.append(c)
+                    if len(valid_configs) >= n_samples:
+                        break
+
+        print(f"  Attempt {attempt + 1}: Generated {batch_size} samples, {len(valid_configs)}/{n_samples} valid so far")
+        attempt += 1
+
+    print(f"Total valid configs within ±10% of {target_params/1e6:.0f}M: {len(valid_configs)}")
 
     # Run evaluations in batches
     all_results = []

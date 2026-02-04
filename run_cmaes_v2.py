@@ -25,7 +25,7 @@ from pathlib import Path
 # Increased LHS samples for tighter ±10% param tolerance
 MODEL_CONFIGS = {
     # Model: (phase, sweep_param, lhs_samples, extra_args)
-    'e88': ('sweep', 'n_state', 48, []),  # Sweep n_state=[16,32,48,64], 48 samples each
+    'e88': ('sweep', 'n_state', 64, []),  # Sweep n_state=[16,32,48,64], 64 samples each
     'fla-gdn': ('both', None, 64, []),
     'mamba2': ('both', None, 64, []),
     'transformer': ('both', None, 64, []),
