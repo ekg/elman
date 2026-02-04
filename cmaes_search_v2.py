@@ -289,8 +289,8 @@ def estimate_params_for_config(params, model_type):
         return 4 * dim * dim * depth  # Rough estimate
 
 
-def is_valid_param_count(params, model_type, target_params, tolerance=0.15):
-    """Check if config is within tolerance of target params."""
+def is_valid_param_count(params, model_type, target_params, tolerance=0.10):
+    """Check if config is within tolerance of target params (default ±10%)."""
     actual = estimate_params_for_config(params, model_type)
     return abs(actual - target_params) / target_params <= tolerance
 
@@ -544,15 +544,15 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
     configs = generate_lhs_configs(model_type, n_samples, fixed_params, seed)
     print(f"Generated {len(configs)} LHS configurations")
 
-    # Filter by param count (allow 15% tolerance)
-    valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.15)]
+    # Filter by param count (allow 10% tolerance: 432M-528M for 480M target)
+    valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.10)]
     print(f"Valid configs (within 15% of {target_params/1e6:.0f}M): {len(valid_configs)}")
 
     # If too few valid, regenerate with more samples
     if len(valid_configs) < n_samples // 2:
         print(f"Warning: Only {len(valid_configs)} valid configs, regenerating with 2x samples...")
         configs = generate_lhs_configs(model_type, n_samples * 2, fixed_params, seed + 1)
-        valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.20)]
+        valid_configs = [c for c in configs if is_valid_param_count(c, model_type, target_params, 0.10)]
         valid_configs = valid_configs[:n_samples]
 
     # Run evaluations in batches
@@ -630,7 +630,7 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             configs = [decode_params(s, model_type, fixed_params) for s in solutions]
 
             # Filter by param count - only train valid configs
-            valid_mask = [is_valid_param_count(c, model_type, target_params, 0.20) for c in configs]
+            valid_mask = [is_valid_param_count(c, model_type, target_params, 0.10) for c in configs]
             valid_configs = [c for c, v in zip(configs, valid_mask) if v]
             valid_indices = [i for i, v in enumerate(valid_mask) if v]
 

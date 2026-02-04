@@ -1,17 +1,34 @@
 {
-  "timestamp": "2026-02-03T06:09:28.925423",
+  "timestamp": "2026-02-03T12:19:21.840848",
   "completed": {
     "fla-gdn": {
-      "success": false,
-      "hours": 0,
+      "success": true,
+      "hours": 2.048849212990867,
       "best_loss": null,
       "best_params": null,
-      "status": "interrupted"
+      "status": "success"
+    },
+    "e88": {
+      "success": true,
+      "hours": 1.5343460324075486,
+      "best_loss": null,
+      "best_params": null,
+      "status": "success"
+    },
+    "e23": {
+      "success": true,
+      "hours": 0.0002782013018925985,
+      "best_loss": null,
+      "best_params": null,
+      "status": "success"
+    },
+    "transformer": {
+      "success": true,
+      "hours": 2.559431512620714,
+      "best_loss": null,
+      "best_params": null,
+      "status": "success"
     }
   },
-  "remaining": [
-    "e88",
-    "e23",
-    "transformer"
-  ]
+  "remaining": []
 }

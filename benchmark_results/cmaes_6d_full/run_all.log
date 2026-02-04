@@ -1,0 +1,59 @@
+
+Models to run (4): ['fla-gdn', 'e88', 'e23', 'transformer']
+Search space: 4D (expanded from 2-3D)
+Training per eval: 30 minutes
+Convergence: improvement < 0.01
+Target: 480M params
+GPUs: 0,1,2,3,4,5,6,7
+Output: benchmark_results/cmaes_4d
+
+[1/4] 
+======================================================================
+Starting CMA-ES 4D search for FLA-GDN
+======================================================================
+Time: 2026-02-03 06:10:47
+Log: benchmark_results/cmaes_4d/fla-gdn_search.log
+Config: train_minutes=30, converge=0.01
+[OK] fla-gdn completed in 2.05 hours
+
+[2/4] 
+======================================================================
+Starting CMA-ES 4D search for E88
+======================================================================
+Time: 2026-02-03 08:13:43
+Log: benchmark_results/cmaes_4d/e88_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e88 completed in 1.53 hours
+
+[3/4] 
+======================================================================
+Starting CMA-ES 4D search for E23
+======================================================================
+Time: 2026-02-03 09:45:46
+Log: benchmark_results/cmaes_4d/e23_search.log
+Config: train_minutes=30, converge=0.01
+[OK] e23 completed in 0.00 hours
+
+[4/4] 
+======================================================================
+Starting CMA-ES 4D search for TRANSFORMER
+======================================================================
+Time: 2026-02-03 09:45:47
+Log: benchmark_results/cmaes_4d/transformer_search.log
+Config: train_minutes=30, converge=0.01
+[OK] transformer completed in 2.56 hours
+
+======================================================================
+CMA-ES 4D SEARCH SUMMARY
+======================================================================
+
+Model           Status          Hours       Loss Config
+----------------------------------------------------------------------
+fla-gdn         OK               2.05        N/A 
+e88             OK               1.53        N/A 
+e23             OK               0.00        N/A 
+transformer     OK               2.56        N/A 
+----------------------------------------------------------------------
+
+Total time: 6.14 hours
+Completed: 4/4 models

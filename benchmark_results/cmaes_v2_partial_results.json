@@ -1,0 +1,22 @@
+{
+  "note": "Partial results from v2 run before restart (param constraint bug)",
+  "e88_n_state_16": {
+    "best_loss": 0.8272,
+    "best_config": {
+      "dim": 2048,
+      "n_heads": 84,
+      "n_state": 16,
+      "depth": 37,
+      "use_gate": 0,
+      "lr": 0.0006633
+    },
+    "params": "516.2M",
+    "generations": 15,
+    "note": "Converged after 15 generations"
+  },
+  "other_good_configs_n_state_16": [
+    {"loss": 0.8747, "dim": 2432, "n_heads": 55, "n_state": 16, "depth": 39, "lr": 0.0004532},
+    {"loss": 0.8617, "dim": 2688, "n_heads": 109, "n_state": 16, "depth": 30, "lr": 0.0009782},
+    {"loss": 0.8793, "dim": 2176, "n_heads": 105, "n_state": 16, "depth": 33, "lr": 0.0003236}
+  ]
+}

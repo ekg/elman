@@ -1,0 +1,239 @@
+{
+  "generation": 2,
+  "best_loss": 1.205224,
+  "best_params": {
+    "dim": 2560,
+    "n_heads": 65,
+    "n_state": 32,
+    "depth": 18,
+    "use_gate": 0,
+    "lr": 0.0004786203805637956
+  },
+  "converge_threshold": 0.01,
+  "history": [
+    {
+      "eval_id": 1,
+      "loss": 1.229134,
+      "params": {
+        "dim": 1792,
+        "n_heads": 100,
+        "n_state": 32,
+        "depth": 20,
+        "use_gate": 0,
+        "lr": 0.0008539682943028366
+      },
+      "dim": 1792,
+      "actual_params": 577525024
+    },
+    {
+      "eval_id": 2,
+      "loss": 1.235926,
+      "params": {
+        "dim": 2432,
+        "n_heads": 82,
+        "n_state": 32,
+        "depth": 17,
+        "use_gate": 1,
+        "lr": 0.0005118170583454768
+      },
+      "dim": 2432,
+      "actual_params": 546493188
+    },
+    {
+      "eval_id": 3,
+      "loss": 1.288465,
+      "params": {
+        "dim": 1920,
+        "n_heads": 106,
+        "n_state": 32,
+        "depth": 18,
+        "use_gate": 0,
+        "lr": 0.0002953690951063441
+      },
+      "dim": 1920,
+      "actual_params": 590333352
+    },
+    {
+      "eval_id": 4,
+      "loss": 1.270796,
+      "params": {
+        "dim": 2304,
+        "n_heads": 96,
+        "n_state": 32,
+        "depth": 15,
+        "use_gate": 1,
+        "lr": 0.0003110342740355285
+      },
+      "dim": 2304,
+      "actual_params": 534789408
+    },
+    {
+      "eval_id": 5,
+      "loss": 1.264494,
+      "params": {
+        "dim": 1792,
+        "n_heads": 116,
+        "n_state": 32,
+        "depth": 20,
+        "use_gate": 1,
+        "lr": 0.000409093847728254
+      },
+      "dim": 1792,
+      "actual_params": 669849504
+    },
+    {
+      "eval_id": 6,
+      "loss": 1.2486249999999999,
+      "params": {
+        "dim": 2048,
+        "n_heads": 134,
+        "n_state": 32,
+        "depth": 13,
+        "use_gate": 1,
+        "lr": 0.0007555350707946928
+      },
+      "dim": 2048,
+      "actual_params": 574943036
+    },
+    {
+      "eval_id": 7,
+      "loss": 1.246644,
+      "params": {
+        "dim": 2048,
+        "n_heads": 123,
+        "n_state": 32,
+        "depth": 12,
+        "use_gate": 1,
+        "lr": 0.0003740017307748335
+      },
+      "dim": 2048,
+      "actual_params": 487232776
+    },
+    {
+      "eval_id": 8,
+      "loss": 1.205224,
+      "params": {
+        "dim": 2560,
+        "n_heads": 65,
+        "n_state": 32,
+        "depth": 18,
+        "use_gate": 0,
+        "lr": 0.0004786203805637956
+      },
+      "dim": 2560,
+      "actual_params": 482934116
+    },
+    {
+      "eval_id": 9,
+      "loss": 1.3749850000000001,
+      "params": {
+        "dim": 2048,
+        "n_heads": 61,
+        "n_state": 32,
+        "depth": 15,
+        "use_gate": 1,
+        "lr": 0.00035923336728666954
+      },
+      "dim": 2048,
+      "actual_params": 302260486
+    },
+    {
+      "eval_id": 10,
+      "loss": 1.3695339999999998,
+      "params": {
+        "dim": 2816,
+        "n_heads": 91,
+        "n_state": 32,
+        "depth": 16,
+        "use_gate": 0,
+        "lr": 0.0001722655744997659
+      },
+      "dim": 2816,
+      "actual_params": 660887648
+    },
+    {
+      "eval_id": 11,
+      "loss": 1.314676,
+      "params": {
+        "dim": 2432,
+        "n_heads": 43,
+        "n_state": 32,
+        "depth": 19,
+        "use_gate": 1,
+        "lr": 0.0007442358280960996
+      },
+      "dim": 2432,
+      "actual_params": 320571458
+    },
+    {
+      "eval_id": 12,
+      "loss": 1.277749,
+      "params": {
+        "dim": 2176,
+        "n_heads": 82,
+        "n_state": 32,
+        "depth": 16,
+        "use_gate": 0,
+        "lr": 0.0009613114410748162
+      },
+      "dim": 2176,
+      "actual_params": 460238016
+    },
+    {
+      "eval_id": 13,
+      "loss": 1.298412,
+      "params": {
+        "dim": 1920,
+        "n_heads": 62,
+        "n_state": 32,
+        "depth": 15,
+        "use_gate": 1,
+        "lr": 0.00089946027791803
+      },
+      "dim": 1920,
+      "actual_params": 288006180
+    },
+    {
+      "eval_id": 14,
+      "loss": 1.3001589999999998,
+      "params": {
+        "dim": 2304,
+        "n_heads": 52,
+        "n_state": 32,
+        "depth": 16,
+        "use_gate": 1,
+        "lr": 0.0008148532555279302
+      },
+      "dim": 2304,
+      "actual_params": 309256576
+    },
+    {
+      "eval_id": 15,
+      "loss": 1.42199,
+      "params": {
+        "dim": 1408,
+        "n_heads": 70,
+        "n_state": 48,
+        "depth": 12,
+        "use_gate": 1,
+        "lr": 0.0009484019727823435
+      },
+      "dim": 1408,
+      "actual_params": 285416528
+    },
+    {
+      "eval_id": 16,
+      "loss": 1.274713,
+      "params": {
+        "dim": 2688,
+        "n_heads": 105,
+        "n_state": 32,
+        "depth": 14,
+        "use_gate": 1,
+        "lr": 0.0007464355211753669
+      },
+      "dim": 2688,
+      "actual_params": 636900796
+    }
+  ]
+}

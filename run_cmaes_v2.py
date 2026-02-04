@@ -22,16 +22,17 @@ from datetime import datetime
 from pathlib import Path
 
 # Models to search and their optimal strategies
+# Increased LHS samples for tighter ±10% param tolerance
 MODEL_CONFIGS = {
     # Model: (phase, sweep_param, lhs_samples, extra_args)
-    'e88': ('sweep', 'n_state', 32, []),  # Sweep n_state=[16,32,48,64]
-    'fla-gdn': ('both', None, 48, []),
-    'mamba2': ('both', None, 48, []),
-    'transformer': ('both', None, 48, []),
-    'e1': ('both', None, 48, []),
-    'e42': ('both', None, 48, []),
-    'mingru': ('both', None, 48, []),
-    'minlstm': ('both', None, 48, []),
+    'e88': ('sweep', 'n_state', 48, []),  # Sweep n_state=[16,32,48,64], 48 samples each
+    'fla-gdn': ('both', None, 64, []),
+    'mamba2': ('both', None, 64, []),
+    'transformer': ('both', None, 64, []),
+    'e1': ('both', None, 64, []),
+    'e42': ('both', None, 64, []),
+    'mingru': ('both', None, 64, []),
+    'minlstm': ('both', None, 64, []),
 }
 
 # Skip these by default (unstable at 480M)

@@ -1,0 +1,375 @@
+CMA-ES v2 Search for e88
+Started: 2026-02-03T15:13:42.404271
+Command: python -u cmaes_search_v2.py --model e88 --phase sweep --train_minutes 30 --gpus 0,1,2,3,4,5,6,7 --params 480M --output benchmark_results/cmaes_v2 --lhs_samples 32 --sigma 0.35 --min_generations 6 --converge 0.005 --consecutive 3 --cmaes_refinements 3 --sweep_param n_state
+======================================================================
+
+/home/erikg/.local/lib/python3.12/site-packages/cma/s.py:15: UserWarning: Could not import matplotlib.pyplot, therefore ``cma.plot()`` etc. is not available
+  _warnings.warn('Could not import matplotlib.pyplot, therefore'
+======================================================================
+CMA-ES v2 Search for E88
+======================================================================
+Phase: sweep
+Target params: 480M
+Training time: 30.0 min/config
+GPUs: [0, 1, 2, 3, 4, 5, 6, 7]
+Output: benchmark_results/cmaes_v2/e88_20260203_151342
+
+======================================================================
+DISCRETE SWEEP: n_state = [16, 32, 48, 64]
+======================================================================
+
+======================================================================
+SWEEP: n_state = 16
+======================================================================
+
+======================================================================
+PHASE 1: Latin Hypercube Sampling (32 samples)
+======================================================================
+Generated 32 LHS configurations
+Valid configs (within 15% of 480M): 7
+Warning: Only 7 valid configs, regenerating with 2x samples...
+
+--- LHS Batch 1 (11 configs) ---
+  [Eval 6] GPU 6 | dim=2048, n_heads=75, n_state=16, depth=31, use_gate=0, lr=3.675e-05 | 386.3M params | Loss: 2.8154
+  [Eval 5] GPU 5 | dim=1792, n_heads=150, n_state=16, depth=19, use_gate=0, lr=0.0007944 | 414.2M params | Loss: 1.0226
+  [Eval 1] GPU 1 | dim=1792, n_heads=133, n_state=16, depth=24, use_gate=0, lr=2.118e-05 | 463.8M params | Loss: 3.3551
+  [Eval 4] GPU 4 | dim=2688, n_heads=90, n_state=16, depth=23, use_gate=0, lr=0.0002603 | 451.5M params | Loss: 1.1082
+  [Eval 7] GPU 7 | dim=2176, n_heads=137, n_state=16, depth=18, use_gate=0, lr=0.000496 | 435.3M params | Loss: 1.0825
+  [Eval 3] GPU 3 | dim=1664, n_heads=122, n_state=16, depth=27, use_gate=1, lr=0.000134 | 444.5M params | Loss: 1.6346
+  [Eval 2] GPU 2 | dim=1536, n_heads=102, n_state=16, depth=37, use_gate=1, lr=0.0002036 | 470.0M params | Loss: 1.3193
+  [Eval 0] GPU 0 | dim=2560, n_heads=80, n_state=16, depth=33, use_gate=1, lr=0.0006174 | 548.2M params | Loss: 1.0190
+  [Eval 9] GPU 1 | dim=1408, n_heads=129, n_state=16, depth=29, use_gate=0, lr=0.0001104 | 427.1M params | Loss: 1.6423
+  [Eval 8] GPU 0 | dim=1664, n_heads=101, n_state=16, depth=33, use_gate=0, lr=1.405e-05 | 449.7M params | Loss: 4.4142
+  [Eval 10] GPU 2 | dim=2048, n_heads=154, n_state=16, depth=20, use_gate=1, lr=6.608e-05 | 511.5M params | Loss: 2.2584
+
+======================================================================
+LHS PHASE COMPLETE - Top 10 Configurations:
+======================================================================
+  1. Loss=1.0190 | dim=2560, n_heads=80, n_state=16, depth=33, use_gate=1, lr=0.0006174
+  2. Loss=1.0226 | dim=1792, n_heads=150, n_state=16, depth=19, use_gate=0, lr=0.0007944
+  3. Loss=1.0825 | dim=2176, n_heads=137, n_state=16, depth=18, use_gate=0, lr=0.000496
+  4. Loss=1.1082 | dim=2688, n_heads=90, n_state=16, depth=23, use_gate=0, lr=0.0002603
+  5. Loss=1.3193 | dim=1536, n_heads=102, n_state=16, depth=37, use_gate=1, lr=0.0002036
+  6. Loss=1.6346 | dim=1664, n_heads=122, n_state=16, depth=27, use_gate=1, lr=0.000134
+  7. Loss=1.6423 | dim=1408, n_heads=129, n_state=16, depth=29, use_gate=0, lr=0.0001104
+  8. Loss=2.2584 | dim=2048, n_heads=154, n_state=16, depth=20, use_gate=1, lr=6.608e-05
+  9. Loss=2.8154 | dim=2048, n_heads=75, n_state=16, depth=31, use_gate=0, lr=3.675e-05
+  10. Loss=3.3551 | dim=1792, n_heads=133, n_state=16, depth=24, use_gate=0, lr=2.118e-05
+
+======================================================================
+PHASE 2: CMA-ES Refinement
+======================================================================
+  Warm starts: 3
+  Sigma: 0.35
+  Min generations: 6
+  Converge threshold: 0.005
+  Consecutive required: 3
+
+--- CMA-ES from warm start 1/3 ---
+    Start config: dim=2560, n_heads=80, n_state=16, depth=33, use_gate=1, lr=0.0006174
+
+  Generation 1:
+  [Eval 7] GPU 7 | dim=1664, n_heads=89, n_state=16, depth=15, use_gate=0, lr=0.0008329 | 180.4M params | Loss: 1.0784
+  [Eval 3] GPU 3 | dim=2176, n_heads=37, n_state=16, depth=36, use_gate=0, lr=7.063e-05 | 235.4M params | Loss: 1.6346
+  [Eval 5] GPU 5 | dim=2688, n_heads=33, n_state=16, depth=37, use_gate=1, lr=0.0003945 | 266.6M params | Loss: 1.0226
+  [Eval 2] GPU 2 | dim=2304, n_heads=60, n_state=16, depth=35, use_gate=0, lr=4.371e-05 | 392.6M params | Loss: 1.3193
+  [Eval 4] GPU 4 | dim=2816, n_heads=70, n_state=16, depth=34, use_gate=0, lr=0.0002677 | 543.7M params | Loss: 1.1082
+  [Eval 0] GPU 0 | dim=2944, n_heads=74, n_state=16, depth=39, use_gate=1, lr=0.000431 | 689.1M params | Loss: 0.9714
+  [Eval 6] GPU 6 | dim=2176, n_heads=158, n_state=16, depth=33, use_gate=0, lr=0.0007263 | 919.6M params | Loss: 1.2607
+  [Eval 1] GPU 1 | dim=2432, n_heads=147, n_state=16, depth=40, use_gate=1, lr=0.0009844 | 1159.0M params | Loss: 0.9103
+  [Eval 12] GPU 4 | dim=2176, n_heads=72, n_state=16, depth=23, use_gate=0, lr=0.0007375 | 292.5M params | Loss: 1.1070
+  [Eval 11] GPU 3 | dim=3072, n_heads=44, n_state=16, depth=30, use_gate=1, lr=0.0005742 | 329.3M params | Loss: 1.1876
+  [Eval 10] GPU 2 | dim=2816, n_heads=64, n_state=16, depth=27, use_gate=1, lr=0.0005274 | 395.0M params | Loss: 1.2140
+  [Eval 9] GPU 1 | dim=2048, n_heads=60, n_state=16, depth=40, use_gate=1, lr=4.123e-05 | 398.7M params | Loss: 1.6423
+  [Eval 8] GPU 0 | dim=3072, n_heads=87, n_state=16, depth=32, use_gate=1, lr=6.381e-05 | 693.6M params | Loss: 2.3835
+  [Eval 13] GPU 5 | dim=2816, n_heads=77, n_state=16, depth=40, use_gate=1, lr=0.0002293 | 703.4M params | Loss: 1.0761
+  [Eval 15] GPU 7 | dim=3072, n_heads=84, n_state=16, depth=30, use_gate=1, lr=2.921e-05 | 627.9M params | Loss: 3.7156
+  [Eval 14] GPU 6 | dim=2816, n_heads=146, n_state=16, depth=33, use_gate=1, lr=1.127e-05 | 1099.8M params | Loss: 5.3678
+    *** NEW BEST: 1.0226 | dim=2304, n_heads=60, n_state=16, depth=35, use_gate=0, lr=4.371e-05 ***
+    Gen best: 1.0226 | Overall best: 1.0226 | No improvement: 0/3
+
+  Generation 2:
+  [Eval 16] GPU 0 | dim=2560, n_heads=42, n_state=16, depth=27, use_gate=0, lr=4.256e-05 | 235.9M params | Loss: 2.3773
+  [Eval 19] GPU 3 | dim=2304, n_heads=49, n_state=16, depth=31, use_gate=0, lr=0.0003499 | 284.1M params | Loss: 1.2165
+  [Eval 20] GPU 4 | dim=1920, n_heads=38, n_state=16, depth=40, use_gate=0, lr=0.0003949 | 237.0M params | Loss: 1.2102
+  [Eval 17] GPU 1 | dim=2048, n_heads=68, n_state=16, depth=27, use_gate=1, lr=0.0002112 | 305.2M params | Loss: 1.3252
+  [Eval 18] GPU 2 | dim=2048, n_heads=93, n_state=16, depth=36, use_gate=0, lr=5.783e-05 | 556.0M params | Loss: 2.4030
+  [Eval 21] GPU 5 | dim=2304, n_heads=105, n_state=16, depth=23, use_gate=0, lr=4.673e-05 | 451.3M params | Loss: 2.3079
+  [Eval 22] GPU 6 | dim=2944, n_heads=96, n_state=16, depth=30, use_gate=0, lr=0.0008567 | 687.6M params | Loss: 0.9146
+  [Eval 23] GPU 7 | dim=3072, n_heads=136, n_state=16, depth=39, use_gate=1, lr=0.0005569 | 1320.7M params | Loss: 1.0665
+  [Eval 31] GPU 7 | dim=1536, n_heads=68, n_state=16, depth=21, use_gate=1, lr=0.0001398 | 178.1M params | Loss: 1.6064
+  [Eval 24] GPU 0 | dim=2816, n_heads=52, n_state=16, depth=35, use_gate=1, lr=0.000108 | 416.0M params | Loss: 1.5128
+  [Eval 26] GPU 2 | dim=2176, n_heads=80, n_state=16, depth=40, use_gate=0, lr=0.0002898 | 564.7M params | Loss: 1.1149
+  [Eval 27] GPU 3 | dim=2816, n_heads=74, n_state=16, depth=37, use_gate=0, lr=2.37e-05 | 625.4M params | Loss: 3.5015
+  [Eval 25] GPU 1 | dim=2944, n_heads=79, n_state=16, depth=34, use_gate=1, lr=2.617e-05 | 641.4M params | Loss: 4.0585
+  [Eval 28] GPU 4 | dim=2048, n_heads=146, n_state=16, depth=37, use_gate=0, lr=0.0001293 | 896.7M params | Loss: 1.5330
+  [Eval 29] GPU 5 | dim=3072, n_heads=103, n_state=16, depth=32, use_gate=1, lr=0.0003103 | 821.0M params | Loss: 1.1175
+  [Eval 30] GPU 6 | dim=2560, n_heads=104, n_state=16, depth=37, use_gate=1, lr=0.0001845 | 798.7M params | Loss: 1.3408
+    Gen best: 1.1149 | Overall best: 1.0226 | No improvement: 1/3
+
+  Generation 3:
+  [Eval 35] GPU 3 | dim=1024, n_heads=61, n_state=16, depth=36, use_gate=0, lr=3.186e-05 | 182.5M params | Loss: 3.2972
+  [Eval 38] GPU 6 | dim=2048, n_heads=33, n_state=16, depth=37, use_gate=0, lr=8.283e-05 | 203.2M params | Loss: 1.8715
+  [Eval 32] GPU 0 | dim=1920, n_heads=58, n_state=16, depth=30, use_gate=0, lr=7.114e-05 | 271.2M params | Loss: 1.9831
+  [Eval 37] GPU 5 | dim=2304, n_heads=37, n_state=16, depth=33, use_gate=1, lr=0.0006521 | 228.5M params | Loss: 1.1945
+  [Eval 36] GPU 4 | dim=2304, n_heads=70, n_state=16, depth=22, use_gate=0, lr=7.033e-05 | 288.0M params | Loss: 1.8759
+  [Eval 33] GPU 1 | dim=2048, n_heads=75, n_state=16, depth=38, use_gate=0, lr=0.000815 | 473.4M params | Loss: 1.0568
+  [Eval 39] GPU 7 | dim=2176, n_heads=92, n_state=16, depth=28, use_gate=1, lr=0.0003582 | 454.7M params | Loss: 1.0790
+  [Eval 34] GPU 2 | dim=2304, n_heads=99, n_state=16, depth=34, use_gate=0, lr=4.311e-05 | 628.9M params | Loss: 2.5429
+  [Eval 45] GPU 5 | dim=1792, n_heads=37, n_state=16, depth=30, use_gate=0, lr=3.177e-05 | 161.6M params | Loss: 3.0680
+  [Eval 46] GPU 6 | dim=1792, n_heads=45, n_state=16, depth=36, use_gate=0, lr=1e-05 | 235.7M params | Loss: 4.9581
+  [Eval 44] GPU 4 | dim=1408, n_heads=67, n_state=16, depth=29, use_gate=1, lr=0.0002202 | 222.0M params | Loss: 1.3819
+  [Eval 43] GPU 3 | dim=1664, n_heads=61, n_state=16, depth=31, use_gate=0, lr=7.412e-05 | 255.4M params | Loss: 2.0685
+  [Eval 47] GPU 7 | dim=1024, n_heads=92, n_state=16, depth=32, use_gate=0, lr=2.311e-05 | 244.5M params | Loss: 3.7515
+  [Eval 41] GPU 1 | dim=1792, n_heads=61, n_state=16, depth=33, use_gate=1, lr=1.83e-05 | 292.7M params | Loss: 5.1177
+  [Eval 42] GPU 2 | dim=2560, n_heads=63, n_state=16, depth=38, use_gate=0, lr=0.0009675 | 497.2M params | Loss: 1.0605
+  [Eval 40] GPU 0 | dim=2816, n_heads=95, n_state=16, depth=33, use_gate=1, lr=0.0005521 | 715.9M params | Loss: 0.9952
+    Gen best: 1.3819 | Overall best: 1.0226 | No improvement: 2/3
+
+  Generation 4:
+  [Eval 52] GPU 4 | dim=1024, n_heads=53, n_state=16, depth=31, use_gate=1, lr=4.377e-05 | 136.6M params | Loss: 3.8473
+  [Eval 51] GPU 3 | dim=2560, n_heads=33, n_state=16, depth=34, use_gate=1, lr=0.0004246 | 233.4M params | Loss: 1.1803
+  [Eval 55] GPU 7 | dim=2176, n_heads=58, n_state=16, depth=40, use_gate=0, lr=0.0001736 | 409.6M params | Loss: 1.3481
+  [Eval 50] GPU 2 | dim=2560, n_heads=82, n_state=16, depth=27, use_gate=0, lr=0.0009574 | 459.8M params | Loss: 1.0678
+  [Eval 53] GPU 5 | dim=1920, n_heads=63, n_state=16, depth=40, use_gate=0, lr=0.0004038 | 392.5M params | Loss: 1.2623
+  [Eval 48] GPU 0 | dim=2048, n_heads=80, n_state=16, depth=33, use_gate=0, lr=0.0001809 | 438.5M params | Loss: 1.2892
+  [Eval 49] GPU 1 | dim=2432, n_heads=73, n_state=16, depth=26, use_gate=1, lr=5.689e-05 | 374.6M params | Loss: 2.8228
+  [Eval 54] GPU 6 | dim=2304, n_heads=145, n_state=16, depth=39, use_gate=0, lr=0.0003195 | 1056.1M params | Loss: 1.3329
+  [Eval 61] GPU 5 | dim=2560, n_heads=32, n_state=16, depth=38, use_gate=0, lr=0.0002078 | 252.9M params | Loss: 1.2689
+  [Eval 57] GPU 1 | dim=1664, n_heads=74, n_state=16, depth=31, use_gate=0, lr=0.0005955 | 309.7M params | Loss: 1.1922
+  [Eval 59] GPU 3 | dim=2688, n_heads=51, n_state=16, depth=29, use_gate=0, lr=0.0007012 | 322.8M params | Loss: 1.1207
+  [Eval 63] GPU 7 | dim=2432, n_heads=48, n_state=16, depth=38, use_gate=0, lr=0.0002859 | 360.0M params | Loss: 1.2369
+  [Eval 62] GPU 6 | dim=3072, n_heads=61, n_state=16, depth=27, use_gate=1, lr=0.0008917 | 410.7M params | Loss: 1.0766
+  [Eval 60] GPU 4 | dim=2176, n_heads=98, n_state=16, depth=30, use_gate=0, lr=0.0005158 | 518.8M params | Loss: 1.0843
+  [Eval 58] GPU 2 | dim=2176, n_heads=74, n_state=16, depth=33, use_gate=1, lr=0.0001265 | 431.1M params | Loss: 1.7321
+  [Eval 56] GPU 0 | dim=2688, n_heads=88, n_state=16, depth=39, use_gate=1, lr=5.349e-05 | 748.0M params | Loss: 3.0359
+    Gen best: 1.0766 | Overall best: 1.0226 | No improvement: 3/3
+
+  Generation 5:
+  [Eval 68] GPU 4 | dim=1664, n_heads=57, n_state=16, depth=36, use_gate=0, lr=0.0003166 | 277.1M params | Loss: 1.2392
+  [Eval 66] GPU 2 | dim=2304, n_heads=36, n_state=16, depth=36, use_gate=1, lr=0.0005733 | 242.5M params | Loss: 1.1492
+  [Eval 69] GPU 5 | dim=2560, n_heads=39, n_state=16, depth=38, use_gate=0, lr=0.0006542 | 308.1M params | Loss: 1.1911
+  [Eval 65] GPU 1 | dim=1792, n_heads=85, n_state=16, depth=26, use_gate=1, lr=0.0001461 | 321.3M params | Loss: 1.6052
+  [Eval 67] GPU 3 | dim=2432, n_heads=57, n_state=16, depth=31, use_gate=0, lr=0.0003905 | 348.8M params | Loss: 1.2104
+  [Eval 71] GPU 7 | dim=2048, n_heads=67, n_state=16, depth=30, use_gate=0, lr=0.0004071 | 334.0M params | Loss: 1.2365
+  [Eval 70] GPU 6 | dim=1792, n_heads=91, n_state=16, depth=37, use_gate=0, lr=0.0001131 | 489.3M params | Loss: 1.6103
+  [Eval 64] GPU 0 | dim=2688, n_heads=119, n_state=16, depth=21, use_gate=0, lr=0.0002802 | 544.9M params | Loss: 1.1141
+  [Eval 76] GPU 4 | dim=2176, n_heads=60, n_state=16, depth=35, use_gate=0, lr=0.0002981 | 370.8M params | Loss: 1.2294
+  [Eval 79] GPU 7 | dim=2432, n_heads=40, n_state=16, depth=30, use_gate=1, lr=0.0001207 | 237.1M params | Loss: 1.6607
+  [Eval 73] GPU 1 | dim=2048, n_heads=71, n_state=16, depth=33, use_gate=0, lr=0.0002776 | 389.3M params | Loss: 1.2888
+  [Eval 77] GPU 5 | dim=2048, n_heads=73, n_state=16, depth=29, use_gate=0, lr=1.979e-05 | 351.8M params | Loss: 3.4889
+  [Eval 75] GPU 3 | dim=2304, n_heads=111, n_state=16, depth=18, use_gate=0, lr=9.939e-05 | 373.5M params | Loss: 1.5420
+  [Eval 78] GPU 6 | dim=2688, n_heads=108, n_state=16, depth=16, use_gate=1, lr=0.000999 | 377.0M params | Loss: 1.1310
+  [Eval 74] GPU 2 | dim=2432, n_heads=76, n_state=16, depth=24, use_gate=1, lr=7.316e-05 | 360.0M params | Loss: 2.3113
+  [Eval 72] GPU 0 | dim=2176, n_heads=109, n_state=16, depth=32, use_gate=1, lr=0.0003384 | 615.4M params | Loss: 0.9197
+    Gen best: 1.2392 | Overall best: 1.0226 | No improvement: 4/3
+
+  Generation 6:
+  [Eval 86] GPU 6 | dim=2688, n_heads=32, n_state=16, depth=26, use_gate=1, lr=0.0005665 | 181.9M params | Loss: 1.1054
+  [Eval 80] GPU 0 | dim=2048, n_heads=66, n_state=16, depth=23, use_gate=0, lr=0.0002646 | 252.4M params | Loss: 1.2678
+  [Eval 83] GPU 3 | dim=2048, n_heads=126, n_state=16, depth=20, use_gate=0, lr=0.0003682 | 418.6M params | Loss: 1.0484
+  [Eval 81] GPU 1 | dim=2688, n_heads=69, n_state=16, depth=32, use_gate=0, lr=0.00024 | 481.5M params | Loss: 1.1997
+  [Eval 87] GPU 7 | dim=1408, n_heads=102, n_state=16, depth=40, use_gate=0, lr=0.0009779 | 465.7M params | Loss: 0.9830
+  [Eval 82] GPU 2 | dim=3072, n_heads=88, n_state=16, depth=26, use_gate=0, lr=0.000952 | 570.2M params | Loss: 1.0709
+  [Eval 85] GPU 5 | dim=3072, n_heads=118, n_state=16, depth=20, use_gate=0, lr=3.77e-05 | 588.1M params | Loss: 2.3128
+  [Eval 84] GPU 4 | dim=2560, n_heads=151, n_state=16, depth=32, use_gate=1, lr=0.0003396 | 1002.7M params | Loss: 1.0503
+  [Eval 94] GPU 6 | dim=3072, n_heads=39, n_state=16, depth=27, use_gate=1, lr=0.0008828 | 262.9M params | Loss: 1.1349
+  [Eval 93] GPU 5 | dim=1792, n_heads=97, n_state=16, depth=30, use_gate=0, lr=9.52e-05 | 422.9M params | Loss: 1.7435
+  [Eval 91] GPU 3 | dim=2176, n_heads=87, n_state=16, depth=28, use_gate=0, lr=0.000495 | 430.0M params | Loss: 1.0898
+  [Eval 95] GPU 7 | dim=2944, n_heads=124, n_state=16, depth=12, use_gate=1, lr=0.000396 | 355.6M params | Loss: 1.2021
+  [Eval 90] GPU 2 | dim=2304, n_heads=122, n_state=16, depth=26, use_gate=0, lr=0.0006629 | 592.6M params | Loss: 1.0608
+  [Eval 89] GPU 1 | dim=2304, n_heads=110, n_state=16, depth=33, use_gate=0, lr=0.000356 | 678.1M params | Loss: 0.9230
+  [Eval 88] GPU 0 | dim=2688, n_heads=109, n_state=16, depth=30, use_gate=0, lr=0.0009782 | 712.7M params | Loss: 0.8617
+  [Eval 92] GPU 4 | dim=2816, n_heads=115, n_state=16, depth=35, use_gate=0, lr=0.0002911 | 918.9M params | Loss: 1.0398
+    *** NEW BEST: 0.9230 | dim=1792, n_heads=97, n_state=16, depth=30, use_gate=0, lr=9.52e-05 ***
+    Gen best: 0.9230 | Overall best: 0.9230 | No improvement: 0/3
+
+  Generation 7:
+  [Eval 100] GPU 4 | dim=2176, n_heads=53, n_state=16, depth=27, use_gate=0, lr=4.988e-05 | 252.8M params | Loss: 2.2865
+  [Eval 103] GPU 7 | dim=1920, n_heads=68, n_state=16, depth=31, use_gate=0, lr=0.000183 | 328.4M params | Loss: 1.3646
+  [Eval 99] GPU 3 | dim=2176, n_heads=133, n_state=16, depth=16, use_gate=0, lr=0.0002488 | 375.7M params | Loss: 1.3230
+  [Eval 97] GPU 1 | dim=1408, n_heads=99, n_state=16, depth=38, use_gate=0, lr=0.0001324 | 429.5M params | Loss: 1.5695
+  [Eval 102] GPU 6 | dim=2432, n_heads=109, n_state=16, depth=21, use_gate=0, lr=0.0002549 | 451.6M params | Loss: 1.1836
+  [Eval 96] GPU 0 | dim=1792, n_heads=122, n_state=16, depth=26, use_gate=0, lr=6.343e-05 | 460.9M params | Loss: 2.1185
+  [Eval 101] GPU 5 | dim=2048, n_heads=122, n_state=16, depth=26, use_gate=0, lr=0.0001124 | 526.8M params | Loss: 1.4770
+  [Eval 98] GPU 2 | dim=2688, n_heads=60, n_state=16, depth=34, use_gate=1, lr=0.0005524 | 445.0M params | Loss: 1.0273
+  [Eval 106] GPU 2 | dim=2048, n_heads=137, n_state=16, depth=17, use_gate=0, lr=0.0004541 | 386.9M params | Loss: 1.1615
+  [Eval 107] GPU 3 | dim=1664, n_heads=109, n_state=16, depth=31, use_gate=0, lr=0.0002072 | 455.9M params | Loss: 1.2446
+  [Eval 108] GPU 4 | dim=1536, n_heads=124, n_state=16, depth=23, use_gate=1, lr=0.0002704 | 355.3M params | Loss: 1.3048
+  [Eval 111] GPU 7 | dim=1920, n_heads=111, n_state=16, depth=30, use_gate=0, lr=0.0001925 | 518.4M params | Loss: 1.2157
+  [Eval 110] GPU 6 | dim=2176, n_heads=92, n_state=16, depth=33, use_gate=0, lr=0.0009999 | 535.8M params | Loss: 0.9989
+  [Eval 109] GPU 5 | dim=2304, n_heads=100, n_state=16, depth=31, use_gate=0, lr=0.0001674 | 579.2M params | Loss: 1.1945
+  [Eval 104] GPU 0 | dim=2304, n_heads=110, n_state=16, depth=33, use_gate=0, lr=8.593e-05 | 678.1M params | Loss: 1.6434
+  [Eval 105] GPU 1 | dim=2048, n_heads=156, n_state=16, depth=30, use_gate=0, lr=0.0002618 | 777.0M params | Loss: 1.0091
+    Gen best: 1.0091 | Overall best: 0.9230 | No improvement: 1/3
+
+  Generation 8:
+  [Eval 115] GPU 3 | dim=1152, n_heads=64, n_state=16, depth=38, use_gate=0, lr=0.0007758 | 227.3M params | Loss: 1.1552
+  [Eval 113] GPU 1 | dim=1408, n_heads=75, n_state=16, depth=33, use_gate=0, lr=3.061e-05 | 282.7M params | Loss: 3.1440
+  [Eval 117] GPU 5 | dim=2304, n_heads=123, n_state=16, depth=21, use_gate=0, lr=9.633e-05 | 482.7M params | Loss: 1.5202
+  [Eval 118] GPU 6 | dim=2176, n_heads=85, n_state=16, depth=35, use_gate=0, lr=0.0004423 | 525.0M params | Loss: 1.0547
+  [Eval 119] GPU 7 | dim=1536, n_heads=98, n_state=16, depth=31, use_gate=0, lr=0.0001237 | 378.4M params | Loss: 1.6979
+  [Eval 114] GPU 2 | dim=1536, n_heads=120, n_state=16, depth=35, use_gate=0, lr=0.000907 | 523.0M params | Loss: 0.9848
+  [Eval 112] GPU 0 | dim=1536, n_heads=120, n_state=16, depth=38, use_gate=0, lr=0.0008701 | 567.8M params | Loss: 0.9837
+  [Eval 116] GPU 4 | dim=2944, n_heads=106, n_state=16, depth=24, use_gate=0, lr=0.0005463 | 607.5M params | Loss: 0.9001
+  [Eval 122] GPU 2 | dim=1408, n_heads=74, n_state=16, depth=33, use_gate=0, lr=0.0005076 | 278.9M params | Loss: 1.1862
+  [Eval 126] GPU 6 | dim=1408, n_heads=129, n_state=16, depth=21, use_gate=0, lr=0.0004089 | 309.4M params | Loss: 1.1868
+  [Eval 127] GPU 7 | dim=1280, n_heads=117, n_state=16, depth=23, use_gate=0, lr=0.0002659 | 279.4M params | Loss: 1.2496
+  [Eval 121] GPU 1 | dim=1280, n_heads=95, n_state=16, depth=35, use_gate=0, lr=6.264e-05 | 345.1M params | Loss: 2.5232
+  [Eval 125] GPU 5 | dim=1920, n_heads=73, n_state=16, depth=35, use_gate=0, lr=0.0002309 | 397.9M params | Loss: 1.3723
+  [Eval 123] GPU 3 | dim=2304, n_heads=104, n_state=16, depth=30, use_gate=0, lr=0.0005527 | 582.9M params | Loss: 1.0719
+  [Eval 124] GPU 4 | dim=2432, n_heads=78, n_state=16, depth=34, use_gate=0, lr=0.0004833 | 523.1M params | Loss: 1.0994
+  [Eval 120] GPU 0 | dim=2816, n_heads=93, n_state=16, depth=30, use_gate=0, lr=0.0004343 | 637.2M params | Loss: 0.8810
+    Gen best: 0.9837 | Overall best: 0.9230 | No improvement: 2/3
+
+  Generation 9:
+  [Eval 135] GPU 7 | dim=1792, n_heads=87, n_state=16, depth=29, use_gate=0, lr=5.706e-05 | 366.7M params | Loss: 2.2890
+  [Eval 129] GPU 1 | dim=2560, n_heads=59, n_state=16, depth=28, use_gate=0, lr=0.0001515 | 343.3M params | Loss: 1.3734
+  [Eval 132] GPU 4 | dim=2048, n_heads=79, n_state=16, depth=33, use_gate=0, lr=0.0004984 | 433.1M params | Loss: 1.0893
+  [Eval 133] GPU 5 | dim=2560, n_heads=119, n_state=16, depth=20, use_gate=0, lr=8.736e-05 | 494.2M params | Loss: 1.5634
+  [Eval 131] GPU 3 | dim=2048, n_heads=94, n_state=16, depth=34, use_gate=0, lr=0.0004085 | 530.8M params | Loss: 1.0608
+  [Eval 134] GPU 6 | dim=2432, n_heads=55, n_state=16, depth=39, use_gate=0, lr=0.0004532 | 423.3M params | Loss: 1.1127
+  [Eval 128] GPU 0 | dim=2176, n_heads=126, n_state=16, depth=28, use_gate=0, lr=0.0008179 | 622.5M params | Loss: 0.8747
+  [Eval 130] GPU 2 | dim=2688, n_heads=155, n_state=16, depth=20, use_gate=0, lr=0.0001612 | 675.7M params | Loss: 1.1259
+  [Eval 139] GPU 3 | dim=1920, n_heads=92, n_state=16, depth=35, use_gate=0, lr=0.0009526 | 501.3M params | Loss: 0.9818
+  [Eval 136] GPU 0 | dim=2176, n_heads=65, n_state=16, depth=40, use_gate=0, lr=0.0006233 | 458.9M params | Loss: 0.9675
+  [Eval 141] GPU 5 | dim=2688, n_heads=109, n_state=16, depth=20, use_gate=0, lr=4.104e-05 | 475.4M params | Loss: 2.1361
+  [Eval 142] GPU 6 | dim=2048, n_heads=93, n_state=16, depth=34, use_gate=0, lr=0.0005187 | 525.1M params | Loss: 1.0391
+  [Eval 138] GPU 2 | dim=1920, n_heads=115, n_state=16, depth=31, use_gate=0, lr=0.0008119 | 555.0M params | Loss: 0.9913
+  [Eval 137] GPU 1 | dim=2176, n_heads=97, n_state=16, depth=34, use_gate=0, lr=0.0003406 | 581.9M params | Loss: 1.0291
+  [Eval 143] GPU 7 | dim=2176, n_heads=105, n_state=16, depth=33, use_gate=0, lr=0.0003236 | 611.4M params | Loss: 0.8793
+  [Eval 140] GPU 4 | dim=2048, n_heads=99, n_state=16, depth=34, use_gate=1, lr=0.0009114 | 559.0M params | Loss: 0.9979
+    *** NEW BEST: 0.8747 | dim=2432, n_heads=55, n_state=16, depth=39, use_gate=0, lr=0.0004532 ***
+    Gen best: 0.8747 | Overall best: 0.8747 | No improvement: 0/3
+
+  Generation 10:
+  [Eval 146] GPU 2 | dim=1920, n_heads=40, n_state=16, depth=36, use_gate=0, lr=0.0007507 | 224.5M params | Loss: 1.0865
+  [Eval 151] GPU 7 | dim=1792, n_heads=54, n_state=16, depth=38, use_gate=0, lr=0.0009854 | 298.4M params | Loss: 1.1234
+  [Eval 144] GPU 0 | dim=2304, n_heads=58, n_state=16, depth=35, use_gate=1, lr=9.892e-05 | 379.5M params | Loss: 2.2277
+  [Eval 148] GPU 4 | dim=2432, n_heads=66, n_state=16, depth=40, use_gate=0, lr=0.000195 | 520.8M params | Loss: 1.2532
+  [Eval 150] GPU 6 | dim=2560, n_heads=89, n_state=16, depth=29, use_gate=0, lr=6.951e-05 | 535.9M params | Loss: 1.8790
+  [Eval 147] GPU 3 | dim=2816, n_heads=55, n_state=16, depth=33, use_gate=1, lr=0.0009946 | 414.8M params | Loss: 1.0498
+  [Eval 149] GPU 5 | dim=2048, n_heads=115, n_state=16, depth=31, use_gate=0, lr=0.0001749 | 592.0M params | Loss: 1.2355
+  [Eval 145] GPU 1 | dim=2176, n_heads=90, n_state=16, depth=33, use_gate=0, lr=0.0004067 | 524.1M params | Loss: 1.1107
+  [Eval 156] GPU 4 | dim=2560, n_heads=46, n_state=16, depth=36, use_gate=0, lr=0.0003618 | 344.1M params | Loss: 1.2000
+  [Eval 154] GPU 2 | dim=2688, n_heads=51, n_state=16, depth=34, use_gate=0, lr=0.0006512 | 378.3M params | Loss: 1.1458
+  [Eval 153] GPU 1 | dim=2560, n_heads=37, n_state=16, depth=35, use_gate=0, lr=0.0005118 | 269.3M params | Loss: 1.1265
+  [Eval 159] GPU 7 | dim=2304, n_heads=65, n_state=16, depth=33, use_gate=0, lr=0.0007485 | 401.0M params | Loss: 0.9922
+  [Eval 152] GPU 0 | dim=2816, n_heads=45, n_state=16, depth=40, use_gate=0, lr=0.0004688 | 411.4M params | Loss: 1.1146
+  [Eval 158] GPU 6 | dim=1920, n_heads=94, n_state=16, depth=33, use_gate=0, lr=0.0004258 | 483.0M params | Loss: 1.1090
+  [Eval 155] GPU 3 | dim=2432, n_heads=68, n_state=16, depth=40, use_gate=0, lr=0.0003498 | 536.5M params | Loss: 1.1354
+  [Eval 157] GPU 5 | dim=2176, n_heads=109, n_state=16, depth=24, use_gate=0, lr=0.0004466 | 461.7M params | Loss: 1.0938
+    Gen best: 0.9922 | Overall best: 0.8747 | No improvement: 1/3
+
+  Generation 11:
+  [Eval 165] GPU 5 | dim=1920, n_heads=87, n_state=16, depth=33, use_gate=0, lr=0.0007793 | 447.1M params | Loss: 1.0480
+  [Eval 160] GPU 0 | dim=2432, n_heads=62, n_state=16, depth=35, use_gate=0, lr=0.0005143 | 428.2M params | Loss: 1.1000
+  [Eval 161] GPU 1 | dim=1920, n_heads=68, n_state=16, depth=39, use_gate=0, lr=0.0006041 | 413.0M params | Loss: 1.0146
+  [Eval 167] GPU 7 | dim=1664, n_heads=92, n_state=16, depth=38, use_gate=0, lr=0.0005798 | 471.7M params | Loss: 1.0608
+  [Eval 162] GPU 2 | dim=2688, n_heads=81, n_state=16, depth=30, use_gate=0, lr=0.0006313 | 529.9M params | Loss: 1.0345
+  [Eval 166] GPU 6 | dim=2560, n_heads=82, n_state=16, depth=35, use_gate=0, lr=0.0001703 | 595.9M params | Loss: 1.1851
+  [Eval 163] GPU 3 | dim=2560, n_heads=100, n_state=16, depth=31, use_gate=0, lr=0.0005398 | 643.6M params | Loss: 0.8830
+  [Eval 164] GPU 4 | dim=2688, n_heads=84, n_state=16, depth=35, use_gate=0, lr=0.0004585 | 640.9M params | Loss: 0.9186
+  [Eval 172] GPU 4 | dim=2432, n_heads=39, n_state=16, depth=39, use_gate=0, lr=0.0009228 | 300.3M params | Loss: 1.1299
+  [Eval 175] GPU 7 | dim=2304, n_heads=74, n_state=16, depth=27, use_gate=0, lr=0.0003213 | 373.5M params | Loss: 1.2304
+  [Eval 171] GPU 3 | dim=2688, n_heads=80, n_state=16, depth=31, use_gate=0, lr=0.0003373 | 540.7M params | Loss: 1.1414
+  [Eval 174] GPU 6 | dim=2304, n_heads=77, n_state=16, depth=34, use_gate=0, lr=0.0001554 | 489.3M params | Loss: 1.3057
+  [Eval 170] GPU 2 | dim=2176, n_heads=92, n_state=16, depth=33, use_gate=0, lr=0.0001637 | 535.8M params | Loss: 1.2724
+  [Eval 173] GPU 5 | dim=2304, n_heads=105, n_state=16, depth=27, use_gate=0, lr=0.0003062 | 529.7M params | Loss: 1.1048
+  [Eval 169] GPU 1 | dim=2816, n_heads=64, n_state=16, depth=34, use_gate=0, lr=0.0005909 | 497.2M params | Loss: 1.0969
+  [Eval 168] GPU 0 | dim=1920, n_heads=91, n_state=16, depth=35, use_gate=0, lr=0.0003157 | 495.9M params | Loss: 1.0345
+    Gen best: 0.9186 | Overall best: 0.8747 | No improvement: 2/3
+
+  Generation 12:
+  [Eval 181] GPU 5 | dim=2432, n_heads=45, n_state=16, depth=40, use_gate=0, lr=0.0006134 | 355.3M params | Loss: 1.1535
+  [Eval 182] GPU 6 | dim=2560, n_heads=82, n_state=16, depth=31, use_gate=0, lr=0.0005253 | 527.9M params | Loss: 1.0850
+  [Eval 180] GPU 4 | dim=2432, n_heads=79, n_state=16, depth=33, use_gate=0, lr=0.0004055 | 514.3M params | Loss: 1.1124
+  [Eval 178] GPU 2 | dim=2560, n_heads=69, n_state=16, depth=38, use_gate=0, lr=0.0009775 | 544.5M params | Loss: 1.0395
+  [Eval 183] GPU 7 | dim=2048, n_heads=84, n_state=16, depth=37, use_gate=0, lr=0.0006633 | 516.2M params | Loss: 1.0596
+  [Eval 179] GPU 3 | dim=2560, n_heads=91, n_state=16, depth=30, use_gate=0, lr=0.0003487 | 566.8M params | Loss: 1.1242
+  [Eval 176] GPU 0 | dim=2432, n_heads=86, n_state=16, depth=37, use_gate=0, lr=0.0003354 | 627.6M params | Loss: 0.8827
+  [Eval 177] GPU 1 | dim=2304, n_heads=86, n_state=16, depth=39, use_gate=0, lr=0.0006316 | 626.6M params | Loss: 0.8272
+  [Eval 189] GPU 5 | dim=2048, n_heads=67, n_state=16, depth=36, use_gate=0, lr=0.0002316 | 400.7M params | Loss: 1.1640
+  [Eval 186] GPU 2 | dim=1280, n_heads=98, n_state=16, depth=40, use_gate=0, lr=0.0007387 | 406.8M params | Loss: 1.0439
+  [Eval 185] GPU 1 | dim=2560, n_heads=69, n_state=16, depth=30, use_gate=0, lr=0.0004323 | 430.0M params | Loss: 1.0358
+  [Eval 184] GPU 0 | dim=2048, n_heads=66, n_state=16, depth=40, use_gate=0, lr=0.0004363 | 438.6M params | Loss: 1.1403
+  [Eval 188] GPU 4 | dim=2048, n_heads=60, n_state=16, depth=40, use_gate=0, lr=0.0009856 | 398.7M params | Loss: 1.2181
+  [Eval 187] GPU 3 | dim=2432, n_heads=73, n_state=16, depth=33, use_gate=0, lr=0.0003486 | 475.3M params | Loss: 1.1306
+  [Eval 190] GPU 6 | dim=2304, n_heads=92, n_state=16, depth=30, use_gate=0, lr=0.0003388 | 515.7M params | Loss: 1.1334
+  [Eval 191] GPU 7 | dim=2432, n_heads=82, n_state=16, depth=36, use_gate=0, lr=0.0006542 | 582.2M params | Loss: 1.0237
+    *** NEW BEST: 0.8272 | dim=2048, n_heads=84, n_state=16, depth=37, use_gate=0, lr=0.0006633 ***
+    Gen best: 0.8272 | Overall best: 0.8272 | No improvement: 0/3
+
+  Generation 13:
+  [Eval 195] GPU 3 | dim=1536, n_heads=90, n_state=16, depth=37, use_gate=0, lr=0.0002982 | 414.8M params | Loss: 1.1913
+  [Eval 197] GPU 5 | dim=2176, n_heads=86, n_state=16, depth=34, use_gate=0, lr=0.0009964 | 516.0M params | Loss: 1.0421
+  [Eval 198] GPU 6 | dim=2176, n_heads=82, n_state=16, depth=33, use_gate=0, lr=0.0002177 | 477.6M params | Loss: 1.2242
+  [Eval 196] GPU 4 | dim=2048, n_heads=95, n_state=16, depth=34, use_gate=0, lr=0.0004868 | 536.4M params | Loss: 1.0809
+  [Eval 194] GPU 2 | dim=2304, n_heads=81, n_state=16, depth=35, use_gate=0, lr=0.0005041 | 529.8M params | Loss: 1.0874
+  [Eval 192] GPU 0 | dim=2304, n_heads=92, n_state=16, depth=33, use_gate=0, lr=0.0008824 | 567.3M params | Loss: 1.0052
+  [Eval 199] GPU 7 | dim=2048, n_heads=90, n_state=16, depth=36, use_gate=0, lr=0.0009977 | 538.1M params | Loss: 1.0413
+  [Eval 193] GPU 1 | dim=2688, n_heads=84, n_state=16, depth=32, use_gate=0, lr=0.0005264 | 586.0M params | Loss: 1.0433
+  [Eval 202] GPU 2 | dim=2048, n_heads=71, n_state=16, depth=39, use_gate=0, lr=0.0009911 | 460.0M params | Loss: 1.0469
+  [Eval 206] GPU 6 | dim=2432, n_heads=72, n_state=16, depth=33, use_gate=0, lr=0.0003415 | 468.8M params | Loss: 1.1461
+  [Eval 203] GPU 3 | dim=2048, n_heads=82, n_state=16, depth=37, use_gate=0, lr=0.0004292 | 503.9M params | Loss: 1.1037
+  [Eval 201] GPU 1 | dim=2432, n_heads=87, n_state=16, depth=32, use_gate=0, lr=0.000816 | 549.1M params | Loss: 1.0658
+  [Eval 207] GPU 7 | dim=2048, n_heads=83, n_state=16, depth=39, use_gate=0, lr=0.0003043 | 537.6M params | Loss: 1.1133
+  [Eval 205] GPU 5 | dim=2432, n_heads=89, n_state=16, depth=31, use_gate=0, lr=0.0004835 | 544.2M params | Loss: 1.0446
+  [Eval 204] GPU 4 | dim=2304, n_heads=65, n_state=16, depth=39, use_gate=1, lr=0.0006897 | 473.8M params | Loss: 1.0040
+  [Eval 200] GPU 0 | dim=2048, n_heads=93, n_state=16, depth=38, use_gate=0, lr=0.0008291 | 586.9M params | Loss: 0.9439
+    Gen best: 0.9439 | Overall best: 0.8272 | No improvement: 1/3
+
+  Generation 14:
+  [Eval 209] GPU 1 | dim=1664, n_heads=90, n_state=16, depth=40, use_gate=0, lr=0.0003401 | 485.7M params | Loss: 1.1008
+  [Eval 211] GPU 3 | dim=2176, n_heads=82, n_state=16, depth=34, use_gate=0, lr=0.0006562 | 492.0M params | Loss: 1.0646
+  [Eval 213] GPU 5 | dim=2304, n_heads=65, n_state=16, depth=36, use_gate=0, lr=0.0005875 | 437.4M params | Loss: 1.0793
+  [Eval 212] GPU 4 | dim=2688, n_heads=59, n_state=16, depth=35, use_gate=0, lr=0.0003996 | 450.4M params | Loss: 1.1206
+  [Eval 215] GPU 7 | dim=1920, n_heads=74, n_state=16, depth=40, use_gate=0, lr=0.0003652 | 460.9M params | Loss: 1.1383
+  [Eval 214] GPU 6 | dim=2176, n_heads=74, n_state=16, depth=37, use_gate=0, lr=0.0005213 | 483.2M params | Loss: 1.0827
+  [Eval 210] GPU 2 | dim=2176, n_heads=85, n_state=16, depth=33, use_gate=0, lr=0.0005191 | 495.0M params | Loss: 1.0886
+  [Eval 208] GPU 0 | dim=2304, n_heads=82, n_state=16, depth=36, use_gate=0, lr=0.0005867 | 551.6M params | Loss: 1.0743
+  [Eval 221] GPU 5 | dim=1920, n_heads=73, n_state=16, depth=39, use_gate=0, lr=0.0004127 | 443.3M params | Loss: 1.1209
+  [Eval 220] GPU 4 | dim=2432, n_heads=57, n_state=16, depth=40, use_gate=0, lr=0.0007424 | 449.9M params | Loss: 1.0244
+  [Eval 216] GPU 0 | dim=1792, n_heads=86, n_state=16, depth=38, use_gate=0, lr=0.0004274 | 474.9M params | Loss: 1.1063
+  [Eval 223] GPU 7 | dim=1920, n_heads=92, n_state=16, depth=37, use_gate=0, lr=0.0006859 | 530.0M params | Loss: 1.0498
+  [Eval 217] GPU 1 | dim=2176, n_heads=88, n_state=16, depth=34, use_gate=0, lr=0.0005231 | 528.0M params | Loss: 1.0820
+  [Eval 218] GPU 2 | dim=2176, n_heads=76, n_state=16, depth=37, use_gate=0, lr=0.0006326 | 496.3M params | Loss: 0.9659
+  [Eval 219] GPU 3 | dim=1920, n_heads=88, n_state=16, depth=37, use_gate=0, lr=0.000229 | 506.9M params | Loss: 1.1757
+  [Eval 222] GPU 6 | dim=2176, n_heads=82, n_state=16, depth=36, use_gate=0, lr=0.000648 | 521.0M params | Loss: 1.0164
+    Gen best: 0.9659 | Overall best: 0.8272 | No improvement: 2/3
+
+  Generation 15:
+  [Eval 229] GPU 5 | dim=1792, n_heads=96, n_state=16, depth=35, use_gate=0, lr=0.0001693 | 488.2M params | Loss: 1.3252
+  [Eval 225] GPU 1 | dim=1792, n_heads=84, n_state=16, depth=37, use_gate=0, lr=0.0004266 | 451.7M params | Loss: 1.1158
+  [Eval 231] GPU 7 | dim=2048, n_heads=74, n_state=16, depth=40, use_gate=0, lr=0.0005445 | 491.6M params | Loss: 1.0812
+  [Eval 230] GPU 6 | dim=1920, n_heads=58, n_state=16, depth=40, use_gate=1, lr=0.0002343 | 361.4M params | Loss: 1.2172
+  [Eval 224] GPU 0 | dim=1920, n_heads=77, n_state=16, depth=39, use_gate=1, lr=0.0009286 | 467.6M params | Loss: 0.9757
+  [Eval 227] GPU 3 | dim=1664, n_heads=100, n_state=16, depth=39, use_gate=0, lr=0.0004752 | 526.2M params | Loss: 1.0846
+  [Eval 226] GPU 2 | dim=2048, n_heads=80, n_state=16, depth=39, use_gate=0, lr=0.0007255 | 518.2M params | Loss: 1.0584
+  [Eval 228] GPU 4 | dim=1920, n_heads=93, n_state=16, depth=36, use_gate=0, lr=0.0006717 | 521.3M params | Loss: 1.0586
+  [Eval 239] GPU 7 | dim=1664, n_heads=76, n_state=16, depth=39, use_gate=0, lr=0.0005439 | 400.0M params | Loss: 1.0880
+  [Eval 235] GPU 3 | dim=2304, n_heads=73, n_state=16, depth=34, use_gate=0, lr=0.0002473 | 463.9M params | Loss: 1.1957
+  [Eval 238] GPU 6 | dim=2176, n_heads=87, n_state=16, depth=32, use_gate=0, lr=0.0002074 | 491.3M params | Loss: 1.2381
+  [Eval 234] GPU 2 | dim=2176, n_heads=89, n_state=16, depth=35, use_gate=0, lr=0.000472 | 549.7M params | Loss: 1.0951
+  [Eval 233] GPU 1 | dim=1792, n_heads=93, n_state=16, depth=40, use_gate=0, lr=0.0007929 | 540.5M params | Loss: 1.0046
+  [Eval 232] GPU 0 | dim=1792, n_heads=86, n_state=16, depth=36, use_gate=1, lr=0.0008861 | 449.9M params | Loss: 0.9214
+  [Eval 237] GPU 5 | dim=2048, n_heads=88, n_state=16, depth=36, use_gate=0, lr=0.0002598 | 526.1M params | Loss: 1.1458
+  [Eval 236] GPU 4 | dim=2432, n_heads=84, n_state=16, depth=33, use_gate=0, lr=0.0009346 | 546.8M params | Loss: 1.0082
+    Gen best: 0.9214 | Overall best: 0.8272 | No improvement: 3/3
+
+    CONVERGED after 15 generations
+
+  Warm start 1 complete. Best: 0.8272
+
+--- CMA-ES from warm start 2/3 ---
+    Start config: dim=1792, n_heads=150, n_state=16, depth=19, use_gate=0, lr=0.0007944
+
+  Generation 1:
+  [Eval 243] GPU 3 | dim=1664, n_heads=100, n_state=16, depth=13, use_gate=0, lr=0.0002027 | 175.7M params | Loss: 1.2758
+  [Eval 246] GPU 6 | dim=1024, n_heads=148, n_state=16, depth=18, use_gate=0, lr=0.0004388 | 221.3M params | Loss: 1.1608
+  [Eval 240] GPU 0 | dim=1920, n_heads=111, n_state=16, depth=15, use_gate=0, lr=0.0005345 | 259.5M params | Loss: 1.1323
+  [Eval 242] GPU 2 | dim=1536, n_heads=160, n_state=16, depth=18, use_gate=0, lr=0.0009092 | 358.7M params | Loss: 1.1198
+  [Eval 247] GPU 7 | dim=2944, n_heads=63, n_state=16, depth=32, use_gate=0, lr=0.0001908 | 481.6M params | Loss: 1.2414
+  [Eval 244] GPU 4 | dim=1792, n_heads=143, n_state=16, depth=40, use_gate=0, lr=0.0008571 | 830.8M params | Loss: 1.2580
+  [Eval 245] GPU 5 | dim=2432, n_heads=145, n_state=16, depth=24, use_gate=0, lr=0.0005519 | 686.2M params | Loss: 0.9169
+  [Eval 241] GPU 1 | dim=1536, n_heads=159, n_state=16, depth=38, use_gate=1, lr=0.0004048 | 752.2M params | Loss: 1.1110
