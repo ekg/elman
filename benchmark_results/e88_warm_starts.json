@@ -1,0 +1,14 @@
+{
+  "n_state_16": [
+    {"dim": 2048, "n_heads": 80, "depth": 37, "lr": 0.0006},
+    {"dim": 2176, "n_heads": 70, "depth": 39, "lr": 0.0006},
+    {"dim": 2304, "n_heads": 70, "depth": 37, "lr": 0.0005},
+    {"dim": 2432, "n_heads": 70, "depth": 35, "lr": 0.0007}
+  ],
+  "n_state_32": [
+    {"dim": 1408, "n_heads": 60, "depth": 35, "lr": 0.0006},
+    {"dim": 1408, "n_heads": 60, "depth": 37, "lr": 0.0006},
+    {"dim": 1536, "n_heads": 60, "depth": 35, "lr": 0.0005}
+  ],
+  "note": "Valid for 480M±10% with use_gate=True, expansion=1.0"
+}

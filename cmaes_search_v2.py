@@ -55,16 +55,19 @@ from calc_dim import (
 E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
+# These configs are validated for 480M±10% with use_gate=True
 KNOWN_GOOD_CONFIGS = {
     'e88': {
-        16: [  # n_state=16: best was 0.8272 loss on pile.txt
-            {'dim': 2048, 'n_heads': 84, 'depth': 37, 'lr': 0.0006633},
-            {'dim': 2688, 'n_heads': 109, 'depth': 30, 'lr': 0.0009782},
-            {'dim': 2432, 'n_heads': 55, 'depth': 39, 'lr': 0.0004532},
+        16: [  # n_state=16: configs around best 0.8272 result (depth 35-40, wider dims)
+            {'dim': 2048, 'n_heads': 80, 'depth': 37, 'lr': 0.0006},  # 491.6M (2.4%)
+            {'dim': 2176, 'n_heads': 70, 'depth': 39, 'lr': 0.0006},  # 481.8M (0.4%)
+            {'dim': 2304, 'n_heads': 70, 'depth': 37, 'lr': 0.0005},  # 484.0M (0.8%)
+            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},  # 483.3M (0.7%)
         ],
-        32: [  # n_state=32: predicted good configs (deep + narrow)
-            {'dim': 1664, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},
-            {'dim': 2048, 'n_heads': 50, 'depth': 37, 'lr': 0.0006},
+        32: [  # n_state=32: narrower dims due to larger state
+            {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},  # 476.5M (0.7%)
+            {'dim': 1408, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},  # 503.7M (4.9%)
+            {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},  # 519.8M (8.3%)
         ],
     },
 }
@@ -271,7 +274,7 @@ def estimate_params_for_config(params, model_type):
     if model_type == 'e88':
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32),
-                               expansion=params.get('expansion', 1.0), use_gate=False)
+                               expansion=params.get('expansion', 1.0), use_gate=True)
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -339,7 +342,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',  # Fixed - E88 requires square state
-            '--use_gate', '0',  # No gating - hurts performance
+            '--use_gate', '1',  # Gate enabled - best result (0.8272) was WITH gate
+            '--gate_activation', 'silu',  # SiLU gating
         ])
 
     elif model_type == 'fla-gdn':
