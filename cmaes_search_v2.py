@@ -420,6 +420,16 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
             cwd=os.path.dirname(os.path.abspath(__file__))
         )
 
+        # Check for errors
+        if result.returncode != 0:
+            # Log stderr for debugging
+            err_file = os.path.join(eval_dir, 'stderr.txt')
+            with open(err_file, 'w') as f:
+                f.write(f"Return code: {result.returncode}\n")
+                f.write(f"Stderr:\n{result.stderr}\n")
+                f.write(f"Stdout (last 50 lines):\n")
+                f.write('\n'.join(result.stdout.split('\n')[-50:]))
+
         # Parse loss from output
         loss = float('inf')
         for line in result.stdout.split('\n'):
