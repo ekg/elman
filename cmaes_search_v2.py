@@ -652,22 +652,36 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
         eval_counter = len(all_results)
 
         for gen in range(max_generations):
-            # Get population
-            solutions = es.ask()
+            # REJECTION SAMPLING: Generate enough valid configs to fill all GPUs
+            target_evals = len(gpus) * 2  # Target 16 valid configs per generation
+            valid_solutions = []
+            valid_configs = []
+            total_generated = 0
+            max_attempts = 20  # Prevent infinite loop
 
-            # Convert to configs
-            configs = [decode_params(s, model_type, fixed_params) for s in solutions]
+            for attempt in range(max_attempts):
+                # Ask for a batch of solutions
+                batch_size = target_evals * 2  # Overgenererate 2x
+                solutions_batch = es.ask(number=batch_size)
+                total_generated += batch_size
 
-            # Filter by param count - only train valid configs
-            valid_mask = [is_valid_param_count(c, model_type, target_params, 0.10) for c in configs]
-            valid_configs = [c for c, v in zip(configs, valid_mask) if v]
-            valid_indices = [i for i, v in enumerate(valid_mask) if v]
+                for sol in solutions_batch:
+                    if len(valid_solutions) >= target_evals:
+                        break
+                    cfg = decode_params(sol, model_type, fixed_params)
+                    if is_valid_param_count(cfg, model_type, target_params, 0.10):
+                        # Check not duplicate
+                        if not any(np.allclose(sol, vs) for vs in valid_solutions):
+                            valid_solutions.append(sol)
+                            valid_configs.append(cfg)
+
+                if len(valid_solutions) >= target_evals:
+                    break
 
             n_valid = len(valid_configs)
-            n_invalid = len(configs) - n_valid
-            print(f"\n  Generation {gen + 1}: {n_valid} valid configs, {n_invalid} skipped (wrong params)")
+            print(f"\n  Generation {gen + 1}: {n_valid} valid configs (from {total_generated} generated)")
 
-            # Only evaluate valid configs
+            # Evaluate all valid configs (should fill all GPUs)
             gen_results = []
             if valid_configs:
                 for batch_start in range(0, len(valid_configs), len(gpus)):
@@ -679,17 +693,11 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
                     gen_results.extend(batch_results)
                     eval_counter += len(batch_results)
 
-            # Assign fitness: real loss for valid, penalty for invalid
-            fitnesses = []
-            result_idx = 0
-            for i, (cfg, valid) in enumerate(zip(configs, valid_mask)):
-                if valid and result_idx < len(gen_results):
-                    fitnesses.append(gen_results[result_idx]['loss'])
-                    result_idx += 1
-                else:
-                    fitnesses.append(10.0)  # Penalty for wrong param count (not trained)
-
-            es.tell(solutions, fitnesses)
+            # Tell CMA-ES only about the valid solutions we actually evaluated
+            # This keeps the covariance matrix clean (no penalty pollution)
+            fitnesses = [r['loss'] for r in gen_results]
+            if valid_solutions and fitnesses:
+                es.tell(valid_solutions[:len(fitnesses)], fitnesses)
 
             # Track best
             gen_best_loss = min(fitnesses)
