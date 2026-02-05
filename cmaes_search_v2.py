@@ -63,78 +63,67 @@ E90_CONFIGS = [
 # SEARCH SPACES - 6D for all models
 # =============================================================================
 SEARCH_SPACES = {
+    # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
     'e88': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40 - deep networks help
-        'expansion': (0.5, 2.0, 'float', 'Expansion factor for k,v,q projections'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D (n_state swept separately)
     'fla-gdn': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
+        'depth': (20, 60, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        'use_conv': (0, 1, 'binary', 'Use short convolution'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
-        'headdim': (32, 128, 'int_pow2', 'Head dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
+        'depth': (20, 60, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 36
-        'dropout': (0.0, 0.15, 'float', 'Dropout rate'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
-        'use_conv': (0, 1, 'binary', 'Use Conv1d'),
-        'd_conv': (3, 7, 'int', 'Conv kernel size'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 4D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (20, 60, 'int', 'Number of layers'),
-        'use_conv': (0, 1, 'binary', 'Use Conv1d'),
-        'd_conv': (3, 7, 'int', 'Conv kernel size'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 4D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (20, 60, 'int', 'Number of layers'),
-        'use_conv': (0, 1, 'binary', 'Use Conv1d'),
-        'mamba2_init': (0, 1, 'binary', 'Use Mamba2-style init'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 4D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40 - can go very deep
+        'depth': (20, 60, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
-        'mamba2_init': (0, 1, 'binary', 'Use Mamba2-style init'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (20, 60, 'int', 'Number of layers'),
-        'expansion': (1, 2, 'float', 'Expansion factor'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },
+    },  # 5D
 }
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
@@ -316,7 +305,7 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 
     cmd = [
         'python', 'train.py',
-        '--data', 'data/pile.txt',
+        '--data', '/mnt/nvme1n1/erikg/comma_v0.1_training_dataset/commapile.txt',
         '--dim', str(dim),
         '--depth', str(params['depth']),
         '--lr', str(lr),
@@ -334,8 +323,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--level', 'E88',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
-            '--expansion', str(params.get('expansion', 1.0)),
-            '--use_gate', '0',  # No gating - hurts performance with small n_state
+            '--expansion', '1.0',  # Fixed - E88 requires square state
+            '--use_gate', '0',  # No gating - hurts performance
         ])
 
     elif model_type == 'fla-gdn':
@@ -343,7 +332,6 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--level', 'fla-gdn',
             '--expansion', str(params['expansion']),
             '--n_heads', str(params.get('n_heads', 16)),
-            '--use_conv', str(params.get('use_conv', 1)),
         ])
 
     elif model_type == 'mamba2':
@@ -354,7 +342,6 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--level', 'llama',
             '--n_heads', str(params.get('n_heads', 16)),
             '--expansion', str(params.get('expansion', 4)),
-            '--dropout', str(params.get('dropout', 0.0)),
         ])
 
     elif model_type == 'mingru':
@@ -362,41 +349,30 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--level', 'mingru',
             '--expansion', str(params.get('expansion', 2)),
         ])
-        if params.get('use_conv', 0):
-            cmd.extend(['--use_conv', '1', '--d_conv', str(params.get('d_conv', 4))])
 
     elif model_type == 'minlstm':
         cmd.extend([
             '--level', 'minlstm',
             '--expansion', str(params.get('expansion', 2)),
         ])
-        if params.get('use_conv', 0):
-            cmd.extend(['--use_conv', '1', '--d_conv', str(params.get('d_conv', 4))])
 
     elif model_type == 'e1':
         cmd.extend([
             '--level', '1',
             '--expansion', str(params.get('expansion', 2)),
         ])
-        if params.get('use_conv', 0):
-            cmd.extend(['--use_conv', '1'])
-        if params.get('mamba2_init', 0):
-            cmd.extend(['--mamba2_init', '1'])
 
     elif model_type == 'e42':
         cmd.extend([
             '--level', '42',
             '--expansion', str(params.get('expansion', 2)),
         ])
-        if params.get('mamba2_init', 0):
-            cmd.extend(['--mamba2_init', '1'])
 
     elif model_type == 'e75':
         cmd.extend([
             '--level', 'E75h{n}n{s}'.format(n=params.get('n_heads', 8), s=params.get('n_state', 32)),
             '--n_heads', str(params.get('n_heads', 8)),
             '--n_state', str(params.get('n_state', 32)),
-            '--expansion', str(params.get('expansion', 1.0)),
         ])
 
     return cmd, actual_params
