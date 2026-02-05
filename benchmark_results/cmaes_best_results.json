@@ -1,0 +1,17 @@
+{
+  "note": "Best E88 configs from CMA-ES runs on commapile.txt, 480M params, 30min training",
+  "date": "2026-02-05",
+  "e88_n_state_16": [
+    {"loss": 0.7351, "dim": 1280, "n_heads": 91, "n_state": 16, "depth": 48, "lr": 0.0006473},
+    {"loss": 0.7639, "dim": 1408, "n_heads": 84, "n_state": 16, "depth": 46, "lr": 0.0008333},
+    {"loss": 0.7696, "dim": 1536, "n_heads": 95, "n_state": 16, "depth": 37, "lr": 0.0006277},
+    {"loss": 0.7724, "dim": 2432, "n_heads": 70, "n_state": 16, "depth": 35, "lr": 0.0007},
+    {"loss": 0.7797, "dim": 2176, "n_heads": 70, "n_state": 16, "depth": 39, "lr": 0.0006},
+    {"loss": 0.7831, "dim": 2048, "n_heads": 80, "n_state": 16, "depth": 37, "lr": 0.0006},
+    {"loss": 0.7892, "dim": 2304, "n_heads": 70, "n_state": 16, "depth": 37, "lr": 0.0005},
+    {"loss": 0.7906, "dim": 2304, "n_heads": 46, "n_state": 16, "depth": 52, "lr": 0.000568},
+    {"loss": 0.8100, "dim": 1920, "n_heads": 70, "n_state": 16, "depth": 46, "lr": 0.0008022},
+    {"loss": 0.8272, "dim": 1408, "n_heads": 92, "n_state": 16, "depth": 48, "lr": 0.0008604}
+  ],
+  "pattern": "Narrow dim (1280-1408), many heads (84-95), deep (46-48 layers) works best for n_state=16"
+}

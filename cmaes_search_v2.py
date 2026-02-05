@@ -56,13 +56,14 @@ E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
+# BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
 KNOWN_GOOD_CONFIGS = {
     'e88': {
-        16: [  # n_state=16: configs around best 0.8272 result (depth 35-40, wider dims)
-            {'dim': 2048, 'n_heads': 80, 'depth': 37, 'lr': 0.0006},  # 491.6M (2.4%)
-            {'dim': 2176, 'n_heads': 70, 'depth': 39, 'lr': 0.0006},  # 481.8M (0.4%)
-            {'dim': 2304, 'n_heads': 70, 'depth': 37, 'lr': 0.0005},  # 484.0M (0.8%)
-            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},  # 483.3M (0.7%)
+        16: [  # n_state=16: BEST from v5/v6 runs - narrow+deep+many heads
+            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},  # 0.7351 loss - BEST
+            {'dim': 1408, 'n_heads': 84, 'depth': 46, 'lr': 0.0008333},  # 0.7639 loss
+            {'dim': 1536, 'n_heads': 95, 'depth': 37, 'lr': 0.0006277},  # 0.7696 loss
+            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},     # 0.7724 loss
         ],
         32: [  # n_state=32: narrower dims due to larger state
             {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},  # 476.5M (0.7%)
