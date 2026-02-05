@@ -623,7 +623,7 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
     print(f"PHASE 2: CMA-ES Refinement")
     print(f"{'='*70}")
     print(f"  Warm starts: {len(warm_starts)}")
-    print(f"  Sigma: {sigma0}")
+    print(f"  Sigma: {sigma0} (refinement: {sigma0 * 0.4:.2f})")
     print(f"  Min generations: {min_generations}")
     print(f"  Converge threshold: {converge_threshold}")
     print(f"  Consecutive required: {consecutive_required}")
@@ -637,8 +637,9 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
         n_dims = get_search_dim(model_type, fixed_params)
         x0 = encode_params(warm_start, model_type, fixed_params)
 
-        # Initialize CMA-ES with larger sigma
-        es = cma.CMAEvolutionStrategy(x0, sigma0, {
+        # Use smaller sigma for refinement (sigma0 is for exploration, use 40% of it for refinement)
+        refinement_sigma = sigma0 * 0.4  # 0.35 * 0.4 = 0.14
+        es = cma.CMAEvolutionStrategy(x0, refinement_sigma, {
             'popsize': len(gpus) * 2,  # 16 configs per generation (2 batches)
             'bounds': [0, 1],
             'seed': 42 + ws_idx,
