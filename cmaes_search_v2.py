@@ -334,6 +334,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         '--output', output_dir,
         '--optimizer', 'schedulefree',
         '--seed', '42',
+        '--save_every', '999999',  # Disable checkpoints - we only need final loss
+        '--keep_checkpoints', '0',
     ]
 
     if model_type == 'e88':
