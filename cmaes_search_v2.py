@@ -67,14 +67,14 @@ SEARCH_SPACES = {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-        'depth': (12, 50, 'int', 'Number of layers'),  # Extended from 40 - deep networks help
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40 - deep networks help
         'expansion': (0.5, 2.0, 'float', 'Expansion factor for k,v,q projections'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },
     'fla-gdn': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
-        'depth': (12, 55, 'int', 'Number of layers'),  # Extended from 40
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'use_conv': (0, 1, 'binary', 'Use short convolution'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
@@ -84,21 +84,21 @@ SEARCH_SPACES = {
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'headdim': (32, 128, 'int_pow2', 'Head dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
-        'depth': (16, 60, 'int', 'Number of layers'),  # Extended from 40
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
-        'depth': (12, 50, 'int', 'Number of layers'),  # Extended from 36
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 36
         'dropout': (0.0, 0.15, 'float', 'Dropout rate'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
-        'depth': (12, 50, 'int', 'Number of layers'),  # Extended from 40
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40
         'use_conv': (0, 1, 'binary', 'Use Conv1d'),
         'd_conv': (3, 7, 'int', 'Conv kernel size'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
@@ -106,7 +106,7 @@ SEARCH_SPACES = {
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
-        'depth': (12, 40, 'int', 'Number of layers'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'use_conv': (0, 1, 'binary', 'Use Conv1d'),
         'd_conv': (3, 7, 'int', 'Conv kernel size'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
@@ -114,7 +114,7 @@ SEARCH_SPACES = {
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
-        'depth': (12, 40, 'int', 'Number of layers'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'use_conv': (0, 1, 'binary', 'Use Conv1d'),
         'mamba2_init': (0, 1, 'binary', 'Use Mamba2-style init'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
@@ -122,7 +122,7 @@ SEARCH_SPACES = {
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
-        'depth': (12, 70, 'int', 'Number of layers'),  # Extended from 40 - can go very deep
+        'depth': (20, 60, 'int', 'Number of layers'),  # Extended from 40 - can go very deep
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'mamba2_init': (0, 1, 'binary', 'Use Mamba2-style init'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
@@ -131,7 +131,7 @@ SEARCH_SPACES = {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
-        'depth': (12, 40, 'int', 'Number of layers'),
+        'depth': (20, 60, 'int', 'Number of layers'),
         'expansion': (1, 2, 'float', 'Expansion factor'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },
