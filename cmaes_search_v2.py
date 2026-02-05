@@ -54,6 +54,21 @@ from calc_dim import (
 # Supported n_state values for E88
 E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
 
+# Known good configs from previous runs - inject into LHS to ensure exploration around them
+KNOWN_GOOD_CONFIGS = {
+    'e88': {
+        16: [  # n_state=16: best was 0.8272 loss on pile.txt
+            {'dim': 2048, 'n_heads': 84, 'depth': 37, 'lr': 0.0006633},
+            {'dim': 2688, 'n_heads': 109, 'depth': 30, 'lr': 0.0009782},
+            {'dim': 2432, 'n_heads': 55, 'depth': 39, 'lr': 0.0004532},
+        ],
+        32: [  # n_state=32: predicted good configs (deep + narrow)
+            {'dim': 1664, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},
+            {'dim': 2048, 'n_heads': 50, 'depth': 37, 'lr': 0.0006},
+        ],
+    },
+}
+
 # E90 valid (k_fast, k_slow) configurations
 E90_CONFIGS = [
     (8, 16), (8, 24), (16, 32), (16, 48),
@@ -514,8 +529,21 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
     print(f"PHASE 1: Latin Hypercube Sampling ({n_samples} valid samples)")
     print(f"{'='*70}")
 
-    # Keep sampling until we have enough valid configs
+    # Inject known good configs first (ensures we explore around them)
     valid_configs = []
+    if model_type in KNOWN_GOOD_CONFIGS:
+        # Get n_state from fixed_params if doing a sweep
+        n_state = fixed_params.get('n_state') if fixed_params else None
+        if n_state and n_state in KNOWN_GOOD_CONFIGS[model_type]:
+            seed_configs = KNOWN_GOOD_CONFIGS[model_type][n_state]
+            for sc in seed_configs:
+                cfg = {**sc, 'n_state': n_state}  # Add n_state to config
+                if is_valid_param_count(cfg, model_type, target_params, 0.10):
+                    valid_configs.append(cfg)
+            if valid_configs:
+                print(f"  Injected {len(valid_configs)} known good configs as seeds")
+
+    # Keep sampling until we have enough valid configs
     attempt = 0
     max_attempts = 10
 
