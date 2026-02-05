@@ -68,7 +68,7 @@ SEARCH_SPACES = {
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
         'depth': (12, 40, 'int', 'Number of layers'),
-        'use_gate': (0, 1, 'binary', 'Use output gating'),
+        'expansion': (0.5, 2.0, 'float', 'Expansion factor for k,v,q projections'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },
     'fla-gdn': {
@@ -266,7 +266,8 @@ def estimate_params_for_config(params, model_type):
 
     if model_type == 'e88':
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
-                               n_state=params.get('n_state', 32), expansion=1.0, use_gate=True)
+                               n_state=params.get('n_state', 32),
+                               expansion=params.get('expansion', 1.0), use_gate=False)
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -329,16 +330,13 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     ]
 
     if model_type == 'e88':
-        use_gate = params.get('use_gate', 1)
         cmd.extend([
             '--level', 'E88',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
-            '--expansion', '1.0',
-            '--use_gate', str(use_gate),
+            '--expansion', str(params.get('expansion', 1.0)),
+            '--use_gate', '0',  # No gating - hurts performance with small n_state
         ])
-        if use_gate:
-            cmd.extend(['--gate_activation', 'silu'])
 
     elif model_type == 'fla-gdn':
         cmd.extend([
