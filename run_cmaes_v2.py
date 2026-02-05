@@ -51,8 +51,8 @@ def run_search(model, output_dir, gpus, train_minutes, phase, sweep_param, lhs_s
         '--output', output_dir,
         '--lhs_samples', str(lhs_samples),
         '--sigma', '0.35',
-        '--min_generations', '6',
-        '--converge', '0.005',
+        '--min_generations', '12',
+        '--converge', '0.002',
         '--consecutive', '3',
         '--cmaes_refinements', '3',
     ]
@@ -138,7 +138,7 @@ def main():
     print(f"\nModels to run ({len(models)}): {models}")
     print(f"Strategy: LHS exploration (48 samples) → CMA-ES refinement (top 3)")
     print(f"Training per eval: {args.train_minutes} minutes")
-    print(f"Convergence: min_gen=6, threshold=0.005, consecutive=3")
+    print(f"Convergence: min_gen=12, threshold=0.002, consecutive=3")
     print(f"GPUs: {args.gpus}")
     print(f"Output: {args.output}")
 
@@ -148,7 +148,7 @@ def main():
         f.write(f"\nModels to run ({len(models)}): {models}\n")
         f.write(f"Strategy: Two-phase (LHS → CMA-ES)\n")
         f.write(f"Training per eval: {args.train_minutes} minutes\n")
-        f.write(f"Convergence: min_gen=6, threshold=0.005, consecutive=3\n")
+        f.write(f"Convergence: min_gen=12, threshold=0.002, consecutive=3\n")
         f.write(f"GPUs: {args.gpus}\n")
         f.write(f"Output: {args.output}\n\n")
 
