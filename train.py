@@ -460,6 +460,10 @@ def train(args):
     avg_loss = 0.0  # Initialize to avoid UnboundLocalError if training ends before first log
     start_time = time.time()
 
+    # Track last 100 step losses for reliable final metric
+    from collections import deque
+    last_100_losses = deque(maxlen=100)
+
     print(f"\nStarting training from step {start_step}...")
     print(f"Batch size: {args.batch_size}, Chunk size: {args.chunk_size}")
     print(f"Gradient accumulation: {args.grad_accum}, Effective batch: {args.batch_size * args.grad_accum}")
@@ -599,6 +603,9 @@ def train(args):
                 print(f"step {step:6d} | loss {avg_loss:.4f} | lr {lr:.2e} | "
                       f"grad {grad_norm:.2f} | tok/s {tokens_per_sec:.0f}")
 
+                # Track for last-100 average (each entry covers log_every steps)
+                last_100_losses.append(avg_loss)
+
                 running_loss = 0
                 tokens_processed = 0
                 start_time = time.time()
@@ -627,11 +634,24 @@ def train(args):
     prefetch_stop.set()
     prefetch_thread.join(timeout=2.0)
 
-    # Final checkpoint
+    # Compute last-100 average (reliable metric)
+    if len(last_100_losses) > 0:
+        # Take last 100 log windows (or fewer if not enough data)
+        # Each entry covers log_every steps, so 100 entries = 100*log_every steps
+        last_n = min(100, len(last_100_losses))
+        recent_losses = list(last_100_losses)[-last_n:]
+        last_100_avg = sum(recent_losses) / len(recent_losses)
+    else:
+        last_100_avg = avg_loss  # Fallback if no logging happened
+
+    # Final checkpoint - use last-100 average for reliable metric
     if args.optimizer == 'schedulefree':
         optimizer.eval()  # Get averaged params for final checkpoint
-    save_checkpoint(model, optimizer, step, avg_loss, output_dir, args.keep_checkpoints)
+    save_checkpoint(model, optimizer, step, last_100_avg, output_dir, args.keep_checkpoints)
+
+    # Print final metrics in parseable format
     print(f"\nTraining complete! Final step: {step}")
+    print(f"FINAL_LOSS_LAST100: {last_100_avg:.4f}")
 
 
 if __name__ == '__main__':

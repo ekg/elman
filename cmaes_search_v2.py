@@ -52,7 +52,7 @@ from calc_dim import (
 )
 
 # Supported n_state values for E88
-E88_SUPPORTED_N_STATE = [16, 32, 48, 64]
+E88_SUPPORTED_N_STATE = [16, 32]
 
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
@@ -147,7 +147,7 @@ SEARCH_SPACES = {
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
 DISCRETE_SWEEP_PARAMS = {
-    'e88': {'n_state': [16, 32, 48, 64]},
+    'e88': {'n_state': [16, 32]},
     'e75': {'n_state': [16, 24, 32, 40, 48, 56, 64]},
 }
 
@@ -433,28 +433,32 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
                 f.write(f"Stdout (last 50 lines):\n")
                 f.write('\n'.join(result.stdout.split('\n')[-50:]))
 
-        # Parse loss from output
+        # Parse loss from output - MUST use last-100 average for reliable metric
         loss = float('inf')
+
+        # Primary: Look for FINAL_LOSS_LAST100 (the reliable metric)
         for line in result.stdout.split('\n'):
-            if 'loss' in line.lower():
-                match = re.search(r'loss[:\s]+([0-9.]+)', line, re.IGNORECASE)
+            if 'FINAL_LOSS_LAST100:' in line:
+                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
                 if match:
                     try:
                         loss = float(match.group(1))
+                        break  # Found the authoritative metric
                     except:
                         pass
 
-        # Also check checkpoint files for loss
-        ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
-        for ckpt in ckpts:
-            match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-            if match:
-                try:
-                    ckpt_loss = float(match.group(1))
-                    if ckpt_loss < loss:
-                        loss = ckpt_loss
-                except:
-                    pass
+        # Fallback: Check checkpoint files for loss (they now use last-100 avg too)
+        if loss == float('inf'):
+            ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
+            for ckpt in ckpts:
+                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                if match:
+                    try:
+                        ckpt_loss = float(match.group(1))
+                        if ckpt_loss < loss:
+                            loss = ckpt_loss
+                    except:
+                        pass
 
         return {
             'params': params,
@@ -827,7 +831,7 @@ def main():
                         help='Output directory')
 
     # LHS options
-    parser.add_argument('--lhs_samples', type=int, default=48,
+    parser.add_argument('--lhs_samples', type=int, default=128,
                         help='Number of LHS samples (phase 1)')
 
     # CMA-ES options
@@ -835,9 +839,9 @@ def main():
                         help='Initial sigma for CMA-ES')
     parser.add_argument('--min_generations', type=int, default=6,
                         help='Minimum generations before convergence check')
-    parser.add_argument('--converge', type=float, default=0.005,
-                        help='Convergence threshold')
-    parser.add_argument('--consecutive', type=int, default=3,
+    parser.add_argument('--converge', type=float, default=0.01,
+                        help='Convergence threshold (1% of typical loss)')
+    parser.add_argument('--consecutive', type=int, default=2,
                         help='Consecutive generations without improvement to converge')
     parser.add_argument('--cmaes_refinements', type=int, default=3,
                         help='Number of top LHS configs to refine with CMA-ES')
