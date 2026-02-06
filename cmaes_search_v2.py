@@ -703,13 +703,17 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
                 es.tell(valid_solutions[:len(fitnesses)], fitnesses)
 
             # Track best
+            if not fitnesses:
+                print(f"    No valid configs this generation, skipping...")
+                continue
+
             gen_best_loss = min(fitnesses)
             gen_best_idx = fitnesses.index(gen_best_loss)
 
             if gen_best_loss < best_loss:
                 improvement = best_loss - gen_best_loss
                 best_loss = gen_best_loss
-                best_params = configs[gen_best_idx]
+                best_params = valid_configs[gen_best_idx]
                 print(f"    *** NEW BEST: {best_loss:.4f} | {format_params(best_params)} ***")
 
                 if improvement < converge_threshold:
