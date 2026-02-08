@@ -81,15 +81,22 @@ E90_CONFIGS = [
 # =============================================================================
 # SEARCH SPACES - 6D for all models
 # =============================================================================
+
+# E88 base search space (shared by ablation variants)
+_E88_SEARCH_SPACE = {
+    'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+    'n_heads': (32, 160, 'int', 'Number of attention heads'),
+    'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
+    'depth': (10, 40, 'int', 'Number of layers'),
+    'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+}  # 5D (n_state swept separately)
+
 SEARCH_SPACES = {
     # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
-    'e88': {
-        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
-        'n_heads': (32, 160, 'int', 'Number of attention heads'),
-        'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-        'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
-    },  # 5D (n_state swept separately)
+    'e88': _E88_SEARCH_SPACE,  # baseline: use_gate=1, linear_state=0
+    'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
+    'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
+    'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
     'fla-gdn': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
@@ -148,6 +155,9 @@ SEARCH_SPACES = {
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
 DISCRETE_SWEEP_PARAMS = {
     'e88': {'n_state': [16, 32]},
+    'e88-linear': {'n_state': [16, 32]},  # ablation: remove tanh
+    'e88-nogate': {'n_state': [16, 32]},  # ablation: remove gating
+    'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
     'e75': {'n_state': [16, 24, 32, 40, 48, 56, 64]},
 }
 
@@ -272,10 +282,12 @@ def estimate_params_for_config(params, model_type):
     dim = params.get('dim', 1024)
     depth = params.get('depth', 20)
 
-    if model_type == 'e88':
+    if model_type in ('e88', 'e88-linear', 'e88-nogate', 'e88-minimal'):
+        # All E88 ablations have same param count (ablations only affect computation, not params)
+        use_gate = model_type not in ('e88-nogate', 'e88-minimal')
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32),
-                               expansion=params.get('expansion', 1.0), use_gate=True)
+                               expansion=params.get('expansion', 1.0), use_gate=use_gate)
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -347,6 +359,39 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--expansion', '1.0',  # Fixed - E88 requires square state
             '--use_gate', '1',  # Gate enabled - best result (0.8272) was WITH gate
             '--gate_activation', 'silu',  # SiLU gating
+        ])
+
+    elif model_type == 'e88-linear':
+        # Ablation: remove tanh (linear state update)
+        cmd.extend([
+            '--level', 'E88',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
+            '--linear_state', '1',  # ABLATION: linear state (no tanh)
+        ])
+
+    elif model_type == 'e88-nogate':
+        # Ablation: remove gating
+        cmd.extend([
+            '--level', 'E88',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '0',  # ABLATION: no gating
+        ])
+
+    elif model_type == 'e88-minimal':
+        # Ablation: remove both tanh and gating
+        cmd.extend([
+            '--level', 'E88',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '0',  # ABLATION: no gating
+            '--linear_state', '1',  # ABLATION: linear state (no tanh)
         ])
 
     elif model_type == 'fla-gdn':
