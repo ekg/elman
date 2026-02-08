@@ -87,13 +87,13 @@ SEARCH_SPACES = {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (32, 160, 'int', 'Number of attention heads'),
         'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D (n_state swept separately)
     'fla-gdn': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D
@@ -101,38 +101,38 @@ SEARCH_SPACES = {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 4D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 4D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 4D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D
@@ -140,7 +140,7 @@ SEARCH_SPACES = {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
-        'depth': (20, 60, 'int', 'Number of layers'),
+        'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 5D
 }

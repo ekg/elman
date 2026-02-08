@@ -34,13 +34,13 @@ shift  # Remove model from args, rest are passed through
 
 # Output directory with timestamp
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT_DIR="${OUTPUT_DIR:-benchmark_results/cmaes_v8}"
+OUTPUT_DIR="${OUTPUT_DIR:-benchmark_results/cmaes_v9}"
 
-# Default settings
+# Default settings - Option B (fast)
 TRAIN_MINS="${TRAIN_MINS:-10}"
 GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 PARAMS="${PARAMS:-480M}"
-LHS_SAMPLES="${LHS_SAMPLES:-128}"
+LHS_SAMPLES="${LHS_SAMPLES:-64}"
 
 # Model-specific phase
 case $MODEL in
@@ -76,10 +76,10 @@ python -u cmaes_search_v2.py \
     --output "$OUTPUT_DIR" \
     --lhs_samples "$LHS_SAMPLES" \
     --sigma 0.35 \
-    --min_generations 6 \
+    --min_generations 4 \
     --converge 0.01 \
     --consecutive 2 \
-    --cmaes_refinements 3 \
+    --cmaes_refinements 2 \
     $EXTRA_ARGS \
     "$@" \
     2>&1 | tee -a "$LOG_FILE"
