@@ -136,6 +136,13 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
     },  # 4D
+    'e23': {
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
+        'expansion': (1, 3, 'int', 'Expansion factor'),
+        'depth': (10, 40, 'int', 'Number of layers'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+    },  # 5D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
@@ -301,6 +308,8 @@ def estimate_params_for_config(params, model_type):
         return calc_minlstm_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'e1':
         return calc_e1_params(dim, depth=depth, expansion=params.get('expansion', 2))
+    elif model_type == 'e23':
+        return calc_e23_params(dim, depth=depth, n_slots=params.get('n_slots', 64))
     elif model_type == 'e42':
         return calc_e42_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'e75':
@@ -427,6 +436,13 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         cmd.extend([
             '--level', '1',
             '--expansion', str(params.get('expansion', 2)),
+        ])
+
+    elif model_type == 'e23':
+        cmd.extend([
+            '--level', '23',
+            '--n_slots', str(params.get('n_slots', 64)),
+            '--expansion', str(params.get('expansion', 1)),
         ])
 
     elif model_type == 'e42':
