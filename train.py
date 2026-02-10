@@ -68,6 +68,8 @@ def parse_args():
                         help='Number of groups for compete softmax')
     parser.add_argument('--n_state', type=int, default=64,
                         help='Matrix state size for E70-E73 (S is n_state x n_state)')
+    parser.add_argument('--n_slots', type=int, default=64,
+                        help='Number of tape memory slots for E23 DualMemoryElman (default=64)')
     parser.add_argument('--n_heads', type=int, default=None,
                         help='Number of heads for E88 FLA Hybrid')
     parser.add_argument('--top_k', type=int, default=None,
@@ -368,6 +370,7 @@ def train(args):
             expansion=args.expansion,
             n_groups=args.n_groups,
             n_state=args.n_state,
+            n_slots=args.n_slots,
             n_heads=args.n_heads,
             top_k=args.top_k,
             k_fast=args.k_fast,
