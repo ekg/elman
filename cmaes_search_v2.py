@@ -97,6 +97,7 @@ SEARCH_SPACES = {
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
     'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
     'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
+    'e88-wgate': _E88_SEARCH_SPACE,  # ablation: add write gate (beta) like FLA-GDN
     'fla-gdn': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
@@ -165,6 +166,7 @@ DISCRETE_SWEEP_PARAMS = {
     'e88-linear': {'n_state': [16, 32]},  # ablation: remove tanh
     'e88-nogate': {'n_state': [16, 32]},  # ablation: remove gating
     'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
+    'e88-wgate': {'n_state': [16, 32]},  # ablation: add write gate
     'e75': {'n_state': [16, 24, 32, 40, 48, 56, 64]},
 }
 
@@ -289,8 +291,9 @@ def estimate_params_for_config(params, model_type):
     dim = params.get('dim', 1024)
     depth = params.get('depth', 20)
 
-    if model_type in ('e88', 'e88-linear', 'e88-nogate', 'e88-minimal'):
-        # All E88 ablations have same param count (ablations only affect computation, not params)
+    if model_type in ('e88', 'e88-linear', 'e88-nogate', 'e88-minimal', 'e88-wgate'):
+        # All E88 ablations have ~same param count (ablations only affect computation, not params)
+        # Note: e88-wgate adds small write_gate_proj (dim -> n_heads) but negligible
         use_gate = model_type not in ('e88-nogate', 'e88-minimal')
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32),
@@ -401,6 +404,18 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--expansion', '1.0',
             '--use_gate', '0',  # ABLATION: no gating
             '--linear_state', '1',  # ABLATION: linear state (no tanh)
+        ])
+
+    elif model_type == 'e88-wgate':
+        # Ablation: add write gate (like FLA-GDN's beta gate on delta)
+        cmd.extend([
+            '--level', 'E88',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
+            '--use_write_gate', '1',  # ABLATION: add write gate (FLA-GDN beta style)
         ])
 
     elif model_type == 'fla-gdn':

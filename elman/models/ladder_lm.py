@@ -588,6 +588,9 @@ def get_ladder_level(level):
         'E88_h48n48': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 48, 'n_state': 48, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 110,592 state
         'E88_h48n64': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 48, 'n_state': 64, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 196,608 state
 
+        # E88 with write gate (FLA-GDN beta style) - gates delta before writing to memory
+        'E88-wgate': E88FLAHybrid,  # Full config via kwargs: --use_gate 1 --use_write_gate 1
+
         # State-matched 500M configs (depth=32 like mamba2)
         # FLA-GDN at 500M has ~1.33M state/layer, Mamba2 has ~410K state/layer
         'E88_h5n128': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 5, 'n_state': 128, 'expansion': 1.0, 'use_conv': False, 'use_gate': False, 'use_output_norm': False}),  # 81,920 state (1/16x FLA)
@@ -789,6 +792,7 @@ class LadderLM(nn.Module):
         use_gate=True,  # For E88 FLA Hybrid: output gating (False for "best" config)
         gate_activation='sigmoid',  # For E88 FLA Hybrid: gate activation ('sigmoid' or 'silu')
         linear_state=False,  # For E88 FLA Hybrid: linear state update (no tanh)
+        use_write_gate=False,  # For E88 FLA Hybrid: write gate (beta) for delta
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
@@ -815,6 +819,7 @@ class LadderLM(nn.Module):
         self.use_gate = use_gate
         self.gate_activation = gate_activation
         self.linear_state = linear_state
+        self.use_write_gate = use_write_gate
         self.rank = rank
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
@@ -848,6 +853,7 @@ class LadderLM(nn.Module):
                 use_gate=use_gate,  # For E88 FLA Hybrid: output gating
                 gate_activation=gate_activation,  # For E88 FLA Hybrid: gate activation
                 linear_state=linear_state,  # For E88 FLA Hybrid: linear state
+                use_write_gate=use_write_gate,  # For E88 FLA Hybrid: write gate
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,

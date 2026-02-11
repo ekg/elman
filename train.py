@@ -84,6 +84,8 @@ def parse_args():
                         help='Gate activation for E88 (sigmoid=E88 original, silu=FLA-GDN style)')
     parser.add_argument('--linear_state', type=int, default=0,
                         help='Use linear state update for E88 (0=tanh, 1=linear)')
+    parser.add_argument('--use_write_gate', type=int, default=0,
+                        help='Use write gate (beta) for E88 (0=no, 1=yes). Gates delta before writing to memory.')
     parser.add_argument('--r_h_mode', type=str, default='auto',
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
@@ -378,6 +380,7 @@ def train(args):
             use_gate=bool(args.use_gate),
             gate_activation=args.gate_activation,
             linear_state=bool(args.linear_state),
+            use_write_gate=bool(args.use_write_gate),
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,
             use_conv=bool(args.use_conv),

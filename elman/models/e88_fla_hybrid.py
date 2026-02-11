@@ -606,6 +606,7 @@ class E88FLAHybrid(nn.Module):
         use_conv: bool = False,  # E88 optimal: no short convolutions (unlike FLA-GDN)
         linear_state: bool = False,  # Set True to use linear state update (no tanh)
         use_gate: bool = False,  # E88 optimal: no output gating (gating hurts E88)
+        use_write_gate: bool = False,  # Set True to gate the delta write (like FLA-GDN beta)
         simple_decay: bool = False,  # Set True to use simple sigmoid decay instead of Mamba2
         use_silu: bool = True,  # Set False to skip SiLU on projections
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
@@ -634,6 +635,7 @@ class E88FLAHybrid(nn.Module):
         self.use_conv = use_conv
         self.linear_state = linear_state
         self.use_gate = use_gate
+        self.use_write_gate = use_write_gate
         self.gate_activation = gate_activation
         self.simple_decay = simple_decay
         self.use_silu = use_silu
@@ -727,6 +729,13 @@ class E88FLAHybrid(nn.Module):
             self.g_proj = nn.Linear(dim, self.value_dim, bias=False)
         else:
             self.g_proj = None
+
+        # === Write gating (FLA-GDN beta style) ===
+        # Gates the delta before writing to memory: S += beta * outer(delta, k)
+        if use_write_gate:
+            self.write_gate_proj = nn.Linear(dim, n_heads, bias=False)
+        else:
+            self.write_gate_proj = None
 
         # === Simple decay option (replaces Mamba2-style) ===
         if simple_decay:
@@ -958,6 +967,12 @@ class E88FLAHybrid(nn.Module):
                     g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
                     decay = g.exp().to(x.dtype)  # [B, T, H]
 
+            # Compute write gate (beta) if enabled - gates how much delta writes to memory
+            if self.use_write_gate and self.write_gate_proj is not None:
+                write_beta = torch.sigmoid(self.write_gate_proj(x))  # [B, T, H]
+            else:
+                write_beta = None
+
             # Reshape for per-head processing
             # q, k: [B, T, H, n_state]
             q = q.view(B, T, H, n)
@@ -974,8 +989,10 @@ class E88FLAHybrid(nn.Module):
             S0 = torch.stack(hidden, dim=1)  # [B, H, n, head_v_dim]
 
         # === Use CUDA kernel if available ===
+        # NOTE: write_gate not yet supported in CUDA kernel, fall back to PyTorch
         use_cuda = (E88_NATIVE_CUDA_AVAILABLE and x.is_cuda and
-                    x.dtype == torch.bfloat16 and self.training)
+                    x.dtype == torch.bfloat16 and self.training and
+                    not self.use_write_gate)
 
         # Track whether fused gating was used (to skip separate gating later)
         fused_gate_used = False
@@ -1069,6 +1086,11 @@ class E88FLAHybrid(nn.Module):
 
                     # Outer product: [B, n_state, head_v_dim]
                     outer = torch.einsum('bv,bi->biv', delta, k_norm)
+
+                    # Apply write gate if enabled (FLA-GDN beta style)
+                    if self.use_write_gate and write_beta is not None:
+                        beta_t = write_beta[:, t, h:h+1]  # [B, 1]
+                        outer = beta_t.unsqueeze(-1) * outer  # [B, n_state, head_v_dim]
 
                     # Gated update (NONLINEAR tanh vs linear for ablation)
                     # S = tanh(decay * S + outer) or S = decay * S + outer
