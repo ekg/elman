@@ -14666,6 +14666,69 @@ std::vector<Tensor> e88_fla_hybrid_forward(
     return {S, output, S_cache};
 }
 
+// E88 Forward with write gate (beta) - gates how much delta gets written to memory
+std::vector<Tensor> e88_fla_hybrid_forward_with_beta(
+    bool training,
+    Tensor k,           // [T, B, H, n_state] L2 normalized keys
+    Tensor v,           // [T, B, H, head_v_dim] values
+    Tensor q,           // [T, B, H, n_state] L2 normalized queries
+    Tensor decay,       // [T, B, H] exponential decay factors
+    Tensor beta,        // [T, B, H] write gate (0-1)
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(beta);
+    CHECK_INPUT(S0);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+    Tensor output = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+
+    // S_cache for checkpoints + Sq_cache
+    const int checkpoint_interval = 16;  // Must match E88_CHECKPOINT_INTERVAL
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+    const int64_t sq_cache_size = time_steps * batch_size * n_heads * head_v_dim;
+    Tensor S_cache = training ?
+        torch::empty({s_checkpoints_size + sq_cache_size}, options) :
+        torch::empty({0}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 FLA Hybrid Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    E88FLAHybridForward<__nv_bfloat16> forward(
+        training, batch_size, n_state, head_v_dim, n_heads,
+        at::cuda::getCurrentCUDAStream());
+
+    forward.RunWithBeta(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(beta.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) : nullptr);
+
+    return {S, output, S_cache};
+}
+
 // E88 Forward with fused output gating - saves 2 memory ops per element per timestep
 std::vector<Tensor> e88_fused_gate_forward(
     bool training,
@@ -14785,6 +14848,68 @@ std::vector<Tensor> e88_fla_hybrid_backward(
         reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()));
 
     return {d_k, d_v, d_q, d_decay};
+}
+
+// E88 Backward with write gate (beta) - computes gradients including d_beta
+std::vector<Tensor> e88_fla_hybrid_backward_with_beta(
+    Tensor k,               // [T, B, H, n_state]
+    Tensor v,               // [T, B, H, head_v_dim]
+    Tensor q,               // [T, B, H, n_state]
+    Tensor decay,           // [T, B, H]
+    Tensor beta,            // [T, B, H] write gate
+    Tensor S_checkpoints,   // [num_checkpoints * B * H * n_state * head_v_dim]
+    Tensor Sq_cache,        // [T * B * H * head_v_dim]
+    Tensor d_output,        // [T, B, H, head_v_dim]
+    int n_heads) {
+
+    const auto time_steps = k.size(0);
+    const auto batch_size = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(beta);
+    CHECK_INPUT(d_output);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Outputs: gradients for k, v, q, decay, beta
+    Tensor d_k = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_v = torch::empty({time_steps, batch_size, n_heads, head_v_dim}, options);
+    Tensor d_q = torch::empty({time_steps, batch_size, n_heads, n_state}, options);
+    Tensor d_decay = torch::empty({time_steps, batch_size, n_heads}, options);
+    Tensor d_beta = torch::empty({time_steps, batch_size, n_heads}, options);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 FLA Hybrid Backward only supports bfloat16");
+
+    using namespace elman;
+
+    E88FLAHybridBackward<__nv_bfloat16> backward(
+        batch_size, n_state, head_v_dim, n_heads,
+        at::cuda::getCurrentCUDAStream());
+
+    backward.RunWithBeta(
+        time_steps,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(beta.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(Sq_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_beta.data_ptr()));
+
+    return {d_k, d_v, d_q, d_decay, d_beta};
 }
 
 std::vector<Tensor> e88_fla_hybrid_backward_cublas(
@@ -15087,6 +15212,329 @@ std::vector<Tensor> e88_fused_projection(
         stream);
 
     return {q_out, k_out, v_out, decay_out};
+}
+
+// =============================================================================
+// E88 Fused: Fully Fused CUDA Kernel with [B, T, H, dim] layout (no transpose)
+// =============================================================================
+
+std::vector<Tensor> e88_fused_forward(
+    bool training,
+    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor v,           // [B, T, H, head_v_dim] values
+    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor decay,       // [B, T, H] exponential decay factors
+    Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
+    Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
+    int n_heads,
+    bool apply_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(output);
+    CHECK_INPUT(S_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Copy initial state
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Fused Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    dispatch_e88_fused_forward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        apply_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),  // Sq_cache follows checkpoints
+        16,  // checkpoint_interval
+        apply_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S, output};
+}
+
+std::vector<Tensor> e88_fused_backward(
+    Tensor k,               // [B, T, H, n_state]
+    Tensor v,               // [B, T, H, head_v_dim]
+    Tensor q,               // [B, T, H, n_state]
+    Tensor decay,           // [B, T, H]
+    Tensor g,               // [B, T, H, head_v_dim] gate (can be empty)
+    Tensor S_cache,         // Combined checkpoints + Sq_cache
+    Tensor d_output,        // [B, T, H, head_v_dim]
+    Tensor d_k,             // [B, T, H, n_state] output
+    Tensor d_v,             // [B, T, H, head_v_dim] output
+    Tensor d_q,             // [B, T, H, n_state] output
+    Tensor d_decay,         // [B, T, H] output
+    Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
+    Tensor segment_cache,   // Pre-allocated segment cache
+    int n_heads,
+    bool has_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(d_k);
+    CHECK_INPUT(d_v);
+    CHECK_INPUT(d_q);
+    CHECK_INPUT(d_decay);
+    CHECK_INPUT(segment_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Fused Backward only supports bfloat16");
+
+    using namespace elman;
+
+    // Calculate checkpoint and Sq_cache offsets
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_fused_backward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        has_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval, has_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay, d_g};
+}
+
+// =============================================================================
+// E88 Chunked: Prefetch chunks of timesteps into shared memory
+// Reduces global memory latency by bulk loading before processing
+// =============================================================================
+
+std::vector<Tensor> e88_chunked_forward(
+    bool training,
+    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor v,           // [B, T, H, head_v_dim] values
+    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor decay,       // [B, T, H] exponential decay factors
+    Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
+    Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
+    int n_heads,
+    bool apply_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(output);
+    CHECK_INPUT(S_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Copy initial state
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Chunked Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    // Calculate checkpoint and Sq_cache offsets
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_chunked_forward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        apply_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        checkpoint_interval,
+        apply_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S, output};
+}
+
+// =============================================================================
+// E88 Warp-Optimized: Full thread utilization with parallel reductions
+// =============================================================================
+
+std::vector<Tensor> e88_warp_optimized_forward(
+    bool training,
+    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor v,           // [B, T, H, head_v_dim] values
+    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor decay,       // [B, T, H] exponential decay factors
+    Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
+    Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
+    int n_heads,
+    bool apply_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(output);
+    CHECK_INPUT(S_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Copy initial state
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Warp Optimized Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    // Calculate checkpoint and Sq_cache offsets
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_warp_optimized_forward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        apply_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        checkpoint_interval,
+        apply_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S, output};
+}
+
+// =============================================================================
+// E88 Coalesced: Transposed state for coalesced memory access
+// =============================================================================
+
+std::vector<Tensor> e88_coalesced_forward(
+    bool training,
+    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor v,           // [B, T, H, head_v_dim] values
+    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor decay,       // [B, T, H] exponential decay factors
+    Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
+    Tensor S0,          // [B, H, n_state, head_v_dim] initial state
+    Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
+    Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
+    int n_heads,
+    bool apply_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S0);
+    CHECK_INPUT(output);
+    CHECK_INPUT(S_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    Tensor S = torch::empty({batch_size, n_heads, n_state, head_v_dim}, options);
+    S.copy_(S0);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Coalesced Forward only supports bfloat16, got ", k.scalar_type());
+
+    using namespace elman;
+
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_coalesced_forward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        apply_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        checkpoint_interval,
+        apply_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {S, output};
 }
 
 // =============================================================================
@@ -16048,6 +16496,23 @@ void elman_ladder_init(py::module& m) {
           "E88 Fused Projection: Combined GEMM + conv + silu + L2 norm + decay computation");
     m.def("e88_fused_gate_forward", &e88_fused_gate_forward,
           "E88 Fused Gate Forward: Forward pass with fused output gating (saves 2 memory ops per element)");
+    m.def("e88_fla_hybrid_forward_with_beta", &e88_fla_hybrid_forward_with_beta,
+          "E88 FLA Hybrid: Forward with write gate (beta) - gates delta write to memory");
+    m.def("e88_fla_hybrid_backward_with_beta", &e88_fla_hybrid_backward_with_beta,
+          "E88 FLA Hybrid: Backward with write gate - computes d_beta gradient");
+
+    // E88 Fused: Fully fused kernel with [B, T, H, dim] layout (no transpose overhead)
+    m.def("e88_fused_forward", &e88_fused_forward,
+          "E88 Fused Forward: Fully fused kernel eliminating transpose overhead. "
+          "Uses [B, T, H, dim] layout directly.");
+    m.def("e88_fused_backward", &e88_fused_backward,
+          "E88 Fused Backward: Fully fused backward kernel with [B, T, H, dim] layout.");
+    m.def("e88_chunked_forward", &e88_chunked_forward,
+          "E88 Chunked Forward: Prefetch chunks into shared memory to reduce global memory latency.");
+    m.def("e88_warp_optimized_forward", &e88_warp_optimized_forward,
+          "E88 Warp Optimized Forward: Full thread utilization with parallel reductions.");
+    m.def("e88_coalesced_forward", &e88_coalesced_forward,
+          "E88 Coalesced Forward: Transposed state matrix for coalesced memory access.");
 
     // E89: Residual State - tanh only on outer product, better gradient flow
     m.def("e89_residual_state_forward", &e89_residual_state_forward,

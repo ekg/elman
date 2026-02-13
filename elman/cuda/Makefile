@@ -130,6 +130,10 @@ CUDA_OBJS := \
 	lib/e88_parallel_segment_gpu.o \
 	lib/e88_fused_projection_gpu.o \
 	lib/e88_fused_gate_gpu.o \
+	lib/e88_fused_gpu.o \
+	lib/e88_chunked_gpu.o \
+	lib/e88_warp_optimized_gpu.o \
+	lib/e88_coalesced_gpu.o \
 	lib/mom_e88_gpu.o \
 	lib/e89_residual_state_gpu.o \
 	lib/e90_dual_rate_gpu.o \

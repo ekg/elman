@@ -9351,6 +9351,7 @@ void dispatch_e88_fla_hybrid_forward(
     int T, int B, int H, int n_state, int head_v_dim,
     const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
     const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* beta_all,  // [T, B, H] write gate (can be nullptr)
     __nv_bfloat16* S, __nv_bfloat16* output,
     __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
     int checkpoint_interval, cudaStream_t stream
@@ -9371,10 +9372,12 @@ void dispatch_e88_fla_hybrid_backward(
     int T, int B, int H, int n_state, int head_v_dim,
     const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
     const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* beta_all,  // [T, B, H] write gate (can be nullptr)
     const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
     const __nv_bfloat16* d_output,
     __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
     __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* d_beta_all,  // [T, B, H] gradient for write gate (can be nullptr)
     int checkpoint_interval, cudaStream_t stream
 );
 
@@ -9392,6 +9395,111 @@ void dispatch_e88_cublas_backward(
 
 // Workspace size for cuBLAS backward kernel
 size_t e88_cublas_backward_workspace_size(int B, int H, int n_state, int head_v_dim);
+
+// =============================================================================
+// E88 Fused CUDA Kernel
+//
+// Fully fused kernel with [B, T, H, dim] layout (no transpose overhead)
+// Eliminates 2.9 GB of memory copies per forward pass
+// =============================================================================
+
+void dispatch_e88_fused_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* g_all,  // gate (can be nullptr)
+    __nv_bfloat16* S, __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
+    int checkpoint_interval, bool apply_gate, cudaStream_t stream
+);
+
+void dispatch_e88_fused_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* g_all,  // gate (can be nullptr)
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* d_g_all,  // gate gradient (can be nullptr)
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval, bool has_gate, cudaStream_t stream
+);
+
+// =============================================================================
+// E88 Chunked Prefetch CUDA Kernel
+//
+// Key optimization: Prefetch CHUNK_SIZE timesteps into shared memory before
+// processing, reducing global memory latency impact.
+//
+// Current kernel: 512 separate global memory reads (one per timestep)
+// Chunked kernel: 32 bulk reads of 16 timesteps each, processed from shared mem
+// =============================================================================
+
+void dispatch_e88_chunked_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    __nv_bfloat16* S,
+    __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    int checkpoint_interval,
+    bool apply_gate,
+    cudaStream_t stream
+);
+
+// =============================================================================
+// E88 Warp-Optimized CUDA Kernel
+//
+// Key optimizations over chunked kernel:
+// 1. Full thread utilization: All 128 threads active during compute
+// 2. Parallel reductions: Multiple threads per column for dot products
+// 3. Parallel state update: All threads participate in state update
+// =============================================================================
+
+void dispatch_e88_warp_optimized_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    __nv_bfloat16* S,
+    __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    int checkpoint_interval,
+    bool apply_gate,
+    cudaStream_t stream
+);
+
+// =============================================================================
+// E88 Coalesced Memory Access CUDA Kernel
+//
+// Transposes state matrix for coalesced column access:
+// S_T[j][i] = S[i][j] enables sequential memory reads per thread
+// =============================================================================
+
+void dispatch_e88_coalesced_forward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    __nv_bfloat16* S,
+    __nv_bfloat16* output,
+    __nv_bfloat16* S_checkpoints,
+    __nv_bfloat16* Sq_cache,
+    int checkpoint_interval,
+    bool apply_gate,
+    cudaStream_t stream
+);
 
 // =============================================================================
 // E89 Residual State CUDA Kernel
@@ -9513,12 +9621,25 @@ struct E88FLAHybridForward {
         int n_heads,
         const cudaStream_t& stream);
 
+    // Original Run method (no write gate)
     void Run(
         int steps,
         const T* k,         // [T, B, H, n_state] L2 normalized keys
         const T* v,         // [T, B, H, head_v_dim] values
         const T* q,         // [T, B, H, n_state] L2 normalized queries
         const T* decay,     // [T, B, H] exponential decay factors
+        T* S,               // [B, H, n_state, head_v_dim]
+        T* output,          // [T, B, H, head_v_dim]
+        T* S_cache);        // checkpoints + Sq_cache
+
+    // Run with write gate (beta) support
+    void RunWithBeta(
+        int steps,
+        const T* k,         // [T, B, H, n_state] L2 normalized keys
+        const T* v,         // [T, B, H, head_v_dim] values
+        const T* q,         // [T, B, H, n_state] L2 normalized queries
+        const T* decay,     // [T, B, H] exponential decay factors
+        const T* beta,      // [T, B, H] write gate (can be nullptr)
         T* S,               // [B, H, n_state, head_v_dim]
         T* output,          // [T, B, H, head_v_dim]
         T* S_cache);        // checkpoints + Sq_cache
@@ -9551,6 +9672,7 @@ struct E88FLAHybridBackward {
 
     ~E88FLAHybridBackward();
 
+    // Original Run method (no write gate)
     void Run(
         int steps,
         const T* k,             // [T, B, H, n_state]
@@ -9564,6 +9686,23 @@ struct E88FLAHybridBackward {
         T* d_v,                 // [T, B, H, head_v_dim]
         T* d_q,                 // [T, B, H, n_state]
         T* d_decay);            // [T, B, H]
+
+    // Run with write gate (beta) support
+    void RunWithBeta(
+        int steps,
+        const T* k,             // [T, B, H, n_state]
+        const T* v,             // [T, B, H, head_v_dim]
+        const T* q,             // [T, B, H, n_state]
+        const T* decay,         // [T, B, H]
+        const T* beta,          // [T, B, H] write gate (can be nullptr)
+        const T* S_checkpoints, // [num_checkpoints, B, H, n_state, head_v_dim]
+        const T* Sq_cache,      // [T, B, H, head_v_dim]
+        const T* d_output,      // [T, B, H, head_v_dim]
+        T* d_k,                 // [T, B, H, n_state]
+        T* d_v,                 // [T, B, H, head_v_dim]
+        T* d_q,                 // [T, B, H, n_state]
+        T* d_decay,             // [T, B, H]
+        T* d_beta);             // [T, B, H] gradient for write gate (can be nullptr)
 
 private:
     int batch_size_;
