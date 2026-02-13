@@ -133,6 +133,9 @@ CUDA_OBJS := \
 	lib/e88_fused_gpu.o \
 	lib/e88_chunked_gpu.o \
 	lib/e88_warp_optimized_gpu.o \
+	lib/e88_warp_backward_gpu.o \
+	lib/e88_warp_backward_simple_gpu.o \
+	lib/e88_warp_backward_v2_gpu.o \
 	lib/e88_coalesced_gpu.o \
 	lib/mom_e88_gpu.o \
 	lib/e89_residual_state_gpu.o \

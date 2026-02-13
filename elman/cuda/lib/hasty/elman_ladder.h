@@ -9478,6 +9478,80 @@ void dispatch_e88_warp_optimized_forward(
     cudaStream_t stream
 );
 
+// E88 Warp-Optimized Backward Kernel
+// Key optimizations:
+// - Precomputed index arrays to eliminate integer division in inner loops
+// - Chunked prefetch of k, v, q for entire segment
+// - All threads participate in gradient computations
+void dispatch_e88_warp_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    const __nv_bfloat16* S_checkpoints,
+    const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k,
+    __nv_bfloat16* d_v,
+    __nv_bfloat16* d_q,
+    __nv_bfloat16* d_decay,
+    __nv_bfloat16* d_g,
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval,
+    bool has_gate,
+    cudaStream_t stream
+);
+
+// E88 Warp-Optimized Backward Kernel SIMPLIFIED (for debugging)
+// Same as dispatch_e88_warp_backward but uses simple loop indexing
+// instead of precomputed indices to test if that's the bug source.
+void dispatch_e88_warp_backward_simple(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    const __nv_bfloat16* S_checkpoints,
+    const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k,
+    __nv_bfloat16* d_v,
+    __nv_bfloat16* d_q,
+    __nv_bfloat16* d_decay,
+    __nv_bfloat16* d_g,
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval,
+    bool has_gate,
+    cudaStream_t stream
+);
+
+// E88 Warp-Optimized Backward V2 (for debugging)
+// Loads k, v from segment_cache in backward phase (like fused backward)
+// instead of using k_chunk/v_chunk directly.
+void dispatch_e88_warp_backward_v2(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k,
+    const __nv_bfloat16* v,
+    const __nv_bfloat16* q,
+    const __nv_bfloat16* decay,
+    const __nv_bfloat16* g,
+    const __nv_bfloat16* S_checkpoints,
+    const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k,
+    __nv_bfloat16* d_v,
+    __nv_bfloat16* d_q,
+    __nv_bfloat16* d_decay,
+    __nv_bfloat16* d_g,
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval,
+    bool has_gate,
+    cudaStream_t stream
+);
+
 // =============================================================================
 // E88 Coalesced Memory Access CUDA Kernel
 //

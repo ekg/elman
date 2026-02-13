@@ -15256,6 +15256,10 @@ std::vector<Tensor> e88_fused_forward(
 
     using namespace elman;
 
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
     dispatch_e88_fused_forward(
         time_steps, batch_size, n_heads, n_state, head_v_dim,
         reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
@@ -15266,8 +15270,8 @@ std::vector<Tensor> e88_fused_forward(
         reinterpret_cast<__nv_bfloat16*>(S.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
         reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),
-        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()),  // Sq_cache follows checkpoints
-        16,  // checkpoint_interval
+        reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,  // Sq_cache follows checkpoints
+        checkpoint_interval,
         apply_gate,
         at::cuda::getCurrentCUDAStream());
 
@@ -15472,6 +15476,221 @@ std::vector<Tensor> e88_warp_optimized_forward(
         at::cuda::getCurrentCUDAStream());
 
     return {S, output};
+}
+
+// =============================================================================
+// E88 Warp-Optimized Backward: Precomputed indices, chunked prefetch
+// =============================================================================
+
+std::vector<Tensor> e88_warp_backward(
+    Tensor k,               // [B, T, H, n_state]
+    Tensor v,               // [B, T, H, head_v_dim]
+    Tensor q,               // [B, T, H, n_state]
+    Tensor decay,           // [B, T, H]
+    Tensor g,               // [B, T, H, head_v_dim] gate (can be empty)
+    Tensor S_cache,         // Combined checkpoints + Sq_cache
+    Tensor d_output,        // [B, T, H, head_v_dim]
+    Tensor d_k,             // [B, T, H, n_state] output
+    Tensor d_v,             // [B, T, H, head_v_dim] output
+    Tensor d_q,             // [B, T, H, n_state] output
+    Tensor d_decay,         // [B, T, H] output
+    Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
+    Tensor segment_cache,   // Pre-allocated segment cache
+    int n_heads,
+    bool has_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(d_k);
+    CHECK_INPUT(d_v);
+    CHECK_INPUT(d_q);
+    CHECK_INPUT(d_decay);
+    CHECK_INPUT(segment_cache);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Warp Backward only supports bfloat16, got ", k.scalar_type());
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    using namespace elman;
+
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_warp_backward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        has_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        has_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
+// =============================================================================
+// E88 Warp Backward SIMPLIFIED: For debugging - uses simple loop indexing
+// =============================================================================
+
+std::vector<Tensor> e88_warp_backward_simple(
+    Tensor k,               // [B, T, H, n_state]
+    Tensor v,               // [B, T, H, head_v_dim]
+    Tensor q,               // [B, T, H, n_state]
+    Tensor decay,           // [B, T, H]
+    Tensor g,               // [B, T, H, head_v_dim] gate (can be empty)
+    Tensor S_cache,         // Combined checkpoints + Sq_cache
+    Tensor d_output,        // [B, T, H, head_v_dim]
+    Tensor d_k,             // [B, T, H, n_state] output
+    Tensor d_v,             // [B, T, H, head_v_dim] output
+    Tensor d_q,             // [B, T, H, n_state] output
+    Tensor d_decay,         // [B, T, H] output
+    Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
+    Tensor segment_cache,   // Pre-allocated segment cache
+    int n_heads,
+    bool has_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(d_k);
+    CHECK_INPUT(d_v);
+    CHECK_INPUT(d_q);
+    CHECK_INPUT(d_decay);
+    CHECK_INPUT(segment_cache);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Warp Backward Simple only supports bfloat16, got ", k.scalar_type());
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    using namespace elman;
+
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_warp_backward_simple(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        has_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        has_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay};
+}
+
+std::vector<Tensor> e88_warp_backward_v2(
+    Tensor k,               // [B, T, H, n_state]
+    Tensor v,               // [B, T, H, head_v_dim]
+    Tensor q,               // [B, T, H, n_state]
+    Tensor decay,           // [B, T, H]
+    Tensor g,               // [B, T, H, head_v_dim] gate (can be empty)
+    Tensor S_cache,         // Combined checkpoints + Sq_cache
+    Tensor d_output,        // [B, T, H, head_v_dim]
+    Tensor d_k,             // [B, T, H, n_state] output
+    Tensor d_v,             // [B, T, H, head_v_dim] output
+    Tensor d_q,             // [B, T, H, n_state] output
+    Tensor d_decay,         // [B, T, H] output
+    Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
+    Tensor segment_cache,   // Pre-allocated segment cache
+    int n_heads,
+    bool has_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(d_k);
+    CHECK_INPUT(d_v);
+    CHECK_INPUT(d_q);
+    CHECK_INPUT(d_decay);
+    CHECK_INPUT(segment_cache);
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Warp Backward V2 only supports bfloat16, got ", k.scalar_type());
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    using namespace elman;
+
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_warp_backward_v2(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        has_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval,
+        has_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay};
 }
 
 // =============================================================================
@@ -16511,6 +16730,12 @@ void elman_ladder_init(py::module& m) {
           "E88 Chunked Forward: Prefetch chunks into shared memory to reduce global memory latency.");
     m.def("e88_warp_optimized_forward", &e88_warp_optimized_forward,
           "E88 Warp Optimized Forward: Full thread utilization with parallel reductions.");
+    m.def("e88_warp_backward", &e88_warp_backward,
+          "E88 Warp Backward: Precomputed indices, chunked prefetch, reduced integer divisions.");
+    m.def("e88_warp_backward_simple", &e88_warp_backward_simple,
+          "E88 Warp Backward Simple: Debugging version with simple loop indexing.");
+    m.def("e88_warp_backward_v2", &e88_warp_backward_v2,
+          "E88 Warp Backward V2: Loads k,v from segment_cache (like fused) instead of k_chunk.");
     m.def("e88_coalesced_forward", &e88_coalesced_forward,
           "E88 Coalesced Forward: Transposed state matrix for coalesced memory access.");
 
