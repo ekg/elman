@@ -83,34 +83,17 @@ __global__ void E88FLAHybridForwardKernel_BF16(
     // k_shared: N_STATE
     // v_shared: HEAD_V_DIM
     // q_shared: N_STATE
-    // retrieved: HEAD_V_DIM
+    // (retrieved eliminated - now in registers via fused column-major pass)
     float* S_shared = shared_mem;
     float* k_shared = S_shared + N_STATE * HEAD_V_DIM;
     float* v_shared = k_shared + N_STATE;
     float* q_shared = v_shared + HEAD_V_DIM;
-    float* retrieved = q_shared + N_STATE;
 
     int tid = threadIdx.x;
     constexpr int state_size = N_STATE * HEAD_V_DIM;
 
     // State offset for this (batch, head)
     int state_offset = (b * H + h) * state_size;
-
-    // OPTIMIZATION: Precompute row/col indices for this thread's work items
-    // Avoids integer division in the inner loop (expensive on GPU)
-    // Each thread handles state_size/blockDim.x elements
-    int my_start = tid;
-    int my_stride = blockDim.x;
-
-    // Precompute indices for first 4 elements (typical: 1024 state / 256 threads = 4)
-    int row0 = my_start / HEAD_V_DIM;
-    int col0 = my_start % HEAD_V_DIM;
-    int row1 = (my_start + my_stride) / HEAD_V_DIM;
-    int col1 = (my_start + my_stride) % HEAD_V_DIM;
-    int row2 = (my_start + 2*my_stride) / HEAD_V_DIM;
-    int col2 = (my_start + 2*my_stride) % HEAD_V_DIM;
-    int row3 = (my_start + 3*my_stride) / HEAD_V_DIM;
-    int col3 = (my_start + 3*my_stride) % HEAD_V_DIM;
 
     // Shared decay value (moved outside loop for better register allocation)
     __shared__ float decay_val;
@@ -145,49 +128,37 @@ __global__ void E88FLAHybridForwardKernel_BF16(
         }
         __syncthreads();  // SYNC 1: All loads complete (was 2 syncs, now 1)
 
-        // retrieved = S @ k (S is [N_STATE, HEAD_V_DIM], k is [N_STATE])
-        // retrieved[j] = sum_i S[i,j] * k[i]
+        // FUSED: retrieval + state update + output in column-major passes
+        // Each thread with tid < HEAD_V_DIM owns column j=tid.
+        // Pass 1: Compute retrieved[j] = sum_i S[i,j] * k[i]
+        // Pass 2: Update S[i,j] = tanh(decay*S[i,j] + delta[j]*k[i])
+        //         and accumulate Sq[j] = sum_i S_new[i,j] * q[i]
+        // This fuses state update + output, eliminating one __syncthreads()
+        // and one full re-read of S_shared.
         if (tid < HEAD_V_DIM) {
-            float sum = 0.0f;
+            // Pass 1: Retrieval (need full column sum before computing delta)
+            float ret_sum = 0.0f;
             #pragma unroll 8
             for (int i = 0; i < N_STATE; i++) {
-                sum += S_shared[i * HEAD_V_DIM + tid] * k_shared[i];
+                ret_sum += S_shared[i * HEAD_V_DIM + tid] * k_shared[i];
             }
-            retrieved[tid] = sum;
+            float delta_j = v_shared[tid] - ret_sum;
+
+            // Pass 2: Fused state update + output accumulation
+            float Sq = 0.0f;
+            #pragma unroll 8
+            for (int i = 0; i < N_STATE; i++) {
+                int idx = i * HEAD_V_DIM + tid;
+                float new_s = e88_tanh(decay_val * S_shared[idx] + delta_j * k_shared[i]);
+                S_shared[idx] = new_s;
+                Sq += new_s * q_shared[i];
+            }
+            Sq_cache[v_offset + tid] = __float2bfloat16(Sq);
+            output[v_offset + tid] = __float2bfloat16(Sq);
         }
         __syncthreads();
 
-        // S = tanh(decay * S + outer(delta, k))
-        // delta = v - retrieved
-        // outer(delta, k)[i,j] = delta[j] * k[i]
-        // S[i,j] = tanh(decay * S[i,j] + (v[j] - retrieved[j]) * k[i])
-        // OPTIMIZATION: Use precomputed row/col indices, avoid division in loop
-        if (my_start < state_size) {
-            float delta0 = v_shared[col0] - retrieved[col0];
-            S_shared[my_start] = e88_tanh(decay_val * S_shared[my_start] + delta0 * k_shared[row0]);
-        }
-        if (my_start + my_stride < state_size) {
-            float delta1 = v_shared[col1] - retrieved[col1];
-            S_shared[my_start + my_stride] = e88_tanh(decay_val * S_shared[my_start + my_stride] + delta1 * k_shared[row1]);
-        }
-        if (my_start + 2*my_stride < state_size) {
-            float delta2 = v_shared[col2] - retrieved[col2];
-            S_shared[my_start + 2*my_stride] = e88_tanh(decay_val * S_shared[my_start + 2*my_stride] + delta2 * k_shared[row2]);
-        }
-        if (my_start + 3*my_stride < state_size) {
-            float delta3 = v_shared[col3] - retrieved[col3];
-            S_shared[my_start + 3*my_stride] = e88_tanh(decay_val * S_shared[my_start + 3*my_stride] + delta3 * k_shared[row3]);
-        }
-        // Handle any remaining elements (for state_size > 4 * blockDim.x)
-        for (int idx = my_start + 4*my_stride; idx < state_size; idx += my_stride) {
-            int i = idx / HEAD_V_DIM;
-            int j = idx % HEAD_V_DIM;
-            float delta_j = v_shared[j] - retrieved[j];
-            S_shared[idx] = e88_tanh(decay_val * S_shared[idx] + delta_j * k_shared[i]);
-        }
-        __syncthreads();  // SYNC 3: State updated
-
-        // Save checkpoint
+        // Save checkpoint (after fused update+output, S_shared is up-to-date)
         if ((t + 1) % checkpoint_interval == 0) {
             int cp_idx = (t + 1) / checkpoint_interval;
             int cp_offset = (cp_idx * B * H + b * H + h) * state_size;
@@ -195,21 +166,6 @@ __global__ void E88FLAHybridForwardKernel_BF16(
                 S_checkpoints[cp_offset + i] = __float2bfloat16(S_shared[i]);
             }
         }
-
-        // Compute output: Sq = S^T @ q (FLA-GDN style - no self-gating)
-        // Sq[j] = sum_i S[i,j] * q[i]
-        if (tid < HEAD_V_DIM) {
-            float Sq = 0.0f;
-            #pragma unroll 8
-            for (int i = 0; i < N_STATE; i++) {
-                Sq += S_shared[i * HEAD_V_DIM + tid] * q_shared[i];
-            }
-            Sq_cache[v_offset + tid] = __float2bfloat16(Sq);
-
-            // Output directly (gating done in Python layer via g_proj)
-            output[v_offset + tid] = __float2bfloat16(Sq);
-        }
-        __syncthreads();
     }
 
     // Write final state back
@@ -1241,12 +1197,17 @@ void dispatch_e88_fla_hybrid_forward(
     int T, int B, int H, int n_state, int head_v_dim,
     const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
     const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* beta_all,  // [T, B, H] write gate (can be nullptr, currently unused)
     __nv_bfloat16* S, __nv_bfloat16* output,
     __nv_bfloat16* S_checkpoints, __nv_bfloat16* Sq_cache,
     int checkpoint_interval, cudaStream_t stream
 ) {
+    // TODO: beta_all write gate support - currently ignored
+    (void)beta_all;
     int state_size = n_state * head_v_dim;
-    int shared_size = (state_size + n_state + head_v_dim + n_state + head_v_dim) * sizeof(float);
+    // Shared memory: S_shared(state_size) + k(n_state) + v(head_v_dim) + q(n_state)
+    // (retrieved array eliminated by fused column-major pass - now in registers)
+    int shared_size = (state_size + n_state + head_v_dim + n_state) * sizeof(float);
     int threads = min(256, state_size);
     int num_blocks = B * H;
 
@@ -1351,14 +1312,19 @@ void dispatch_e88_fla_hybrid_backward(
     int T, int B, int H, int n_state, int head_v_dim,
     const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
     const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* beta_all,  // [T, B, H] write gate (can be nullptr, currently unused)
     const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
     const __nv_bfloat16* d_output,
     __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
     __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* d_beta_all,  // [T, B, H] gradient for write gate (can be nullptr)
     float* S_global, float* dS_global,  // For global memory fallback (can be nullptr if not needed)
     __nv_bfloat16* segment_state_cache,  // [B*H, checkpoint_interval, n_state, head_v_dim] for O(T) caching
     int checkpoint_interval, cudaStream_t stream
 ) {
+    // TODO: beta_all write gate support - currently ignored
+    (void)beta_all;
+    (void)d_beta_all;
     int state_size = n_state * head_v_dim;
     // Shared memory: S, dS, S_t, dtanh (4*state_size) + k,q,d_k,d_q (4*n_state) + v,delta,retrieved,d_v,d_Sq,d_delta (6*head_v_dim) + warp_results (8)
     int shared_size = (4 * state_size + 4 * n_state + 6 * head_v_dim + 8) * sizeof(float);
@@ -1523,6 +1489,39 @@ void E88FLAHybridForward<DataT>::Run(
         T, B, H, n, v_dim,
         (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
         (const __nv_bfloat16*)q, (const __nv_bfloat16*)decay,
+        nullptr,  // beta_all (no write gate)
+        (__nv_bfloat16*)S, (__nv_bfloat16*)output,
+        (__nv_bfloat16*)s_checkpoints, (__nv_bfloat16*)sq_cache,
+        E88_CHECKPOINT_INTERVAL, stream_);
+}
+
+template<typename DataT>
+void E88FLAHybridForward<DataT>::RunWithBeta(
+    int steps,
+    const DataT* k,
+    const DataT* v,
+    const DataT* q,
+    const DataT* decay,
+    const DataT* beta,
+    DataT* S,
+    DataT* output,
+    DataT* S_cache
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int v_dim = head_v_dim_;
+    int H = n_heads_;
+
+    int num_checkpoints = (T + E88_CHECKPOINT_INTERVAL - 1) / E88_CHECKPOINT_INTERVAL + 1;
+    DataT* s_checkpoints = S_cache;
+    DataT* sq_cache = S_cache + num_checkpoints * B * H * n * v_dim;
+
+    dispatch_e88_fla_hybrid_forward(
+        T, B, H, n, v_dim,
+        (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
+        (const __nv_bfloat16*)q, (const __nv_bfloat16*)decay,
+        (const __nv_bfloat16*)beta,
         (__nv_bfloat16*)S, (__nv_bfloat16*)output,
         (__nv_bfloat16*)s_checkpoints, (__nv_bfloat16*)sq_cache,
         E88_CHECKPOINT_INTERVAL, stream_);
@@ -1613,12 +1612,52 @@ void E88FLAHybridBackward<DataT>::Run(
         T, B, H, n, v_dim,
         (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
         (const __nv_bfloat16*)q, (const __nv_bfloat16*)decay,
+        nullptr,  // beta_all (no write gate)
         (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache,
         (const __nv_bfloat16*)d_output,
         (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v,
         (__nv_bfloat16*)d_q, (__nv_bfloat16*)d_decay,
-        S_global_, dS_global_,  // Pass global memory buffers (nullptr if not using global fallback)
-        (__nv_bfloat16*)segment_state_cache_,  // Segment cache for O(T) backward
+        nullptr,  // d_beta_all (no write gate)
+        S_global_, dS_global_,
+        (__nv_bfloat16*)segment_state_cache_,
+        E88_CHECKPOINT_INTERVAL, stream_);
+}
+
+template<typename DataT>
+void E88FLAHybridBackward<DataT>::RunWithBeta(
+    int steps,
+    const DataT* k,
+    const DataT* v,
+    const DataT* q,
+    const DataT* decay,
+    const DataT* beta,
+    const DataT* S_checkpoints,
+    const DataT* Sq_cache,
+    const DataT* d_output,
+    DataT* d_k,
+    DataT* d_v,
+    DataT* d_q,
+    DataT* d_decay,
+    DataT* d_beta
+) {
+    int T = steps;
+    int B = batch_size_;
+    int n = n_state_;
+    int v_dim = head_v_dim_;
+    int H = n_heads_;
+
+    dispatch_e88_fla_hybrid_backward(
+        T, B, H, n, v_dim,
+        (const __nv_bfloat16*)k, (const __nv_bfloat16*)v,
+        (const __nv_bfloat16*)q, (const __nv_bfloat16*)decay,
+        (const __nv_bfloat16*)beta,
+        (const __nv_bfloat16*)S_checkpoints, (const __nv_bfloat16*)Sq_cache,
+        (const __nv_bfloat16*)d_output,
+        (__nv_bfloat16*)d_k, (__nv_bfloat16*)d_v,
+        (__nv_bfloat16*)d_q, (__nv_bfloat16*)d_decay,
+        (__nv_bfloat16*)d_beta,
+        S_global_, dS_global_,
+        (__nv_bfloat16*)segment_state_cache_,
         E88_CHECKPOINT_INTERVAL, stream_);
 }
 

@@ -71,6 +71,20 @@ KNOWN_GOOD_CONFIGS = {
             {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},  # 519.8M (8.3%)
         ],
     },
+    # e88_fused uses same configs as e88 (fused kernel, same semantics)
+    'e88_fused': {
+        16: [
+            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},
+            {'dim': 1408, 'n_heads': 84, 'depth': 46, 'lr': 0.0008333},
+            {'dim': 1536, 'n_heads': 95, 'depth': 37, 'lr': 0.0006277},
+            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},
+        ],
+        32: [
+            {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},
+            {'dim': 1408, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},
+            {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},
+        ],
+    },
 }
 
 # E90 valid (k_fast, k_slow) configurations
@@ -94,6 +108,7 @@ _E88_SEARCH_SPACE = {
 SEARCH_SPACES = {
     # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
     'e88': _E88_SEARCH_SPACE,  # baseline: use_gate=1, linear_state=0
+    'e88_fused': _E88_SEARCH_SPACE,  # E88 with fused CUDA kernel (faster training)
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
     'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
     'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
@@ -163,6 +178,7 @@ SEARCH_SPACES = {
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
 DISCRETE_SWEEP_PARAMS = {
     'e88': {'n_state': [16, 32]},
+    'e88_fused': {'n_state': [16, 32]},  # fused CUDA kernel variant
     'e88-linear': {'n_state': [16, 32]},  # ablation: remove tanh
     'e88-nogate': {'n_state': [16, 32]},  # ablation: remove gating
     'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
@@ -291,8 +307,8 @@ def estimate_params_for_config(params, model_type):
     dim = params.get('dim', 1024)
     depth = params.get('depth', 20)
 
-    if model_type in ('e88', 'e88-linear', 'e88-nogate', 'e88-minimal', 'e88-wgate'):
-        # All E88 ablations have ~same param count (ablations only affect computation, not params)
+    if model_type in ('e88', 'e88_fused', 'e88-linear', 'e88-nogate', 'e88-minimal', 'e88-wgate'):
+        # All E88 variants have ~same param count (ablations only affect computation, not params)
         # Note: e88-wgate adds small write_gate_proj (dim -> n_heads) but negligible
         use_gate = model_type not in ('e88-nogate', 'e88-minimal')
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
@@ -371,6 +387,17 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--expansion', '1.0',  # Fixed - E88 requires square state
             '--use_gate', '1',  # Gate enabled - best result (0.8272) was WITH gate
             '--gate_activation', 'silu',  # SiLU gating
+        ])
+
+    elif model_type == 'e88_fused':
+        # E88 with fused CUDA kernel (faster training, same semantics)
+        cmd.extend([
+            '--level', 'e88_fused',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
         ])
 
     elif model_type == 'e88-linear':

@@ -40,6 +40,7 @@ from elman.models.lstm_baseline import LSTMLM
 from elman.models.min_rnn_baseline import MinGRULM, MinLSTMLM
 from elman.models.cuda_gru import CudaGRULM
 from elman.models.cuda_lstm import CudaLSTMLM
+from elman.models.e88_fused import E88FusedLM
 
 
 def parse_args():
@@ -362,6 +363,17 @@ def train(args):
             dim=args.dim,
             depth=args.depth,
             expansion_factor=args.expansion,
+        )
+    elif args.level.lower() == 'e88_fused':
+        # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)
+        model = E88FusedLM(
+            vocab_size=256,
+            dim=args.dim,
+            depth=args.depth,
+            n_heads=args.n_heads,
+            n_state=args.n_state,
+            expansion=args.expansion,
+            use_gate=bool(args.use_gate),
         )
     elif args.dim is not None and args.depth is not None:
         model = LadderLM(

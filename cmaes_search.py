@@ -69,6 +69,27 @@ SEARCH_SPACES = {
         'use_gate': (0, 1, 'binary', 'Use output gating (0=no, 1=yes)'),
         'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
     },
+    'e88-writegate': {
+        # E88 with write gate (beta) - gates how much delta gets written to memory
+        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, use_gate) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_heads': (32, 160, 'int', 'Number of attention heads'),
+        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
+        'depth': (12, 40, 'int', 'Number of layers'),
+        'use_gate': (0, 1, 'binary', 'Use output gating (0=no, 1=yes)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
+    'e88_fused': {
+        # E88 Fused: Optimized kernel with [B,T,H,dim] layout (no transpose overhead)
+        # Same search space as e88 but uses E88FusedLM for faster training
+        # 6D: capacity (dim, depth) + architecture (n_heads, n_state, use_gate) + lr
+        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'n_heads': (32, 160, 'int', 'Number of attention heads'),
+        'n_state': (16, 64, 'e88_n_state', 'State dimension (only 16,32,48,64 supported)'),
+        'depth': (8, 40, 'int', 'Number of layers'),
+        'use_gate': (0, 1, 'binary', 'Use output gating (0=no, 1=yes)'),
+        'lr': (1e-5, 1e-3, 'log', 'Learning rate (log scale)'),
+    },
     'fla-gdn': {
         # 6D: capacity (dim, depth) + architecture (expansion, n_heads, use_conv) + lr
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -395,7 +416,7 @@ def estimate_params_for_dim(params, model_type, dim):
     depth = params.get('depth', 20)
     expansion = params.get('expansion', 2)
 
-    if model_type == 'e88':
+    if model_type in ('e88', 'e88-writegate', 'e88_fused'):
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32), expansion=params.get('expansion', 1.0),
                                use_gate=True)
@@ -438,7 +459,7 @@ def estimate_params_for_dim(params, model_type, dim):
 
 def estimate_dim_and_params(params, model_type, target_params):
     """Calculate dim to hit target params, return (dim, actual_params)."""
-    if model_type == 'e88':
+    if model_type in ('e88', 'e88-writegate', 'e88_fused'):
         n_heads = params['n_heads']
         n_state = params['n_state']
         depth = params['depth']
@@ -670,6 +691,29 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
         ])
         if use_gate:
             cmd.extend(['--gate_activation', 'silu'])
+    elif model_type == 'e88-writegate':
+        # E88 with write gate (beta) enabled
+        use_gate = params.get('use_gate', 1)
+        cmd.extend([
+            '--level', 'E88',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', str(params.get('expansion', 1.0)),
+            '--use_gate', str(use_gate),
+            '--use_write_gate', '1',  # Enable write gate (beta)
+        ])
+        if use_gate:
+            cmd.extend(['--gate_activation', 'silu'])
+    elif model_type == 'e88_fused':
+        # E88 Fused: Optimized kernel with [B,T,H,dim] layout (no transpose)
+        use_gate = params.get('use_gate', 1)
+        cmd.extend([
+            '--level', 'e88_fused',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', str(params.get('expansion', 1.0)),
+            '--use_gate', str(use_gate),
+        ])
     elif model_type == 'fla-gdn':
         use_conv = params.get('use_conv', 1)
         cmd.extend([
@@ -1058,7 +1102,7 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
 def main():
     parser = argparse.ArgumentParser(description='CMA-ES search for optimal model config')
     parser.add_argument('--model', type=str, required=True,
-                        choices=['e88', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88', 'e90', 'e1', 'e23', 'e42', 'e75'],
+                        choices=['e88', 'e88_fused', 'e88-writegate', 'fla-gdn', 'mamba2', 'transformer', 'gru', 'lstm', 'mingru', 'minlstm', 'mom-e88', 'e90', 'e1', 'e23', 'e42', 'e75'],
                         help='Model type to optimize')
     parser.add_argument('--generations', type=int, default=20,
                         help='Number of CMA-ES generations (max if using --converge)')
@@ -1128,6 +1172,10 @@ def main():
         print(f"python train.py --level E88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
               f"--lr {lr} --expansion {best_params.get('expansion', 1.0)} --use_gate 1 --gate_activation silu --train_minutes 30")
+    elif args.model == 'e88_fused':
+        print(f"python train.py --level e88_fused --dim {dim} --n_heads {best_params['n_heads']} "
+              f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
+              f"--lr {lr} --expansion {best_params.get('expansion', 1.0)} --use_gate 1 --train_minutes 30")
     elif args.model == 'fla-gdn':
         print(f"python train.py --level fla-gdn --dim {dim} --depth {best_params['depth']} "
               f"--expansion {best_params['expansion']} --n_heads {best_params.get('n_heads', 16)} "
