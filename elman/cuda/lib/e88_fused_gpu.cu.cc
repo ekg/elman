@@ -448,11 +448,13 @@ __global__ void E88FusedBackwardKernel_BF16(
             }
             __syncthreads();
 
+            // Fused d_k: both dS*dtanh contribution and retrieved gradient in single loop
             if (tid < N_STATE) {
                 float d_k_local = 0.0f;
                 for (int j = 0; j < HEAD_V_DIM; j++) {
                     float d_pre = dS[tid * HEAD_V_DIM + j] * dtanh[tid * HEAD_V_DIM + j];
                     d_k_local += d_pre * delta[j];
+                    d_k_local += S[tid * HEAD_V_DIM + j] * (-d_delta[j]);
                 }
                 d_k[tid] = d_k_local;
             }
@@ -486,16 +488,6 @@ __global__ void E88FusedBackwardKernel_BF16(
                     load_val += __shfl_xor_sync(0xFFFFFFFF, load_val, offset);
                 }
                 d_decay_accum = load_val;
-            }
-            __syncthreads();
-
-            // d_k from retrieved
-            if (tid < N_STATE) {
-                float d_k_from_retrieved = 0.0f;
-                for (int j = 0; j < HEAD_V_DIM; j++) {
-                    d_k_from_retrieved += S[tid * HEAD_V_DIM + j] * (-d_delta[j]);
-                }
-                d_k[tid] += d_k_from_retrieved;
             }
             __syncthreads();
 

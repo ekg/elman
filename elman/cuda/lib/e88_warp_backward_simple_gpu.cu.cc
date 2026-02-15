@@ -1,8 +1,16 @@
 /**
- * E88 Warp Backward SIMPLIFIED - For debugging
+ * E88 Warp Backward SIMPLIFIED - Fixed version with chunk prefetching
  *
- * Removes precomputed indices to test if that's the bug source.
- * Uses simple loop-based indexing like the fused backward.
+ * Fixes applied (from V2 investigation):
+ * 1. Per-timestep loading in forward replay (not bulk prefetch) to match fused kernel
+ * 2. Read k, v from segment cache in backward phase (not stale prefetch buffers)
+ * 3. Add __syncthreads() between d_delta and d_k computation
+ *
+ * Optimization: Chunk-based prefetching for backward phase
+ * - Bulk load q, d_output, g, Sq_cache for entire segment into shared memory
+ *   AFTER forward replay completes (fresh data, not stale)
+ * - Backward loop reads from shared memory instead of global memory
+ * - Mirrors the forward kernel's chunk prefetch pattern
  */
 
 #include <cuda_runtime.h>
@@ -63,17 +71,22 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
     float* dS = S + state_size;
     float* S_t = dS + state_size;
     float* dtanh_buf = S_t + state_size;
-    float* k_chunk = dtanh_buf + state_size;
-    float* v_chunk = k_chunk + CHUNK_SIZE * N_STATE;
-    float* q_chunk = v_chunk + CHUNK_SIZE * HEAD_V_DIM;
-    float* decay_chunk = q_chunk + CHUNK_SIZE * N_STATE;
-    float* g_chunk = decay_chunk + CHUNK_SIZE;
-    float* delta_buf = g_chunk + (has_gate ? CHUNK_SIZE * HEAD_V_DIM : 0);
+    float* k = dtanh_buf + state_size;          // Single timestep k buffer
+    float* v = k + N_STATE;                     // Single timestep v buffer
+    float* q = v + HEAD_V_DIM;                  // Single timestep q buffer (still used as scratch)
+    float* delta_buf = q + N_STATE;
     float* d_delta_buf = delta_buf + HEAD_V_DIM;
     float* d_k_buf = d_delta_buf + HEAD_V_DIM;
     float* d_q_buf = d_k_buf + N_STATE;
     float* d_Sq_buf = d_q_buf + N_STATE;
     float* warp_results = d_Sq_buf + HEAD_V_DIM;
+
+    // Chunk prefetch buffers for backward phase (loaded once per segment)
+    float* q_chunk = warp_results + 8;                          // CHUNK_SIZE * N_STATE
+    float* d_out_chunk = q_chunk + CHUNK_SIZE * N_STATE;        // CHUNK_SIZE * HEAD_V_DIM
+    float* Sq_chunk = d_out_chunk + CHUNK_SIZE * HEAD_V_DIM;    // CHUNK_SIZE * HEAD_V_DIM
+    float* g_chunk = Sq_chunk + CHUNK_SIZE * HEAD_V_DIM;        // CHUNK_SIZE * HEAD_V_DIM (conditional, but always allocated)
+    float* decay_bwd_chunk = g_chunk + CHUNK_SIZE * HEAD_V_DIM; // CHUNK_SIZE
 
     // Segment cache
     int cache_entry_size = state_size + N_STATE + HEAD_V_DIM + 1;
@@ -103,52 +116,56 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
         }
         __syncthreads();
 
-        // Prefetch k, v, decay
-        for (int i = tid; i < seg_len * N_STATE; i += num_threads) {
-            int t_local = i / N_STATE;
-            int k_idx = i % N_STATE;
-            int t = t_start + t_local;
-            k_chunk[t_local * N_STATE + k_idx] = __bfloat162float(k_all[((b * T + t) * H + h) * N_STATE + k_idx]);
-        }
-        for (int i = tid; i < seg_len * HEAD_V_DIM; i += num_threads) {
-            int t_local = i / HEAD_V_DIM;
-            int v_idx = i % HEAD_V_DIM;
-            int t = t_start + t_local;
-            v_chunk[t_local * HEAD_V_DIM + v_idx] = __bfloat162float(v_all[((b * T + t) * H + h) * HEAD_V_DIM + v_idx]);
-        }
-        for (int i = tid; i < seg_len; i += num_threads) {
-            decay_chunk[i] = __bfloat162float(decay_all[(b * T + t_start + i) * H + h]);
-        }
-        __syncthreads();
-
-        // Forward replay - using SIMPLE loop indexing (no precomputed indices)
+        // Forward replay - load per-timestep like fused kernel (FIX #1)
+        __shared__ float decay_val_replay;
         for (int local_t = 0; local_t < seg_len; local_t++) {
+            int t = t_start + local_t;
+
+            // Save S_{t-1} before update
             __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
             for (int i = tid; i < state_size; i += num_threads) {
                 S_cache_slot[i] = __float2bfloat16(S[i]);
             }
 
-            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
-            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            // Load inputs per-timestep from global memory (matching fused kernel exactly)
+            int k_offset = ((b * T + t) * H + h) * N_STATE;
+            int v_offset = ((b * T + t) * H + h) * HEAD_V_DIM;
+            int decay_offset = (b * T + t) * H + h;
+
             if (tid < N_STATE) {
-                k_cache_slot[tid] = __float2bfloat16(k_chunk[local_t * N_STATE + tid]);
+                k[tid] = __bfloat162float(k_all[k_offset + tid]);
             }
             if (tid < HEAD_V_DIM) {
-                v_cache_slot[tid] = __float2bfloat16(v_chunk[local_t * HEAD_V_DIM + tid]);
-            }
-            if (tid == 0) {
-                decay_cache_base[local_t] = __float2bfloat16(decay_chunk[local_t]);
+                v[tid] = __bfloat162float(v_all[v_offset + tid]);
             }
             __syncthreads();
 
-            float decay_val = decay_chunk[local_t];
+            if (tid == 0) {
+                decay_val_replay = __bfloat162float(decay_all[decay_offset]);
+            }
+            __syncthreads();
+
+            // Cache k, v, decay for backward phase
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+            if (tid < N_STATE) {
+                k_cache_slot[tid] = __float2bfloat16(k[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v_cache_slot[tid] = __float2bfloat16(v[tid]);
+            }
+            if (tid == 0) {
+                decay_cache_base[local_t] = __float2bfloat16(decay_val_replay);
+            }
+            __syncthreads();
+
             if (tid < HEAD_V_DIM) {
                 float sum = 0.0f;
                 #pragma unroll 8
                 for (int i = 0; i < N_STATE; i++) {
-                    sum += S[i * HEAD_V_DIM + tid] * k_chunk[local_t * N_STATE + i];
+                    sum += S[i * HEAD_V_DIM + tid] * k[i];
                 }
-                delta_buf[tid] = v_chunk[local_t * HEAD_V_DIM + tid] - sum;
+                delta_buf[tid] = v[tid] - sum;
             }
             __syncthreads();
 
@@ -156,37 +173,72 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
             for (int idx = tid; idx < state_size; idx += num_threads) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                float k_val = k_chunk[local_t * N_STATE + i];
-                float d_val = delta_buf[j];
-                S[idx] = e88_simple_tanh(decay_val * S[idx] + k_val * d_val);
+                S[idx] = e88_simple_tanh(decay_val_replay * S[idx] + k[i] * delta_buf[j]);
             }
             __syncthreads();
         }
 
-        // Phase 2: Backward pass
+        // Phase 2: Bulk prefetch q, d_output, g, Sq_cache for entire segment
+        // These are read-only during backward and benefit from shared memory caching
         for (int i = tid; i < seg_len * N_STATE; i += num_threads) {
-            int t_local = i / N_STATE;
-            int q_idx = i % N_STATE;
-            int t = t_start + t_local;
-            q_chunk[t_local * N_STATE + q_idx] = __bfloat162float(q_all[((b * T + t) * H + h) * N_STATE + q_idx]);
+            int lt = i / N_STATE;
+            int qi = i % N_STATE;
+            int t = t_start + lt;
+            q_chunk[lt * N_STATE + qi] = __bfloat162float(q_all[((b * T + t) * H + h) * N_STATE + qi]);
+        }
+        for (int i = tid; i < seg_len * HEAD_V_DIM; i += num_threads) {
+            int lt = i / HEAD_V_DIM;
+            int vi = i % HEAD_V_DIM;
+            int t = t_start + lt;
+            d_out_chunk[lt * HEAD_V_DIM + vi] = __bfloat162float(d_output[((b * T + t) * H + h) * HEAD_V_DIM + vi]);
         }
         if (has_gate && g_all != nullptr) {
             for (int i = tid; i < seg_len * HEAD_V_DIM; i += num_threads) {
-                int t_local = i / HEAD_V_DIM;
-                int g_idx = i % HEAD_V_DIM;
-                int t = t_start + t_local;
-                g_chunk[t_local * HEAD_V_DIM + g_idx] = __bfloat162float(g_all[((b * T + t) * H + h) * HEAD_V_DIM + g_idx]);
+                int lt = i / HEAD_V_DIM;
+                int gi = i % HEAD_V_DIM;
+                int t = t_start + lt;
+                g_chunk[lt * HEAD_V_DIM + gi] = __bfloat162float(g_all[((b * T + t) * H + h) * HEAD_V_DIM + gi]);
             }
+            for (int i = tid; i < seg_len * HEAD_V_DIM; i += num_threads) {
+                int lt = i / HEAD_V_DIM;
+                int si = i % HEAD_V_DIM;
+                int t = t_start + lt;
+                Sq_chunk[lt * HEAD_V_DIM + si] = __bfloat162float(Sq_cache[((b * T + t) * H + h) * HEAD_V_DIM + si]);
+            }
+        }
+        for (int i = tid; i < seg_len; i += num_threads) {
+            decay_bwd_chunk[i] = __bfloat162float(decay_cache_base[i]);
         }
         __syncthreads();
 
+        // Phase 2: Backward pass - S, k, v from segment cache; q, d_output, g from chunk buffers
+        __shared__ float decay_val;
         for (int local_t = seg_len - 1; local_t >= 0; local_t--) {
             int t = t_start + local_t;
-            float decay_val = decay_chunk[local_t];
 
+            // Load S, k, v from segment cache (like fused backward)
             __nv_bfloat16* S_cache_slot = S_cache_base + (size_t)local_t * state_size;
+            __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
+            __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
+
             for (int i = tid; i < state_size; i += num_threads) {
                 S[i] = __bfloat162float(S_cache_slot[i]);
+            }
+            if (tid < N_STATE) {
+                k[tid] = __bfloat162float(k_cache_slot[tid]);
+            }
+            if (tid < HEAD_V_DIM) {
+                v[tid] = __bfloat162float(v_cache_slot[tid]);
+            }
+
+            // Load q from chunk buffer (replaces global memory read)
+            if (tid < N_STATE) {
+                q[tid] = q_chunk[local_t * N_STATE + tid];
+            }
+
+            // Load decay from chunk buffer
+            if (tid == 0) {
+                decay_val = decay_bwd_chunk[local_t];
             }
             __syncthreads();
 
@@ -194,9 +246,9 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
                 float sum = 0.0f;
                 #pragma unroll 8
                 for (int i = 0; i < N_STATE; i++) {
-                    sum += S[i * HEAD_V_DIM + tid] * k_chunk[local_t * N_STATE + i];
+                    sum += S[i * HEAD_V_DIM + tid] * k[i];
                 }
-                delta_buf[tid] = v_chunk[local_t * HEAD_V_DIM + tid] - sum;
+                delta_buf[tid] = v[tid] - sum;
             }
             __syncthreads();
 
@@ -204,7 +256,7 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
             for (int idx = tid; idx < state_size; idx += num_threads) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                float k_val = k_chunk[local_t * N_STATE + i];
+                float k_val = k[i];
                 float d_val = delta_buf[j];
                 float pre_tanh = decay_val * S[idx] + k_val * d_val;
                 float tv = e88_simple_tanh(pre_tanh);
@@ -214,12 +266,14 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
             __syncthreads();
 
             int v_offset = ((b * T + t) * H + h) * HEAD_V_DIM;
+            int k_offset = ((b * T + t) * H + h) * N_STATE;
             if (tid < HEAD_V_DIM) {
-                float d_out = __bfloat162float(d_output[v_offset + tid]);
+                // Read d_output and g from chunk buffers (replaces global memory reads)
+                float d_out = d_out_chunk[local_t * HEAD_V_DIM + tid];
 
                 if (has_gate && g_all != nullptr) {
                     float g_val = g_chunk[local_t * HEAD_V_DIM + tid];
-                    float Sq_val = __bfloat162float(Sq_cache[v_offset + tid]);
+                    float Sq_val = Sq_chunk[local_t * HEAD_V_DIM + tid];
                     float sig_g = e88_simple_sigmoid(g_val);
                     float silu_g = g_val * sig_g;
                     d_Sq_buf[tid] = d_out * silu_g;
@@ -245,7 +299,7 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
             for (int idx = tid; idx < state_size; idx += num_threads) {
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
-                dS[idx] += q_chunk[local_t * N_STATE + i] * d_Sq_buf[j];
+                dS[idx] += q[i] * d_Sq_buf[j];
             }
             __syncthreads();
 
@@ -254,16 +308,20 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
                 #pragma unroll 8
                 for (int i = 0; i < N_STATE; i++) {
                     float d_pre = dS[i * HEAD_V_DIM + tid] * dtanh_buf[i * HEAD_V_DIM + tid];
-                    d_delta_local += d_pre * k_chunk[local_t * N_STATE + i];
+                    d_delta_local += d_pre * k[i];
                 }
                 d_delta_buf[tid] = d_delta_local;
             }
+            __syncthreads();  // FIX #3: sync between d_delta and d_k
+
+            // Fused d_k: both dS*dtanh contribution and retrieved gradient in single loop
             if (tid < N_STATE) {
                 float d_k_local = 0.0f;
                 #pragma unroll 8
                 for (int j = 0; j < HEAD_V_DIM; j++) {
                     float d_pre = dS[tid * HEAD_V_DIM + j] * dtanh_buf[tid * HEAD_V_DIM + j];
                     d_k_local += d_pre * delta_buf[j];
+                    d_k_local += S[tid * HEAD_V_DIM + j] * (-d_delta_buf[j]);
                 }
                 d_k_buf[tid] = d_k_local;
             }
@@ -299,17 +357,6 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
             }
             __syncthreads();
 
-            if (tid < N_STATE) {
-                float d_k_from_retrieved = 0.0f;
-                #pragma unroll 8
-                for (int j = 0; j < HEAD_V_DIM; j++) {
-                    d_k_from_retrieved += S[tid * HEAD_V_DIM + j] * (-d_delta_buf[j]);
-                }
-                d_k_buf[tid] += d_k_from_retrieved;
-            }
-            __syncthreads();
-
-            int k_offset = ((b * T + t) * H + h) * N_STATE;
             int decay_offset = (b * T + t) * H + h;
             if (tid < N_STATE) {
                 d_k_all[k_offset + tid] = __float2bfloat16(d_k_buf[tid]);
@@ -327,8 +374,7 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
                 int i = idx / HEAD_V_DIM;
                 int j = idx % HEAD_V_DIM;
                 float d_pre = dS[idx] * dtanh_buf[idx];
-                float k_val = k_chunk[local_t * N_STATE + i];
-                dS[idx] = d_pre * decay_val + (-d_delta_buf[j]) * k_val;
+                dS[idx] = d_pre * decay_val + (-d_delta_buf[j]) * k[i];
             }
             __syncthreads();
         }
@@ -347,18 +393,31 @@ void dispatch_e88_warp_backward_simple(
     bool has_gate, cudaStream_t stream
 ) {
     int num_blocks = B * H;
-    int threads_per_block = 128;
+    // Adaptive thread count: reduce idle threads in guarded phases for small n_state
+    // n_state=16 → 64 threads (25% guarded utilization, 4 loop iters)
+    // n_state=32 → 256 threads (12.5% guarded utilization, 4 loop iters)
+    // n_state=48+ → 256 threads (capped)
+    int threads_per_block = min(256, max(64, (n_state * head_v_dim) / 4));
 
     constexpr int CHUNK_SIZE = E88_WARP_BACKWARD_SIMPLE_CHUNK_SIZE;
 
+    // Shared memory: 4 state buffers + single-timestep k,v,q + work buffers + chunk prefetch buffers
     #define DISPATCH_SIMPLE(NS, HV) \
         do { \
             size_t shmem_size = (NS * HV) * 4 + \
-                                (CHUNK_SIZE * NS) + (CHUNK_SIZE * HV) + (CHUNK_SIZE * NS) + \
-                                CHUNK_SIZE + (has_gate ? CHUNK_SIZE * HV : 0) + \
-                                HV + HV + NS + NS + HV + 8; \
+                                NS + HV + NS + \
+                                HV + HV + NS + NS + HV + 8 + \
+                                CHUNK_SIZE * NS + \
+                                CHUNK_SIZE * HV + \
+                                CHUNK_SIZE * HV + \
+                                CHUNK_SIZE * HV + \
+                                CHUNK_SIZE; \
             shmem_size *= sizeof(float); \
-            E88WarpBackwardSimpleKernel_BF16<NS, HV, CHUNK_SIZE><<<num_blocks, threads_per_block, shmem_size, stream>>>( \
+            auto kernel = E88WarpBackwardSimpleKernel_BF16<NS, HV, CHUNK_SIZE>; \
+            if (shmem_size > 48 * 1024) { \
+                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shmem_size); \
+            } \
+            kernel<<<num_blocks, threads_per_block, shmem_size, stream>>>( \
                 T, B, H, k, v, q, decay, g, S_checkpoints, Sq_cache, d_output, \
                 d_k, d_v, d_q, d_decay, d_g, segment_cache, checkpoint_interval, has_gate \
             ); \
