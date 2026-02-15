@@ -99,22 +99,14 @@ class E88FusedCUDAFunction(torch.autograd.Function):
             dtype=k.dtype, device=k.device
         )
 
-        # Select backward kernel based on n_state
-        # warp_simple is 1.43x faster for n_state <= 16
-        if n_state <= 16:
-            hasty_pytorch_lib.e88_warp_backward_simple(
-                k, v, q, decay, g if apply_gate else None,
-                S_cache, d_output.contiguous(),
-                d_k, d_v, d_q, d_decay, d_g,
-                segment_cache, H, apply_gate
-            )
-        else:
-            hasty_pytorch_lib.e88_warp_backward_v2(
-                k, v, q, decay, g if apply_gate else None,
-                S_cache, d_output.contiguous(),
-                d_k, d_v, d_q, d_decay, d_g,
-                segment_cache, H, apply_gate
-            )
+        # Use fused_backward - benchmarked fastest for n_state=32
+        # fused: 9.78ms vs warp_v2: 10.51ms vs warp_simple: slower
+        hasty_pytorch_lib.e88_fused_backward(
+            k, v, q, decay, g if apply_gate else None,
+            S_cache, d_output.contiguous(),
+            d_k, d_v, d_q, d_decay, d_g,
+            segment_cache, H, apply_gate
+        )
 
         return None, d_k, d_v, d_q, d_decay, d_g, None, None, None
 
