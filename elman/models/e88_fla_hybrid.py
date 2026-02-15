@@ -91,6 +91,8 @@ try:
     E88_OPTIMIZED_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_fused_forward')
     E88_WARP_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_warp_optimized_forward')
     E88_COALESCED_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_coalesced_forward')
+    # E88 register-owned backward kernel (5-6x faster for n_state <= 32, head_v_dim <= 32)
+    E88_REGISTER_OWNED_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_register_owned_backward')
 except ImportError:
     E88_NATIVE_CUDA_AVAILABLE = False
     E88_CUBLAS_BACKWARD_AVAILABLE = False
@@ -101,6 +103,7 @@ except ImportError:
     E88_OPTIMIZED_AVAILABLE = False
     E88_WARP_AVAILABLE = False
     E88_COALESCED_AVAILABLE = False
+    E88_REGISTER_OWNED_AVAILABLE = False
 
 # Global flag to enable cuBLAS backward kernel (can be toggled at runtime)
 USE_CUBLAS_BACKWARD = False
@@ -556,15 +559,27 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
             dtype=k.dtype, device=k.device
         )
 
-        # Call fused backward kernel
-        hasty_pytorch_lib.e88_fused_backward(
-            k, v, q, decay,
-            g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype),
-            S_cache, d_output.contiguous(),
-            d_k, d_v, d_q, d_decay,
-            d_g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype),
-            segment_cache, n_heads, apply_gate and g.numel() > 0
-        )
+        # Use register_owned_backward for supported sizes (n_state <= 32, head_v_dim <= 32)
+        # Register-owned is 5-6x faster: 1.5ms vs 10ms for 32x32
+        g_tensor = g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype)
+        d_g_tensor = d_g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype)
+        has_gate = apply_gate and g.numel() > 0
+
+        if E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
+            hasty_pytorch_lib.e88_register_owned_backward(
+                k, v, q, decay, g_tensor,
+                S_cache, d_output.contiguous(),
+                d_k, d_v, d_q, d_decay, d_g_tensor,
+                segment_cache, n_heads, has_gate
+            )
+        else:
+            # Fall back to fused_backward for larger sizes
+            hasty_pytorch_lib.e88_fused_backward(
+                k, v, q, decay, g_tensor,
+                S_cache, d_output.contiguous(),
+                d_k, d_v, d_q, d_decay, d_g_tensor,
+                segment_cache, n_heads, has_gate
+            )
 
         # Return gradients for: training, k, v, q, decay, g, S0, n_heads, apply_gate
         d_g_out = d_g if apply_gate and g.numel() > 0 else None

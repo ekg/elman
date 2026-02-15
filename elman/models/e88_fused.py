@@ -21,8 +21,10 @@ from typing import Optional, List, Tuple
 try:
     import hasty_pytorch_lib
     E88_FUSED_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_warp_optimized_forward')
+    E88_REGISTER_OWNED_AVAILABLE = hasattr(hasty_pytorch_lib, 'e88_register_owned_backward')
 except ImportError:
     E88_FUSED_AVAILABLE = False
+    E88_REGISTER_OWNED_AVAILABLE = False
 
 E88_FUSED_CHECKPOINT_INTERVAL = 16
 
@@ -99,14 +101,23 @@ class E88FusedCUDAFunction(torch.autograd.Function):
             dtype=k.dtype, device=k.device
         )
 
-        # Use fused_backward - benchmarked fastest for n_state=32
-        # fused: 9.78ms vs warp_v2: 10.51ms vs warp_simple: slower
-        hasty_pytorch_lib.e88_fused_backward(
-            k, v, q, decay, g if apply_gate else None,
-            S_cache, d_output.contiguous(),
-            d_k, d_v, d_q, d_decay, d_g,
-            segment_cache, H, apply_gate
-        )
+        # Use register_owned_backward for supported sizes (n_state <= 32, head_v_dim <= 32)
+        # Register-owned is 5-6x faster: 1.5ms vs 10ms for 32x32
+        if E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
+            hasty_pytorch_lib.e88_register_owned_backward(
+                k, v, q, decay, g if apply_gate else torch.empty(0, device=k.device, dtype=k.dtype),
+                S_cache, d_output.contiguous(),
+                d_k, d_v, d_q, d_decay, d_g if apply_gate else torch.empty(0, device=k.device, dtype=k.dtype),
+                segment_cache, H, apply_gate
+            )
+        else:
+            # Fall back to fused_backward for larger sizes
+            hasty_pytorch_lib.e88_fused_backward(
+                k, v, q, decay, g if apply_gate else None,
+                S_cache, d_output.contiguous(),
+                d_k, d_v, d_q, d_decay, d_g,
+                segment_cache, H, apply_gate
+            )
 
         return None, d_k, d_v, d_q, d_decay, d_g, None, None, None
 
