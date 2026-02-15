@@ -9427,6 +9427,21 @@ void dispatch_e88_fused_backward(
     int checkpoint_interval, bool has_gate, cudaStream_t stream
 );
 
+// Register-owned backward: 32 threads per block, state in registers
+void dispatch_e88_register_owned_backward(
+    int T, int B, int H, int n_state, int head_v_dim,
+    const __nv_bfloat16* k_all, const __nv_bfloat16* v_all,
+    const __nv_bfloat16* q_all, const __nv_bfloat16* decay_all,
+    const __nv_bfloat16* g_all,  // gate (can be nullptr)
+    const __nv_bfloat16* S_checkpoints, const __nv_bfloat16* Sq_cache,
+    const __nv_bfloat16* d_output,
+    __nv_bfloat16* d_k_all, __nv_bfloat16* d_v_all,
+    __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
+    __nv_bfloat16* d_g_all,  // gate gradient (can be nullptr)
+    __nv_bfloat16* segment_cache,
+    int checkpoint_interval, bool has_gate, cudaStream_t stream
+);
+
 // =============================================================================
 // E88 Chunked Prefetch CUDA Kernel
 //
