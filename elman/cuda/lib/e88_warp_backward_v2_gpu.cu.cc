@@ -359,8 +359,11 @@ void dispatch_e88_warp_backward_v2(
     bool has_gate, cudaStream_t stream
 ) {
     int num_blocks = B * H;
-    int state_size = n_state * head_v_dim;
-    int threads_per_block = min(256, state_size);  // Match fused kernel
+    // Adaptive thread count: reduce idle threads in guarded phases
+    // Most phases use (tid < N_STATE), so scale threads with n_state
+    // n_state=32 → 128 threads (25% guarded utilization)
+    // n_state=64+ → 256 threads
+    int threads_per_block = min(256, max(64, n_state * 4));
 
     constexpr int CHUNK_SIZE = E88_WARP_BACKWARD_V2_CHUNK_SIZE;
 

@@ -393,11 +393,12 @@ void dispatch_e88_warp_backward_simple(
     bool has_gate, cudaStream_t stream
 ) {
     int num_blocks = B * H;
-    // Adaptive thread count: reduce idle threads in guarded phases for small n_state
-    // n_state=16 → 64 threads (25% guarded utilization, 4 loop iters)
-    // n_state=32 → 256 threads (12.5% guarded utilization, 4 loop iters)
-    // n_state=48+ → 256 threads (capped)
-    int threads_per_block = min(256, max(64, (n_state * head_v_dim) / 4));
+    // Adaptive thread count: reduce idle threads in guarded phases
+    // Most phases use (tid < N_STATE), so scale threads with n_state, not state_size
+    // n_state=16 → 64 threads (25% guarded utilization)
+    // n_state=32 → 128 threads (25% guarded utilization)
+    // n_state=64+ → 256 threads (capped)
+    int threads_per_block = min(256, max(64, n_state * 4));
 
     constexpr int CHUNK_SIZE = E88_WARP_BACKWARD_SIMPLE_CHUNK_SIZE;
 
