@@ -15391,8 +15391,13 @@ std::vector<Tensor> e88_register_owned_backward(
 
     TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
                 "E88 Register-Owned Backward only supports bfloat16");
-    TORCH_CHECK(n_state == 32 && head_v_dim == 32,
-                "E88 Register-Owned Backward requires n_state=32 and head_v_dim=32");
+    // Register-owned kernel supports:
+    // - head_v_dim <= 32 (single warp, Tier 1)
+    // - n_state <= 64 (register budget)
+    TORCH_CHECK(head_v_dim <= 32,
+                "E88 Register-Owned Backward requires head_v_dim<=32 (single warp), got ", head_v_dim);
+    TORCH_CHECK(n_state <= 64,
+                "E88 Register-Owned Backward requires n_state<=64 (register budget), got ", n_state);
 
     using namespace elman;
 
@@ -16813,7 +16818,7 @@ void elman_ladder_init(py::module& m) {
     m.def("e88_warp_backward_v2", &e88_warp_backward_v2,
           "E88 Warp Backward V2: Loads k,v from segment_cache (like fused) instead of k_chunk.");
     m.def("e88_register_owned_backward", &e88_register_owned_backward,
-          "E88 Register-Owned Backward: 32 threads, state in registers. Requires n_state=32, head_v_dim=32.");
+          "E88 Register-Owned Backward: 32 threads, state in registers. Supports n_state<=64, head_v_dim<=32.");
     m.def("e88_coalesced_forward", &e88_coalesced_forward,
           "E88 Coalesced Forward: Transposed state matrix for coalesced memory access.");
 
