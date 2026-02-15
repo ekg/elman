@@ -121,7 +121,9 @@ USE_FUSED_GATE = True
 
 # Global flag to enable optimized [B, T, H, dim] layout kernels (no transpose overhead)
 # Auto-selects best kernel: warp for n_state<=32, coalesced for n_state>32 or long sequences
-USE_OPTIMIZED_KERNELS = True
+# DISABLED: e88_fused_backward has gradient scaling bug (produces ~100x larger gradients)
+# Use e88_fla_hybrid_backward instead until the bug is fixed
+USE_OPTIMIZED_KERNELS = False
 
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE

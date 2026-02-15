@@ -1,10 +1,13 @@
 """
 E88 Fused: Fully Fused CUDA Implementation
 
-Eliminates Python overhead by using [B, T, H, dim] layout directly,
-avoiding all transpose+contiguous copies.
+WARNING: This module has a known bug in the backward kernel (e88_fused_backward)
+that produces ~100x larger gradients than expected. Training will not converge.
+Use `--level E88` instead until this bug is fixed.
 
-Key improvements over e88_fla_hybrid:
+The forward kernel works correctly, but the backward kernel has a scaling issue.
+
+Original design goals (not currently working due to backward bug):
 - No transpose before CUDA kernel (saves 2.9 GB memory copies per forward)
 - Fused L2 normalization (saves 28 kernel launches per forward)
 - Fused gating (saves 14 kernel launches per forward)
