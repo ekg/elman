@@ -566,10 +566,8 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         d_g_tensor = d_g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype)
         has_gate = apply_gate and g.numel() > 0
 
-        # NOTE: register_owned_backward is correct but slower than fused_backward at larger scales
-        # Benchmarks show fused_backward is 20-50% faster for n_state=32, head_v_dim=32
-        # Keep fused_backward as default
-        if False and E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
+        # register_owned_backward is 1.5-1.6x faster than fused_backward for n_state<=32
+        if E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
             hasty_pytorch_lib.e88_register_owned_backward(
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),
