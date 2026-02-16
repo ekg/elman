@@ -209,10 +209,11 @@ __global__ void E88ChunkedForwardKernel_BF16(
                 int out_offset = ((b * T + t) * H + h) * HEAD_V_DIM + tid;
                 output[out_offset] = __float2bfloat16(out_val);
 
-                // Cache Sq for backward
+                // Cache GATED output for backward (matches e88_fused_forward format)
+                // The backward kernel expects the gated value and recovers un-gated by dividing
                 if (Sq_cache != nullptr) {
                     Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + tid] =
-                        __float2bfloat16(sq_sum);
+                        __float2bfloat16(out_val);
                 }
             }
             __syncthreads();

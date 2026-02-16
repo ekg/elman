@@ -121,9 +121,8 @@ USE_FUSED_GATE = True
 
 # Global flag to enable optimized [B, T, H, dim] layout kernels (no transpose overhead)
 # Auto-selects best kernel: warp for n_state<=32, coalesced for n_state>32 or long sequences
-# DISABLED: e88_fused_backward has gradient scaling bug (produces ~100x larger gradients)
-# Use e88_fla_hybrid_backward instead until the bug is fixed
-USE_OPTIMIZED_KERNELS = False
+# Enable optimized kernels with [B, T, H, dim] layout (no transpose overhead)
+USE_OPTIMIZED_KERNELS = True
 
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE
@@ -567,7 +566,10 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         d_g_tensor = d_g if apply_gate and g.numel() > 0 else torch.empty(0, device=k.device, dtype=k.dtype)
         has_gate = apply_gate and g.numel() > 0
 
-        if E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
+        # NOTE: register_owned_backward is correct but slower than fused_backward at larger scales
+        # Benchmarks show fused_backward is 20-50% faster for n_state=32, head_v_dim=32
+        # Keep fused_backward as default
+        if False and E88_REGISTER_OWNED_AVAILABLE and n_state <= 32 and head_v_dim <= 32:
             hasty_pytorch_lib.e88_register_owned_backward(
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),

@@ -201,8 +201,10 @@ __global__ void E88WarpOptimizedForwardKernel_BF16(
 
                 output[((b * T + t) * H + h) * HEAD_V_DIM + j] = __float2bfloat16(out_val);
 
+                // Store GATED output to Sq_cache (matches e88_fused_forward format)
+                // The backward kernel expects the gated value and recovers un-gated by dividing
                 if (Sq_cache != nullptr) {
-                    Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + j] = __float2bfloat16(sq_j);
+                    Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + j] = __float2bfloat16(out_val);
                 }
             }
             __syncthreads();
