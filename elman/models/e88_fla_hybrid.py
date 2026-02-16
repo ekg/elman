@@ -830,7 +830,7 @@ class E88FLAHybrid(nn.Module):
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
         use_output_norm: bool = False,  # E88 optimal: no output RMSNorm
         head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
-        gate_activation: str = 'sigmoid',  # Gate activation: 'sigmoid' (E88 original) or 'silu' (FLA-GDN style)
+        gate_activation: str = 'silu',  # Gate activation: 'silu' (FLA-GDN style, enables optimized kernels) or 'sigmoid'
         **kwargs
     ):
         super().__init__()
