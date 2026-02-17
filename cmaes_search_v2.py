@@ -54,6 +54,10 @@ from calc_dim import (
 # Supported n_state values for E88
 E88_SUPPORTED_N_STATE = [16, 32]
 
+# Global compile settings (set from args in main())
+COMPILE_ENABLED = False
+COMPILE_MODE = 'max-autotune'
+
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
@@ -85,6 +89,13 @@ KNOWN_GOOD_CONFIGS = {
             {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},
         ],
     },
+    'mamba2': {
+        None: [  # No n_state sweep for mamba2
+            {'dim': 1792, 'd_state': 96, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Previous CMA-ES best: 1.2713
+            {'dim': 1792, 'd_state': 64, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Default d_state
+            {'dim': 1792, 'd_state': 128, 'expand': 2, 'depth': 22, 'lr': 3e-4}, # Higher d_state
+        ],
+    },
 }
 
 # E90 valid (k_fast, k_slow) configurations
@@ -102,7 +113,7 @@ _E88_SEARCH_SPACE = {
     'n_heads': (32, 160, 'int', 'Number of attention heads'),
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 40, 'int', 'Number of layers'),
-    'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+    'lr': (1e-5, 1e-2, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
 }  # 5D (n_state swept separately)
 
 SEARCH_SPACES = {
@@ -118,60 +129,60 @@ SEARCH_SPACES = {
         'expansion': (1, 3, 'int', 'Value expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 4D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 4D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 4D
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
-        'lr': (1e-5, 1e-3, 'log', 'Learning rate'),
+        'lr': (1e-5, 1e-2, 'log', 'Learning rate'),
     },  # 5D
 }
 
@@ -317,7 +328,8 @@ def estimate_params_for_config(params, model_type):
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
-        return calc_mamba2_params(dim, depth=depth, expand=params.get('expand', 2))
+        return calc_mamba2_params(dim, depth=depth, expand=params.get('expand', 2),
+                                    d_state=params.get('d_state', 64))
     elif model_type == 'transformer':
         return calc_transformer_params(dim, depth=depth, n_heads=params.get('n_heads', 16),
                                        expansion=params.get('expansion', 4))
@@ -378,6 +390,10 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         '--save_every', '999999',  # Disable checkpoints - we only need final loss
         '--keep_checkpoints', '0',
     ]
+
+    # Add torch.compile if enabled (global settings)
+    if COMPILE_ENABLED:
+        cmd.extend(['--compile', '--compile_mode', COMPILE_MODE])
 
     if model_type == 'e88':
         cmd.extend([
@@ -453,7 +469,11 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         ])
 
     elif model_type == 'mamba2':
-        cmd.extend(['--level', 'mamba2'])
+        cmd.extend([
+            '--level', 'mamba2',
+            '--mamba_d_state', str(params.get('d_state', 64)),
+            '--mamba_expand', str(params.get('expand', 2)),
+        ])
 
     elif model_type == 'transformer':
         cmd.extend([
@@ -658,10 +678,13 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
     if model_type in KNOWN_GOOD_CONFIGS:
         # Get n_state from fixed_params if doing a sweep
         n_state = fixed_params.get('n_state') if fixed_params else None
-        if n_state and n_state in KNOWN_GOOD_CONFIGS[model_type]:
-            seed_configs = KNOWN_GOOD_CONFIGS[model_type][n_state]
+        lookup_key = n_state if n_state is not None else None
+        if lookup_key in KNOWN_GOOD_CONFIGS[model_type]:
+            seed_configs = KNOWN_GOOD_CONFIGS[model_type][lookup_key]
             for sc in seed_configs:
-                cfg = {**sc, 'n_state': n_state}  # Add n_state to config
+                cfg = {**sc}
+                if n_state is not None:
+                    cfg['n_state'] = n_state
                 if is_valid_param_count(cfg, model_type, target_params, 0.10):
                     valid_configs.append(cfg)
             if valid_configs:
@@ -952,16 +975,29 @@ def main():
     # Sweep options
     parser.add_argument('--sweep_param', type=str, default=None,
                         help='Discrete parameter to sweep (e.g., n_state)')
+    parser.add_argument('--fixed_n_state', type=int, default=None,
+                        help='Fix n_state to this value (skip sweep)')
 
     # Warm start
     parser.add_argument('--warm_start', type=str, default=None,
                         help='JSON file with warm start configs')
+
+    # torch.compile options
+    parser.add_argument('--compile', action='store_true',
+                        help='Use torch.compile for training (recommended: +17% throughput)')
+    parser.add_argument('--compile_mode', type=str, default='max-autotune',
+                        help='torch.compile mode (default, reduce-overhead, max-autotune)')
 
     args = parser.parse_args()
 
     # Parse params
     target_params = int(args.params.lower().replace('m', '000000').replace('b', '000000000'))
     gpus = [int(g) for g in args.gpus.split(',')]
+
+    # Set global compile settings
+    global COMPILE_ENABLED, COMPILE_MODE
+    COMPILE_ENABLED = args.compile
+    COMPILE_MODE = args.compile_mode
 
     # Create output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -976,11 +1012,18 @@ def main():
     print(f"Training time: {args.train_minutes} min/config")
     print(f"GPUs: {gpus}")
     print(f"Output: {output_dir}")
+    print(f"torch.compile: {COMPILE_ENABLED} (mode: {COMPILE_MODE})")
     if args.phase in ['both', 'lhs']:
         print(f"LHS samples: {args.lhs_samples}")
     if args.phase in ['both', 'cmaes']:
         print(f"Sigma: {args.sigma}, Min gens: {args.min_generations}, "
               f"Converge: {args.converge}, Consecutive: {args.consecutive}")
+
+    # Build fixed_params dict
+    fixed_params = {}
+    if args.fixed_n_state is not None:
+        fixed_params['n_state'] = args.fixed_n_state
+        print(f"Fixed n_state: {args.fixed_n_state}")
 
     # Log to file
     log_file = os.path.join(output_dir, 'search.log')
@@ -997,7 +1040,7 @@ def main():
     elif args.phase == 'lhs':
         results = run_lhs_phase(
             args.model, args.lhs_samples, args.train_minutes, output_dir, gpus,
-            target_params
+            target_params, fixed_params=fixed_params if fixed_params else None
         )
 
     elif args.phase == 'cmaes':
@@ -1020,7 +1063,7 @@ def main():
         # Phase 1: LHS
         lhs_results = run_lhs_phase(
             args.model, args.lhs_samples, args.train_minutes, output_dir, gpus,
-            target_params
+            target_params, fixed_params=fixed_params if fixed_params else None
         )
 
         # Phase 2: CMA-ES from top configs
@@ -1030,6 +1073,7 @@ def main():
             cmaes_results = run_cmaes_phase(
                 args.model, args.train_minutes, output_dir, gpus,
                 top_configs, target_params,
+                fixed_params=fixed_params if fixed_params else None,
                 sigma0=args.sigma, min_generations=args.min_generations,
                 converge_threshold=args.converge, consecutive_required=args.consecutive
             )

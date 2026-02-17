@@ -301,12 +301,12 @@ def encode_params(params, model_type):
 # Known best configs for warm-starting (6D: includes dim and lr)
 BEST_CONFIGS = {
     'e88': {
-        'dim': 2176,
-        'n_heads': 98,
+        'dim': 1920,
+        'n_heads': 83,
         'n_state': 32,
-        'depth': 14,
+        'depth': 17,
         'use_gate': 1,  # SiLU gating helps at 480M scale
-        'lr': 3e-4,
+        'lr': 6.4e-4,
     },
     'fla-gdn': {
         'dim': 1920,

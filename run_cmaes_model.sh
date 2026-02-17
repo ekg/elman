@@ -22,10 +22,12 @@ if [ -z "$1" ]; then
     echo ""
     echo "Extra args are passed directly to cmaes_search_v2.py"
     echo "  --phase {lhs,cmaes,both,sweep}  Phase to run (default: sweep for e88, both for others)"
-    echo "  --train_minutes N               Training time per config (default: 30)"
+    echo "  --train_minutes N               Training time per config (default: 10)"
     echo "  --gpus 0,1,2,3,4,5,6,7          GPUs to use"
     echo "  --params 480M                   Target parameter count"
     echo "  --lhs_samples N                 Number of LHS samples (default: 64)"
+    echo ""
+    echo "torch.compile is ENABLED by default (+17% throughput)"
     exit 1
 fi
 
@@ -66,7 +68,7 @@ echo "Started: $(date)" | tee -a "$LOG_FILE"
 echo "Output: $OUTPUT_DIR" | tee -a "$LOG_FILE"
 echo "======================================================================" | tee -a "$LOG_FILE"
 
-# Run the search
+# Run the search with torch.compile enabled (+17% throughput)
 python -u cmaes_search_v2.py \
     --model "$MODEL" \
     --phase "$DEFAULT_PHASE" \
@@ -80,6 +82,7 @@ python -u cmaes_search_v2.py \
     --converge 0.01 \
     --consecutive 2 \
     --cmaes_refinements 2 \
+    --compile \
     $EXTRA_ARGS \
     "$@" \
     2>&1 | tee -a "$LOG_FILE"
