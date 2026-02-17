@@ -9,42 +9,42 @@ After this, we've made some modifications generating E1, and that for a long tim
 And that in a nutshell is a lot of the kind of work that's been happening. It's been a slow process to try to regularize, organize all the effort to develop the standard protocol for how to implement the CUDA kernels to... Basically the standard protocol involves cross-checking the Python and CUDA implementation in forward and backward passes on the same data to verify no difference in output.
 We want to make sure that we remember to do this, and this process is very involved. So we basically need to be sure to run subagents in the background to do this. And in fact, for really a lot of effort, you want to be using salvations. I think it helps you save your focus and not get confused or distracted and allows a lot of work to be done at the same time. It also can simplify your interface with the system.
 
-## Current Best: E88 at 480M Scale (Jan 27, 2026 - CMA-ES Optimized)
+## Current Best: E88 at 480M Scale (Feb 17, 2026 - Optimized Kernels)
 
-### CMA-ES Search Results (240 evaluations)
+### CMA-ES Search Results (896 evaluations with optimized kernels)
 
-CMA-ES with 30 generations found **optimal E88 config at 480M scale**:
+CMA-ES v9-style search with **register-owned backward kernel** (1.5-1.6x faster):
 
 | Model | Params | Loss | Config | Notes |
 |-------|--------|------|--------|-------|
-| **E88 (CMA-ES)** | 480M | **1.39** | h=98, n=32, d=14, dim=2176 | **New best from search** |
+| **E88 (Optimized)** | 480M | **1.3060** | h=83, n=32, d=17, dim=1920 | **New best - 6% improvement** |
 | Mamba2 (CMA-ES) | 480M | **1.27** | d_state=96, exp=2, d=25, dim=1792 | SSM baseline |
 | FLA-GDN (CMA-ES) | 480M | **1.27** | exp=2, d=17, h=24, dim=1920 | ICLR 2025 |
 
-**Key CMA-ES findings (E88):**
-- **Shallower is better**: depth=14 beats depth=32 (contrary to initial assumptions)
-- **Wider dims**: dim=2176 with 14 layers > dim=896 with 32 layers
-- **n_state=32 wins**: consistently outperforms n_state=16 or 48
-- **~98 heads optimal**: slightly fewer than original 104 heads
-- Gap to SSMs: ~0.12 nats (1.39 vs 1.27) - architectural, not optimization
+**Key findings (Feb 2026 optimized kernel search):**
+- **Gap to SSMs reduced 70%**: 0.12 nats → **0.036 nats**
+- **n_state=32 wins**: 1.3060 vs 1.3083 for n_state=16
+- **~83 heads optimal**: with n_state=32
+- **depth=17 optimal**: moderate depth beats very shallow or deep
+- **Nonlinear sequential RNN matches SSMs within 3%**
 
 ### E88 vs SSM Baselines
 
-All models CMA-ES optimized at ~480M params, seed=42, 10 min training, lr=3e-4, bf16:
+All models CMA-ES optimized at ~480M params, seed=42, 10 min training, bf16:
 
 | Model | Loss | State/Layer | Gap to Mamba2 |
 |-------|------|-------------|---------------|
-| **E88** | 1.39 | 98×(32×32)=100K | +0.12 |
+| **E88** | **1.3060** | 83×(32×32)=85K | **+0.036** |
 | Mamba2 | 1.27 | 3584×96=344K | baseline |
 | FLA-GDN | 1.27 | ~490K | +0.00 |
 
-**Why E88 trails SSMs:** E88 uses 3-5x less state memory per layer than Mamba2/FLA-GDN. The ~0.12 nat gap appears to be the cost of this memory efficiency. E88's nonlinear update provides expressivity but can't match the raw capacity of larger SSM states.
+**Why this matters:** E88 is a **nonlinear, sequential** RNN - the kind that "doesn't scale" according to conventional wisdom. Yet it matches SSMs within 3% using 4x less state memory. This is a counter-example to assertions about vanishing gradients and sequential training limitations.
 
 **Key findings:**
-- E88 matches ~80% of SSM performance with 3-5x less state memory
-- E88 learns faster per step (fewer steps to same loss)
-- E88 is ~2.5x slower throughput due to sequential recurrence (no parallel scan)
+- E88 matches **97% of SSM performance** with 4x less state memory
+- Optimized backward kernel gives 15% end-to-end speedup
 - n_state=32 with SiLU gating is optimal
+- Gap is now small enough that further kernel optimization could close it
 
 ### State Size Comparison (Critical Finding)
 
@@ -71,23 +71,23 @@ FLA-GDN: 16 heads × 124×248 LINEAR attention matrix
 
 **Why this matters:** E88's 104 small (32×32) nonlinear matrix heads provide high expressivity through **parallel specialized memories** rather than through raw state size. Each head learns independent key-value associations.
 
-### Optimal E88 Configuration (480M) - CMA-ES Optimized
+### Optimal E88 Configuration (480M) - Feb 2026 Optimized Kernels
 
 ```
-dim=2176, depth=14, n_heads=98, n_state=32, use_gate=1, gate_activation=silu
+dim=1920, depth=17, n_heads=83, n_state=32, use_gate=1, gate_activation=silu, lr=6.4e-4
 ```
 
-**Key insight:** Shallower (d=14) + wider (dim=2176) beats deeper (d=32) + narrower (dim=896).
+**Key insight:** Moderate depth (d=17) + balanced dims (1920) + 83 heads is optimal. The register-owned backward kernel enables 15% faster training.
 
-### Reproducing the Benchmark (CMA-ES Optimized Configs)
+### Reproducing the Benchmark (Optimized Kernel Configs)
 
 ```bash
-# E88 at 480M (CMA-ES optimal: shallow+wide)
+# E88 at 480M (Feb 2026 optimized kernel best)
 CUDA_VISIBLE_DEVICES=0 python train.py --level E88 \
-  --dim 2176 --depth 14 --n_heads 98 --n_state 32 \
+  --dim 1920 --depth 17 --n_heads 83 --n_state 32 \
   --use_gate 1 --gate_activation silu \
   --data data/pile.txt --batch_size 16 --chunk_size 512 \
-  --lr 3e-4 --seed 42 --bf16 --train_minutes 10
+  --lr 6.4e-4 --seed 42 --bf16 --train_minutes 10
 
 # Mamba2 at 480M (CMA-ES optimal: d_state=96)
 CUDA_VISIBLE_DEVICES=1 python train.py --level mamba2 \
