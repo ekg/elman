@@ -652,7 +652,7 @@ def estimate_dim_and_params(params, model_type, target_params):
     return 1024, target_params
 
 
-def build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params):
+def build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params, compile=False, compile_mode='max-autotune'):
     """Build training command for a configuration."""
     # Adjust batch size based on actual model size (not target)
     if actual_params > 480_000_000:
@@ -679,6 +679,10 @@ def build_train_command(params, model_type, dim, train_minutes, output_dir, actu
         '--optimizer', 'schedulefree',
         '--seed', '42',
     ]
+
+    # Add torch.compile flags if enabled
+    if compile:
+        cmd.extend(['--compile', '--compile_mode', compile_mode])
 
     if model_type == 'e88':
         use_gate = params.get('use_gate', 1)
@@ -845,7 +849,7 @@ def extract_loss(log_file):
 
 def evaluate_config_worker(args):
     """Worker function for parallel evaluation."""
-    x, model_type, train_minutes, gpu_id, work_dir, eval_id, target_params, tolerance = args
+    x, model_type, train_minutes, gpu_id, work_dir, eval_id, target_params, tolerance, compile, compile_mode = args
 
     params = decode_params(x, model_type)
 
@@ -867,7 +871,7 @@ def evaluate_config_worker(args):
     output_dir = os.path.join(work_dir, f'eval_{eval_id}')
     log_file = os.path.join(work_dir, f'eval_{eval_id}.log')
 
-    cmd = build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params)
+    cmd = build_train_command(params, model_type, dim, train_minutes, output_dir, actual_params, compile, compile_mode)
 
     config_str = ', '.join(f'{k}={v:.4g}' if isinstance(v, float) else f'{k}={v}'
                            for k, v in params.items())
@@ -905,12 +909,14 @@ def evaluate_config_worker(args):
     return {'eval_id': eval_id, 'loss': loss, 'params': params, 'dim': dim, 'actual_params': actual_params}
 
 
-def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance, start_from_best=False, converge_threshold=None):
+def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir, target_params, tolerance, start_from_best=False, converge_threshold=None, compile=False, compile_mode='max-autotune'):
     """Run CMA-ES search for optimal configuration.
 
     Args:
         converge_threshold: If set, stop when best loss improvement < threshold between generations.
                           If None, run for fixed number of generations.
+        compile: Whether to use torch.compile for training.
+        compile_mode: torch.compile mode (default, reduce-overhead, max-autotune).
     """
     space = SEARCH_SPACES[model_type]
     n_dims = len(space)
@@ -992,7 +998,8 @@ def run_cmaes_search(model_type, generations, train_minutes, gpu_ids, output_dir
             gpu_id = gpu_ids[i % n_gpus]
             worker_args.append((
                 x, model_type, train_minutes, gpu_id,
-                output_dir, eval_count, target_params, tolerance
+                output_dir, eval_count, target_params, tolerance,
+                compile, compile_mode
             ))
 
         # Run in parallel
@@ -1120,6 +1127,10 @@ def main():
                         help='Output directory')
     parser.add_argument('--start_from_best', action='store_true',
                         help='Start search from known best config (for local refinement)')
+    parser.add_argument('--compile', action='store_true',
+                        help='Use torch.compile for training')
+    parser.add_argument('--compile_mode', type=str, default='max-autotune',
+                        help='torch.compile mode (default, reduce-overhead, max-autotune)')
     args = parser.parse_args()
 
     # Parse GPU IDs
@@ -1158,7 +1169,9 @@ def main():
         target_params,
         tolerance,
         start_from_best=args.start_from_best,
-        converge_threshold=args.converge
+        converge_threshold=args.converge,
+        compile=args.compile,
+        compile_mode=args.compile_mode
     )
 
     print(f"\nTo train with best config:")
@@ -1168,10 +1181,11 @@ def main():
     else:
         dim, _ = estimate_dim_and_params(best_params, args.model, target_params)
     lr = best_params.get('lr', 3e-4)
+    compile_flags = " --compile --compile_mode max-autotune" if args.compile else ""
     if args.model == 'e88':
         print(f"python train.py --level E88 --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
-              f"--lr {lr} --expansion {best_params.get('expansion', 1.0)} --use_gate 1 --gate_activation silu --train_minutes 30")
+              f"--lr {lr} --expansion {best_params.get('expansion', 1.0)} --use_gate 1 --gate_activation silu --train_minutes 30{compile_flags}")
     elif args.model == 'e88_fused':
         print(f"python train.py --level e88_fused --dim {dim} --n_heads {best_params['n_heads']} "
               f"--n_state {best_params['n_state']} --depth {best_params['depth']} "
