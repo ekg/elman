@@ -15429,6 +15429,86 @@ std::vector<Tensor> e88_register_owned_backward(
 }
 
 // =============================================================================
+// E88 Multi-Head Backward: 4 warps per block (4 heads per block)
+// Better SM occupancy than register-owned (1 warp per block)
+// Requires H divisible by 4
+// =============================================================================
+
+std::vector<Tensor> e88_multihead_backward(
+    Tensor k,               // [B, T, H, n_state]
+    Tensor v,               // [B, T, H, head_v_dim]
+    Tensor q,               // [B, T, H, n_state]
+    Tensor decay,           // [B, T, H]
+    Tensor g,               // [B, T, H, head_v_dim] gate (can be empty)
+    Tensor S_cache,         // Combined checkpoints + Sq_cache
+    Tensor d_output,        // [B, T, H, head_v_dim]
+    Tensor d_k,             // [B, T, H, n_state] output
+    Tensor d_v,             // [B, T, H, head_v_dim] output
+    Tensor d_q,             // [B, T, H, n_state] output
+    Tensor d_decay,         // [B, T, H] output
+    Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
+    Tensor segment_cache,   // Pre-allocated segment cache
+    int n_heads,
+    bool has_gate) {
+
+    const auto batch_size = k.size(0);
+    const auto time_steps = k.size(1);
+    const auto n_state = k.size(3);
+    const auto head_v_dim = v.size(3);
+
+    CHECK_INPUT(k);
+    CHECK_INPUT(v);
+    CHECK_INPUT(q);
+    CHECK_INPUT(decay);
+    CHECK_INPUT(S_cache);
+    CHECK_INPUT(d_output);
+    CHECK_INPUT(d_k);
+    CHECK_INPUT(d_v);
+    CHECK_INPUT(d_q);
+    CHECK_INPUT(d_decay);
+    CHECK_INPUT(segment_cache);
+
+    const auto options = k.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    TORCH_CHECK(k.scalar_type() == at::ScalarType::BFloat16,
+                "E88 Multi-Head Backward only supports bfloat16");
+    TORCH_CHECK(head_v_dim <= 32,
+                "E88 Multi-Head Backward requires head_v_dim<=32, got ", head_v_dim);
+    TORCH_CHECK(n_state <= 64,
+                "E88 Multi-Head Backward requires n_state<=64, got ", n_state);
+    TORCH_CHECK(n_heads % 4 == 0,
+                "E88 Multi-Head Backward requires n_heads divisible by 4, got ", n_heads);
+
+    using namespace elman;
+
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
+    const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
+
+    dispatch_e88_multihead_backward(
+        time_steps, batch_size, n_heads, n_state, head_v_dim,
+        reinterpret_cast<const __nv_bfloat16*>(k.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(q.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr()),
+        has_gate && g.numel() > 0 ? reinterpret_cast<const __nv_bfloat16*>(g.data_ptr()) : nullptr,
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_k.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_v.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_q.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
+        has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
+        reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
+        checkpoint_interval, has_gate,
+        at::cuda::getCurrentCUDAStream());
+
+    return {d_k, d_v, d_q, d_decay, d_g};
+}
+
+// =============================================================================
 // E88 Chunked: Prefetch chunks of timesteps into shared memory
 // Reduces global memory latency by bulk loading before processing
 // =============================================================================
@@ -16819,6 +16899,8 @@ void elman_ladder_init(py::module& m) {
           "E88 Warp Backward V2: Loads k,v from segment_cache (like fused) instead of k_chunk.");
     m.def("e88_register_owned_backward", &e88_register_owned_backward,
           "E88 Register-Owned Backward: 32 threads, state in registers. Supports n_state<=64, head_v_dim<=32.");
+    m.def("e88_multihead_backward", &e88_multihead_backward,
+          "E88 Multi-Head Backward: 4 warps/block (4 heads), better occupancy. Requires H%4==0, n_state<=64, head_v_dim<=32.");
     m.def("e88_coalesced_forward", &e88_coalesced_forward,
           "E88 Coalesced Forward: Transposed state matrix for coalesced memory access.");
 
