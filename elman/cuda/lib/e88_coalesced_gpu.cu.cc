@@ -48,7 +48,8 @@ __global__ void E88CoalescedForwardKernel_BF16(
     __nv_bfloat16* __restrict__ S_checkpoints,    // [num_checkpoints, B, H, N_STATE, HEAD_V_DIM]
     __nv_bfloat16* __restrict__ Sq_cache,         // [B, T, H, HEAD_V_DIM]
     int checkpoint_interval,
-    bool apply_gate
+    bool apply_gate,
+    bool normalize_kq
 ) {
     int block_idx = blockIdx.x;
     int b = block_idx / H;
@@ -144,6 +145,46 @@ __global__ void E88CoalescedForwardKernel_BF16(
 
         __syncthreads();
 
+        // In-kernel L2 normalization of k and q per timestep
+        // Coalesced kernel: HEAD_V_DIM threads (== 1 warp for standard 32-dim config)
+        // Each thread loads strided elements: k[j], k[j+HEAD_V_DIM], etc.
+        if (normalize_kq) {
+            for (int t_local = 0; t_local < chunk_len; t_local++) {
+                // Normalize k[t_local, :]
+                float k_sq_sum = 0.0f;
+                for (int i = j; i < N_STATE; i += HEAD_V_DIM) {
+                    float ki = k_chunk[t_local * N_STATE + i];
+                    k_sq_sum += ki * ki;
+                }
+                // Warp-level reduction (HEAD_V_DIM <= 32, single warp)
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    k_sq_sum += __shfl_xor_sync(0xffffffff, k_sq_sum, offset);
+                }
+                // All threads in warp now have the same k_sq_sum
+                float k_inv_norm = rsqrtf(k_sq_sum + 1e-12f);
+                for (int i = j; i < N_STATE; i += HEAD_V_DIM) {
+                    k_chunk[t_local * N_STATE + i] *= k_inv_norm;
+                }
+
+                // Normalize q[t_local, :]
+                float q_sq_sum = 0.0f;
+                for (int i = j; i < N_STATE; i += HEAD_V_DIM) {
+                    float qi = q_chunk[t_local * N_STATE + i];
+                    q_sq_sum += qi * qi;
+                }
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    q_sq_sum += __shfl_xor_sync(0xffffffff, q_sq_sum, offset);
+                }
+                float q_inv_norm = rsqrtf(q_sq_sum + 1e-12f);
+                for (int i = j; i < N_STATE; i += HEAD_V_DIM) {
+                    q_chunk[t_local * N_STATE + i] *= q_inv_norm;
+                }
+            }
+            // No sync needed here - coalesced kernel uses 1 warp, lockstep execution
+        }
+
         // ========================================
         // PROCESS: Run recurrence
         // ========================================
@@ -194,11 +235,10 @@ __global__ void E88CoalescedForwardKernel_BF16(
             int out_offset = ((b * T + t) * H + h) * HEAD_V_DIM + j;
             output[out_offset] = __float2bfloat16(out_val);
 
-            // Cache GATED output for backward (matches e88_fused_forward format)
-            // The backward kernel expects the gated value and recovers un-gated by dividing
+            // Cache PRE-GATED Sq for numerically stable backward
             if (Sq_cache != nullptr) {
                 Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + j] =
-                    __float2bfloat16(out_val);
+                    __float2bfloat16(sq_j);
             }
 
             // Save checkpoint
@@ -238,6 +278,7 @@ void dispatch_e88_coalesced_forward(
     __nv_bfloat16* Sq_cache,
     int checkpoint_interval,
     bool apply_gate,
+    bool normalize_kq,
     cudaStream_t stream
 ) {
     int num_blocks = B * H;
@@ -255,7 +296,7 @@ void dispatch_e88_coalesced_forward(
                                 CHUNK_SIZE;  /* decay chunk */ \
             shmem_size *= sizeof(float); \
             E88CoalescedForwardKernel_BF16<NS, HV, CHUNK_SIZE><<<num_blocks, threads, shmem_size, stream>>>( \
-                T, B, H, k, v, q, decay, g, S, output, S_checkpoints, Sq_cache, checkpoint_interval, apply_gate \
+                T, B, H, k, v, q, decay, g, S, output, S_checkpoints, Sq_cache, checkpoint_interval, apply_gate, normalize_kq \
             ); \
         } while(0)
 

@@ -158,6 +158,9 @@ __global__ void E88FusedForwardKernel_BF16(
                 Sq += new_s * q_shared[i];
             }
 
+            // Store PRE-GATED Sq to cache for numerically stable backward
+            Sq_cache[v_offset + tid] = __float2bfloat16(Sq);
+
             // Apply gating if enabled
             if (apply_gate && g_all != nullptr) {
                 Sq = Sq * e88_fused_silu(g_shared[tid]);
@@ -165,7 +168,6 @@ __global__ void E88FusedForwardKernel_BF16(
 
             // Write output (keeping [B, T, H, dim] layout)
             output[v_offset + tid] = __float2bfloat16(Sq);
-            Sq_cache[v_offset + tid] = __float2bfloat16(Sq);
         }
         __syncthreads();
 
@@ -397,7 +399,8 @@ __global__ void E88FusedBackwardKernel_BF16(
                 // Handle gating backward
                 if (has_gate && g_all != nullptr) {
                     float g_val = __bfloat162float(g_all[v_offset + tid]);
-                    float Sq_val = __bfloat162float(Sq_cache[v_offset + tid]);
+                    // Sq_cache now stores PRE-GATED Sq (no division needed)
+                    float Sq_pre_gate = __bfloat162float(Sq_cache[v_offset + tid]);
 
                     // Backward through silu gate: y = Sq * silu(g)
                     // silu(g) = g * sigmoid(g)
@@ -407,12 +410,10 @@ __global__ void E88FusedBackwardKernel_BF16(
                     // d_Sq = d_out * silu(g)
                     d_Sq[tid] = d_out * silu_g;
 
-                    // d_g = d_out * Sq * d_silu(g)
-                    // d_silu(g) = sigmoid(g) + g * sigmoid(g) * (1 - sigmoid(g))
-                    //           = sigmoid(g) * (1 + g * (1 - sigmoid(g)))
+                    // d_g = d_out * Sq_pre_gate * d_silu(g)
+                    // d_silu(g) = sigmoid(g) * (1 + g * (1 - sigmoid(g)))
                     float d_silu = sig_g * (1.0f + g_val * (1.0f - sig_g));
-                    float Sq_before_gate = Sq_val / (silu_g + 1e-8f);  // Recover pre-gated Sq
-                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_before_gate * d_silu);
+                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_pre_gate * d_silu);
                 } else {
                     d_Sq[tid] = d_out;
                 }

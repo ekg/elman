@@ -9454,7 +9454,7 @@ void dispatch_e88_register_owned_backward(
     __nv_bfloat16* d_q_all, __nv_bfloat16* d_decay_all,
     __nv_bfloat16* d_g_all,  // gate gradient (can be nullptr)
     __nv_bfloat16* segment_cache,
-    int checkpoint_interval, bool has_gate, cudaStream_t stream
+    int checkpoint_interval, bool has_gate, bool normalize_kq, cudaStream_t stream
 );
 
 // =============================================================================
@@ -9505,6 +9505,7 @@ void dispatch_e88_warp_optimized_forward(
     __nv_bfloat16* Sq_cache,
     int checkpoint_interval,
     bool apply_gate,
+    bool normalize_kq,
     cudaStream_t stream
 );
 
@@ -9602,6 +9603,7 @@ void dispatch_e88_coalesced_forward(
     __nv_bfloat16* Sq_cache,
     int checkpoint_interval,
     bool apply_gate,
+    bool normalize_kq,
     cudaStream_t stream
 );
 

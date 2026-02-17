@@ -266,7 +266,8 @@ __global__ void E88MultiHeadBackwardKernel_BF16(
             if (is_active) {
                 if (has_gate && g_all != nullptr) {
                     float g_val = __bfloat162float(g_all[v_offset + lane_id]);
-                    float Sq_val = __bfloat162float(Sq_cache[v_offset + lane_id]);
+                    // Sq_cache now stores PRE-GATED Sq (no division needed)
+                    float Sq_pre_gate = __bfloat162float(Sq_cache[v_offset + lane_id]);
 
                     float sig_g = 1.0f / (1.0f + expf(-g_val));
                     float silu_g = g_val * sig_g;
@@ -274,8 +275,7 @@ __global__ void E88MultiHeadBackwardKernel_BF16(
                     d_Sq = d_out * silu_g;
 
                     float d_silu = sig_g * (1.0f + g_val * (1.0f - sig_g));
-                    float Sq_before_gate = Sq_val / (silu_g + 1e-8f);
-                    d_g_all[v_offset + lane_id] = __float2bfloat16(d_out * Sq_before_gate * d_silu);
+                    d_g_all[v_offset + lane_id] = __float2bfloat16(d_out * Sq_pre_gate * d_silu);
                 } else {
                     d_Sq = d_out;
                 }

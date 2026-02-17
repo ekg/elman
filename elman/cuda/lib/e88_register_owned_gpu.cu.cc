@@ -69,7 +69,8 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
     __nv_bfloat16* __restrict__ d_g_all,
     __nv_bfloat16* __restrict__ segment_cache,
     int checkpoint_interval,
-    bool has_gate
+    bool has_gate,
+    bool normalize_kq
 ) {
     static_assert(HEAD_V_DIM <= 32,
                   "Tier 1 register-owned kernel requires HEAD_V_DIM <= 32");
@@ -163,6 +164,22 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
             }
             __syncwarp();
 
+            // In-kernel L2 normalization of k
+            if (normalize_kq) {
+                // Compute ||k||^2 via warp reduction
+                float k_sq = (tid < N_STATE) ? (k_shared[tid] * k_shared[tid]) : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    k_sq += __shfl_xor_sync(0xFFFFFFFF, k_sq, offset);
+                }
+                // All threads have k_sq = ||k||^2 now
+                float k_inv = rsqrtf(k_sq + 1e-12f);
+                if (tid < N_STATE) {
+                    k_shared[tid] *= k_inv;
+                }
+                __syncwarp();
+            }
+
             // Cache k, v, decay
             __nv_bfloat16* k_cache_slot = k_cache_base + (size_t)local_t * N_STATE;
             __nv_bfloat16* v_cache_slot = v_cache_base + (size_t)local_t * HEAD_V_DIM;
@@ -231,6 +248,32 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
             int decay_offset = (b * T + t) * H + h;
             float q_val = (tid < N_STATE) ? __bfloat162float(q_all[k_offset + tid]) : 0.0f;
 
+            // In-kernel L2 normalization of q (keep raw value for backward chain rule)
+            float q_raw_val = q_val;
+            float q_norm_inv = 1.0f;  // 1/||q_raw||
+            if (normalize_kq) {
+                float q_sq = (tid < N_STATE) ? (q_val * q_val) : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    q_sq += __shfl_xor_sync(0xFFFFFFFF, q_sq, offset);
+                }
+                q_norm_inv = rsqrtf(q_sq + 1e-12f);
+                q_val *= q_norm_inv;
+            }
+
+            // Load unnormalized k from global memory for L2 norm backward chain rule
+            float k_raw_val = 0.0f;
+            float k_norm_inv = 1.0f;  // 1/||k_raw||
+            if (normalize_kq) {
+                k_raw_val = (tid < N_STATE) ? __bfloat162float(k_all[k_offset + tid]) : 0.0f;
+                float k_sq = (tid < N_STATE) ? (k_raw_val * k_raw_val) : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    k_sq += __shfl_xor_sync(0xFFFFFFFF, k_sq, offset);
+                }
+                k_norm_inv = rsqrtf(k_sq + 1e-12f);
+            }
+
             // Recompute forward values (active threads only)
             float retrieved = 0.0f;
             float delta = 0.0f;
@@ -258,16 +301,19 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
             if (is_active) {
                 if (has_gate && g_all != nullptr) {
                     float g_val = __bfloat162float(g_all[v_offset + tid]);
-                    float Sq_val = __bfloat162float(Sq_cache[v_offset + tid]);
+                    // Sq_cache now stores PRE-GATED Sq (no division needed)
+                    float Sq_pre_gate = __bfloat162float(Sq_cache[v_offset + tid]);
 
                     float sig_g = 1.0f / (1.0f + expf(-g_val));
                     float silu_g = g_val * sig_g;
 
+                    // d_Sq = d_out * silu(g)
                     d_Sq = d_out * silu_g;
 
+                    // d_g = d_out * Sq_pre_gate * d_silu(g)
+                    // d_silu(g) = sigmoid(g) * (1 + g * (1 - sigmoid(g)))
                     float d_silu = sig_g * (1.0f + g_val * (1.0f - sig_g));
-                    float Sq_before_gate = Sq_val / (silu_g + 1e-8f);
-                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_before_gate * d_silu);
+                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_pre_gate * d_silu);
                 } else {
                     d_Sq = d_out;
                 }
@@ -297,9 +343,26 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
                 }
                 d_q_local[i] = val;
             }
-            // Write d_q[tid] (only valid threads)
-            if (tid < N_STATE) {
-                d_q_all[k_offset + tid] = __float2bfloat16(d_q_local[tid]);
+            // Apply L2 norm backward chain rule for q if normalize_kq
+            // d_q_raw[i] = (d_q_norm[i] - q_norm[i] * dot(d_q_norm, q_norm)) / ||q_raw||
+            if (normalize_kq) {
+                // d_q_local[tid] is d_q w.r.t. normalized q (all threads have all values after xor reduce)
+                // q_val is the normalized q[tid], q_norm_inv = 1/||q_raw||
+                float dq_dot_qn = (tid < N_STATE) ? (d_q_local[tid] * q_val) : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    dq_dot_qn += __shfl_xor_sync(0xFFFFFFFF, dq_dot_qn, offset);
+                }
+                // All threads have dot(d_q_norm, q_norm)
+                if (tid < N_STATE) {
+                    float d_q_raw = (d_q_local[tid] - q_val * dq_dot_qn) * q_norm_inv;
+                    d_q_all[k_offset + tid] = __float2bfloat16(d_q_raw);
+                }
+            } else {
+                // Write d_q[tid] directly (already w.r.t. normalized q which was input)
+                if (tid < N_STATE) {
+                    d_q_all[k_offset + tid] = __float2bfloat16(d_q_local[tid]);
+                }
             }
 
             // Add dS contribution from output: dS[i, j] += q[i] * d_Sq[j]
@@ -345,8 +408,10 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
                 }
             }
 
-            // Warp reduce to get d_k[i] = sum_j(d_k_contrib[i])
-            // Full mask - inactive threads contribute 0
+            // Warp reduce to get d_k_norm[i] = sum_j(d_k_contrib[i])
+            // After xor reduction, all threads have the same sum for each i.
+            // Thread tid captures d_k_norm[tid] from the i==tid iteration.
+            float my_dk_norm = 0.0f;
             #pragma unroll
             for (int i = 0; i < N_STATE; i++) {
                 float val = d_k_contrib[i];
@@ -354,8 +419,25 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
                 for (int offset = 16; offset >= 1; offset /= 2) {
                     val += __shfl_xor_sync(0xFFFFFFFF, val, offset);
                 }
-                if (tid == i && i < N_STATE) {
-                    d_k_all[k_offset + i] = __float2bfloat16(val);
+                if (tid == i) my_dk_norm = val;
+            }
+
+            // Apply L2 norm backward chain rule for k if normalize_kq
+            if (normalize_kq) {
+                // k_shared[tid] contains normalized k[tid], k_norm_inv = 1/||k_raw||
+                // Compute dot(d_k_norm, k_norm) = sum_i d_k_norm[i] * k_norm[i]
+                float dk_dot_kn = (tid < N_STATE) ? (my_dk_norm * k_shared[tid]) : 0.0f;
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    dk_dot_kn += __shfl_xor_sync(0xFFFFFFFF, dk_dot_kn, offset);
+                }
+                if (tid < N_STATE) {
+                    float d_k_raw = (my_dk_norm - k_shared[tid] * dk_dot_kn) * k_norm_inv;
+                    d_k_all[k_offset + tid] = __float2bfloat16(d_k_raw);
+                }
+            } else {
+                if (tid < N_STATE) {
+                    d_k_all[k_offset + tid] = __float2bfloat16(my_dk_norm);
                 }
             }
 
@@ -397,7 +479,7 @@ __global__ void E88RegisterOwnedBackwardKernel_BF16(
         E88RegisterOwnedBackwardKernel_BF16<NS, HVD><<<num_blocks, threads, shared_mem, stream>>>( \
             T, B, H, k, v, q, decay, g, S_checkpoints, Sq_cache, d_output, \
             d_k, d_v, d_q, d_decay, d_g, segment_cache, \
-            checkpoint_interval, has_gate \
+            checkpoint_interval, has_gate, normalize_kq \
         ); \
     } while(0)
 
@@ -415,7 +497,7 @@ void dispatch_e88_register_owned_backward(
     __nv_bfloat16* d_k, __nv_bfloat16* d_v, __nv_bfloat16* d_q,
     __nv_bfloat16* d_decay, __nv_bfloat16* d_g,
     __nv_bfloat16* segment_cache,
-    int checkpoint_interval, bool has_gate, cudaStream_t stream
+    int checkpoint_interval, bool has_gate, bool normalize_kq, cudaStream_t stream
 ) {
     // Tier 1 constraints:
     // - head_v_dim <= 32 (single warp)

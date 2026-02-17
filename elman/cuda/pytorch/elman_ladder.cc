@@ -15367,7 +15367,8 @@ std::vector<Tensor> e88_register_owned_backward(
     Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
     Tensor segment_cache,   // Pre-allocated segment cache
     int n_heads,
-    bool has_gate) {
+    bool has_gate,
+    bool normalize_kq) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15422,7 +15423,7 @@ std::vector<Tensor> e88_register_owned_backward(
         reinterpret_cast<__nv_bfloat16*>(d_decay.data_ptr()),
         has_gate && d_g.numel() > 0 ? reinterpret_cast<__nv_bfloat16*>(d_g.data_ptr()) : nullptr,
         reinterpret_cast<__nv_bfloat16*>(segment_cache.data_ptr()),
-        checkpoint_interval, has_gate,
+        checkpoint_interval, has_gate, normalize_kq,
         at::cuda::getCurrentCUDAStream());
 
     return {d_k, d_v, d_q, d_decay, d_g};
@@ -15580,16 +15581,17 @@ std::vector<Tensor> e88_chunked_forward(
 
 std::vector<Tensor> e88_warp_optimized_forward(
     bool training,
-    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor k,           // [B, T, H, n_state] keys (L2 normalized or raw if normalize_kq)
     Tensor v,           // [B, T, H, head_v_dim] values
-    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor q,           // [B, T, H, n_state] queries (L2 normalized or raw if normalize_kq)
     Tensor decay,       // [B, T, H] exponential decay factors
     Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
     Tensor S0,          // [B, H, n_state, head_v_dim] initial state
     Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
     Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
     int n_heads,
-    bool apply_gate) {
+    bool apply_gate,
+    bool normalize_kq) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15634,6 +15636,7 @@ std::vector<Tensor> e88_warp_optimized_forward(
         reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
         checkpoint_interval,
         apply_gate,
+        normalize_kq,
         at::cuda::getCurrentCUDAStream());
 
     return {S, output};
@@ -15860,16 +15863,17 @@ std::vector<Tensor> e88_warp_backward_v2(
 
 std::vector<Tensor> e88_coalesced_forward(
     bool training,
-    Tensor k,           // [B, T, H, n_state] L2 normalized keys
+    Tensor k,           // [B, T, H, n_state] keys (L2 normalized or raw if normalize_kq)
     Tensor v,           // [B, T, H, head_v_dim] values
-    Tensor q,           // [B, T, H, n_state] L2 normalized queries
+    Tensor q,           // [B, T, H, n_state] queries (L2 normalized or raw if normalize_kq)
     Tensor decay,       // [B, T, H] exponential decay factors
     Tensor g,           // [B, T, H, head_v_dim] gate values (can be empty)
     Tensor S0,          // [B, H, n_state, head_v_dim] initial state
     Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
     Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
     int n_heads,
-    bool apply_gate) {
+    bool apply_gate,
+    bool normalize_kq) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15912,6 +15916,7 @@ std::vector<Tensor> e88_coalesced_forward(
         reinterpret_cast<__nv_bfloat16*>(S_cache.data_ptr()) + s_checkpoints_size,
         checkpoint_interval,
         apply_gate,
+        normalize_kq,
         at::cuda::getCurrentCUDAStream());
 
     return {S, output};

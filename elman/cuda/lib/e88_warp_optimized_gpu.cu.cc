@@ -68,7 +68,8 @@ __global__ void E88WarpOptimizedForwardKernel_BF16(
     __nv_bfloat16* __restrict__ S_checkpoints,
     __nv_bfloat16* __restrict__ Sq_cache,
     int checkpoint_interval,
-    bool apply_gate
+    bool apply_gate,
+    bool normalize_kq
 ) {
     int block_idx = blockIdx.x;
     int b = block_idx / H;
@@ -149,6 +150,63 @@ __global__ void E88WarpOptimizedForwardKernel_BF16(
         }
         __syncthreads();
 
+        // In-kernel L2 normalization of k and q per timestep
+        if (normalize_kq) {
+            for (int t_local = 0; t_local < chunk_len; t_local++) {
+                // Normalize k[t_local, :] in shared memory
+                float k_sq_sum = 0.0f;
+                for (int i = tid; i < N_STATE; i += num_threads) {
+                    float ki = k_chunk[t_local * N_STATE + i];
+                    k_sq_sum += ki * ki;
+                }
+                // Block-wide reduction using warp shuffles then shared mem
+                // First reduce within each warp
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    k_sq_sum += __shfl_down_sync(0xffffffff, k_sq_sum, offset);
+                }
+                // Inter-warp reduction via shared delta_buf (reuse as scratch)
+                int warp_id = tid / 32;
+                int lane_id = tid % 32;
+                if (lane_id == 0) delta_buf[warp_id] = k_sq_sum;
+                __syncthreads();
+                if (tid == 0) {
+                    float total = 0.0f;
+                    for (int w = 0; w < (num_threads + 31) / 32; w++) total += delta_buf[w];
+                    delta_buf[0] = rsqrtf(total + 1e-12f);
+                }
+                __syncthreads();
+                float k_inv_norm = delta_buf[0];
+                for (int i = tid; i < N_STATE; i += num_threads) {
+                    k_chunk[t_local * N_STATE + i] *= k_inv_norm;
+                }
+
+                // Normalize q[t_local, :] in shared memory
+                float q_sq_sum = 0.0f;
+                for (int i = tid; i < N_STATE; i += num_threads) {
+                    float qi = q_chunk[t_local * N_STATE + i];
+                    q_sq_sum += qi * qi;
+                }
+                #pragma unroll
+                for (int offset = 16; offset > 0; offset >>= 1) {
+                    q_sq_sum += __shfl_down_sync(0xffffffff, q_sq_sum, offset);
+                }
+                if (lane_id == 0) delta_buf[warp_id] = q_sq_sum;
+                __syncthreads();
+                if (tid == 0) {
+                    float total = 0.0f;
+                    for (int w = 0; w < (num_threads + 31) / 32; w++) total += delta_buf[w];
+                    delta_buf[0] = rsqrtf(total + 1e-12f);
+                }
+                __syncthreads();
+                float q_inv_norm = delta_buf[0];
+                for (int i = tid; i < N_STATE; i += num_threads) {
+                    q_chunk[t_local * N_STATE + i] *= q_inv_norm;
+                }
+                __syncthreads();
+            }
+        }
+
         // PROCESS
         for (int t_local = 0; t_local < chunk_len; t_local++) {
             int t = t_start + t_local;
@@ -201,10 +259,10 @@ __global__ void E88WarpOptimizedForwardKernel_BF16(
 
                 output[((b * T + t) * H + h) * HEAD_V_DIM + j] = __float2bfloat16(out_val);
 
-                // Store GATED output to Sq_cache (matches e88_fused_forward format)
-                // The backward kernel expects the gated value and recovers un-gated by dividing
+                // Store PRE-GATED Sq to Sq_cache for numerically stable backward
+                // The backward kernel uses this directly (no division by silu(g) needed)
                 if (Sq_cache != nullptr) {
-                    Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + j] = __float2bfloat16(out_val);
+                    Sq_cache[(b * T + t) * H * HEAD_V_DIM + h * HEAD_V_DIM + j] = __float2bfloat16(sq_j);
                 }
             }
             __syncthreads();
@@ -244,6 +302,7 @@ void dispatch_e88_warp_optimized_forward(
     __nv_bfloat16* Sq_cache,
     int checkpoint_interval,
     bool apply_gate,
+    bool normalize_kq,
     cudaStream_t stream
 ) {
     int num_blocks = B * H;
@@ -262,7 +321,7 @@ void dispatch_e88_warp_optimized_forward(
                                 threads_per_block;  /* reduction buffer */ \
             shmem_size *= sizeof(float); \
             E88WarpOptimizedForwardKernel_BF16<NS, HV, CHUNK_SIZE><<<num_blocks, threads_per_block, shmem_size, stream>>>( \
-                T, B, H, k, v, q, decay, g, S, output, S_checkpoints, Sq_cache, checkpoint_interval, apply_gate \
+                T, B, H, k, v, q, decay, g, S, output, S_checkpoints, Sq_cache, checkpoint_interval, apply_gate, normalize_kq \
             ); \
         } while(0)
 

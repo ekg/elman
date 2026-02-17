@@ -143,6 +143,8 @@ def parse_args():
                         help='Use bfloat16 mixed precision')
     parser.add_argument('--compile', action='store_true',
                         help='Use torch.compile')
+    parser.add_argument('--compile_mode', type=str, default='max-autotune',
+                        help='torch.compile mode (default, reduce-overhead, max-autotune)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
     parser.add_argument('--resume', type=str, default=None,
@@ -415,8 +417,8 @@ def train(args):
         model = model.bfloat16()
 
     if args.compile and hasattr(torch, 'compile'):
-        print("Compiling model...")
-        model = torch.compile(model)
+        print(f"Compiling model (mode={args.compile_mode})...")
+        model = torch.compile(model, mode=args.compile_mode)
 
     print(f"Model: Level {args.level}, {model.get_num_params():,} parameters")
 

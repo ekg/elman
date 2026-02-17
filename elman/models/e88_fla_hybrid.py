@@ -124,6 +124,11 @@ USE_FUSED_GATE = True
 # Enable optimized kernels with [B, T, H, dim] layout (no transpose overhead)
 USE_OPTIMIZED_KERNELS = True
 
+# Global flag to enable in-kernel L2 normalization of k and q
+# When True, the optimized forward/backward kernels normalize k/q in shared memory,
+# eliminating separate L2 norm kernel launches (saves ~3-5% end-to-end)
+USE_FUSED_L2_NORM = True
+
 # Backwards compat
 E75MH_CUDA_AVAILABLE = E88_CUDA_AVAILABLE
 E75MH_PRECOMPUTED_CUDA_AVAILABLE = E88_PRECOMPUTED_CUDA_AVAILABLE
@@ -470,18 +475,19 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, training, k, v, q, decay, g, S0, n_heads, apply_gate=True):
+    def forward(ctx, training, k, v, q, decay, g, S0, n_heads, apply_gate=True, normalize_kq=False):
         """
         Args:
             training: bool
-            k: [B, T, H, n_state] L2 normalized keys (already in [B, T, H, dim] layout!)
+            k: [B, T, H, n_state] keys (L2 normalized, or raw if normalize_kq=True)
             v: [B, T, H, head_v_dim] values
-            q: [B, T, H, n_state] L2 normalized queries
+            q: [B, T, H, n_state] queries (L2 normalized, or raw if normalize_kq=True)
             decay: [B, T, H] exponential decay factors
             g: [B, T, H, head_v_dim] gate values (can be None if apply_gate=False)
             S0: [B, H, n_state, head_v_dim] initial state
             n_heads: int
             apply_gate: bool
+            normalize_kq: bool - if True, kernel normalizes k/q in shared memory (avoids separate L2 norm launches)
         """
         B, T, H, n_state = k.shape
         head_v_dim = v.size(-1)
@@ -507,13 +513,13 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
             hasty_pytorch_lib.e88_coalesced_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
-                S0.contiguous(), output, S_cache, H, apply_gate
+                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq
             )
         elif E88_WARP_AVAILABLE:
             hasty_pytorch_lib.e88_warp_optimized_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
-                S0.contiguous(), output, S_cache, H, apply_gate
+                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq
             )
         elif E88_OPTIMIZED_AVAILABLE:
             hasty_pytorch_lib.e88_fused_forward(
@@ -532,6 +538,7 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         ctx.n_state = n_state
         ctx.head_v_dim = head_v_dim
         ctx.apply_gate = apply_gate
+        ctx.normalize_kq = normalize_kq
 
         return S_final, output
 
@@ -542,6 +549,7 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         n_state = ctx.n_state
         head_v_dim = ctx.head_v_dim
         apply_gate = ctx.apply_gate
+        normalize_kq = ctx.normalize_kq
 
         B, T, H, _ = k.shape
         checkpoint_interval = 16
@@ -572,10 +580,10 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),
                 d_k, d_v, d_q, d_decay, d_g_tensor,
-                segment_cache, n_heads, has_gate
+                segment_cache, n_heads, has_gate, normalize_kq
             )
         else:
-            # Fall back to fused_backward for larger sizes
+            # Fall back to fused_backward for larger sizes (no in-kernel norm yet)
             hasty_pytorch_lib.e88_fused_backward(
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),
@@ -583,9 +591,9 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
                 segment_cache, n_heads, has_gate
             )
 
-        # Return gradients for: training, k, v, q, decay, g, S0, n_heads, apply_gate
+        # Return gradients for: training, k, v, q, decay, g, S0, n_heads, apply_gate, normalize_kq
         d_g_out = d_g if apply_gate and g.numel() > 0 else None
-        return None, d_k, d_v, d_q, d_decay, d_g_out, None, None, None
+        return None, d_k, d_v, d_q, d_decay, d_g_out, None, None, None, None
 
 
 class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
@@ -1232,8 +1240,23 @@ class E88FLAHybrid(nn.Module):
             # === Optimized path: No transpose, 1.17-2.84x faster ===
             input_dtype = x.dtype
 
-            # L2 normalize k and q if enabled and not already done by fused projection
-            if self.use_l2_norm and not use_fused_proj:
+            # Determine if we can use in-kernel L2 normalization
+            # Requires warp or coalesced forward kernel (not fused) + register-owned backward
+            use_fused_l2 = (
+                USE_FUSED_L2_NORM and
+                self.use_l2_norm and
+                not use_fused_proj and
+                (E88_WARP_AVAILABLE or E88_COALESCED_AVAILABLE) and
+                E88_REGISTER_OWNED_AVAILABLE and
+                n <= 32 and self.head_v_dim <= 32  # register-owned backward supports these sizes
+            )
+
+            if use_fused_l2:
+                # Skip separate L2 norm - kernel will normalize in shared memory
+                k_norm = k.to(input_dtype)
+                q_norm = q.to(input_dtype)
+            elif self.use_l2_norm and not use_fused_proj:
+                # Fallback: separate L2 norm kernel launches
                 if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
                     k_norm = triton_l2_norm(k)
                     q_norm = triton_l2_norm(q)
@@ -1251,7 +1274,7 @@ class E88FLAHybrid(nn.Module):
             S_final, output = E88OptimizedCUDAFunction.apply(
                 self.training,
                 k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
-                g, S0.to(input_dtype), H, True  # apply_gate=True
+                g, S0.to(input_dtype), H, True, use_fused_l2  # apply_gate=True, normalize_kq
             )
             fused_gate_used = True
 

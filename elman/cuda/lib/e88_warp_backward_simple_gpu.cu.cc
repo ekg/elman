@@ -273,13 +273,13 @@ __global__ void E88WarpBackwardSimpleKernel_BF16(
 
                 if (has_gate && g_all != nullptr) {
                     float g_val = g_chunk[local_t * HEAD_V_DIM + tid];
-                    float Sq_val = Sq_chunk[local_t * HEAD_V_DIM + tid];
+                    // Sq_cache now stores PRE-GATED Sq (no division needed)
+                    float Sq_pre_gate = Sq_chunk[local_t * HEAD_V_DIM + tid];
                     float sig_g = e88_simple_sigmoid(g_val);
                     float silu_g = g_val * sig_g;
                     d_Sq_buf[tid] = d_out * silu_g;
                     float d_silu = sig_g * (1.0f + g_val * (1.0f - sig_g));
-                    float Sq_before_gate = Sq_val / (silu_g + 1e-8f);
-                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_before_gate * d_silu);
+                    d_g_all[v_offset + tid] = __float2bfloat16(d_out * Sq_pre_gate * d_silu);
                 } else {
                     d_Sq_buf[tid] = d_out;
                 }
