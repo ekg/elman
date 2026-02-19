@@ -63,11 +63,11 @@ COMPILE_MODE = 'max-autotune'
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
 KNOWN_GOOD_CONFIGS = {
     'e88': {
-        16: [  # n_state=16: BEST from v5/v6 runs - narrow+deep+many heads
-            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},  # 0.7351 loss - BEST
+        16: [  # n_state=16: BEST from v5/v6/v10 runs - many heads wins!
+            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006},    # v10 CMA-ES best: 1.2794
+            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},  # v5/v6 best: 0.7351 loss
             {'dim': 1408, 'n_heads': 84, 'depth': 46, 'lr': 0.0008333},  # 0.7639 loss
             {'dim': 1536, 'n_heads': 95, 'depth': 37, 'lr': 0.0006277},  # 0.7696 loss
-            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},     # 0.7724 loss
         ],
         32: [  # n_state=32: narrower dims due to larger state
             {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},  # 476.5M (0.7%)
@@ -110,9 +110,9 @@ E90_CONFIGS = [
 # E88 base search space (shared by ablation variants)
 _E88_SEARCH_SPACE = {
     'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
-    'n_heads': (32, 160, 'int', 'Number of attention heads'),
+    'n_heads': (32, 400, 'int', 'Number of attention heads'),  # Expanded to 400 - n16 wants many small heads
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-    'depth': (10, 40, 'int', 'Number of layers'),
+    'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
 }  # 5D (n_state swept separately)
 
@@ -200,9 +200,28 @@ DISCRETE_SWEEP_PARAMS = {
 # =============================================================================
 # PARAMETER CONVERSION
 # =============================================================================
+def get_search_space(model_type, fixed_params=None):
+    """Get search space with n_state-dependent bounds for E88."""
+    space = SEARCH_SPACES[model_type].copy()
+    fixed_params = fixed_params or {}
+
+    # Adjust n_heads range for E88 based on n_state
+    if model_type.startswith('e88') and 'n_heads' in space:
+        n_state = fixed_params.get('n_state')
+        if n_state == 16:
+            # n_state=16 wants many small heads: 96-400
+            space['n_heads'] = (96, 400, 'int', 'Number of attention heads (n16: many small)')
+        elif n_state == 32:
+            # n_state=32 prefers fewer larger heads: 32-160
+            space['n_heads'] = (32, 160, 'int', 'Number of attention heads (n32: fewer large)')
+        # else: use default range
+
+    return space
+
+
 def decode_params(x, model_type, fixed_params=None):
     """Convert CMA-ES vector [0,1]^n to model parameters."""
-    space = SEARCH_SPACES[model_type]
+    space = get_search_space(model_type, fixed_params)
     params = {}
     fixed_params = fixed_params or {}
 
@@ -247,7 +266,7 @@ def decode_params(x, model_type, fixed_params=None):
 
 def encode_params(params, model_type, fixed_params=None):
     """Convert model parameters to CMA-ES vector [0,1]^n."""
-    space = SEARCH_SPACES[model_type]
+    space = get_search_space(model_type, fixed_params)
     fixed_params = fixed_params or {}
     x = []
 
@@ -273,7 +292,7 @@ def encode_params(params, model_type, fixed_params=None):
 def get_search_dim(model_type, fixed_params=None):
     """Get number of dimensions to search (excluding fixed params)."""
     fixed_params = fixed_params or {}
-    return len(SEARCH_SPACES[model_type]) - len(fixed_params)
+    return len(get_search_space(model_type, fixed_params)) - len(fixed_params)
 
 
 # =============================================================================
@@ -496,20 +515,20 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 
     elif model_type == 'e1':
         cmd.extend([
-            '--level', '1',
+            '--level', '1',  # Integer level - parsed by train.py's parse_level()
             '--expansion', str(params.get('expansion', 2)),
         ])
 
     elif model_type == 'e23':
         cmd.extend([
-            '--level', '23',
+            '--level', '23',  # Integer level - parsed by train.py's parse_level()
             '--n_slots', str(params.get('n_slots', 64)),
             '--expansion', str(params.get('expansion', 1)),
         ])
 
     elif model_type == 'e42':
         cmd.extend([
-            '--level', '42',
+            '--level', '42',  # Integer level - parsed by train.py's parse_level()
             '--expansion', str(params.get('expansion', 2)),
         ])
 

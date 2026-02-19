@@ -120,21 +120,27 @@ class MambaGatedElmanCell(nn.Module):
             nn.init.xavier_uniform_(self.W_x)
             nn.init.xavier_uniform_(self.W_h, gain=w_h_init_gain)
 
+    @torch.compiler.disable
+    def _update_spectral_u(self):
+        """Update spectral u vector (disabled from torch.compile to avoid CUDAGraph issues)."""
+        u = getattr(self, '_spectral_u', None)
+        if u is None or u.shape[0] != self.dim:
+            u = torch.randn(self.dim, device=self.W_h.device, dtype=self.W_h.dtype)
+            u = u / u.norm()
+        with torch.no_grad():
+            for _ in range(3):
+                v = self.W_h.T @ u
+                v = v / (v.norm() + 1e-8)
+                u = self.W_h @ v
+                u = u / (u.norm() + 1e-8)
+            self._spectral_u = u
+        return u, v
+
     def get_W_h(self):
         """Get W_h with spectral normalization applied."""
         if self.w_h_mode == 'spectral_norm':
             target_radius = 0.99
-            u = getattr(self, '_spectral_u', None)
-            if u is None or u.shape[0] != self.dim:
-                u = torch.randn(self.dim, device=self.W_h.device, dtype=self.W_h.dtype)
-                u = u / u.norm()
-            with torch.no_grad():
-                for _ in range(3):
-                    v = self.W_h.T @ u
-                    v = v / (v.norm() + 1e-8)
-                    u = self.W_h @ v
-                    u = u / (u.norm() + 1e-8)
-                self._spectral_u = u
+            u, v = self._update_spectral_u()
             sigma = (u @ self.W_h @ v).abs()
             return self.W_h * (target_radius / (sigma + 1e-8))
         return self.W_h

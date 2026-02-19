@@ -100,6 +100,7 @@ class E42LinearTiedCell(nn.Module):
         else:
             nn.init.xavier_uniform_(self.W, gain=w_h_init_gain)
 
+    @torch.compiler.disable
     def get_W(self):
         """Get W with spectral normalization applied for stability."""
         if self.w_h_mode == 'spectral_norm':

@@ -366,7 +366,7 @@ def train(args):
             depth=args.depth,
             expansion_factor=args.expansion,
         )
-    elif args.level.lower() == 'e88_fused':
+    elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)
         model = E88FusedLM(
             vocab_size=256,
