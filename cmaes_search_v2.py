@@ -58,6 +58,9 @@ E88_SUPPORTED_N_STATE = [16, 32]
 COMPILE_ENABLED = False
 COMPILE_MODE = 'max-autotune'
 
+# Global sequence length setting (set from args in main())
+CHUNK_SIZE = 512
+
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
@@ -383,13 +386,16 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     dim = params['dim']
     actual_params = estimate_params_for_config(params, model_type)
 
-    # Adjust batch size based on model size
+    # Adjust batch size based on model size AND sequence length
+    # At 2048 chunk_size (4x longer), memory scales linearly → need 4x less batch
+    seq_scale = CHUNK_SIZE / 512.0  # Scaling factor relative to baseline 512
+
     if actual_params > 600_000_000:
-        batch_size = 8
+        batch_size = max(4, int(8 / seq_scale))
     elif actual_params > 400_000_000:
-        batch_size = 16
+        batch_size = max(4, int(16 / seq_scale))
     else:
-        batch_size = 32
+        batch_size = max(4, int(32 / seq_scale))
 
     lr = params.get('lr', 3e-4)
 
@@ -401,7 +407,7 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         '--lr', str(lr),
         '--bf16',
         '--batch_size', str(batch_size),
-        '--chunk_size', '512',
+        '--chunk_size', str(CHUNK_SIZE),
         '--train_minutes', str(train_minutes),
         '--output', output_dir,
         '--optimizer', 'schedulefree',
@@ -1007,16 +1013,21 @@ def main():
     parser.add_argument('--compile_mode', type=str, default='max-autotune',
                         help='torch.compile mode (default, reduce-overhead, max-autotune)')
 
+    # Sequence length scaling
+    parser.add_argument('--chunk_size', type=int, default=512,
+                        help='Sequence chunk size (default: 512, for scaling: 1024, 2048)')
+
     args = parser.parse_args()
 
     # Parse params
     target_params = int(args.params.lower().replace('m', '000000').replace('b', '000000000'))
     gpus = [int(g) for g in args.gpus.split(',')]
 
-    # Set global compile settings
-    global COMPILE_ENABLED, COMPILE_MODE
+    # Set global compile and sequence settings
+    global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE
     COMPILE_ENABLED = args.compile
     COMPILE_MODE = args.compile_mode
+    CHUNK_SIZE = args.chunk_size
 
     # Create output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1031,6 +1042,7 @@ def main():
     print(f"Training time: {args.train_minutes} min/config")
     print(f"GPUs: {gpus}")
     print(f"Output: {output_dir}")
+    print(f"Chunk size: {CHUNK_SIZE} (batch size auto-scaled)")
     print(f"torch.compile: {COMPILE_ENABLED} (mode: {COMPILE_MODE})")
     if args.phase in ['both', 'lhs']:
         print(f"LHS samples: {args.lhs_samples}")
