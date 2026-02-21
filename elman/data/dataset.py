@@ -248,15 +248,8 @@ class BatchedStreamDataset:
             self.positions[stream_idx] = pos + 1
 
             if byte_val == 0x1e:
-                # Document boundary
-                if len(buf) > 0:
-                    # Return partial chunk padded with zeros
-                    actual_len = len(buf)
-                    chunk = torch.zeros(self.chunk_size, dtype=torch.long)
-                    chunk[:actual_len] = torch.tensor(buf, dtype=torch.long)
-                    self.buffers[stream_idx] = []
-                    return chunk, True, actual_len
-                # Empty buffer, skip delimiter
+                # Document boundary — skip delimiter and continue reading
+                # No padding: just concatenate documents to fill the chunk
                 continue
             else:
                 buf.append(byte_val)
