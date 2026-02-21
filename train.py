@@ -672,6 +672,11 @@ def train(args):
     # Print final metrics in parseable format
     print(f"\nTraining complete! Final step: {step}")
     print(f"FINAL_LOSS_LAST100: {last_100_avg:.4f}")
+    if torch.cuda.is_available():
+        peak_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+        reserved_mb = torch.cuda.max_memory_reserved() / 1024 / 1024
+        print(f"PEAK_MEMORY_MB: {peak_mb:.0f}")
+        print(f"RESERVED_MEMORY_MB: {reserved_mb:.0f}")
 
 
 if __name__ == '__main__':
