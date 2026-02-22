@@ -110,6 +110,8 @@ def parse_args():
                         help='Sequence chunk size (TBPTT)')
     parser.add_argument('--checkpoint_interval', type=int, default=16,
                         help='E88 state checkpoint interval (larger=less memory, more recompute)')
+    parser.add_argument('--gradient_checkpointing', action='store_true',
+                        help='Recompute layer forward during backward (saves ~16GB, enables larger batch/seq)')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
@@ -404,6 +406,7 @@ def train(args):
             d_conv=args.d_conv,
             dropout=args.dropout,
             checkpoint_interval=args.checkpoint_interval,
+            gradient_checkpointing=args.gradient_checkpointing,
         )
     else:
         model = create_ladder_model(

@@ -15,6 +15,7 @@ Architecture matches Mamba exactly:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 # Import fused ops from mamba_ssm for exact architecture match
 try:
@@ -807,6 +808,7 @@ class LadderLM(nn.Module):
         k_fast=None,  # For E90 Dual-Rate: fast state dimension
         k_slow=None,  # For E90 Dual-Rate: slow state dimension
         checkpoint_interval=16,  # For E88: steps between state checkpoints (larger = less memory)
+        gradient_checkpointing=False,  # Recompute layer forward during backward (saves ~16GB at 25 layers)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -825,6 +827,7 @@ class LadderLM(nn.Module):
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
         self.d_conv = d_conv
+        self.gradient_checkpointing = gradient_checkpointing
 
         # Get the layer class for this level
         LayerClass = get_ladder_level(level)
@@ -953,7 +956,10 @@ class LadderLM(nn.Module):
                     residual = residual.to(torch.float32)
 
             # Elman layer forward
-            x, h_final = layer(x, prev_hiddens[i])
+            if self.gradient_checkpointing and self.training:
+                x, h_final = torch_checkpoint(layer, x, prev_hiddens[i], use_reentrant=False)
+            else:
+                x, h_final = layer(x, prev_hiddens[i])
 
             new_hidden_states.append(h_final)
 
