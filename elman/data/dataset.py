@@ -73,8 +73,8 @@ class DocumentStreamDataset(Dataset):
         """
         Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
 
-        Always returns fixed-size tensors filled with real data.
-        Document delimiters (0x1e) are skipped — documents are concatenated.
+        Reads raw bytes sequentially, including 0x1e delimiters as regular byte tokens.
+        No special handling of document boundaries — all bytes are data.
         """
         while len(self.token_buffer) < self.chunk_size:
             # Check if we need to wrap
@@ -83,28 +83,15 @@ class DocumentStreamDataset(Dataset):
                 self.wraps += 1
 
             # Read in larger chunks for efficiency
-            bytes_needed = self.chunk_size - len(self.token_buffer) + 64  # Extra buffer for doc boundaries
+            bytes_needed = self.chunk_size - len(self.token_buffer)
             end_pos = min(self.position + bytes_needed, self.file_size)
             raw_bytes = self.mmap[self.position:end_pos]
 
-            # Find document boundary in this chunk
-            delim_pos = raw_bytes.find(b'\x1e')
+            self.token_buffer.extend(raw_bytes)
+            self.bytes_processed += len(raw_bytes)
+            self.position = end_pos
 
-            if delim_pos == -1:
-                # No delimiter in this chunk - add all bytes
-                self.token_buffer.extend(raw_bytes)
-                self.bytes_processed += len(raw_bytes)
-                self.position = end_pos
-            else:
-                # Found delimiter - add bytes up to it, skip delimiter, continue
-                if delim_pos > 0:
-                    self.token_buffer.extend(raw_bytes[:delim_pos])
-                self.bytes_processed += delim_pos + 1
-                self.position += delim_pos + 1
-                self.docs_completed += 1
-                # Don't return partial chunk — continue filling from next document
-
-        # Full chunk (always chunk_size real tokens, no padding)
+        # Full chunk
         chunk = torch.tensor(self.token_buffer[:self.chunk_size], dtype=torch.long)
         self.token_buffer = self.token_buffer[self.chunk_size:]
         self.chunks_served += 1
@@ -225,7 +212,7 @@ class BatchedStreamDataset:
         self.positions[stream_idx] = 0
 
     def _get_chunk(self, stream_idx: int):
-        """Get next chunk from a specific stream."""
+        """Get next chunk from a specific stream. All bytes including 0x1e are data."""
         buf = self.buffers[stream_idx]
 
         while len(buf) < self.chunk_size:
@@ -236,13 +223,7 @@ class BatchedStreamDataset:
 
             byte_val = self.mmap[pos]
             self.positions[stream_idx] = pos + 1
-
-            if byte_val == 0x1e:
-                # Document boundary — skip delimiter and continue reading
-                # No padding: just concatenate documents to fill the chunk
-                continue
-            else:
-                buf.append(byte_val)
+            buf.append(byte_val)
 
         # Full chunk
         chunk = torch.tensor(buf[:self.chunk_size], dtype=torch.long)
@@ -440,13 +421,8 @@ class TokenizedStreamDataset:
                 byte_val = self.mmap[pos]
                 self.positions[stream_idx] = pos + 1
 
-                if self.doc_delimiter is not None and byte_val == self.doc_delimiter:
-                    # Document boundary - flush tokens and continue to next doc
-                    self._flush_bytes_to_tokens(stream_idx)
-                    continue
-                else:
-                    self.byte_buffers[stream_idx].append(byte_val)
-                    bytes_read += 1
+                self.byte_buffers[stream_idx].append(byte_val)
+                bytes_read += 1
 
             # Flush accumulated bytes to tokens
             self._flush_bytes_to_tokens(stream_idx)
