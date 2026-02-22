@@ -510,21 +510,21 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         use_coalesced = n_state > 32 or T > 1024
 
         if use_coalesced and E88_COALESCED_AVAILABLE:
-            hasty_pytorch_lib.e88_coalesced_forward(
+            result = hasty_pytorch_lib.e88_coalesced_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
                 S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq,
                 checkpoint_interval
             )
         elif E88_WARP_AVAILABLE:
-            hasty_pytorch_lib.e88_warp_optimized_forward(
+            result = hasty_pytorch_lib.e88_warp_optimized_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
                 S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq,
                 checkpoint_interval
             )
         elif E88_OPTIMIZED_AVAILABLE:
-            hasty_pytorch_lib.e88_fused_forward(
+            result = hasty_pytorch_lib.e88_fused_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
                 S0.contiguous(), output, S_cache, H, apply_gate,
@@ -533,8 +533,8 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         else:
             raise RuntimeError("No optimized E88 kernel available")
 
-        # Extract final state from the last checkpoint
-        S_final = S0.clone()  # Will be updated by kernel
+        # Extract final state from kernel return value
+        S_final = result[0]  # C++ kernel returns {S_updated, output}
 
         ctx.save_for_backward(k, v, q, decay, g_tensor if apply_gate else torch.empty(0, device=k.device, dtype=k.dtype), S_cache)
         ctx.n_heads = n_heads
@@ -846,6 +846,7 @@ class E88FLAHybrid(nn.Module):
         head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
         gate_activation: str = 'silu',  # Gate activation: 'silu' (FLA-GDN style, enables optimized kernels) or 'sigmoid'
         checkpoint_interval: int = 16,  # Steps between state checkpoints (larger = less memory, more recompute)
+        projection_chunk_size: int = 0,  # Chunk size for projection recomputation (0=disabled). Saves ~5GB/layer at T=32K.
         **kwargs
     ):
         super().__init__()
@@ -864,6 +865,7 @@ class E88FLAHybrid(nn.Module):
         self.d_conv = d_conv
         self.expansion = expansion
         self.checkpoint_interval = checkpoint_interval
+        self.projection_chunk_size = projection_chunk_size
 
         # Ablation flags
         self.use_conv = use_conv
@@ -1083,6 +1085,116 @@ class E88FLAHybrid(nn.Module):
 
         return W_qkva, conv_q, conv_k, conv_v
 
+    def _compute_projections(self, x_chunk, input_dtype, use_fused_l2):
+        """Compute k, v, q, decay, g projections for a time chunk.
+
+        Args:
+            x_chunk: [B, C, dim] input chunk
+            input_dtype: dtype for output tensors
+            use_fused_l2: if True, skip separate L2 norm (kernel handles it)
+
+        Returns:
+            k: [B, C, H, n_state]
+            v: [B, C, H, head_v_dim]
+            q: [B, C, H, n_state]
+            decay: [B, C, H]
+            g: [B, C, H, head_v_dim]
+        """
+        B, C, D = x_chunk.shape
+        H = self.n_heads
+        n = self.n_state
+
+        # QKV projection
+        if self.qkv_proj is not None:
+            qkv = self.qkv_proj(x_chunk)
+            q = qkv[..., :self.key_dim]
+            k = qkv[..., self.key_dim:2*self.key_dim]
+            v = qkv[..., 2*self.key_dim:]
+        else:
+            q = self.q_proj(x_chunk)
+            k = self.k_proj(x_chunk)
+            v = None
+
+        # Short convolutions (not supported with chunking, but handle for completeness)
+        if self.use_conv and self.q_conv is not None:
+            q = self.q_conv(q.transpose(1, 2))[:, :, :C].transpose(1, 2)
+            k = self.k_conv(k.transpose(1, 2))[:, :, :C].transpose(1, 2)
+
+        # SiLU activation
+        if self.use_silu:
+            q = F.silu(q)
+            k = F.silu(k)
+
+        # Value projection
+        if self.tie_kv:
+            v = k
+        elif v is None:
+            v = self.v_proj(x_chunk)
+
+        # Apply conv and SiLU to v (skip if tied — k already has SiLU)
+        if not self.tie_kv:
+            if self.use_conv and self.v_conv is not None:
+                v = self.v_conv(v.transpose(1, 2))[:, :, :C].transpose(1, 2)
+            if self.use_silu:
+                v = F.silu(v)
+
+        # Reshape for per-head processing
+        q = q.view(B, C, H, n)
+        k = k.view(B, C, H, n)
+        v = v.view(B, C, H, self.head_v_dim)
+
+        # L2 normalize k and q
+        if use_fused_l2:
+            k = k.to(input_dtype)
+            q = q.to(input_dtype)
+        elif self.use_l2_norm:
+            if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
+                k = triton_l2_norm(k)
+                q = triton_l2_norm(q)
+            else:
+                k = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                q = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+        else:
+            k = k.to(input_dtype)
+            q = q.to(input_dtype)
+
+        # Compute decay
+        if self.simple_decay:
+            decay = torch.sigmoid(self.beta_proj(x_chunk))
+        else:
+            alpha = self.a_proj(x_chunk)
+            if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x_chunk.is_cuda and x_chunk.dtype == torch.bfloat16:
+                decay = triton_mamba2_decay(alpha, self.A_log.float(), self.dt_bias.float())
+            else:
+                g_decay = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
+                decay = g_decay.exp().to(x_chunk.dtype)
+
+        # Gate projection
+        g = self.g_proj(x_chunk).view(B, C, H, self.head_v_dim).to(input_dtype)
+
+        return k, v.to(input_dtype), q, decay.to(input_dtype), g
+
+    def _process_chunk(self, x_chunk, S_prev, input_dtype, use_fused_l2):
+        """Compute projections and run CUDA kernel for one time chunk.
+
+        Args:
+            x_chunk: [B, C, dim] input chunk
+            S_prev: [B, H, n_state, head_v_dim] state from previous chunk
+            input_dtype: dtype for computation
+            use_fused_l2: if True, kernel normalizes k/q
+
+        Returns:
+            S_new: [B, H, n_state, head_v_dim] updated state
+            output: [B, C, H, head_v_dim] output for this chunk
+        """
+        k, v, q, decay, g = self._compute_projections(x_chunk, input_dtype, use_fused_l2)
+
+        S_new, output = E88OptimizedCUDAFunction.apply(
+            self.training, k, v, q, decay, g, S_prev,
+            self.n_heads, True, use_fused_l2, self.checkpoint_interval
+        )
+        return S_new, output
+
     def forward(
         self,
         x: torch.Tensor,
@@ -1140,79 +1252,103 @@ class E88FLAHybrid(nn.Module):
             # Note: q, k are already L2 normalized by the fused kernel if use_l2_norm=True
 
         else:
-            # === Original code path: separate projections ===
-            # Projections (fused QKV for GEMM efficiency)
-            if self.qkv_proj is not None:
-                # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
-                qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
-                q = qkv[..., :self.key_dim]
-                k = qkv[..., self.key_dim:2*self.key_dim]
-                v = qkv[..., 2*self.key_dim:]
-            else:
-                q = self.q_proj(x)  # [B, T, key_dim]
-                k = self.k_proj(x)  # [B, T, key_dim]
-                v = None  # Set below
+            # === Check early if chunked projection path will be used ===
+            # When chunking, we skip full-T projections entirely (computed per-chunk instead)
+            _use_optimized = (
+                USE_OPTIMIZED_KERNELS and
+                E88_OPTIMIZED_AVAILABLE and
+                x.is_cuda and
+                x.dtype == torch.bfloat16 and
+                self.training and
+                self.use_gate and
+                self.g_proj is not None and
+                self.gate_activation == 'silu' and
+                not self.use_output_norm and
+                not self._use_fused_norm_gate and
+                not self.use_write_gate
+            )
+            _will_chunk = (
+                _use_optimized and
+                self.projection_chunk_size > 0 and
+                T > self.projection_chunk_size and
+                not self.use_conv
+            )
 
-            # Short convolutions with optional SiLU (FLA-GDN style)
-            # Can be disabled for ablation
-            if self.use_conv and self.q_conv is not None:
-                # Conv expects [B, C, T]
-                q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
-                k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
-            # Apply SiLU if enabled
-            if self.use_silu:
-                q = F.silu(q)
-                k = F.silu(k)
-
-            # v projection (or tied to k when expansion=1.0 and tie_kv=True)
-            if self.tie_kv:
-                # Skip v_proj - v shares k after conv+silu (square state)
-                v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
-            elif v is None:
-                # Non-fused path: separate v projection
-                v = self.v_proj(x)  # [B, T, value_dim]
-
-            # Apply conv and SiLU to v if not using fused projection (fused already did q,k,v together)
-            if not self.tie_kv and self.qkv_proj is None:
-                if self.use_conv and self.v_conv is not None:
-                    v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-                if self.use_silu:
-                    v = F.silu(v)
-            elif not self.tie_kv:
-                # Fused path: apply conv and SiLU to v
-                if self.use_conv and self.v_conv is not None:
-                    v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-                if self.use_silu:
-                    v = F.silu(v)
-
-            # Compute decay
-            if self.simple_decay:
-                # Simple sigmoid decay (ablation: replaces Mamba2-style)
-                decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
-            else:
-                # Mamba2-style exponential decay
-                alpha = self.a_proj(x)  # [B, T, H]
-                if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x.is_cuda and x.dtype == torch.bfloat16:
-                    # Use fused Triton kernel (19x faster)
-                    decay = triton_mamba2_decay(alpha, self.A_log.float(), self.dt_bias.float())
+            if not _will_chunk:
+                # === Original code path: separate projections for full T ===
+                # Projections (fused QKV for GEMM efficiency)
+                if self.qkv_proj is not None:
+                    # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
+                    qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
+                    q = qkv[..., :self.key_dim]
+                    k = qkv[..., self.key_dim:2*self.key_dim]
+                    v = qkv[..., 2*self.key_dim:]
                 else:
-                    # Fallback: PyTorch ops
-                    # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
-                    g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
-                    decay = g.exp().to(x.dtype)  # [B, T, H]
+                    q = self.q_proj(x)  # [B, T, key_dim]
+                    k = self.k_proj(x)  # [B, T, key_dim]
+                    v = None  # Set below
 
-            # Compute write gate (beta) if enabled - gates how much delta writes to memory
-            if self.use_write_gate and self.write_gate_proj is not None:
-                write_beta = torch.sigmoid(self.write_gate_proj(x))  # [B, T, H]
-            else:
-                write_beta = None
+                # Short convolutions with optional SiLU (FLA-GDN style)
+                # Can be disabled for ablation
+                if self.use_conv and self.q_conv is not None:
+                    # Conv expects [B, C, T]
+                    q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                    k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                # Apply SiLU if enabled
+                if self.use_silu:
+                    q = F.silu(q)
+                    k = F.silu(k)
 
-            # Reshape for per-head processing
-            # q, k: [B, T, H, n_state]
-            q = q.view(B, T, H, n)
-            k = k.view(B, T, H, n)
-            # v: [B, T, H, head_v_dim]
-            v = v.view(B, T, H, self.head_v_dim)
+                # v projection (or tied to k when expansion=1.0 and tie_kv=True)
+                if self.tie_kv:
+                    # Skip v_proj - v shares k after conv+silu (square state)
+                    v = k  # [B, T, key_dim] = [B, T, value_dim] when expansion=1.0
+                elif v is None:
+                    # Non-fused path: separate v projection
+                    v = self.v_proj(x)  # [B, T, value_dim]
+
+                # Apply conv and SiLU to v if not using fused projection (fused already did q,k,v together)
+                if not self.tie_kv and self.qkv_proj is None:
+                    if self.use_conv and self.v_conv is not None:
+                        v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                    if self.use_silu:
+                        v = F.silu(v)
+                elif not self.tie_kv:
+                    # Fused path: apply conv and SiLU to v
+                    if self.use_conv and self.v_conv is not None:
+                        v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
+                    if self.use_silu:
+                        v = F.silu(v)
+
+                # Compute decay
+                if self.simple_decay:
+                    # Simple sigmoid decay (ablation: replaces Mamba2-style)
+                    decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
+                else:
+                    # Mamba2-style exponential decay
+                    alpha = self.a_proj(x)  # [B, T, H]
+                    if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and x.is_cuda and x.dtype == torch.bfloat16:
+                        # Use fused Triton kernel (19x faster)
+                        decay = triton_mamba2_decay(alpha, self.A_log.float(), self.dt_bias.float())
+                    else:
+                        # Fallback: PyTorch ops
+                        # g = -exp(A_log) * softplus(a_proj(x) + dt_bias)
+                        g = -self.A_log.float().exp() * F.softplus(alpha.float() + self.dt_bias)
+                        decay = g.exp().to(x.dtype)  # [B, T, H]
+
+                # Compute write gate (beta) if enabled - gates how much delta writes to memory
+                if self.use_write_gate and self.write_gate_proj is not None:
+                    write_beta = torch.sigmoid(self.write_gate_proj(x))  # [B, T, H]
+                else:
+                    write_beta = None
+
+                # Reshape for per-head processing
+                # q, k: [B, T, H, n_state]
+                q = q.view(B, T, H, n)
+                k = k.view(B, T, H, n)
+                # v: [B, T, H, head_v_dim]
+                v = v.view(B, T, H, self.head_v_dim)
+            # else: chunked path — projections computed per-chunk in _process_chunk
 
         # === Initialize states ===
         # State shape: [B, H, n_state, head_v_dim] stacked (for CUDA kernel)
@@ -1259,32 +1395,62 @@ class E88FLAHybrid(nn.Module):
                 n <= 32 and self.head_v_dim <= 32  # register-owned backward supports these sizes
             )
 
-            if use_fused_l2:
-                # Skip separate L2 norm - kernel will normalize in shared memory
-                k_norm = k.to(input_dtype)
-                q_norm = q.to(input_dtype)
-            elif self.use_l2_norm and not use_fused_proj:
-                # Fallback: separate L2 norm kernel launches
-                if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
-                    k_norm = triton_l2_norm(k)
-                    q_norm = triton_l2_norm(q)
-                else:
-                    k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
-                    q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
-            else:
-                k_norm = k.to(input_dtype)
-                q_norm = q.to(input_dtype)
-
-            # Compute gate projection (kept in [B, T, H, dim] layout)
-            g = self.g_proj(x).view(B, T, H, self.head_v_dim).to(input_dtype)
-
-            # Call optimized kernel (auto-selects warp vs coalesced based on n_state)
-            S_final, output = E88OptimizedCUDAFunction.apply(
-                self.training,
-                k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
-                g, S0.to(input_dtype), H, True, use_fused_l2,  # apply_gate=True, normalize_kq
-                self.checkpoint_interval
+            # Check if we should use chunked projection recomputation
+            # Saves ~5GB/layer at T=32K by only materializing one chunk's projections at a time
+            can_chunk = (
+                self.projection_chunk_size > 0 and
+                T > self.projection_chunk_size and
+                not self.use_conv  # Conv1d has cross-chunk dependencies
             )
+
+            if can_chunk:
+                # === Chunked path: recompute projections per-chunk during backward ===
+                # Full-T projections were skipped above — computed per-chunk here instead
+                C = self.projection_chunk_size
+                S = S0.to(input_dtype)
+                output_chunks = []
+
+                for t_start in range(0, T, C):
+                    t_end = min(t_start + C, T)
+                    x_chunk = x[:, t_start:t_end]
+
+                    S, out_chunk = torch.utils.checkpoint.checkpoint(
+                        self._process_chunk, x_chunk, S, input_dtype, use_fused_l2,
+                        use_reentrant=False
+                    )
+                    output_chunks.append(out_chunk)
+
+                output = torch.cat(output_chunks, dim=1)
+                S_final = S
+            else:
+                # === Non-chunked path (original) ===
+                if use_fused_l2:
+                    # Skip separate L2 norm - kernel will normalize in shared memory
+                    k_norm = k.to(input_dtype)
+                    q_norm = q.to(input_dtype)
+                elif self.use_l2_norm and not use_fused_proj:
+                    # Fallback: separate L2 norm kernel launches
+                    if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
+                        k_norm = triton_l2_norm(k)
+                        q_norm = triton_l2_norm(q)
+                    else:
+                        k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                        q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
+                else:
+                    k_norm = k.to(input_dtype)
+                    q_norm = q.to(input_dtype)
+
+                # Compute gate projection (kept in [B, T, H, dim] layout)
+                g = self.g_proj(x).view(B, T, H, self.head_v_dim).to(input_dtype)
+
+                # Call optimized kernel (auto-selects warp vs coalesced based on n_state)
+                S_final, output = E88OptimizedCUDAFunction.apply(
+                    self.training,
+                    k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
+                    g, S0.to(input_dtype), H, True, use_fused_l2,  # apply_gate=True, normalize_kq
+                    self.checkpoint_interval
+                )
+
             fused_gate_used = True
 
             # Convert S_final back to list for hidden state

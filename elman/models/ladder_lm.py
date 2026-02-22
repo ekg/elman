@@ -809,6 +809,7 @@ class LadderLM(nn.Module):
         k_slow=None,  # For E90 Dual-Rate: slow state dimension
         checkpoint_interval=16,  # For E88: steps between state checkpoints (larger = less memory)
         gradient_checkpointing=False,  # Recompute layer forward during backward (saves ~16GB at 25 layers)
+        projection_chunk_size=0,  # For E88: chunk size for projection recomputation (0=disabled, saves ~5GB/layer at T=32K)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -872,6 +873,7 @@ class LadderLM(nn.Module):
                 k_fast=k_fast,  # For E90 Dual-Rate: fast state dimension
                 k_slow=k_slow,  # For E90 Dual-Rate: slow state dimension
                 checkpoint_interval=checkpoint_interval,  # For E88: state checkpoint interval
+                projection_chunk_size=projection_chunk_size,  # For E88: projection recomputation chunks
             )
             for _ in range(depth)
         ])

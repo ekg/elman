@@ -112,6 +112,8 @@ def parse_args():
                         help='E88 state checkpoint interval (larger=less memory, more recompute)')
     parser.add_argument('--gradient_checkpointing', action='store_true',
                         help='Recompute layer forward during backward (saves ~16GB, enables larger batch/seq)')
+    parser.add_argument('--projection_chunk_size', type=int, default=0,
+                        help='E88 projection recomputation chunk size (0=disabled, 512=recommended for T>=8K). Saves ~5GB/layer.')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
@@ -407,6 +409,7 @@ def train(args):
             dropout=args.dropout,
             checkpoint_interval=args.checkpoint_interval,
             gradient_checkpointing=args.gradient_checkpointing,
+            projection_chunk_size=args.projection_chunk_size,
         )
     else:
         model = create_ladder_model(
