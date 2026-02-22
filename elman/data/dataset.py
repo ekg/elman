@@ -73,7 +73,8 @@ class DocumentStreamDataset(Dataset):
         """
         Returns: (chunk_tensor, is_final_chunk_in_doc, actual_chunk_length)
 
-        Always returns fixed-size tensors. Partial chunks are padded with zeros.
+        Always returns fixed-size tensors filled with real data.
+        Document delimiters (0x1e) are skipped — documents are concatenated.
         """
         while len(self.token_buffer) < self.chunk_size:
             # Check if we need to wrap
@@ -95,26 +96,15 @@ class DocumentStreamDataset(Dataset):
                 self.bytes_processed += len(raw_bytes)
                 self.position = end_pos
             else:
-                # Found delimiter - add bytes up to it
+                # Found delimiter - add bytes up to it, skip delimiter, continue
                 if delim_pos > 0:
                     self.token_buffer.extend(raw_bytes[:delim_pos])
                 self.bytes_processed += delim_pos + 1
                 self.position += delim_pos + 1
                 self.docs_completed += 1
+                # Don't return partial chunk — continue filling from next document
 
-                if len(self.token_buffer) > 0:
-                    # Partial chunk at document boundary - pad to maintain fixed size
-                    actual_length = min(len(self.token_buffer), self.chunk_size)
-
-                    chunk = torch.zeros(self.chunk_size, dtype=torch.long)
-                    chunk[:actual_length] = torch.tensor(self.token_buffer[:actual_length], dtype=torch.long)
-                    self.token_buffer = self.token_buffer[actual_length:] if actual_length < len(self.token_buffer) else []
-                    self.chunks_served += 1
-
-                    return chunk, True, actual_length
-                # Empty buffer at document start, continue
-
-        # Full chunk
+        # Full chunk (always chunk_size real tokens, no padding)
         chunk = torch.tensor(self.token_buffer[:self.chunk_size], dtype=torch.long)
         self.token_buffer = self.token_buffer[self.chunk_size:]
         self.chunks_served += 1
@@ -437,7 +427,7 @@ class TokenizedStreamDataset:
         """Get next chunk from a specific stream."""
         doc_ended = False
 
-        # Fill token buffer until we have enough
+        # Fill token buffer until we have enough — skip delimiters, concatenate docs
         while len(self.token_buffers[stream_idx]) < self.chunk_size:
             # Accumulate bytes
             bytes_read = 0
@@ -451,11 +441,8 @@ class TokenizedStreamDataset:
                 self.positions[stream_idx] = pos + 1
 
                 if self.doc_delimiter is not None and byte_val == self.doc_delimiter:
-                    # Document boundary - flush and mark
+                    # Document boundary - flush tokens and continue to next doc
                     self._flush_bytes_to_tokens(stream_idx)
-                    doc_ended = True
-                    if self.token_buffers[stream_idx]:
-                        break
                     continue
                 else:
                     self.byte_buffers[stream_idx].append(byte_val)
@@ -464,25 +451,11 @@ class TokenizedStreamDataset:
             # Flush accumulated bytes to tokens
             self._flush_bytes_to_tokens(stream_idx)
 
-            # If doc ended and we have tokens, return partial
-            if doc_ended and self.token_buffers[stream_idx]:
-                break
-
-        # Build chunk
+        # Full chunk (always chunk_size real tokens, no padding)
         buf = self.token_buffers[stream_idx]
-        actual_len = min(len(buf), self.chunk_size)
-
-        if actual_len < self.chunk_size:
-            # Partial chunk - pad with zeros
-            chunk = torch.zeros(self.chunk_size, dtype=torch.long)
-            chunk[:actual_len] = torch.tensor(buf[:actual_len], dtype=torch.long)
-            is_doc_end = True
-        else:
-            chunk = torch.tensor(buf[:self.chunk_size], dtype=torch.long)
-            is_doc_end = doc_ended
-
+        chunk = torch.tensor(buf[:self.chunk_size], dtype=torch.long)
         self.token_buffers[stream_idx] = buf[self.chunk_size:]
-        return chunk, is_doc_end, actual_len
+        return chunk, False, self.chunk_size
 
     def get_batch(self, device=None):
         """
