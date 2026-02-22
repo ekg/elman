@@ -806,6 +806,7 @@ class LadderLM(nn.Module):
         top_k=None,  # For MoM E88: number of active memory slots (top-K routing)
         k_fast=None,  # For E90 Dual-Rate: fast state dimension
         k_slow=None,  # For E90 Dual-Rate: slow state dimension
+        checkpoint_interval=16,  # For E88: steps between state checkpoints (larger = less memory)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -867,6 +868,7 @@ class LadderLM(nn.Module):
                 top_k=top_k,  # For MoM E88: number of active memory slots
                 k_fast=k_fast,  # For E90 Dual-Rate: fast state dimension
                 k_slow=k_slow,  # For E90 Dual-Rate: slow state dimension
+                checkpoint_interval=checkpoint_interval,  # For E88: state checkpoint interval
             )
             for _ in range(depth)
         ])

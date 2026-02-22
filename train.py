@@ -108,6 +108,8 @@ def parse_args():
                         help='Batch size')
     parser.add_argument('--chunk_size', type=int, default=512,
                         help='Sequence chunk size (TBPTT)')
+    parser.add_argument('--checkpoint_interval', type=int, default=16,
+                        help='E88 state checkpoint interval (larger=less memory, more recompute)')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
@@ -376,6 +378,7 @@ def train(args):
             n_state=args.n_state,
             expansion=args.expansion,
             use_gate=bool(args.use_gate),
+            checkpoint_interval=args.checkpoint_interval,
         )
     elif args.dim is not None and args.depth is not None:
         model = LadderLM(
@@ -400,6 +403,7 @@ def train(args):
             use_conv=bool(args.use_conv),
             d_conv=args.d_conv,
             dropout=args.dropout,
+            checkpoint_interval=args.checkpoint_interval,
         )
     else:
         model = create_ladder_model(

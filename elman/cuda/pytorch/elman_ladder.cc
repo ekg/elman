@@ -15229,7 +15229,8 @@ std::vector<Tensor> e88_fused_forward(
     Tensor output,      // [B, T, H, head_v_dim] output (pre-allocated)
     Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
     int n_heads,
-    bool apply_gate) {
+    bool apply_gate,
+    int checkpoint_interval) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15255,8 +15256,6 @@ std::vector<Tensor> e88_fused_forward(
                 "E88 Fused Forward only supports bfloat16, got ", k.scalar_type());
 
     using namespace elman;
-
-    const int checkpoint_interval = 16;
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
 
@@ -15293,7 +15292,8 @@ std::vector<Tensor> e88_fused_backward(
     Tensor d_g,             // [B, T, H, head_v_dim] output (can be empty)
     Tensor segment_cache,   // Pre-allocated segment cache
     int n_heads,
-    bool has_gate) {
+    bool has_gate,
+    int checkpoint_interval) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15321,7 +15321,6 @@ std::vector<Tensor> e88_fused_backward(
     using namespace elman;
 
     // Calculate checkpoint and Sq_cache offsets
-    const int checkpoint_interval = 16;
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
 
@@ -15368,7 +15367,8 @@ std::vector<Tensor> e88_register_owned_backward(
     Tensor segment_cache,   // Pre-allocated segment cache
     int n_heads,
     bool has_gate,
-    bool normalize_kq) {
+    bool normalize_kq,
+    int checkpoint_interval) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15403,7 +15403,6 @@ std::vector<Tensor> e88_register_owned_backward(
     using namespace elman;
 
     // Calculate checkpoint and Sq_cache offsets
-    const int checkpoint_interval = 16;
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
 
@@ -15591,7 +15590,8 @@ std::vector<Tensor> e88_warp_optimized_forward(
     Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
     int n_heads,
     bool apply_gate,
-    bool normalize_kq) {
+    bool normalize_kq,
+    int checkpoint_interval) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15619,7 +15619,6 @@ std::vector<Tensor> e88_warp_optimized_forward(
     using namespace elman;
 
     // Calculate checkpoint and Sq_cache offsets
-    const int checkpoint_interval = 16;
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
 
@@ -15873,7 +15872,8 @@ std::vector<Tensor> e88_coalesced_forward(
     Tensor S_cache,     // Pre-allocated cache for checkpoints + Sq
     int n_heads,
     bool apply_gate,
-    bool normalize_kq) {
+    bool normalize_kq,
+    int checkpoint_interval) {
 
     const auto batch_size = k.size(0);
     const auto time_steps = k.size(1);
@@ -15898,8 +15898,6 @@ std::vector<Tensor> e88_coalesced_forward(
                 "E88 Coalesced Forward only supports bfloat16, got ", k.scalar_type());
 
     using namespace elman;
-
-    const int checkpoint_interval = 16;
     const int num_checkpoints = (time_steps + checkpoint_interval - 1) / checkpoint_interval + 1;
     const int64_t s_checkpoints_size = num_checkpoints * batch_size * n_heads * n_state * head_v_dim;
 

@@ -475,7 +475,7 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, training, k, v, q, decay, g, S0, n_heads, apply_gate=True, normalize_kq=False):
+    def forward(ctx, training, k, v, q, decay, g, S0, n_heads, apply_gate=True, normalize_kq=False, checkpoint_interval=16):
         """
         Args:
             training: bool
@@ -488,6 +488,7 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
             n_heads: int
             apply_gate: bool
             normalize_kq: bool - if True, kernel normalizes k/q in shared memory (avoids separate L2 norm launches)
+            checkpoint_interval: int - steps between state checkpoints (16=default, larger=less memory)
         """
         B, T, H, n_state = k.shape
         head_v_dim = v.size(-1)
@@ -496,7 +497,6 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         output = torch.empty(B, T, H, head_v_dim, device=k.device, dtype=k.dtype)
 
         # Allocate cache for checkpoints + Sq
-        checkpoint_interval = 16
         num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         cache_size = num_checkpoints * B * H * n_state * head_v_dim + B * T * H * head_v_dim
         S_cache = torch.empty(cache_size, device=k.device, dtype=k.dtype)
@@ -513,19 +513,22 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
             hasty_pytorch_lib.e88_coalesced_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
-                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq
+                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq,
+                checkpoint_interval
             )
         elif E88_WARP_AVAILABLE:
             hasty_pytorch_lib.e88_warp_optimized_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
-                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq
+                S0.contiguous(), output, S_cache, H, apply_gate, normalize_kq,
+                checkpoint_interval
             )
         elif E88_OPTIMIZED_AVAILABLE:
             hasty_pytorch_lib.e88_fused_forward(
                 training, k.contiguous(), v.contiguous(), q.contiguous(),
                 decay.contiguous(), g_tensor.contiguous(),
-                S0.contiguous(), output, S_cache, H, apply_gate
+                S0.contiguous(), output, S_cache, H, apply_gate,
+                checkpoint_interval
             )
         else:
             raise RuntimeError("No optimized E88 kernel available")
@@ -539,6 +542,7 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         ctx.head_v_dim = head_v_dim
         ctx.apply_gate = apply_gate
         ctx.normalize_kq = normalize_kq
+        ctx.checkpoint_interval = checkpoint_interval
 
         return S_final, output
 
@@ -550,9 +554,9 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
         head_v_dim = ctx.head_v_dim
         apply_gate = ctx.apply_gate
         normalize_kq = ctx.normalize_kq
+        checkpoint_interval = ctx.checkpoint_interval
 
         B, T, H, _ = k.shape
-        checkpoint_interval = 16
 
         # Allocate output gradients
         d_k = torch.empty_like(k)
@@ -580,7 +584,8 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),
                 d_k, d_v, d_q, d_decay, d_g_tensor,
-                segment_cache, n_heads, has_gate, normalize_kq
+                segment_cache, n_heads, has_gate, normalize_kq,
+                checkpoint_interval
             )
         else:
             # Fall back to fused_backward for larger sizes (no in-kernel norm yet)
@@ -588,12 +593,13 @@ class E88OptimizedCUDAFunction(torch.autograd.Function):
                 k, v, q, decay, g_tensor,
                 S_cache, d_output.contiguous(),
                 d_k, d_v, d_q, d_decay, d_g_tensor,
-                segment_cache, n_heads, has_gate
+                segment_cache, n_heads, has_gate,
+                checkpoint_interval
             )
 
-        # Return gradients for: training, k, v, q, decay, g, S0, n_heads, apply_gate, normalize_kq
+        # Return gradients for: training, k, v, q, decay, g, S0, n_heads, apply_gate, normalize_kq, checkpoint_interval
         d_g_out = d_g if apply_gate and g.numel() > 0 else None
-        return None, d_k, d_v, d_q, d_decay, d_g_out, None, None, None, None
+        return None, d_k, d_v, d_q, d_decay, d_g_out, None, None, None, None, None
 
 
 class E75MultiHeadPrecomputedCUDAFunction(torch.autograd.Function):
@@ -839,6 +845,7 @@ class E88FLAHybrid(nn.Module):
         use_output_norm: bool = False,  # E88 optimal: no output RMSNorm
         head_mix: str = 'concat',  # Head mixing: 'concat', 'weighted_sum', 'per_head', 'input_weighted', 'sum'
         gate_activation: str = 'silu',  # Gate activation: 'silu' (FLA-GDN style, enables optimized kernels) or 'sigmoid'
+        checkpoint_interval: int = 16,  # Steps between state checkpoints (larger = less memory, more recompute)
         **kwargs
     ):
         super().__init__()
@@ -856,6 +863,7 @@ class E88FLAHybrid(nn.Module):
         self.n_heads = n_heads
         self.d_conv = d_conv
         self.expansion = expansion
+        self.checkpoint_interval = checkpoint_interval
 
         # Ablation flags
         self.use_conv = use_conv
@@ -1274,7 +1282,8 @@ class E88FLAHybrid(nn.Module):
             S_final, output = E88OptimizedCUDAFunction.apply(
                 self.training,
                 k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
-                g, S0.to(input_dtype), H, True, use_fused_l2  # apply_gate=True, normalize_kq
+                g, S0.to(input_dtype), H, True, use_fused_l2,  # apply_gate=True, normalize_kq
+                self.checkpoint_interval
             )
             fused_gate_used = True
 

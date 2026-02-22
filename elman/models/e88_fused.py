@@ -37,7 +37,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
     """Autograd function for fused E88 CUDA kernel."""
 
     @staticmethod
-    def forward(ctx, training, k, v, q, decay, g, S0, H, apply_gate):
+    def forward(ctx, training, k, v, q, decay, g, S0, H, apply_gate, checkpoint_interval=16):
         """
         Args:
             k: [B, T, H, n_state] L2-normalized keys
@@ -48,6 +48,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
             S0: [B, H, n_state, head_v_dim] initial states
             H: number of heads
             apply_gate: whether to apply silu gating
+            checkpoint_interval: steps between state checkpoints (larger=less memory)
         """
         B, T, _, n_state = k.shape
         _, _, _, head_v_dim = v.shape
@@ -57,7 +58,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
         output = torch.empty(B, T, H, head_v_dim, dtype=k.dtype, device=k.device)
 
         # S_cache: checkpoints + Sq_cache
-        num_checkpoints = (T + E88_FUSED_CHECKPOINT_INTERVAL - 1) // E88_FUSED_CHECKPOINT_INTERVAL + 1
+        num_checkpoints = (T + checkpoint_interval - 1) // checkpoint_interval + 1
         S_cache = torch.empty(
             num_checkpoints * B * H * n_state * head_v_dim + B * T * H * head_v_dim,
             dtype=k.dtype, device=k.device
@@ -66,7 +67,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
         # Call warp-optimized forward (2.87x faster, identical outputs)
         hasty_pytorch_lib.e88_warp_optimized_forward(
             training, k, v, q, decay, g if apply_gate else None,
-            S, output, S_cache, H, apply_gate
+            S, output, S_cache, H, apply_gate, False, checkpoint_interval
         )
 
         # Save for backward
@@ -75,6 +76,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
         ctx.apply_gate = apply_gate
         ctx.n_state = n_state
         ctx.head_v_dim = head_v_dim
+        ctx.checkpoint_interval = checkpoint_interval
 
         return S, output
 
@@ -85,6 +87,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
         apply_gate = ctx.apply_gate
         n_state = ctx.n_state
         head_v_dim = ctx.head_v_dim
+        checkpoint_interval = ctx.checkpoint_interval
 
         B, T = k.shape[:2]
 
@@ -99,7 +102,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
         state_size = n_state * head_v_dim
         cache_entry_size = state_size + n_state + head_v_dim + 1
         segment_cache = torch.empty(
-            B * H * E88_FUSED_CHECKPOINT_INTERVAL * cache_entry_size,
+            B * H * checkpoint_interval * cache_entry_size,
             dtype=k.dtype, device=k.device
         )
 
@@ -110,7 +113,7 @@ class E88FusedCUDAFunction(torch.autograd.Function):
                 k, v, q, decay, g if apply_gate else torch.empty(0, device=k.device, dtype=k.dtype),
                 S_cache, d_output.contiguous(),
                 d_k, d_v, d_q, d_decay, d_g if apply_gate else torch.empty(0, device=k.device, dtype=k.dtype),
-                segment_cache, H, apply_gate
+                segment_cache, H, apply_gate, False, checkpoint_interval
             )
         else:
             # Fall back to fused_backward for larger sizes
@@ -118,10 +121,10 @@ class E88FusedCUDAFunction(torch.autograd.Function):
                 k, v, q, decay, g if apply_gate else None,
                 S_cache, d_output.contiguous(),
                 d_k, d_v, d_q, d_decay, d_g,
-                segment_cache, H, apply_gate
+                segment_cache, H, apply_gate, checkpoint_interval
             )
 
-        return None, d_k, d_v, d_q, d_decay, d_g, None, None, None
+        return None, d_k, d_v, d_q, d_decay, d_g, None, None, None, None
 
 
 class E88FusedLayer(nn.Module):
@@ -146,6 +149,7 @@ class E88FusedLayer(nn.Module):
         use_gate: bool = True,
         use_l2_norm: bool = True,
         use_silu: bool = True,
+        checkpoint_interval: int = 16,
     ):
         super().__init__()
 
@@ -156,6 +160,7 @@ class E88FusedLayer(nn.Module):
         self.use_gate = use_gate
         self.use_l2_norm = use_l2_norm
         self.use_silu = use_silu
+        self.checkpoint_interval = checkpoint_interval
 
         # Projection dimensions
         self.key_dim = n_heads * n_state
@@ -274,7 +279,8 @@ class E88FusedLayer(nn.Module):
 
             S_final, output = E88FusedCUDAFunction.apply(
                 self.training, k_cuda, v_cuda, q_cuda, decay_cuda, g_cuda,
-                S0_cuda, H, self.use_gate and gate is not None
+                S0_cuda, H, self.use_gate and gate is not None,
+                self.checkpoint_interval
             )
         else:
             # PyTorch fallback
@@ -345,6 +351,7 @@ class E88FusedLM(nn.Module):
         use_l2_norm: bool = True,
         use_silu: bool = True,
         tie_embeddings: bool = True,
+        checkpoint_interval: int = 16,
     ):
         super().__init__()
 
@@ -365,6 +372,7 @@ class E88FusedLM(nn.Module):
                 use_gate=use_gate,
                 use_l2_norm=use_l2_norm,
                 use_silu=use_silu,
+                checkpoint_interval=checkpoint_interval,
             )
             for _ in range(depth)
         ])
