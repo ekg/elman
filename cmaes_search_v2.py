@@ -61,6 +61,10 @@ COMPILE_MODE = 'max-autotune'
 # Global sequence length setting (set from args in main())
 CHUNK_SIZE = 512
 
+# Global long-sequence settings (set from args in main())
+GRADIENT_CHECKPOINTING = False
+PROJECTION_CHUNK_SIZE = 0
+
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
@@ -419,6 +423,12 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     # Add torch.compile if enabled (global settings)
     if COMPILE_ENABLED:
         cmd.extend(['--compile', '--compile_mode', COMPILE_MODE])
+
+    # Add long-sequence options
+    if GRADIENT_CHECKPOINTING:
+        cmd.append('--gradient_checkpointing')
+    if PROJECTION_CHUNK_SIZE > 0:
+        cmd.extend(['--projection_chunk_size', str(PROJECTION_CHUNK_SIZE)])
 
     if model_type == 'e88':
         cmd.extend([
@@ -1017,6 +1027,12 @@ def main():
     parser.add_argument('--chunk_size', type=int, default=512,
                         help='Sequence chunk size (default: 512, for scaling: 1024, 2048)')
 
+    # Long-sequence options
+    parser.add_argument('--gradient_checkpointing', action='store_true',
+                        help='Enable gradient checkpointing (needed for long sequences)')
+    parser.add_argument('--projection_chunk_size', type=int, default=0,
+                        help='Projection chunk size for memory savings (0=disabled)')
+
     args = parser.parse_args()
 
     # Parse params
@@ -1024,9 +1040,11 @@ def main():
     gpus = [int(g) for g in args.gpus.split(',')]
 
     # Set global compile and sequence settings
-    global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE
+    global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
     COMPILE_ENABLED = args.compile
     COMPILE_MODE = args.compile_mode
+    GRADIENT_CHECKPOINTING = args.gradient_checkpointing
+    PROJECTION_CHUNK_SIZE = args.projection_chunk_size
     CHUNK_SIZE = args.chunk_size
 
     # Create output directory
@@ -1086,6 +1104,7 @@ def main():
         results = run_cmaes_phase(
             args.model, args.train_minutes, output_dir, gpus,
             warm_starts, target_params,
+            fixed_params=fixed_params if fixed_params else None,
             sigma0=args.sigma, min_generations=args.min_generations,
             converge_threshold=args.converge, consecutive_required=args.consecutive
         )
