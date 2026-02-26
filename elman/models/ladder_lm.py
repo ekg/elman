@@ -111,6 +111,7 @@ from .e86_input_matrix_delta import E86InputMatrixDeltaLayer
 from .e87_sparse_block import E87SparseBlockLayer
 from .mom_e88 import MoME88
 from .e90_dual_rate import E90DualRate
+from .e1_multihead import E1MultiHead
 
 
 def get_ladder_level(level):
@@ -721,6 +722,9 @@ def get_ladder_level(level):
         '26n32': lambda **kw: E26DualMemoryElman(n_slots=32, **{k: v for k, v in kw.items() if k != 'n_slots'}),
         '26n128': lambda **kw: E26DualMemoryElman(n_slots=128, **{k: v for k, v in kw.items() if k != 'n_slots'}),
         28: E28ConvElman,  # E28: E1 + Mamba2 causal conv
+        # E1H: Multi-Head E1 (independent Elman heads, vector state, no matrix/decay/L2)
+        'E1H': E1MultiHead,
+
         'mamba2': 'mamba2',  # Special case - handled separately
     }
     if level in levels:

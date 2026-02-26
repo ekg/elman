@@ -14604,6 +14604,122 @@ std::vector<Tensor> e87_sparse_block_backward(
 }
 
 // =============================================================================
+// E1H: Multi-Head Elman - Vector state per head with W_h recurrence
+// =============================================================================
+
+std::vector<Tensor> e1h_forward(
+    bool training,
+    Tensor pre_x,       // [T, B, H, N] pre-computed W_x @ x
+    Tensor z,           // [T, B, H, N] gate values
+    Tensor h0,          // [B, H, N] initial hidden state
+    Tensor W_h,         // [H, N, N] per-head recurrence weight
+    Tensor b_h          // [H, N] per-head bias
+) {
+    const auto T = pre_x.size(0);
+    const auto B = pre_x.size(1);
+    const auto H = pre_x.size(2);
+    const auto N = pre_x.size(3);
+
+    CHECK_INPUT(pre_x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(h0);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b_h);
+
+    const auto options = pre_x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // h state: copy h0 so kernel can update in-place
+    Tensor h = torch::empty({B, H, N}, options);
+    h.copy_(h0);
+
+    // Output
+    Tensor output = torch::empty({T, B, H, N}, options);
+
+    // Checkpoint storage: [num_checkpoints, B, H, N]
+    const int checkpoint_interval = 16;
+    const int num_checkpoints = (T + checkpoint_interval - 1) / checkpoint_interval + 1;
+    Tensor h_checkpoints = training ?
+        torch::empty({num_checkpoints, B, H, N}, options) :
+        torch::empty({0}, options);
+
+    TORCH_CHECK(pre_x.scalar_type() == at::ScalarType::BFloat16,
+                "E1H Forward only supports bfloat16, got ", pre_x.scalar_type());
+
+    using namespace elman;
+
+    E1HForward<__nv_bfloat16> forward(
+        training, B, N, H,
+        at::cuda::getCurrentCUDAStream());
+
+    forward.Run(
+        T,
+        reinterpret_cast<const __nv_bfloat16*>(pre_x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(output.data_ptr()),
+        training ? reinterpret_cast<__nv_bfloat16*>(h_checkpoints.data_ptr()) : nullptr);
+
+    return {h, output, h_checkpoints};
+}
+
+std::vector<Tensor> e1h_backward(
+    Tensor pre_x,           // [T, B, H, N]
+    Tensor z,               // [T, B, H, N]
+    Tensor W_h,             // [H, N, N]
+    Tensor b_h,             // [H, N]
+    Tensor h_checkpoints,   // [num_checkpoints, B, H, N]
+    Tensor d_output         // [T, B, H, N]
+) {
+    const auto T = pre_x.size(0);
+    const auto B = pre_x.size(1);
+    const auto H = pre_x.size(2);
+    const auto N = pre_x.size(3);
+
+    CHECK_INPUT(pre_x);
+    CHECK_INPUT(z);
+    CHECK_INPUT(W_h);
+    CHECK_INPUT(b_h);
+    CHECK_INPUT(d_output);
+
+    const auto options = pre_x.options();
+    const at::cuda::CUDAGuard guard(options.device_index());
+
+    // Gradient outputs
+    Tensor d_pre_x = torch::empty({T, B, H, N}, options);
+    Tensor d_z = torch::empty({T, B, H, N}, options);
+    // d_W_h and d_b in float32 per (B, H) pair — sum across B in Python
+    Tensor d_W_h = torch::empty({B, H, N, N}, pre_x.options().dtype(at::ScalarType::Float));
+    Tensor d_b_h = torch::empty({B, H, N}, pre_x.options().dtype(at::ScalarType::Float));
+
+    TORCH_CHECK(pre_x.scalar_type() == at::ScalarType::BFloat16,
+                "E1H Backward only supports bfloat16, got ", pre_x.scalar_type());
+
+    using namespace elman;
+
+    E1HBackward<__nv_bfloat16> backward(
+        B, N, H,
+        at::cuda::getCurrentCUDAStream());
+
+    backward.Run(
+        T,
+        reinterpret_cast<const __nv_bfloat16*>(pre_x.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(z.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(W_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(b_h.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(h_checkpoints.data_ptr()),
+        reinterpret_cast<const __nv_bfloat16*>(d_output.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_pre_x.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(d_z.data_ptr()),
+        d_W_h.data_ptr<float>(),
+        d_b_h.data_ptr<float>());
+
+    return {d_pre_x, d_z, d_W_h, d_b_h};
+}
+
+// =============================================================================
 // E88: FLA Hybrid - Mamba2-style exponential decay + rectangular matrix state
 // =============================================================================
 
@@ -16920,6 +17036,12 @@ void elman_ladder_init(py::module& m) {
     m.def("mom_e88_backward", &mom_e88_backward,
           "MoM E88: Mixture of Memory backward with per-slot state. "
           "Computes gradients for k, v, q, decay, router_weights.");
+
+    // E1H: Multi-Head Elman (vector state per head)
+    m.def("e1h_forward", &e1h_forward,
+          "E1H Multi-Head Elman: Forward pass with vector state per head");
+    m.def("e1h_backward", &e1h_backward,
+          "E1H Multi-Head Elman: Backward pass with checkpoint + segment replay");
 
     // E90: Dual-Rate Factorized State
     m.def("e90_dual_rate_forward", &e90_dual_rate_forward,

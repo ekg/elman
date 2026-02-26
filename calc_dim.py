@@ -180,6 +180,33 @@ def calc_e1_params(dim, depth, expansion=2.0, vocab_size=256):
     return layers_total + embed + final_norm
 
 
+def calc_e1h_params(dim, depth, n_heads=16, n_state=32, vocab_size=256):
+    """Calculate E1H (Multi-Head E1) parameters.
+
+    E1H has H independent Elman heads, each with vector state of size n_state.
+    - in_proj: dim → 2 * H * n_state (split into x and z)
+    - W_x: [H, n_state, n_state] per-head input transform
+    - W_h: [H, n_state, n_state] per-head recurrence weight
+    - b: [H, n_state] per-head bias
+    - out_proj: H * n_state → dim
+    """
+    d_inner = n_heads * n_state
+
+    in_proj = dim * 2 * d_inner
+    W_x = n_heads * n_state * n_state
+    W_h = n_heads * n_state * n_state
+    b = n_heads * n_state
+    out_proj = d_inner * dim
+    norm = dim  # RMSNorm
+
+    per_layer = in_proj + W_x + W_h + b + out_proj + norm
+    layers_total = per_layer * depth
+    embed = vocab_size * dim
+    final_norm = dim
+
+    return layers_total + embed + final_norm
+
+
 def calc_e23_params(dim, depth, n_slots=64, vocab_size=256):
     """Calculate E23 (DualMemoryElman) parameters.
 

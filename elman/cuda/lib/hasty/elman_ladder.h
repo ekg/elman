@@ -9976,6 +9976,73 @@ void dispatch_e90_dual_rate_backward(
     cudaStream_t stream
 );
 
+// =============================================================================
+// E1H: Multi-Head Elman (vector state per head)
+// =============================================================================
+
+template<typename T>
+struct E1HForward {
+    E1HForward(
+        bool training,
+        int batch_size,
+        int n_state,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    void Run(
+        int steps,
+        const T* pre_x,    // [T, B, H, N]
+        const T* z,         // [T, B, H, N]
+        T* h,               // [B, H, N] initial state, updated in-place
+        const T* W_h,       // [H, N, N]
+        const T* b_h,       // [H, N]
+        T* output,          // [T, B, H, N]
+        T* h_cache);        // checkpoint storage
+
+    static int64_t WorkspaceSize(int steps, int batch_size, int n_state, int n_heads) {
+        int num_checkpoints = (steps + 15) / 16 + 1;
+        return (int64_t)num_checkpoints * batch_size * n_heads * n_state * sizeof(T);
+    }
+
+private:
+    bool training_;
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    cudaStream_t stream_;
+};
+
+template<typename T>
+struct E1HBackward {
+    E1HBackward(
+        int batch_size,
+        int n_state,
+        int n_heads,
+        const cudaStream_t& stream);
+
+    ~E1HBackward();
+
+    void Run(
+        int steps,
+        const T* pre_x,        // [T, B, H, N]
+        const T* z,             // [T, B, H, N]
+        const T* W_h,           // [H, N, N]
+        const T* b_h,           // [H, N]
+        const T* h_checkpoints, // [num_checkpoints, B, H, N]
+        const T* d_output,      // [T, B, H, N]
+        T* d_pre_x,             // [T, B, H, N]
+        T* d_z,                 // [T, B, H, N]
+        float* d_W_h,           // [B, H, N, N] float32
+        float* d_b_h);          // [B, H, N] float32
+
+private:
+    int batch_size_;
+    int n_state_;
+    int n_heads_;
+    cudaStream_t stream_;
+    void* segment_cache_;   // [B*H, checkpoint_interval, N]
+};
+
 }  // namespace elman
 
 #endif  // HASTY_ELMAN_LADDER_H

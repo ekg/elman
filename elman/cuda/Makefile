@@ -143,7 +143,8 @@ CUDA_OBJS := \
 	lib/e89_residual_state_gpu.o \
 	lib/e90_dual_rate_gpu.o \
 	lib/gru_gpu.o \
-	lib/lstm_gpu.o
+	lib/lstm_gpu.o \
+	lib/e1h_multihead_gpu.o
 
 .PHONY: all hasty hasty_tf hasty_pytorch libhasty_tf examples benchmarks clean
 

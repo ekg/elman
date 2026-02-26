@@ -48,7 +48,7 @@ from calc_dim import (
     calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
     calc_transformer_params, calc_gru_params, calc_lstm_params,
     calc_mingru_params, calc_minlstm_params, calc_mom_e88_params, calc_e90_params,
-    calc_e1_params, calc_e23_params, calc_e42_params, calc_e75_params
+    calc_e1_params, calc_e1h_params, calc_e23_params, calc_e42_params, calc_e75_params
 )
 
 # Supported n_state values for E88
@@ -101,6 +101,20 @@ KNOWN_GOOD_CONFIGS = {
             {'dim': 1792, 'd_state': 96, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Previous CMA-ES best: 1.2713
             {'dim': 1792, 'd_state': 64, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Default d_state
             {'dim': 1792, 'd_state': 128, 'expand': 2, 'depth': 22, 'lr': 3e-4}, # Higher d_state
+        ],
+    },
+    'e1h': {
+        16: [  # n_state=16: CMA-ES sweep results (non-compiled, Feb 24 2026)
+            {'dim': 1408, 'n_heads': 166, 'depth': 40, 'lr': 6.26e-4},  # Best: 1.3358
+            {'dim': 2048, 'n_heads': 168, 'depth': 26, 'lr': 4.94e-4},  # 1.3401
+            {'dim': 1920, 'n_heads': 192, 'depth': 26, 'lr': 4.93e-4},  # 1.3403
+            {'dim': 1536, 'n_heads': 166, 'depth': 40, 'lr': 5.32e-4},  # 1.3448
+        ],
+        32: [  # n_state=32: CMA-ES sweep results (non-compiled, Feb 25 2026)
+            {'dim': 1792, 'n_heads': 70, 'depth': 37, 'lr': 5.8e-4},   # Best: 1.3524
+            {'dim': 1408, 'n_heads': 154, 'depth': 22, 'lr': 3.82e-4}, # 1.3591
+            {'dim': 3072, 'n_heads': 66, 'depth': 22, 'lr': 5.94e-4},  # 1.3601
+            {'dim': 1280, 'n_heads': 175, 'depth': 21, 'lr': 3.52e-4}, # 1.3610
         ],
     },
 }
@@ -191,6 +205,13 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
     },  # 5D
+    'e1h': {
+        'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
+        'n_heads': (16, 400, 'int', 'Number of independent Elman heads'),
+        'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
+        'depth': (10, 40, 'int', 'Number of layers'),
+        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
+    },  # 5D (n_state swept separately like E88)
 }
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
@@ -202,6 +223,7 @@ DISCRETE_SWEEP_PARAMS = {
     'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
     'e88-wgate': {'n_state': [16, 32]},  # ablation: add write gate
     'e75': {'n_state': [16, 24, 32, 40, 48, 56, 64]},
+    'e1h': {'n_state': [16, 32]},
 }
 
 # =============================================================================
@@ -222,6 +244,14 @@ def get_search_space(model_type, fixed_params=None):
             # n_state=32 prefers fewer larger heads: 32-160
             space['n_heads'] = (32, 160, 'int', 'Number of attention heads (n32: fewer large)')
         # else: use default range
+
+    # Adjust n_heads range for E1H based on n_state
+    if model_type == 'e1h' and 'n_heads' in space:
+        n_state = fixed_params.get('n_state')
+        if n_state == 16:
+            space['n_heads'] = (64, 400, 'int', 'Number of Elman heads (n16: many small)')
+        elif n_state == 32:
+            space['n_heads'] = (32, 200, 'int', 'Number of Elman heads (n32: fewer large)')
 
     return space
 
@@ -372,6 +402,9 @@ def estimate_params_for_config(params, model_type):
     elif model_type == 'e75':
         return calc_e75_params(dim, depth=depth, n_heads=params.get('n_heads', 8),
                                n_state=params.get('n_state', 32), expansion=params.get('expansion', 1.0))
+    elif model_type == 'e1h':
+        return calc_e1h_params(dim, depth=depth, n_heads=params.get('n_heads', 16),
+                               n_state=params.get('n_state', 32))
     else:
         return 4 * dim * dim * depth  # Rough estimate
 
@@ -552,6 +585,13 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         cmd.extend([
             '--level', 'E75h{n}n{s}'.format(n=params.get('n_heads', 8), s=params.get('n_state', 32)),
             '--n_heads', str(params.get('n_heads', 8)),
+            '--n_state', str(params.get('n_state', 32)),
+        ])
+
+    elif model_type == 'e1h':
+        cmd.extend([
+            '--level', 'E1H',
+            '--n_heads', str(params.get('n_heads', 16)),
             '--n_state', str(params.get('n_state', 32)),
         ])
 
