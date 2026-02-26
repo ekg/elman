@@ -65,6 +65,26 @@ CHUNK_SIZE = 512
 GRADIENT_CHECKPOINTING = False
 PROJECTION_CHUNK_SIZE = 0
 
+# Progressive training settings (set from args in main())
+PROGRESSIVE = False
+PHASE1_MINUTES = 10
+PHASE2_MINUTES = 10
+PHASE2_CHUNK_SIZE = 32768
+
+# Model-specific batch sizes at 32K (what fits in 48GB VRAM)
+PHASE2_BATCH_SIZES = {
+    'e88': 4, 'e88_fused': 4,
+    'e1h': 2,
+    'fla-gdn': 1,
+    'mamba2': 1,
+}
+
+# Models that need gradient checkpointing at 32K
+PHASE2_GRAD_CKPT_MODELS = {'e88', 'e88_fused', 'e1h'}
+
+# Models that need projection chunking at 32K
+PHASE2_PROJ_CHUNK_MODELS = {'e88', 'e88_fused'}
+
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
@@ -601,8 +621,200 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 # =============================================================================
 # EVALUATION
 # =============================================================================
+def run_training_progressive(gpu_id, params, model_type, train_minutes, output_dir, eval_id):
+    """Run 2-phase progressive training: Phase 1 @ 512, Phase 2 @ 32K.
+
+    train_minutes is ignored — uses PHASE1_MINUTES and PHASE2_MINUTES instead.
+    Returns result dict with loss = Phase 2 final loss (the fitness signal).
+    """
+    eval_dir = os.path.join(output_dir, f'eval_{eval_id}')
+    phase1_dir = os.path.join(eval_dir, 'phase1')
+    phase2_dir = os.path.join(eval_dir, 'phase2')
+    os.makedirs(phase1_dir, exist_ok=True)
+    os.makedirs(phase2_dir, exist_ok=True)
+
+    env = os.environ.copy()
+    env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    cwd = os.path.dirname(os.path.abspath(__file__))
+
+    actual_params = estimate_params_for_config(params, model_type)
+
+    # --- PHASE 1: Train at 512 (save checkpoint for resume) ---
+    # Build Phase 1 command: short context, normal batch size, KEEP checkpoints
+    global CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
+    saved_globals = (CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE)
+
+    CHUNK_SIZE = 512
+    GRADIENT_CHECKPOINTING = False
+    PROJECTION_CHUNK_SIZE = 0
+    cmd1, _ = build_train_command(params, model_type, PHASE1_MINUTES, phase1_dir)
+    CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
+
+    # Phase 1 needs to SAVE a checkpoint — override keep_checkpoints and save_every
+    # Remove --keep_checkpoints 0 and --save_every 999999 from cmd1
+    cmd1_filtered = []
+    skip_next = False
+    for i, arg in enumerate(cmd1):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ('--keep_checkpoints', '--save_every'):
+            skip_next = True  # Skip this flag and its value
+            continue
+        cmd1_filtered.append(arg)
+    cmd1 = cmd1_filtered + ['--keep_checkpoints', '1', '--save_every', '999999']
+    # Final checkpoint is always saved by train.py at the end, so save_every=999999 is fine
+
+    try:
+        result1 = subprocess.run(
+            cmd1,
+            capture_output=True,
+            text=True,
+            timeout=PHASE1_MINUTES * 60 + 300,
+            env=env,
+            cwd=cwd
+        )
+
+        if result1.returncode != 0:
+            err_file = os.path.join(eval_dir, 'phase1_stderr.txt')
+            with open(err_file, 'w') as f:
+                f.write(f"Return code: {result1.returncode}\n")
+                f.write(f"Stderr:\n{result1.stderr}\n")
+                f.write(f"Stdout (last 30 lines):\n")
+                f.write('\n'.join(result1.stdout.split('\n')[-30:]))
+            return {
+                'params': params, 'actual_params': actual_params,
+                'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
+                'success': False, 'error': f'phase1_returncode_{result1.returncode}',
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            'params': params, 'actual_params': actual_params,
+            'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
+            'success': False, 'error': 'phase1_timeout',
+        }
+    except Exception as e:
+        return {
+            'params': params, 'actual_params': actual_params,
+            'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
+            'success': False, 'error': f'phase1_exception: {e}',
+        }
+
+    # Find Phase 1 checkpoint
+    ckpts = glob.glob(os.path.join(phase1_dir, '**', 'checkpoint_*.pt'), recursive=True)
+    if not ckpts:
+        return {
+            'params': params, 'actual_params': actual_params,
+            'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
+            'success': False, 'error': 'no_phase1_checkpoint',
+        }
+    # Use the latest checkpoint (sorted alphabetically, step number is zero-padded)
+    ckpt_path = sorted(ckpts)[-1]
+
+    # --- PHASE 2: Resume at 32K with model-specific settings ---
+    saved_globals = (CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE)
+
+    CHUNK_SIZE = PHASE2_CHUNK_SIZE
+    GRADIENT_CHECKPOINTING = model_type in PHASE2_GRAD_CKPT_MODELS
+    PROJECTION_CHUNK_SIZE = 512 if model_type in PHASE2_PROJ_CHUNK_MODELS else 0
+    cmd2, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
+    CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
+
+    # Override batch_size for Phase 2 (model-specific for 32K)
+    phase2_bs = PHASE2_BATCH_SIZES.get(model_type, 1)
+    cmd2_filtered = []
+    skip_next = False
+    for i, arg in enumerate(cmd2):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--batch_size':
+            skip_next = True
+            continue
+        cmd2_filtered.append(arg)
+    cmd2 = cmd2_filtered + ['--batch_size', str(phase2_bs)]
+
+    # Add --resume pointing to Phase 1 checkpoint
+    cmd2 += ['--resume', ckpt_path]
+
+    try:
+        result2 = subprocess.run(
+            cmd2,
+            capture_output=True,
+            text=True,
+            timeout=PHASE2_MINUTES * 60 + 300,
+            env=env,
+            cwd=cwd
+        )
+
+        if result2.returncode != 0:
+            err_file = os.path.join(eval_dir, 'phase2_stderr.txt')
+            with open(err_file, 'w') as f:
+                f.write(f"Return code: {result2.returncode}\n")
+                f.write(f"Stderr:\n{result2.stderr}\n")
+                f.write(f"Stdout (last 30 lines):\n")
+                f.write('\n'.join(result2.stdout.split('\n')[-30:]))
+
+        # Parse Phase 2 loss (FINAL_LOSS_LAST100 — the fitness signal)
+        loss = float('inf')
+        for line in result2.stdout.split('\n'):
+            if 'FINAL_LOSS_LAST100:' in line:
+                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                if match:
+                    try:
+                        loss = float(match.group(1))
+                        break
+                    except:
+                        pass
+
+        # Fallback: check checkpoint files
+        if loss == float('inf'):
+            p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
+            for ckpt in p2_ckpts:
+                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                if match:
+                    try:
+                        ckpt_loss = float(match.group(1))
+                        if ckpt_loss < loss:
+                            loss = ckpt_loss
+                    except:
+                        pass
+
+    except subprocess.TimeoutExpired:
+        loss = float('inf')
+    except Exception as e:
+        loss = float('inf')
+
+    # Cleanup: delete Phase 1 checkpoint(s) to save disk
+    for ckpt in ckpts:
+        try:
+            os.remove(ckpt)
+        except:
+            pass
+    # Also remove Phase 2 checkpoints
+    p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
+    for ckpt in p2_ckpts:
+        try:
+            os.remove(ckpt)
+        except:
+            pass
+
+    return {
+        'params': params,
+        'actual_params': actual_params,
+        'loss': loss,
+        'eval_id': eval_id,
+        'gpu_id': gpu_id,
+        'success': loss < 10.0,
+    }
+
+
 def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id):
     """Run training for a single configuration."""
+    if PROGRESSIVE:
+        return run_training_progressive(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
+
     eval_dir = os.path.join(output_dir, f'eval_{eval_id}')
     os.makedirs(eval_dir, exist_ok=True)
 
@@ -1073,6 +1285,16 @@ def main():
     parser.add_argument('--projection_chunk_size', type=int, default=0,
                         help='Projection chunk size for memory savings (0=disabled)')
 
+    # Progressive training (512→32K)
+    parser.add_argument('--progressive', action='store_true',
+                        help='Enable 2-phase progressive training: Phase 1 @ 512, Phase 2 @ 32K')
+    parser.add_argument('--phase1_minutes', type=float, default=10,
+                        help='Phase 1 training time at 512 (default: 10)')
+    parser.add_argument('--phase2_minutes', type=float, default=10,
+                        help='Phase 2 training time at 32K (default: 10)')
+    parser.add_argument('--phase2_chunk_size', type=int, default=32768,
+                        help='Phase 2 sequence length (default: 32768)')
+
     args = parser.parse_args()
 
     # Parse params
@@ -1081,11 +1303,18 @@ def main():
 
     # Set global compile and sequence settings
     global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
+    global PROGRESSIVE, PHASE1_MINUTES, PHASE2_MINUTES, PHASE2_CHUNK_SIZE
     COMPILE_ENABLED = args.compile
     COMPILE_MODE = args.compile_mode
     GRADIENT_CHECKPOINTING = args.gradient_checkpointing
     PROJECTION_CHUNK_SIZE = args.projection_chunk_size
     CHUNK_SIZE = args.chunk_size
+
+    # Progressive training settings
+    PROGRESSIVE = args.progressive
+    PHASE1_MINUTES = args.phase1_minutes
+    PHASE2_MINUTES = args.phase2_minutes
+    PHASE2_CHUNK_SIZE = args.phase2_chunk_size
 
     # Create output directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1097,10 +1326,15 @@ def main():
     print(f"{'='*70}")
     print(f"Phase: {args.phase}")
     print(f"Target params: {target_params/1e6:.0f}M")
-    print(f"Training time: {args.train_minutes} min/config")
+    if PROGRESSIVE:
+        print(f"Progressive training: Phase 1 = {PHASE1_MINUTES} min @ 512, Phase 2 = {PHASE2_MINUTES} min @ {PHASE2_CHUNK_SIZE}")
+        print(f"Effective time per eval: {PHASE1_MINUTES + PHASE2_MINUTES} min")
+    else:
+        print(f"Training time: {args.train_minutes} min/config")
     print(f"GPUs: {gpus}")
     print(f"Output: {output_dir}")
-    print(f"Chunk size: {CHUNK_SIZE} (batch size auto-scaled)")
+    if not PROGRESSIVE:
+        print(f"Chunk size: {CHUNK_SIZE} (batch size auto-scaled)")
     print(f"torch.compile: {COMPILE_ENABLED} (mode: {COMPILE_MODE})")
     if args.phase in ['both', 'lhs']:
         print(f"LHS samples: {args.lhs_samples}")
