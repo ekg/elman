@@ -202,7 +202,7 @@ class LlamaLayer(nn.Module):
     """
 
     def __init__(self, dim, n_heads=None, head_dim=64, hidden_dim=None,
-                 dropout=0.0, max_seq_len=8192, **kwargs):
+                 dropout=0.0, max_seq_len=65536, **kwargs):
         super().__init__()
 
         # Default n_heads based on dim and head_dim
@@ -248,7 +248,7 @@ class LlamaLM(nn.Module):
         head_dim=64,
         hidden_dim=None,
         dropout=0.0,
-        max_seq_len=8192,
+        max_seq_len=65536,
         tie_weights=True,
     ):
         super().__init__()
