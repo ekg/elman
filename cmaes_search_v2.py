@@ -200,7 +200,8 @@ _E88_SEARCH_SPACE = {
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
-}  # 5D (n_state swept separately)
+    'batch_size': (1, 8, 'int', 'Training batch size'),
+}  # 6D (n_state swept separately)
 
 SEARCH_SPACES = {
     # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
@@ -216,67 +217,77 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 4D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 5D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 4D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 5D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 4D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 5D
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D
     'e1h': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'n_heads': (16, 400, 'int', 'Number of independent Elman heads'),
         'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-    },  # 5D (n_state swept separately like E88)
+        'batch_size': (1, 8, 'int', 'Training batch size'),
+    },  # 6D (n_state swept separately like E88)
 }
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
@@ -488,16 +499,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     dim = params['dim']
     actual_params = estimate_params_for_config(params, model_type)
 
-    # Adjust batch size based on model size AND sequence length
-    # At 2048 chunk_size (4x longer), memory scales linearly → need 4x less batch
-    seq_scale = CHUNK_SIZE / 512.0  # Scaling factor relative to baseline 512
-
-    if actual_params > 600_000_000:
-        batch_size = max(4, int(8 / seq_scale))
-    elif actual_params > 400_000_000:
-        batch_size = max(4, int(16 / seq_scale))
-    else:
-        batch_size = max(4, int(32 / seq_scale))
+    # Batch size from search space (CMA-ES optimizes this)
+    batch_size = params.get('batch_size', 16)
 
     lr = params.get('lr', 3e-4)
 
@@ -783,8 +786,8 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     # Add --resume pointing to Phase 1 checkpoint
     cmd2_no_bs += ['--resume', ckpt_path]
 
-    # Try Phase 2 with decreasing batch size on OOM
-    phase2_bs = get_phase2_batch_size(model_type, PHASE2_CHUNK_SIZE)
+    # Try Phase 2 with searched batch_size, walk down on OOM
+    phase2_bs = params.get('batch_size', 1)
     loss = float('inf')
 
     while phase2_bs >= 1:
@@ -1040,6 +1043,8 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
                 cfg = {**sc}
                 if n_state is not None:
                     cfg['n_state'] = n_state
+                if 'batch_size' not in cfg:
+                    cfg['batch_size'] = 4  # Default seed batch size (CMA-ES will explore around it)
                 if is_valid_param_count(cfg, model_type, target_params, 0.10):
                     valid_configs.append(cfg)
             if valid_configs:
