@@ -76,22 +76,22 @@ PHASE2_CHUNK_SIZE = 32768
 # Key = chunk_size, value = {model: batch_size}
 PHASE2_BATCH_SIZES_BY_SCALE = {
     8192: {
-        'e88': 16, 'e88_fused': 16,
+        'e88': 8, 'e88_fused': 8,
         'e1h': 8,
-        'fla-gdn': 4,
-        'mamba2': 4,
+        'fla-gdn': 8,
+        'mamba2': 8,
     },
     32768: {
-        'e88': 4, 'e88_fused': 4,
-        'e1h': 2,
-        'fla-gdn': 1,
-        'mamba2': 1,
+        'e88': 8, 'e88_fused': 8,
+        'e1h': 8,
+        'fla-gdn': 8,
+        'mamba2': 8,
     },
     131072: {
-        'e88': 1, 'e88_fused': 1,
-        'e1h': 1,
-        'fla-gdn': 1,
-        'mamba2': 1,
+        'e88': 8, 'e88_fused': 8,
+        'e1h': 8,
+        'fla-gdn': 8,
+        'mamba2': 8,
     },
 }
 
