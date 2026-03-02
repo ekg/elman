@@ -675,13 +675,14 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             cwd=cwd
         )
 
+        # Save Phase 1 stdout/stderr
+        with open(os.path.join(eval_dir, 'phase1_stdout.txt'), 'w') as f:
+            f.write(result1.stdout)
+        if result1.stderr:
+            with open(os.path.join(eval_dir, 'phase1_stderr.txt'), 'w') as f:
+                f.write(result1.stderr)
+
         if result1.returncode != 0:
-            err_file = os.path.join(eval_dir, 'phase1_stderr.txt')
-            with open(err_file, 'w') as f:
-                f.write(f"Return code: {result1.returncode}\n")
-                f.write(f"Stderr:\n{result1.stderr}\n")
-                f.write(f"Stdout (last 30 lines):\n")
-                f.write('\n'.join(result1.stdout.split('\n')[-30:]))
             return {
                 'params': params, 'actual_params': actual_params,
                 'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
@@ -748,13 +749,12 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             cwd=cwd
         )
 
-        if result2.returncode != 0:
-            err_file = os.path.join(eval_dir, 'phase2_stderr.txt')
-            with open(err_file, 'w') as f:
-                f.write(f"Return code: {result2.returncode}\n")
-                f.write(f"Stderr:\n{result2.stderr}\n")
-                f.write(f"Stdout (last 30 lines):\n")
-                f.write('\n'.join(result2.stdout.split('\n')[-30:]))
+        # Save Phase 2 stdout/stderr
+        with open(os.path.join(eval_dir, 'phase2_stdout.txt'), 'w') as f:
+            f.write(result2.stdout)
+        if result2.stderr:
+            with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
+                f.write(result2.stderr)
 
         # Parse Phase 2 loss (FINAL_LOSS_LAST100 — the fitness signal)
         loss = float('inf')
