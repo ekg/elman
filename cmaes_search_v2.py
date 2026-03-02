@@ -850,8 +850,8 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         except Exception:
             break
 
-    # Record the actual batch size used (for post-hoc analysis)
-    with open(os.path.join(eval_dir, 'phase2_batch_size.txt'), 'w') as f:
+    # Record the max batch size that fit (for post-hoc analysis)
+    with open(os.path.join(eval_dir, 'phase2_max_batch_size.txt'), 'w') as f:
         f.write(str(phase2_bs))
 
     # Cleanup: delete Phase 1 checkpoint(s) to save disk
