@@ -29,6 +29,7 @@ import argparse
 import subprocess
 import json
 import re
+import shutil
 from pathlib import Path
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -758,77 +759,100 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     ckpt_path = sorted(ckpts)[-1]
 
     # --- PHASE 2: Resume at 32K with model-specific settings ---
+    # Build base Phase 2 command (without batch_size — we'll set it per attempt)
     saved_globals = (CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE)
 
     CHUNK_SIZE = PHASE2_CHUNK_SIZE
     GRADIENT_CHECKPOINTING = model_type in PHASE2_GRAD_CKPT_MODELS
     PROJECTION_CHUNK_SIZE = 512 if model_type in PHASE2_PROJ_CHUNK_MODELS else 0
-    cmd2, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
+    cmd2_base, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
-    # Override batch_size for Phase 2 (model-specific for 32K)
-    phase2_bs = get_phase2_batch_size(model_type, PHASE2_CHUNK_SIZE)
-    cmd2_filtered = []
+    # Strip batch_size from base command (we'll add it per attempt)
+    cmd2_no_bs = []
     skip_next = False
-    for i, arg in enumerate(cmd2):
+    for arg in cmd2_base:
         if skip_next:
             skip_next = False
             continue
         if arg == '--batch_size':
             skip_next = True
             continue
-        cmd2_filtered.append(arg)
-    cmd2 = cmd2_filtered + ['--batch_size', str(phase2_bs)]
+        cmd2_no_bs.append(arg)
 
     # Add --resume pointing to Phase 1 checkpoint
-    cmd2 += ['--resume', ckpt_path]
+    cmd2_no_bs += ['--resume', ckpt_path]
 
-    try:
-        result2 = subprocess.run(
-            cmd2,
-            capture_output=True,
-            text=True,
-            timeout=PHASE2_MINUTES * 60 + 300,
-            env=env,
-            cwd=cwd
-        )
+    # Try Phase 2 with decreasing batch size on OOM
+    phase2_bs = get_phase2_batch_size(model_type, PHASE2_CHUNK_SIZE)
+    loss = float('inf')
 
-        # Save Phase 2 stdout/stderr
-        with open(os.path.join(eval_dir, 'phase2_stdout.txt'), 'w') as f:
-            f.write(result2.stdout)
-        if result2.stderr:
-            with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
-                f.write(result2.stderr)
+    while phase2_bs >= 1:
+        cmd2 = cmd2_no_bs + ['--batch_size', str(phase2_bs)]
 
-        # Parse Phase 2 loss (FINAL_LOSS_LAST100 — the fitness signal)
-        loss = float('inf')
-        for line in result2.stdout.split('\n'):
-            if 'FINAL_LOSS_LAST100:' in line:
-                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                if match:
-                    try:
-                        loss = float(match.group(1))
-                        break
-                    except:
-                        pass
+        try:
+            result2 = subprocess.run(
+                cmd2,
+                capture_output=True,
+                text=True,
+                timeout=PHASE2_MINUTES * 60 + 300,
+                env=env,
+                cwd=cwd
+            )
 
-        # Fallback: check checkpoint files
-        if loss == float('inf'):
-            p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
-            for ckpt in p2_ckpts:
-                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                if match:
-                    try:
-                        ckpt_loss = float(match.group(1))
-                        if ckpt_loss < loss:
-                            loss = ckpt_loss
-                    except:
-                        pass
+            # Save Phase 2 stdout/stderr (overwrite on retry)
+            with open(os.path.join(eval_dir, 'phase2_stdout.txt'), 'w') as f:
+                f.write(result2.stdout)
+            if result2.stderr:
+                with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
+                    f.write(result2.stderr)
 
-    except subprocess.TimeoutExpired:
-        loss = float('inf')
-    except Exception as e:
-        loss = float('inf')
+            # Check for OOM — retry with smaller batch size
+            if result2.returncode != 0 and ('CUDA out of memory' in result2.stderr or
+                                             'OutOfMemoryError' in result2.stderr):
+                if phase2_bs > 1:
+                    phase2_bs = phase2_bs // 2
+                    # Clean up phase2 output dir for retry
+                    for d in glob.glob(os.path.join(phase2_dir, 'level*')):
+                        shutil.rmtree(d, ignore_errors=True)
+                    continue
+                else:
+                    break  # bs=1 still OOMs — give up
+
+            # Parse Phase 2 loss (FINAL_LOSS_LAST100 — the fitness signal)
+            for line in result2.stdout.split('\n'):
+                if 'FINAL_LOSS_LAST100:' in line:
+                    match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                    if match:
+                        try:
+                            loss = float(match.group(1))
+                            break
+                        except:
+                            pass
+
+            # Fallback: check checkpoint files
+            if loss == float('inf'):
+                p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
+                for ckpt in p2_ckpts:
+                    match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                    if match:
+                        try:
+                            ckpt_loss = float(match.group(1))
+                            if ckpt_loss < loss:
+                                loss = ckpt_loss
+                        except:
+                            pass
+
+            break  # Success (or non-OOM failure) — don't retry
+
+        except subprocess.TimeoutExpired:
+            break
+        except Exception:
+            break
+
+    # Record the actual batch size used (for post-hoc analysis)
+    with open(os.path.join(eval_dir, 'phase2_batch_size.txt'), 'w') as f:
+        f.write(str(phase2_bs))
 
     # Cleanup: delete Phase 1 checkpoint(s) to save disk
     for ckpt in ckpts:
