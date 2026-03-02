@@ -71,18 +71,51 @@ PHASE1_MINUTES = 10
 PHASE2_MINUTES = 10
 PHASE2_CHUNK_SIZE = 32768
 
-# Model-specific batch sizes at 32K (what fits in 48GB VRAM)
-PHASE2_BATCH_SIZES = {
-    'e88': 4, 'e88_fused': 4,
-    'e1h': 2,
-    'fla-gdn': 1,
-    'mamba2': 1,
+# Model-specific batch sizes by Phase 2 chunk size (what fits in 48GB VRAM)
+# Key = chunk_size, value = {model: batch_size}
+PHASE2_BATCH_SIZES_BY_SCALE = {
+    8192: {
+        'e88': 16, 'e88_fused': 16,
+        'e1h': 8,
+        'fla-gdn': 4,
+        'mamba2': 4,
+    },
+    32768: {
+        'e88': 4, 'e88_fused': 4,
+        'e1h': 2,
+        'fla-gdn': 1,
+        'mamba2': 1,
+    },
+    131072: {
+        'e88': 1, 'e88_fused': 1,
+        'e1h': 1,
+        'fla-gdn': 1,
+        'mamba2': 1,
+    },
 }
 
-# Models that need gradient checkpointing at 32K
+def get_phase2_batch_size(model_type, chunk_size):
+    """Get Phase 2 batch size for a model at a given chunk size."""
+    if chunk_size in PHASE2_BATCH_SIZES_BY_SCALE:
+        return PHASE2_BATCH_SIZES_BY_SCALE[chunk_size].get(model_type, 1)
+    # Interpolate: find nearest known scale and scale linearly
+    known = sorted(PHASE2_BATCH_SIZES_BY_SCALE.keys())
+    if chunk_size <= known[0]:
+        bs_map = PHASE2_BATCH_SIZES_BY_SCALE[known[0]]
+        scale = known[0] / chunk_size
+        return max(1, int(bs_map.get(model_type, 1) * scale))
+    if chunk_size >= known[-1]:
+        return 1  # At very long context, bs=1 is safest
+    # Between two known scales — use the larger (more conservative)
+    for k in known:
+        if k >= chunk_size:
+            return PHASE2_BATCH_SIZES_BY_SCALE[k].get(model_type, 1)
+    return 1
+
+# Models that need gradient checkpointing at long context
 PHASE2_GRAD_CKPT_MODELS = {'e88', 'e88_fused', 'e1h'}
 
-# Models that need projection chunking at 32K
+# Models that need projection chunking at long context
 PHASE2_PROJ_CHUNK_MODELS = {'e88', 'e88_fused'}
 
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
@@ -90,48 +123,59 @@ PHASE2_PROJ_CHUNK_MODELS = {'e88', 'e88_fused'}
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
 KNOWN_GOOD_CONFIGS = {
     'e88': {
-        16: [  # n_state=16: BEST from v5/v6/v10 runs - many heads wins!
-            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006},    # v10 CMA-ES best: 1.2794
-            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},  # v5/v6 best: 0.7351 loss
-            {'dim': 1408, 'n_heads': 84, 'depth': 46, 'lr': 0.0008333},  # 0.7639 loss
-            {'dim': 1536, 'n_heads': 95, 'depth': 37, 'lr': 0.0006277},  # 0.7696 loss
+        16: [  # n_state=16: 32K progressive CMA-ES (Mar 2026) + 512 CMA-ES seeds
+            {'dim': 1152, 'n_heads': 269, 'depth': 18, 'lr': 9.07e-4},   # 32K best: 1.1000
+            {'dim': 1280, 'n_heads': 152, 'depth': 28, 'lr': 1.70e-3},   # 32K #2: 1.1086
+            {'dim': 1024, 'n_heads': 262, 'depth': 20, 'lr': 4.96e-4},   # 32K #3: 1.1093
+            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006},    # 512 CMA-ES best: 1.2794
         ],
-        32: [  # n_state=32: narrower dims due to larger state
-            {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},  # 476.5M (0.7%)
-            {'dim': 1408, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},  # 503.7M (4.9%)
-            {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},  # 519.8M (8.3%)
+        32: [  # n_state=32: 32K progressive CMA-ES (Mar 2026) — sub-1.0 nats!
+            {'dim': 1152, 'n_heads': 60, 'depth': 39, 'lr': 1.21e-3},    # 32K best: 0.9858
+            {'dim': 1024, 'n_heads': 63, 'depth': 46, 'lr': 1.54e-3},    # 32K #2: 0.9971
+            {'dim': 1280, 'n_heads': 60, 'depth': 42, 'lr': 2.53e-3},    # 32K #3: 1.0183
+            {'dim': 1024, 'n_heads': 62, 'depth': 47, 'lr': 6.09e-4},    # 32K #4: 1.0248
         ],
     },
     # e88_fused uses same configs as e88 (fused kernel, same semantics)
     'e88_fused': {
         16: [
-            {'dim': 1280, 'n_heads': 91, 'depth': 48, 'lr': 0.0006473},
-            {'dim': 1408, 'n_heads': 84, 'depth': 46, 'lr': 0.0008333},
-            {'dim': 1536, 'n_heads': 95, 'depth': 37, 'lr': 0.0006277},
-            {'dim': 2432, 'n_heads': 70, 'depth': 35, 'lr': 0.0007},
+            {'dim': 1152, 'n_heads': 269, 'depth': 18, 'lr': 9.07e-4},
+            {'dim': 1280, 'n_heads': 152, 'depth': 28, 'lr': 1.70e-3},
+            {'dim': 1024, 'n_heads': 262, 'depth': 20, 'lr': 4.96e-4},
+            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006},
         ],
         32: [
-            {'dim': 1408, 'n_heads': 60, 'depth': 35, 'lr': 0.0006},
-            {'dim': 1408, 'n_heads': 60, 'depth': 37, 'lr': 0.0006},
-            {'dim': 1536, 'n_heads': 60, 'depth': 35, 'lr': 0.0005},
+            {'dim': 1152, 'n_heads': 60, 'depth': 39, 'lr': 1.21e-3},
+            {'dim': 1024, 'n_heads': 63, 'depth': 46, 'lr': 1.54e-3},
+            {'dim': 1280, 'n_heads': 60, 'depth': 42, 'lr': 2.53e-3},
+            {'dim': 1024, 'n_heads': 62, 'depth': 47, 'lr': 6.09e-4},
+        ],
+    },
+    'fla-gdn': {
+        None: [  # 32K progressive CMA-ES (Mar 2026)
+            {'dim': 1664, 'expansion': 3, 'depth': 13, 'n_heads': 12, 'lr': 7.68e-4},  # 32K best: 1.1345
+            {'dim': 1408, 'expansion': 3, 'depth': 20, 'n_heads': 15, 'lr': 6.11e-4},  # 32K #2: 1.1359
+            {'dim': 1664, 'expansion': 3, 'depth': 13, 'n_heads': 8, 'lr': 7.54e-4},   # 32K #3: 1.1370
+            {'dim': 1664, 'expansion': 3, 'depth': 15, 'n_heads': 10, 'lr': 6.68e-4},  # 32K #4: 1.1379
         ],
     },
     'mamba2': {
-        None: [  # No n_state sweep for mamba2
-            {'dim': 1792, 'd_state': 96, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Previous CMA-ES best: 1.2713
-            {'dim': 1792, 'd_state': 64, 'expand': 2, 'depth': 25, 'lr': 3e-4},  # Default d_state
-            {'dim': 1792, 'd_state': 128, 'expand': 2, 'depth': 22, 'lr': 3e-4}, # Higher d_state
+        None: [  # 32K progressive CMA-ES (Mar 2026) + 512 CMA-ES seeds
+            {'dim': 1920, 'd_state': 208, 'expand': 2, 'depth': 21, 'lr': 3.12e-4},    # 32K best: 1.1882
+            {'dim': 2176, 'd_state': 192, 'expand': 1, 'depth': 34, 'lr': 3.26e-4},    # 32K #2: 1.1885
+            {'dim': 2176, 'd_state': 208, 'expand': 1, 'depth': 34, 'lr': 2.98e-4},    # 32K #3: 1.1895
+            {'dim': 1664, 'd_state': 176, 'expand': 2, 'depth': 26, 'lr': 3.38e-4},    # 32K #4: 1.1938
         ],
     },
     'e1h': {
-        16: [  # n_state=16: CMA-ES sweep results (non-compiled, Feb 24 2026)
-            {'dim': 1408, 'n_heads': 166, 'depth': 40, 'lr': 6.26e-4},  # Best: 1.3358
-            {'dim': 2048, 'n_heads': 168, 'depth': 26, 'lr': 4.94e-4},  # 1.3401
-            {'dim': 1920, 'n_heads': 192, 'depth': 26, 'lr': 4.93e-4},  # 1.3403
-            {'dim': 1536, 'n_heads': 166, 'depth': 40, 'lr': 5.32e-4},  # 1.3448
+        16: [  # 32K progressive CMA-ES (Mar 2026)
+            {'dim': 1408, 'n_heads': 184, 'depth': 40, 'lr': 6.54e-4},   # 32K best: 1.2542
+            {'dim': 2304, 'n_heads': 191, 'depth': 23, 'lr': 4.15e-4},   # 32K #2: 1.2587
+            {'dim': 1920, 'n_heads': 192, 'depth': 26, 'lr': 4.93e-4},   # 32K #3: 1.2642
+            {'dim': 1280, 'n_heads': 204, 'depth': 39, 'lr': 5.26e-4},   # 32K #4: 1.2664
         ],
-        32: [  # n_state=32: CMA-ES sweep results (non-compiled, Feb 25 2026)
-            {'dim': 1792, 'n_heads': 70, 'depth': 37, 'lr': 5.8e-4},   # Best: 1.3524
+        32: [  # 512 CMA-ES seeds (pending 32K results)
+            {'dim': 1792, 'n_heads': 70, 'depth': 37, 'lr': 5.8e-4},   # 512 best: 1.3524
             {'dim': 1408, 'n_heads': 154, 'depth': 22, 'lr': 3.82e-4}, # 1.3591
             {'dim': 3072, 'n_heads': 66, 'depth': 22, 'lr': 5.94e-4},  # 1.3601
             {'dim': 1280, 'n_heads': 175, 'depth': 21, 'lr': 3.52e-4}, # 1.3610
@@ -723,7 +767,7 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
     # Override batch_size for Phase 2 (model-specific for 32K)
-    phase2_bs = PHASE2_BATCH_SIZES.get(model_type, 1)
+    phase2_bs = get_phase2_batch_size(model_type, PHASE2_CHUNK_SIZE)
     cmd2_filtered = []
     skip_next = False
     for i, arg in enumerate(cmd2):
