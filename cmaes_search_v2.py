@@ -630,6 +630,91 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 # =============================================================================
 # EVALUATION
 # =============================================================================
+
+def _is_oom(result):
+    """Check if a subprocess result indicates CUDA OOM."""
+    return (result.returncode != 0 and
+            ('CUDA out of memory' in result.stderr or
+             'OutOfMemoryError' in result.stderr))
+
+
+def find_max_batch_size(cmd_no_bs, bs_start, env, cwd, timeout, cleanup_fn=None):
+    """Find max batch size via halve-down then increase-by-1/3.
+
+    Phase 1: Halve bs on OOM until it fits (or bs=0 → give up).
+    Phase 2: Increase by 1/3 of gap until OOM again → use last working bs.
+
+    OOM failures are cheap (crash in seconds). Only the final successful
+    run does real training.
+
+    Returns (max_bs, result) where result is the subprocess result from
+    the final successful run, or (0, None) if even bs=1 OOMs.
+    """
+    # Phase 1: Halve down until it works
+    bs = bs_start
+    last_good_bs = 0
+    last_good_result = None
+
+    while bs >= 1:
+        cmd = cmd_no_bs + ['--batch_size', str(bs)]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=timeout, env=env, cwd=cwd)
+        except (subprocess.TimeoutExpired, Exception):
+            # Timeout or other error at this bs — treat as unusable
+            if bs == 1:
+                return (0, None)
+            bs = bs // 2
+            if cleanup_fn:
+                cleanup_fn()
+            continue
+
+        if _is_oom(result):
+            if bs == 1:
+                return (0, None)
+            bs = bs // 2
+            if cleanup_fn:
+                cleanup_fn()
+            continue
+
+        # Success! Record and move to phase 2
+        last_good_bs = bs
+        last_good_result = result
+        break
+
+    if last_good_bs == 0:
+        return (0, None)
+
+    # Phase 2: Increase by 1/3 of gap to find true max
+    # gap = bs_start - last_good_bs (or at least the OOM ceiling)
+    oom_ceiling = bs_start
+    while True:
+        step = max(1, (oom_ceiling - last_good_bs) // 3)
+        next_bs = last_good_bs + step
+        if next_bs >= oom_ceiling or next_bs == last_good_bs:
+            break  # No room to grow
+
+        if cleanup_fn:
+            cleanup_fn()
+
+        cmd = cmd_no_bs + ['--batch_size', str(next_bs)]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=timeout, env=env, cwd=cwd)
+        except (subprocess.TimeoutExpired, Exception):
+            break  # Can't go higher
+
+        if _is_oom(result):
+            oom_ceiling = next_bs
+            continue  # Try a smaller increase
+
+        # Worked! Update best
+        last_good_bs = next_bs
+        last_good_result = result
+
+    return (last_good_bs, last_good_result)
+
+
 def run_training_progressive(gpu_id, params, model_type, train_minutes, output_dir, eval_id):
     """Run 2-phase progressive training: Phase 1 @ 512, Phase 2 @ 32K.
 
@@ -732,7 +817,7 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     cmd2_base, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
-    # Strip batch_size from base command (we'll add it per attempt)
+    # Strip batch_size from base command
     cmd2_no_bs = []
     skip_next = False
     for arg in cmd2_base:
@@ -747,76 +832,52 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     # Add --resume pointing to Phase 1 checkpoint
     cmd2_no_bs += ['--resume', ckpt_path]
 
-    # Try Phase 2 with searched batch_size, walk down on OOM
-    phase2_bs = params.get('batch_size', 1)
-    loss = float('inf')
+    phase2_bs_start = params.get('batch_size', 1)
+    phase2_timeout = PHASE2_MINUTES * 60 + 300
 
-    while phase2_bs >= 1:
-        cmd2 = cmd2_no_bs + ['--batch_size', str(phase2_bs)]
+    def cleanup_phase2():
+        for d in glob.glob(os.path.join(phase2_dir, 'level*')):
+            shutil.rmtree(d, ignore_errors=True)
 
-        try:
-            result2 = subprocess.run(
-                cmd2,
-                capture_output=True,
-                text=True,
-                timeout=PHASE2_MINUTES * 60 + 300,
-                env=env,
-                cwd=cwd
-            )
+    max_bs, result2 = find_max_batch_size(cmd2_no_bs, phase2_bs_start, env, cwd,
+                                           phase2_timeout, cleanup_phase2)
 
-            # Save Phase 2 stdout/stderr (overwrite on retry)
-            with open(os.path.join(eval_dir, 'phase2_stdout.txt'), 'w') as f:
-                f.write(result2.stdout)
-            if result2.stderr:
-                with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
-                    f.write(result2.stderr)
+    # Save Phase 2 stdout/stderr
+    if result2 is not None:
+        with open(os.path.join(eval_dir, 'phase2_stdout.txt'), 'w') as f:
+            f.write(result2.stdout)
+        if result2.stderr:
+            with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
+                f.write(result2.stderr)
 
-            # Check for OOM — retry with smaller batch size
-            if result2.returncode != 0 and ('CUDA out of memory' in result2.stderr or
-                                             'OutOfMemoryError' in result2.stderr):
-                if phase2_bs > 1:
-                    phase2_bs = phase2_bs // 2
-                    # Clean up phase2 output dir for retry
-                    for d in glob.glob(os.path.join(phase2_dir, 'level*')):
-                        shutil.rmtree(d, ignore_errors=True)
-                    continue
-                else:
-                    break  # bs=1 still OOMs — give up
-
-            # Parse Phase 2 loss (FINAL_LOSS_LAST100 — the fitness signal)
-            for line in result2.stdout.split('\n'):
-                if 'FINAL_LOSS_LAST100:' in line:
-                    match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                    if match:
-                        try:
-                            loss = float(match.group(1))
-                            break
-                        except:
-                            pass
-
-            # Fallback: check checkpoint files
-            if loss == float('inf'):
-                p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
-                for ckpt in p2_ckpts:
-                    match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                    if match:
-                        try:
-                            ckpt_loss = float(match.group(1))
-                            if ckpt_loss < loss:
-                                loss = ckpt_loss
-                        except:
-                            pass
-
-            break  # Success (or non-OOM failure) — don't retry
-
-        except subprocess.TimeoutExpired:
-            break
-        except Exception:
-            break
-
-    # Record the max batch size that fit (for post-hoc analysis)
+    # Record the max batch size that fit
     with open(os.path.join(eval_dir, 'phase2_max_batch_size.txt'), 'w') as f:
-        f.write(str(phase2_bs))
+        f.write(str(max_bs))
+
+    # Parse Phase 2 loss
+    loss = float('inf')
+    if result2 is not None:
+        for line in result2.stdout.split('\n'):
+            if 'FINAL_LOSS_LAST100:' in line:
+                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                if match:
+                    try:
+                        loss = float(match.group(1))
+                        break
+                    except:
+                        pass
+
+        if loss == float('inf'):
+            p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
+            for ckpt in p2_ckpts:
+                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                if match:
+                    try:
+                        ckpt_loss = float(match.group(1))
+                        if ckpt_loss < loss:
+                            loss = ckpt_loss
+                    except:
+                        pass
 
     # Cleanup: delete Phase 1 checkpoint(s) to save disk
     for ckpt in ckpts:
@@ -856,7 +917,7 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     cwd = os.path.dirname(os.path.abspath(__file__))
 
-    # Strip batch_size from base command (we'll add it per attempt)
+    # Strip batch_size from base command
     cmd_no_bs = []
     skip_next = False
     for arg in cmd_base:
@@ -868,78 +929,52 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
             continue
         cmd_no_bs.append(arg)
 
-    # Try with searched batch_size, walk down on OOM
-    bs = params.get('batch_size', 16)
-    loss = float('inf')
+    bs_start = params.get('batch_size', 16)
+    timeout = train_minutes * 60 + 300
 
-    while bs >= 1:
-        cmd = cmd_no_bs + ['--batch_size', str(bs)]
+    def cleanup():
+        for d in glob.glob(os.path.join(eval_dir, 'level*')):
+            shutil.rmtree(d, ignore_errors=True)
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=train_minutes * 60 + 300,  # 5 min buffer
-                env=env,
-                cwd=cwd
-            )
-
-            # Check for OOM — retry with smaller batch size
-            if result.returncode != 0 and ('CUDA out of memory' in result.stderr or
-                                             'OutOfMemoryError' in result.stderr):
-                if bs > 1:
-                    bs = bs // 2
-                    # Clean up output dir for retry
-                    for d in glob.glob(os.path.join(eval_dir, 'level*')):
-                        shutil.rmtree(d, ignore_errors=True)
-                    continue
-                else:
-                    break  # bs=1 still OOMs — give up
-
-            # Check for other errors
-            if result.returncode != 0:
-                err_file = os.path.join(eval_dir, 'stderr.txt')
-                with open(err_file, 'w') as f:
-                    f.write(f"Return code: {result.returncode}\n")
-                    f.write(f"Stderr:\n{result.stderr}\n")
-                    f.write(f"Stdout (last 50 lines):\n")
-                    f.write('\n'.join(result.stdout.split('\n')[-50:]))
-
-            # Parse loss from output - MUST use last-100 average for reliable metric
-            for line in result.stdout.split('\n'):
-                if 'FINAL_LOSS_LAST100:' in line:
-                    match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                    if match:
-                        try:
-                            loss = float(match.group(1))
-                            break
-                        except:
-                            pass
-
-            # Fallback: Check checkpoint files for loss
-            if loss == float('inf'):
-                ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
-                for ckpt in ckpts:
-                    match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                    if match:
-                        try:
-                            ckpt_loss = float(match.group(1))
-                            if ckpt_loss < loss:
-                                loss = ckpt_loss
-                        except:
-                            pass
-
-            break  # Success (or non-OOM failure) — don't retry
-
-        except subprocess.TimeoutExpired:
-            break
-        except Exception:
-            break
+    max_bs, result = find_max_batch_size(cmd_no_bs, bs_start, env, cwd, timeout, cleanup)
 
     # Record max batch size that fit
     with open(os.path.join(eval_dir, 'max_batch_size.txt'), 'w') as f:
-        f.write(str(bs))
+        f.write(str(max_bs))
+
+    # Parse loss from result
+    loss = float('inf')
+    if result is not None:
+        # Log errors
+        if result.returncode != 0:
+            err_file = os.path.join(eval_dir, 'stderr.txt')
+            with open(err_file, 'w') as f:
+                f.write(f"Return code: {result.returncode}\n")
+                f.write(f"Stderr:\n{result.stderr}\n")
+                f.write(f"Stdout (last 50 lines):\n")
+                f.write('\n'.join(result.stdout.split('\n')[-50:]))
+
+        for line in result.stdout.split('\n'):
+            if 'FINAL_LOSS_LAST100:' in line:
+                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                if match:
+                    try:
+                        loss = float(match.group(1))
+                        break
+                    except:
+                        pass
+
+        if loss == float('inf'):
+            ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
+            for ckpt in ckpts:
+                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                if match:
+                    try:
+                        ckpt_loss = float(match.group(1))
+                        if ckpt_loss < loss:
+                            loss = ckpt_loss
+                    except:
+                        pass
 
     return {
         'params': params,
