@@ -70,7 +70,7 @@ PROJECTION_CHUNK_SIZE = 0
 # Progressive training settings (set from args in main())
 PROGRESSIVE = False
 PHASE1_MINUTES = 10
-PHASE2_MINUTES = 10
+PHASE2_MINUTES = 20
 PHASE2_CHUNK_SIZE = 32768
 
 
@@ -881,9 +881,10 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     cmd2_base, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
-    # Strip batch_size and add --resume pointing to Phase 1 checkpoint
-    cmd2_no_bs = strip_cmd_arg(cmd2_base, '--batch_size')
-    cmd2_no_bs += ['--resume', ckpt_path]
+    # Strip batch_size, set log_every=1 (long-context steps are slow, need every-step logging),
+    # and add --resume pointing to Phase 1 checkpoint
+    cmd2_no_bs = strip_cmd_arg(cmd2_base, '--batch_size', '--log_every')
+    cmd2_no_bs += ['--log_every', '1', '--resume', ckpt_path]
 
     phase2_timeout = PHASE2_MINUTES * 60 + 300
 
@@ -1423,8 +1424,8 @@ def main():
                         help='Enable 2-phase progressive training: Phase 1 @ 512, Phase 2 @ 32K')
     parser.add_argument('--phase1_minutes', type=float, default=10,
                         help='Phase 1 training time at 512 (default: 10)')
-    parser.add_argument('--phase2_minutes', type=float, default=10,
-                        help='Phase 2 training time at 32K (default: 10)')
+    parser.add_argument('--phase2_minutes', type=float, default=20,
+                        help='Phase 2 training time at long context (default: 20)')
     parser.add_argument('--phase2_chunk_size', type=int, default=32768,
                         help='Phase 2 sequence length (default: 32768)')
 
