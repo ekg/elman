@@ -467,8 +467,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         '--output', output_dir,
         '--optimizer', 'schedulefree',
         '--seed', '42',
-        '--save_every', '999999',  # Disable checkpoints - we only need final loss
-        '--keep_checkpoints', '0',
+        '--save_every', '999999',  # Only save final checkpoint
+        '--keep_checkpoints', '1',  # Keep final checkpoint for top-3 retention
     ]
 
     # Add torch.compile if enabled (global settings)
@@ -906,19 +906,13 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
                     except:
                         pass
 
-    # Cleanup: delete Phase 1 checkpoint(s) to save disk
+    # Delete Phase 1 checkpoint(s) — only needed for resume, not archival
     for ckpt in ckpts:
         try:
             os.remove(ckpt)
         except:
             pass
-    # Also remove Phase 2 checkpoints
-    p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
-    for ckpt in p2_ckpts:
-        try:
-            os.remove(ckpt)
-        except:
-            pass
+    # Keep Phase 2 checkpoints — retain_top_checkpoints() will prune non-top-3 later
 
     return {
         'params': params,
@@ -971,14 +965,12 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     # Parse loss from result
     loss = float('inf')
     if result is not None:
-        # Log errors
-        if result.returncode != 0:
-            err_file = os.path.join(eval_dir, 'stderr.txt')
-            with open(err_file, 'w') as f:
-                f.write(f"Return code: {result.returncode}\n")
-                f.write(f"Stderr:\n{result.stderr}\n")
-                f.write(f"Stdout (last 50 lines):\n")
-                f.write('\n'.join(result.stdout.split('\n')[-50:]))
+        # Always save stdout/stderr for loss curve recovery
+        with open(os.path.join(eval_dir, 'stdout.txt'), 'w') as f:
+            f.write(result.stdout)
+        if result.stderr:
+            with open(os.path.join(eval_dir, 'stderr.txt'), 'w') as f:
+                f.write(result.stderr)
 
         for line in result.stdout.split('\n'):
             if 'FINAL_LOSS_LAST100:' in line:
@@ -1132,6 +1124,9 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
                                      gpus, start_eval_id=batch_start + sub_start)
             all_results.extend(results)
 
+        # Prune checkpoints after each LHS batch: keep only top-3
+        retain_top_checkpoints(output_dir, all_results, top_n=3)
+
     # Sort by loss
     all_results.sort(key=lambda x: x['loss'])
 
@@ -1259,6 +1254,9 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
 
             all_results.extend(gen_results)
 
+            # Prune checkpoints: keep only top-3 across all evals so far
+            retain_top_checkpoints(output_dir, all_results, top_n=3)
+
             # Check convergence (but not before min_generations)
             if gen >= min_generations - 1 and generations_without_improvement >= consecutive_required:
                 print(f"\n    CONVERGED after {gen + 1} generations")
@@ -1324,17 +1322,56 @@ def run_discrete_sweep(model_type, sweep_param, train_minutes, output_dir, gpus,
 # =============================================================================
 # CLEANUP
 # =============================================================================
-def cleanup_checkpoints(output_dir):
-    """Remove checkpoint files to save disk space."""
-    pt_files = glob.glob(os.path.join(output_dir, '**', '*.pt'), recursive=True)
-    if pt_files:
-        print(f"\nCleaning up {len(pt_files)} checkpoint files...")
-        for f in pt_files:
-            try:
-                os.remove(f)
-            except:
-                pass
-        print("Cleanup complete.")
+def retain_top_checkpoints(output_dir, results, top_n=3):
+    """Keep checkpoints only for the top N configs by loss. Delete the rest.
+
+    Each eval_dir may contain checkpoint .pt files. We keep checkpoints for
+    the top_n best losses and remove all others to save disk space.
+    """
+    # Sort results by loss (best first)
+    sorted_results = sorted(
+        [r for r in results if r.get('success') and r.get('loss', float('inf')) < 10.0],
+        key=lambda r: r['loss']
+    )
+
+    # Eval IDs to keep
+    keep_eval_ids = set()
+    for r in sorted_results[:top_n]:
+        keep_eval_ids.add(r.get('eval_id'))
+
+    # Find and manage checkpoints
+    kept = 0
+    deleted = 0
+    for eval_dir_path in glob.glob(os.path.join(output_dir, 'eval_*')):
+        eval_id_match = re.search(r'eval_(\d+)', os.path.basename(eval_dir_path))
+        if not eval_id_match:
+            continue
+        eval_id = int(eval_id_match.group(1))
+
+        pt_files = glob.glob(os.path.join(eval_dir_path, '**', '*.pt'), recursive=True)
+        # Exclude latest.pt symlinks from count
+        pt_files = [f for f in pt_files if not os.path.islink(f)]
+
+        if eval_id in keep_eval_ids:
+            kept += len(pt_files)
+        else:
+            for f in pt_files:
+                try:
+                    os.remove(f)
+                    deleted += 1
+                except:
+                    pass
+            # Also remove symlinks
+            for f in glob.glob(os.path.join(eval_dir_path, '**', 'latest.pt'), recursive=True):
+                try:
+                    os.remove(f)
+                except:
+                    pass
+
+    if kept or deleted:
+        top_losses = [f"{r['loss']:.4f}" for r in sorted_results[:top_n]]
+        print(f"\nCheckpoint retention: kept {kept} files (top {top_n}: losses {', '.join(top_losses)}), "
+              f"deleted {deleted} files")
 
 
 # =============================================================================
@@ -1543,14 +1580,16 @@ def main():
                 'model': args.model,
                 'best_loss': best['loss'],
                 'best_params': best['params'],
-                'all_results': [{'params': r['params'], 'loss': r['loss']} for r in results[:50]],
+                'all_results': [{'params': r['params'], 'loss': r['loss'],
+                                 'actual_params': r.get('actual_params'),
+                                 'eval_id': r.get('eval_id')} for r in results],
                 'elapsed_hours': elapsed,
                 'total_evals': len(results),
             }, f, indent=2, default=str)
         print(f"\nResults saved to: {results_file}")
 
-    # Cleanup
-    cleanup_checkpoints(output_dir)
+    # Keep only top-3 checkpoints, delete the rest
+    retain_top_checkpoints(output_dir, results, top_n=3)
 
     return results
 
