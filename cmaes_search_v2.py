@@ -175,11 +175,11 @@ KNOWN_GOOD_CONFIGS = {
             {'dim': 1920, 'n_heads': 192, 'depth': 26, 'lr': 4.93e-4},   # 32K #3: 1.2642
             {'dim': 1280, 'n_heads': 204, 'depth': 39, 'lr': 5.26e-4},   # 32K #4: 1.2664
         ],
-        32: [  # 512 CMA-ES seeds (pending 32K results)
-            {'dim': 1792, 'n_heads': 70, 'depth': 37, 'lr': 5.8e-4},   # 512 best: 1.3524
-            {'dim': 1408, 'n_heads': 154, 'depth': 22, 'lr': 3.82e-4}, # 1.3591
-            {'dim': 3072, 'n_heads': 66, 'depth': 22, 'lr': 5.94e-4},  # 1.3601
-            {'dim': 1280, 'n_heads': 175, 'depth': 21, 'lr': 3.52e-4}, # 1.3610
+        32: [  # 32K progressive CMA-ES (Mar 2026)
+            {'dim': 2048, 'n_heads': 74, 'depth': 35, 'lr': 3.69e-4},   # 32K best: 1.2322
+            {'dim': 2688, 'n_heads': 44, 'depth': 39, 'lr': 6.03e-4},   # 32K #2: 1.2410
+            {'dim': 2304, 'n_heads': 57, 'depth': 40, 'lr': 9.85e-4},   # 32K #3: 1.2641
+            {'dim': 1792, 'n_heads': 159, 'depth': 17, 'lr': 5.18e-4},  # 32K #4: 1.2717
         ],
     },
 }
