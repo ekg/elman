@@ -775,7 +775,7 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             if result2.returncode != 0 and ('CUDA out of memory' in result2.stderr or
                                              'OutOfMemoryError' in result2.stderr):
                 if phase2_bs > 1:
-                    phase2_bs -= 1
+                    phase2_bs = phase2_bs // 2
                     # Clean up phase2 output dir for retry
                     for d in glob.glob(os.path.join(phase2_dir, 'level*')):
                         shutil.rmtree(d, ignore_errors=True)
@@ -889,7 +889,7 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
             if result.returncode != 0 and ('CUDA out of memory' in result.stderr or
                                              'OutOfMemoryError' in result.stderr):
                 if bs > 1:
-                    bs -= 1
+                    bs = bs // 2
                     # Clean up output dir for retry
                     for d in glob.glob(os.path.join(eval_dir, 'level*')):
                         shutil.rmtree(d, ignore_errors=True)
