@@ -32,7 +32,8 @@ import re
 import shutil
 from pathlib import Path
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 import time
 import glob
 from datetime import datetime
@@ -74,11 +75,18 @@ PHASE2_CHUNK_SIZE = 32768
 
 
 
-# Models that need gradient checkpointing at long context
-PHASE2_GRAD_CKPT_MODELS = {'e88', 'e88_fused', 'e1h'}
-
-# Models that need projection chunking at long context
-PHASE2_PROJ_CHUNK_MODELS = {'e88', 'e88_fused'}
+def get_phase_settings(model_type, chunk_size):
+    """Get gradient checkpointing and projection chunk settings based on model and context length."""
+    base = model_type.split('-')[0]
+    grad_ckpt = False
+    proj_chunk = 0
+    if chunk_size >= 8192 and base in ('e88', 'e88_fused', 'e1h'):
+        grad_ckpt = True
+    if chunk_size >= 32768:
+        grad_ckpt = True
+    if chunk_size >= 32768 and base in ('e88', 'e88_fused'):
+        proj_chunk = 512
+    return grad_ckpt, proj_chunk
 
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
@@ -620,6 +628,57 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 # EVALUATION
 # =============================================================================
 
+def strip_cmd_arg(cmd, *arg_names):
+    """Remove named args and their values from a command list. Returns new list."""
+    result = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in arg_names:
+            skip_next = True
+            continue
+        result.append(arg)
+    return result
+
+
+def parse_final_loss(stdout, phase_dir=None):
+    """Extract FINAL_LOSS_LAST100 from stdout. Falls back to checkpoint filenames."""
+    loss = float('inf')
+    if stdout:
+        for line in stdout.split('\n'):
+            if 'FINAL_LOSS_LAST100:' in line:
+                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                if match:
+                    try:
+                        loss = float(match.group(1))
+                        return loss
+                    except:
+                        pass
+
+    if phase_dir and loss == float('inf'):
+        ckpts = glob.glob(os.path.join(phase_dir, '**', 'checkpoint_*.pt'), recursive=True)
+        for ckpt in ckpts:
+            match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+            if match:
+                try:
+                    ckpt_loss = float(match.group(1))
+                    if ckpt_loss < loss:
+                        loss = ckpt_loss
+                except:
+                    pass
+    return loss
+
+
+def find_latest_checkpoint(phase_dir):
+    """Find the latest checkpoint_*.pt file in a directory. Returns path or None."""
+    ckpts = glob.glob(os.path.join(phase_dir, '**', 'checkpoint_*.pt'), recursive=True)
+    if not ckpts:
+        return None
+    return sorted(ckpts)[-1]
+
+
 def _is_oom(result):
     """Check if a subprocess result indicates CUDA OOM."""
     return (result.returncode != 0 and
@@ -764,31 +823,11 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
     # Phase 1 needs to SAVE a checkpoint — override keep_checkpoints and save_every
-    # Remove --keep_checkpoints 0 and --save_every 999999 from cmd1
-    cmd1_filtered = []
-    skip_next = False
-    for i, arg in enumerate(cmd1):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in ('--keep_checkpoints', '--save_every'):
-            skip_next = True  # Skip this flag and its value
-            continue
-        cmd1_filtered.append(arg)
-    cmd1 = cmd1_filtered + ['--keep_checkpoints', '1', '--save_every', '999999']
-    # Final checkpoint is always saved by train.py at the end, so save_every=999999 is fine
+    cmd1 = strip_cmd_arg(cmd1, '--keep_checkpoints', '--save_every')
+    cmd1 += ['--keep_checkpoints', '1', '--save_every', '999999']
 
     # Phase 1: probe memory to find max batch size, then train with OOM fallback
-    cmd1_no_bs = []
-    skip_next = False
-    for arg in cmd1:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == '--batch_size':
-            skip_next = True
-            continue
-        cmd1_no_bs.append(arg)
+    cmd1_no_bs = strip_cmd_arg(cmd1, '--batch_size')
 
     phase1_timeout = PHASE1_MINUTES * 60 + 300
 
@@ -825,39 +864,25 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         }
 
     # Find Phase 1 checkpoint
-    ckpts = glob.glob(os.path.join(phase1_dir, '**', 'checkpoint_*.pt'), recursive=True)
-    if not ckpts:
+    ckpt_path = find_latest_checkpoint(phase1_dir)
+    if not ckpt_path:
         return {
             'params': params, 'actual_params': actual_params,
             'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
             'success': False, 'error': 'no_phase1_checkpoint',
         }
-    # Use the latest checkpoint (sorted alphabetically, step number is zero-padded)
-    ckpt_path = sorted(ckpts)[-1]
 
     # --- PHASE 2: Resume at 32K with model-specific settings ---
     # Build base Phase 2 command (without batch_size — we'll set it per attempt)
     saved_globals = (CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE)
 
     CHUNK_SIZE = PHASE2_CHUNK_SIZE
-    GRADIENT_CHECKPOINTING = model_type in PHASE2_GRAD_CKPT_MODELS
-    PROJECTION_CHUNK_SIZE = 512 if model_type in PHASE2_PROJ_CHUNK_MODELS else 0
+    GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = get_phase_settings(model_type, PHASE2_CHUNK_SIZE)
     cmd2_base, _ = build_train_command(params, model_type, PHASE2_MINUTES, phase2_dir)
     CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE = saved_globals
 
-    # Strip batch_size from base command
-    cmd2_no_bs = []
-    skip_next = False
-    for arg in cmd2_base:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == '--batch_size':
-            skip_next = True
-            continue
-        cmd2_no_bs.append(arg)
-
-    # Add --resume pointing to Phase 1 checkpoint
+    # Strip batch_size and add --resume pointing to Phase 1 checkpoint
+    cmd2_no_bs = strip_cmd_arg(cmd2_base, '--batch_size')
     cmd2_no_bs += ['--resume', ckpt_path]
 
     phase2_timeout = PHASE2_MINUTES * 60 + 300
@@ -881,33 +906,14 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     with open(os.path.join(eval_dir, 'phase2_max_batch_size.txt'), 'w') as f:
         f.write(str(max_bs))
 
-    # Parse Phase 2 loss
-    loss = float('inf')
-    if result2 is not None:
-        for line in result2.stdout.split('\n'):
-            if 'FINAL_LOSS_LAST100:' in line:
-                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                if match:
-                    try:
-                        loss = float(match.group(1))
-                        break
-                    except:
-                        pass
+    # Parse Phase 1 loss
+    phase1_loss = parse_final_loss(result1.stdout if result1 else None, phase1_dir)
 
-        if loss == float('inf'):
-            p2_ckpts = glob.glob(os.path.join(phase2_dir, '**', 'checkpoint_*.pt'), recursive=True)
-            for ckpt in p2_ckpts:
-                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                if match:
-                    try:
-                        ckpt_loss = float(match.group(1))
-                        if ckpt_loss < loss:
-                            loss = ckpt_loss
-                    except:
-                        pass
+    # Parse Phase 2 loss
+    loss = parse_final_loss(result2.stdout if result2 else None, phase2_dir)
 
     # Delete Phase 1 checkpoint(s) — only needed for resume, not archival
-    for ckpt in ckpts:
+    for ckpt in glob.glob(os.path.join(phase1_dir, '**', 'checkpoint_*.pt'), recursive=True):
         try:
             os.remove(ckpt)
         except:
@@ -918,6 +924,8 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         'params': params,
         'actual_params': actual_params,
         'loss': loss,
+        'phase1_loss': phase1_loss,
+        'phase2_chunk_size': PHASE2_CHUNK_SIZE,
         'eval_id': eval_id,
         'gpu_id': gpu_id,
         'success': loss < 10.0,
@@ -938,17 +946,7 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     cwd = os.path.dirname(os.path.abspath(__file__))
 
-    # Strip batch_size from base command
-    cmd_no_bs = []
-    skip_next = False
-    for arg in cmd_base:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == '--batch_size':
-            skip_next = True
-            continue
-        cmd_no_bs.append(arg)
+    cmd_no_bs = strip_cmd_arg(cmd_base, '--batch_size')
 
     timeout = train_minutes * 60 + 300
 
@@ -962,37 +960,16 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     with open(os.path.join(eval_dir, 'max_batch_size.txt'), 'w') as f:
         f.write(str(max_bs))
 
-    # Parse loss from result
-    loss = float('inf')
+    # Save stdout/stderr for loss curve recovery
     if result is not None:
-        # Always save stdout/stderr for loss curve recovery
         with open(os.path.join(eval_dir, 'stdout.txt'), 'w') as f:
             f.write(result.stdout)
         if result.stderr:
             with open(os.path.join(eval_dir, 'stderr.txt'), 'w') as f:
                 f.write(result.stderr)
 
-        for line in result.stdout.split('\n'):
-            if 'FINAL_LOSS_LAST100:' in line:
-                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                if match:
-                    try:
-                        loss = float(match.group(1))
-                        break
-                    except:
-                        pass
-
-        if loss == float('inf'):
-            ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
-            for ckpt in ckpts:
-                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                if match:
-                    try:
-                        ckpt_loss = float(match.group(1))
-                        if ckpt_loss < loss:
-                            loss = ckpt_loss
-                    except:
-                        pass
+    # Parse loss from result
+    loss = parse_final_loss(result.stdout if result else None, eval_dir)
 
     return {
         'params': params,
@@ -1008,18 +985,29 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
 
 
 def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_eval_id=0):
-    """Evaluate a batch of configurations in parallel."""
+    """Evaluate a batch of configurations in parallel with GPU pool backfill.
+
+    Accepts any number of configs (not limited to len(gpus)). Uses a GPU pool
+    so freed GPUs immediately pick up the next config instead of waiting for
+    a sub-batch to complete.
+    """
+    gpu_pool = queue.Queue()
+    for g in gpus:
+        gpu_pool.put(g)
     results = []
 
-    with ProcessPoolExecutor(max_workers=len(gpus)) as executor:
-        futures = {}
+    def worker(params, eval_id):
+        gpu_id = gpu_pool.get()  # Block until GPU free
+        try:
+            return run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
+        finally:
+            gpu_pool.put(gpu_id)
 
+    with ThreadPoolExecutor(max_workers=len(gpus)) as executor:
+        futures = {}
         for i, params in enumerate(configs):
-            gpu_id = gpus[i % len(gpus)]
             eval_id = start_eval_id + i
-            future = executor.submit(
-                run_training, gpu_id, params, model_type, train_minutes, output_dir, eval_id
-            )
+            future = executor.submit(worker, params, eval_id)
             futures[future] = (eval_id, params)
 
         for future in as_completed(futures):
@@ -1109,20 +1097,17 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
 
     print(f"Total valid configs within ±10% of {target_params/1e6:.0f}M: {len(valid_configs)}")
 
-    # Run evaluations in batches
+    # Run evaluations in batches (GPU pool handles backfill automatically)
     all_results = []
-    batch_size = len(gpus) * 2  # 2 batches per "generation" for better GPU utilization
+    batch_size = len(gpus) * 2  # 2x GPU count per batch for good utilization
 
     for batch_start in range(0, len(valid_configs), batch_size):
         batch = valid_configs[batch_start:batch_start + batch_size]
         print(f"\n--- LHS Batch {batch_start // batch_size + 1} ({len(batch)} configs) ---")
 
-        # Split into sub-batches for parallel execution
-        for sub_start in range(0, len(batch), len(gpus)):
-            sub_batch = batch[sub_start:sub_start + len(gpus)]
-            results = evaluate_batch(sub_batch, model_type, train_minutes, output_dir,
-                                     gpus, start_eval_id=batch_start + sub_start)
-            all_results.extend(results)
+        results = evaluate_batch(batch, model_type, train_minutes, output_dir,
+                                 gpus, start_eval_id=batch_start)
+        all_results.extend(results)
 
         # Prune checkpoints after each LHS batch: keep only top-3
         retain_top_checkpoints(output_dir, all_results, top_n=3)
@@ -1210,17 +1195,14 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             n_valid = len(valid_configs)
             print(f"\n  Generation {gen + 1}: {n_valid} valid configs (from {total_generated} generated)")
 
-            # Evaluate all valid configs (should fill all GPUs)
+            # Evaluate all valid configs (GPU pool handles backfill automatically)
             gen_results = []
             if valid_configs:
-                for batch_start in range(0, len(valid_configs), len(gpus)):
-                    batch_configs = valid_configs[batch_start:batch_start + len(gpus)]
-                    batch_results = evaluate_batch(
-                        batch_configs, model_type, train_minutes, output_dir,
-                        gpus, start_eval_id=eval_counter
-                    )
-                    gen_results.extend(batch_results)
-                    eval_counter += len(batch_results)
+                gen_results = evaluate_batch(
+                    valid_configs, model_type, train_minutes, output_dir,
+                    gpus, start_eval_id=eval_counter
+                )
+                eval_counter += len(gen_results)
 
             # Tell CMA-ES only about the valid solutions we actually evaluated
             # This keeps the covariance matrix clean (no penalty pollution)
@@ -1582,7 +1564,10 @@ def main():
                 'best_params': best['params'],
                 'all_results': [{'params': r['params'], 'loss': r['loss'],
                                  'actual_params': r.get('actual_params'),
-                                 'eval_id': r.get('eval_id')} for r in results],
+                                 'eval_id': r.get('eval_id'),
+                                 'phase1_loss': r.get('phase1_loss'),
+                                 'phase2_chunk_size': r.get('phase2_chunk_size'),
+                                 } for r in results],
                 'elapsed_hours': elapsed,
                 'total_evals': len(results),
             }, f, indent=2, default=str)
