@@ -161,8 +161,7 @@ _E88_SEARCH_SPACE = {
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
-    'batch_size': (1, 64, 'int', 'Training batch size'),
-}  # 6D (n_state swept separately)
+}  # 5D (n_state swept separately, batch_size probed via memory)
 
 SEARCH_SPACES = {
     # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
@@ -178,77 +177,67 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 5D
+        },  # 5D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 5D
+        },  # 5D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 5D
+        },  # 5D
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D
+        },  # 6D
     'e1h': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'n_heads': (16, 400, 'int', 'Number of independent Elman heads'),
         'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int', 'Training batch size'),
-    },  # 6D (n_state swept separately like E88)
+        },  # 6D (n_state swept separately like E88)
 }
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
@@ -460,7 +449,7 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     dim = params['dim']
     actual_params = estimate_params_for_config(params, model_type)
 
-    # Batch size from search space (CMA-ES optimizes this)
+    # Batch size: set by memory probing (not a CMA-ES search dimension)
     batch_size = params.get('batch_size', 16)
 
     lr = params.get('lr', 3e-4)
@@ -638,33 +627,95 @@ def _is_oom(result):
              'OutOfMemoryError' in result.stderr))
 
 
-def find_max_batch_size(cmd_no_bs, bs_start, env, cwd, timeout, cleanup_fn=None):
-    """Find max batch size via halve-down then increase-by-1/3.
+def _probe_memory(cmd_no_bs, bs, env, cwd):
+    """Run train.py --probe_memory at given batch size, return peak memory in MB or None on failure."""
+    cmd = cmd_no_bs + ['--batch_size', str(bs), '--probe_memory']
+    # Remove --train_minutes since probe exits after 1 step
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=120, env=env, cwd=cwd)
+    except (subprocess.TimeoutExpired, Exception):
+        return None
 
-    Phase 1: Halve bs on OOM until it fits (or bs=0 → give up).
-    Phase 2: Increase by 1/3 of gap until OOM again → use last working bs.
+    if result.returncode != 0:
+        return None
 
-    OOM failures are cheap (crash in seconds). Only the final successful
-    run does real training.
+    for line in result.stdout.split('\n'):
+        if 'PROBE_PEAK_MEMORY_MB:' in line:
+            match = re.search(r'PROBE_PEAK_MEMORY_MB:\s*([0-9.]+)', line)
+            if match:
+                return float(match.group(1))
+    return None
+
+
+
+def probe_max_batch_size(cmd_no_bs, env, cwd, max_bs_cap=256):
+    """Find max batch size via binary search with memory probes.
+
+    Each probe runs 1 fwd+bwd step (~10-15s) — much faster than a full training run.
+    Exponential search + binary search finds the exact max in O(log N) probes.
+
+    The probe tests actual peak memory for 1 step. find_max_batch_size() provides
+    OOM fallback (step down by 1) in case training uses slightly more than 1 step.
+
+    Returns max batch size (int >= 1), or 0 if even bs=1 OOMs.
+    """
+    # Check bs=1 first
+    if _probe_memory(cmd_no_bs, 1, env, cwd) is None:
+        return 0  # Even bs=1 fails
+
+    # Exponential search: double up until OOM to find upper bound
+    lo = 1
+    hi = 2
+    while hi <= max_bs_cap:
+        if _probe_memory(cmd_no_bs, hi, env, cwd) is None:
+            break  # hi OOMs, max is in [lo, hi)
+        lo = hi
+        hi = hi * 2
+
+    hi = min(hi, max_bs_cap + 1)
+
+    # If max_bs_cap didn't OOM, return it
+    if lo >= max_bs_cap:
+        return max_bs_cap
+
+    # Binary search between lo (works) and hi (OOMs)
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        if _probe_memory(cmd_no_bs, mid, env, cwd) is not None:
+            lo = mid
+        else:
+            hi = mid
+
+    # lo is the largest bs that fits in 1 step
+    # Subtract 1 for safety (fragmentation over many steps)
+    return max(1, lo - 1)
+
+
+def find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup_fn=None):
+    """Find max batch size via memory probing, then verify with actual training.
+
+    Uses probe_max_batch_size() for fast estimation, then trains at that bs.
+    If training OOMs, steps down by 1 until it works.
 
     Returns (max_bs, result) where result is the subprocess result from
     the final successful run, or (0, None) if even bs=1 OOMs.
     """
-    # Phase 1: Halve down until it works
-    bs = bs_start
-    last_good_bs = 0
-    last_good_result = None
+    # Memory probe to estimate max bs (fast — seconds, not minutes)
+    bs = probe_max_batch_size(cmd_no_bs, env, cwd)
+    if bs == 0:
+        return (0, None)
 
+    # Try training at estimated max, step down on OOM
     while bs >= 1:
         cmd = cmd_no_bs + ['--batch_size', str(bs)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True,
                                     timeout=timeout, env=env, cwd=cwd)
         except (subprocess.TimeoutExpired, Exception):
-            # Timeout or other error at this bs — treat as unusable
             if bs == 1:
                 return (0, None)
-            bs = bs // 2
+            bs -= 1
             if cleanup_fn:
                 cleanup_fn()
             continue
@@ -672,47 +723,15 @@ def find_max_batch_size(cmd_no_bs, bs_start, env, cwd, timeout, cleanup_fn=None)
         if _is_oom(result):
             if bs == 1:
                 return (0, None)
-            bs = bs // 2
+            bs -= 1
             if cleanup_fn:
                 cleanup_fn()
             continue
 
-        # Success! Record and move to phase 2
-        last_good_bs = bs
-        last_good_result = result
-        break
+        # Success!
+        return (bs, result)
 
-    if last_good_bs == 0:
-        return (0, None)
-
-    # Phase 2: Increase by 1/3 of gap to find true max
-    # gap = bs_start - last_good_bs (or at least the OOM ceiling)
-    oom_ceiling = bs_start
-    while True:
-        step = max(1, (oom_ceiling - last_good_bs) // 3)
-        next_bs = last_good_bs + step
-        if next_bs >= oom_ceiling or next_bs == last_good_bs:
-            break  # No room to grow
-
-        if cleanup_fn:
-            cleanup_fn()
-
-        cmd = cmd_no_bs + ['--batch_size', str(next_bs)]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    timeout=timeout, env=env, cwd=cwd)
-        except (subprocess.TimeoutExpired, Exception):
-            break  # Can't go higher
-
-        if _is_oom(result):
-            oom_ceiling = next_bs
-            continue  # Try a smaller increase
-
-        # Worked! Update best
-        last_good_bs = next_bs
-        last_good_result = result
-
-    return (last_good_bs, last_good_result)
+    return (0, None)
 
 
 def run_training_progressive(gpu_id, params, model_type, train_minutes, output_dir, eval_id):
@@ -759,41 +778,50 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     cmd1 = cmd1_filtered + ['--keep_checkpoints', '1', '--save_every', '999999']
     # Final checkpoint is always saved by train.py at the end, so save_every=999999 is fine
 
-    try:
-        result1 = subprocess.run(
-            cmd1,
-            capture_output=True,
-            text=True,
-            timeout=PHASE1_MINUTES * 60 + 300,
-            env=env,
-            cwd=cwd
-        )
+    # Phase 1: probe memory to find max batch size, then train with OOM fallback
+    cmd1_no_bs = []
+    skip_next = False
+    for arg in cmd1:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--batch_size':
+            skip_next = True
+            continue
+        cmd1_no_bs.append(arg)
 
-        # Save Phase 1 stdout/stderr
-        with open(os.path.join(eval_dir, 'phase1_stdout.txt'), 'w') as f:
-            f.write(result1.stdout)
-        if result1.stderr:
-            with open(os.path.join(eval_dir, 'phase1_stderr.txt'), 'w') as f:
-                f.write(result1.stderr)
+    phase1_timeout = PHASE1_MINUTES * 60 + 300
 
-        if result1.returncode != 0:
-            return {
-                'params': params, 'actual_params': actual_params,
-                'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
-                'success': False, 'error': f'phase1_returncode_{result1.returncode}',
-            }
+    def cleanup_phase1():
+        for d in glob.glob(os.path.join(phase1_dir, 'level*')):
+            shutil.rmtree(d, ignore_errors=True)
 
-    except subprocess.TimeoutExpired:
+    phase1_max_bs, result1 = find_max_batch_size(cmd1_no_bs, env, cwd,
+                                                  phase1_timeout, cleanup_phase1)
+
+    # Record Phase 1 max batch size
+    with open(os.path.join(eval_dir, 'phase1_max_batch_size.txt'), 'w') as f:
+        f.write(str(phase1_max_bs))
+
+    if phase1_max_bs == 0 or result1 is None:
         return {
             'params': params, 'actual_params': actual_params,
             'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
-            'success': False, 'error': 'phase1_timeout',
+            'success': False, 'error': 'phase1_oom',
         }
-    except Exception as e:
+
+    # Save Phase 1 stdout/stderr
+    with open(os.path.join(eval_dir, 'phase1_stdout.txt'), 'w') as f:
+        f.write(result1.stdout)
+    if result1.stderr:
+        with open(os.path.join(eval_dir, 'phase1_stderr.txt'), 'w') as f:
+            f.write(result1.stderr)
+
+    if result1.returncode != 0:
         return {
             'params': params, 'actual_params': actual_params,
             'loss': float('inf'), 'eval_id': eval_id, 'gpu_id': gpu_id,
-            'success': False, 'error': f'phase1_exception: {e}',
+            'success': False, 'error': f'phase1_returncode_{result1.returncode}',
         }
 
     # Find Phase 1 checkpoint
@@ -832,14 +860,13 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     # Add --resume pointing to Phase 1 checkpoint
     cmd2_no_bs += ['--resume', ckpt_path]
 
-    phase2_bs_start = params.get('batch_size', 1)
     phase2_timeout = PHASE2_MINUTES * 60 + 300
 
     def cleanup_phase2():
         for d in glob.glob(os.path.join(phase2_dir, 'level*')):
             shutil.rmtree(d, ignore_errors=True)
 
-    max_bs, result2 = find_max_batch_size(cmd2_no_bs, phase2_bs_start, env, cwd,
+    max_bs, result2 = find_max_batch_size(cmd2_no_bs, env, cwd,
                                            phase2_timeout, cleanup_phase2)
 
     # Save Phase 2 stdout/stderr
@@ -929,14 +956,13 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
             continue
         cmd_no_bs.append(arg)
 
-    bs_start = params.get('batch_size', 16)
     timeout = train_minutes * 60 + 300
 
     def cleanup():
         for d in glob.glob(os.path.join(eval_dir, 'level*')):
             shutil.rmtree(d, ignore_errors=True)
 
-    max_bs, result = find_max_batch_size(cmd_no_bs, bs_start, env, cwd, timeout, cleanup)
+    max_bs, result = find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup)
 
     # Record max batch size that fit
     with open(os.path.join(eval_dir, 'max_batch_size.txt'), 'w') as f:
@@ -1060,8 +1086,6 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
                 cfg = {**sc}
                 if n_state is not None:
                     cfg['n_state'] = n_state
-                if 'batch_size' not in cfg:
-                    cfg['batch_size'] = 4  # Default seed batch size (CMA-ES will explore around it)
                 if is_valid_param_count(cfg, model_type, target_params, 0.10):
                     valid_configs.append(cfg)
             if valid_configs:

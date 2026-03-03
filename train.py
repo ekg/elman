@@ -164,6 +164,10 @@ def parse_args():
     parser.add_argument('--orth_orth', type=float, default=0.001,
                         help='Weight for key orthogonality in orthogonality loss')
 
+    # Memory probing
+    parser.add_argument('--probe_memory', action='store_true',
+                        help='Run 1 fwd+bwd step, print peak GPU memory in MB, then exit')
+
     return parser.parse_args()
 
 
@@ -481,6 +485,33 @@ def train(args):
             chunk_size=args.chunk_size + 1,
             device=device,
         )
+
+    # Memory probe mode: run 1 fwd+bwd step, report peak memory, exit
+    if args.probe_memory:
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+        model.train()
+        if args.optimizer == 'schedulefree':
+            optimizer.train()
+        # Get one batch
+        if args.tbptt:
+            chunks, is_doc_end = train_dataset.get_batch(device=device)
+        else:
+            chunks, is_doc_end, actual_lengths = train_dataset.get_batch(args.batch_size, device=device)
+        # Forward + backward
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=args.bf16):
+            result = model(chunks, return_loss=True)
+            if isinstance(result, tuple):
+                loss = result[0]
+            else:
+                loss = result
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        torch.cuda.synchronize(device)
+        peak_mb = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
+        print(f"PROBE_PEAK_MEMORY_MB: {peak_mb:.1f}")
+        sys.exit(0)
 
     # Training state
     hidden_state = None  # Only used if --tbptt
