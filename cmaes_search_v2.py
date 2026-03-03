@@ -72,46 +72,7 @@ PHASE1_MINUTES = 10
 PHASE2_MINUTES = 10
 PHASE2_CHUNK_SIZE = 32768
 
-# Model-specific batch sizes by Phase 2 chunk size (what fits in 48GB VRAM)
-# Key = chunk_size, value = {model: batch_size}
-PHASE2_BATCH_SIZES_BY_SCALE = {
-    8192: {
-        'e88': 8, 'e88_fused': 8,
-        'e1h': 8,
-        'fla-gdn': 8,
-        'mamba2': 8,
-    },
-    32768: {
-        'e88': 8, 'e88_fused': 8,
-        'e1h': 8,
-        'fla-gdn': 8,
-        'mamba2': 8,
-    },
-    131072: {
-        'e88': 8, 'e88_fused': 8,
-        'e1h': 8,
-        'fla-gdn': 8,
-        'mamba2': 8,
-    },
-}
 
-def get_phase2_batch_size(model_type, chunk_size):
-    """Get Phase 2 batch size for a model at a given chunk size."""
-    if chunk_size in PHASE2_BATCH_SIZES_BY_SCALE:
-        return PHASE2_BATCH_SIZES_BY_SCALE[chunk_size].get(model_type, 1)
-    # Interpolate: find nearest known scale and scale linearly
-    known = sorted(PHASE2_BATCH_SIZES_BY_SCALE.keys())
-    if chunk_size <= known[0]:
-        bs_map = PHASE2_BATCH_SIZES_BY_SCALE[known[0]]
-        scale = known[0] / chunk_size
-        return max(1, int(bs_map.get(model_type, 1) * scale))
-    if chunk_size >= known[-1]:
-        return 1  # At very long context, bs=1 is safest
-    # Between two known scales — use the larger (more conservative)
-    for k in known:
-        if k >= chunk_size:
-            return PHASE2_BATCH_SIZES_BY_SCALE[k].get(model_type, 1)
-    return 1
 
 # Models that need gradient checkpointing at long context
 PHASE2_GRAD_CKPT_MODELS = {'e88', 'e88_fused', 'e1h'}
@@ -200,7 +161,7 @@ _E88_SEARCH_SPACE = {
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
-    'batch_size': (1, 8, 'int', 'Training batch size'),
+    'batch_size': (1, 64, 'int', 'Training batch size'),
 }  # 6D (n_state swept separately)
 
 SEARCH_SPACES = {
@@ -217,7 +178,7 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -225,7 +186,7 @@ SEARCH_SPACES = {
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -233,28 +194,28 @@ SEARCH_SPACES = {
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 5D
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 5D
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 5D
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -262,7 +223,7 @@ SEARCH_SPACES = {
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
@@ -270,7 +231,7 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -278,7 +239,7 @@ SEARCH_SPACES = {
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D
     'e1h': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
@@ -286,7 +247,7 @@ SEARCH_SPACES = {
         'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 8, 'int', 'Training batch size'),
+        'batch_size': (1, 64, 'int', 'Training batch size'),
     },  # 6D (n_state swept separately like E88)
 }
 
@@ -889,87 +850,108 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     eval_dir = os.path.join(output_dir, f'eval_{eval_id}')
     os.makedirs(eval_dir, exist_ok=True)
 
-    cmd, actual_params = build_train_command(params, model_type, train_minutes, eval_dir)
+    cmd_base, actual_params = build_train_command(params, model_type, train_minutes, eval_dir)
 
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    cwd = os.path.dirname(os.path.abspath(__file__))
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=train_minutes * 60 + 300,  # 5 min buffer
-            env=env,
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
+    # Strip batch_size from base command (we'll add it per attempt)
+    cmd_no_bs = []
+    skip_next = False
+    for arg in cmd_base:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--batch_size':
+            skip_next = True
+            continue
+        cmd_no_bs.append(arg)
 
-        # Check for errors
-        if result.returncode != 0:
-            # Log stderr for debugging
-            err_file = os.path.join(eval_dir, 'stderr.txt')
-            with open(err_file, 'w') as f:
-                f.write(f"Return code: {result.returncode}\n")
-                f.write(f"Stderr:\n{result.stderr}\n")
-                f.write(f"Stdout (last 50 lines):\n")
-                f.write('\n'.join(result.stdout.split('\n')[-50:]))
+    # Try with searched batch_size, walk down on OOM
+    bs = params.get('batch_size', 16)
+    loss = float('inf')
 
-        # Parse loss from output - MUST use last-100 average for reliable metric
-        loss = float('inf')
+    while bs >= 1:
+        cmd = cmd_no_bs + ['--batch_size', str(bs)]
 
-        # Primary: Look for FINAL_LOSS_LAST100 (the reliable metric)
-        for line in result.stdout.split('\n'):
-            if 'FINAL_LOSS_LAST100:' in line:
-                match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
-                if match:
-                    try:
-                        loss = float(match.group(1))
-                        break  # Found the authoritative metric
-                    except:
-                        pass
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=train_minutes * 60 + 300,  # 5 min buffer
+                env=env,
+                cwd=cwd
+            )
 
-        # Fallback: Check checkpoint files for loss (they now use last-100 avg too)
-        if loss == float('inf'):
-            ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
-            for ckpt in ckpts:
-                match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
-                if match:
-                    try:
-                        ckpt_loss = float(match.group(1))
-                        if ckpt_loss < loss:
-                            loss = ckpt_loss
-                    except:
-                        pass
+            # Check for OOM — retry with smaller batch size
+            if result.returncode != 0 and ('CUDA out of memory' in result.stderr or
+                                             'OutOfMemoryError' in result.stderr):
+                if bs > 1:
+                    bs -= 1
+                    # Clean up output dir for retry
+                    for d in glob.glob(os.path.join(eval_dir, 'level*')):
+                        shutil.rmtree(d, ignore_errors=True)
+                    continue
+                else:
+                    break  # bs=1 still OOMs — give up
 
-        return {
-            'params': params,
-            'actual_params': actual_params,
-            'loss': loss,
-            'eval_id': eval_id,
-            'gpu_id': gpu_id,
-            'success': loss < 10.0,
-        }
+            # Check for other errors
+            if result.returncode != 0:
+                err_file = os.path.join(eval_dir, 'stderr.txt')
+                with open(err_file, 'w') as f:
+                    f.write(f"Return code: {result.returncode}\n")
+                    f.write(f"Stderr:\n{result.stderr}\n")
+                    f.write(f"Stdout (last 50 lines):\n")
+                    f.write('\n'.join(result.stdout.split('\n')[-50:]))
 
-    except subprocess.TimeoutExpired:
-        return {
-            'params': params,
-            'actual_params': actual_params,
-            'loss': float('inf'),
-            'eval_id': eval_id,
-            'gpu_id': gpu_id,
-            'success': False,
-            'error': 'timeout',
-        }
-    except Exception as e:
-        return {
-            'params': params,
-            'actual_params': actual_params,
-            'loss': float('inf'),
-            'eval_id': eval_id,
-            'gpu_id': gpu_id,
-            'success': False,
-            'error': str(e),
-        }
+            # Parse loss from output - MUST use last-100 average for reliable metric
+            for line in result.stdout.split('\n'):
+                if 'FINAL_LOSS_LAST100:' in line:
+                    match = re.search(r'FINAL_LOSS_LAST100:\s*([0-9.]+)', line)
+                    if match:
+                        try:
+                            loss = float(match.group(1))
+                            break
+                        except:
+                            pass
+
+            # Fallback: Check checkpoint files for loss
+            if loss == float('inf'):
+                ckpts = glob.glob(os.path.join(eval_dir, '**', 'checkpoint_*.pt'), recursive=True)
+                for ckpt in ckpts:
+                    match = re.search(r'loss_([0-9.]+)\.pt', ckpt)
+                    if match:
+                        try:
+                            ckpt_loss = float(match.group(1))
+                            if ckpt_loss < loss:
+                                loss = ckpt_loss
+                        except:
+                            pass
+
+            break  # Success (or non-OOM failure) — don't retry
+
+        except subprocess.TimeoutExpired:
+            break
+        except Exception:
+            break
+
+    # Record max batch size that fit
+    with open(os.path.join(eval_dir, 'max_batch_size.txt'), 'w') as f:
+        f.write(str(bs))
+
+    return {
+        'params': params,
+        'actual_params': actual_params,
+        'loss': loss,
+        'eval_id': eval_id,
+        'gpu_id': gpu_id,
+        'success': loss < 10.0,
+    }
+
+
+
 
 
 def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_eval_id=0):
