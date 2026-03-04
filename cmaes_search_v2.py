@@ -169,10 +169,12 @@ _E88_SEARCH_SPACE = {
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
-}  # 5D (n_state swept separately, batch_size probed via memory)
+    'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible by memory probe)'),
+}  # 6D (n_state swept separately)
 
 SEARCH_SPACES = {
-    # Clean 5D/4D search spaces - no binary params (CMA-ES handles continuous better)
+    # All search spaces include batch_size — CMA-ES optimizes it for learning speed,
+    # memory probe clamps to max feasible if CMA-ES picks too large.
     'e88': _E88_SEARCH_SPACE,  # baseline: use_gate=1, linear_state=0
     'e88_fused': _E88_SEARCH_SPACE,  # E88 with fused CUDA kernel (faster training)
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
@@ -185,67 +187,77 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'd_state': (64, 256, 'int_mult16', 'SSM state dimension'),
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (8, 32, 'int', 'Number of attention heads'),
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 5D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 5D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 5D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_slots': (32, 128, 'int', 'Number of tape memory slots'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'n_heads': (4, 32, 'int', 'Number of heads'),
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
     'e1h': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'n_heads': (16, 400, 'int', 'Number of independent Elman heads'),
         'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        },  # 6D (n_state swept separately like E88)
+        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        },
 }
 
 # Discrete parameters that benefit from sweep (instead of CMA-ES interpolation)
@@ -457,7 +469,7 @@ def build_train_command(params, model_type, train_minutes, output_dir):
     dim = params['dim']
     actual_params = estimate_params_for_config(params, model_type)
 
-    # Batch size: set by memory probing (not a CMA-ES search dimension)
+    # Batch size: CMA-ES searched, clamped to max feasible by memory probe
     batch_size = params.get('batch_size', 16)
 
     lr = params.get('lr', 3e-4)
@@ -751,19 +763,22 @@ def probe_max_batch_size(cmd_no_bs, env, cwd, max_bs_cap=256):
     return max(1, lo - 1)
 
 
-def find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup_fn=None):
-    """Find max batch size via memory probing, then verify with actual training.
+def find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup_fn=None, target_bs=None):
+    """Find batch size via memory probing, optionally capped by target_bs.
 
-    Uses probe_max_batch_size() for fast estimation, then trains at that bs.
-    If training OOMs, steps down by 1 until it works.
+    If target_bs is given (from CMA-ES), use min(target_bs, max_feasible).
+    If target_bs is None, use max_feasible (legacy behavior).
 
-    Returns (max_bs, result) where result is the subprocess result from
+    Returns (actual_bs, result) where result is the subprocess result from
     the final successful run, or (0, None) if even bs=1 OOMs.
     """
-    # Memory probe to estimate max bs (fast — seconds, not minutes)
-    bs = probe_max_batch_size(cmd_no_bs, env, cwd)
-    if bs == 0:
+    # Memory probe to estimate max feasible bs (fast — seconds, not minutes)
+    max_feasible = probe_max_batch_size(cmd_no_bs, env, cwd)
+    if max_feasible == 0:
         return (0, None)
+
+    # Clamp to CMA-ES chosen batch_size if specified
+    bs = min(max_feasible, target_bs) if target_bs is not None else max_feasible
 
     # Try training at estimated max, step down on OOM
     while bs >= 1:
@@ -835,12 +850,15 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         for d in glob.glob(os.path.join(phase1_dir, 'level*')):
             shutil.rmtree(d, ignore_errors=True)
 
+    # Use CMA-ES chosen batch_size as target, clamped to max feasible by probe
+    target_bs = params.get('batch_size')
     phase1_max_bs, result1 = find_max_batch_size(cmd1_no_bs, env, cwd,
-                                                  phase1_timeout, cleanup_phase1)
+                                                  phase1_timeout, cleanup_phase1,
+                                                  target_bs=target_bs)
 
-    # Record Phase 1 max batch size
-    with open(os.path.join(eval_dir, 'phase1_max_batch_size.txt'), 'w') as f:
-        f.write(str(phase1_max_bs))
+    # Record Phase 1 batch size
+    with open(os.path.join(eval_dir, 'phase1_batch_size.txt'), 'w') as f:
+        f.write(f"target={target_bs} actual={phase1_max_bs}")
 
     if phase1_max_bs == 0 or result1 is None:
         return {
@@ -893,7 +911,8 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             shutil.rmtree(d, ignore_errors=True)
 
     max_bs, result2 = find_max_batch_size(cmd2_no_bs, env, cwd,
-                                           phase2_timeout, cleanup_phase2)
+                                           phase2_timeout, cleanup_phase2,
+                                           target_bs=target_bs)
 
     # Save Phase 2 stdout/stderr
     if result2 is not None:
@@ -903,9 +922,9 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             with open(os.path.join(eval_dir, 'phase2_stderr.txt'), 'w') as f:
                 f.write(result2.stderr)
 
-    # Record the max batch size that fit
-    with open(os.path.join(eval_dir, 'phase2_max_batch_size.txt'), 'w') as f:
-        f.write(str(max_bs))
+    # Record Phase 2 batch size
+    with open(os.path.join(eval_dir, 'phase2_batch_size.txt'), 'w') as f:
+        f.write(f"target={target_bs} actual={max_bs}")
 
     # Parse Phase 1 loss
     phase1_loss = parse_final_loss(result1.stdout if result1 else None, phase1_dir)
@@ -927,6 +946,9 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         'loss': loss,
         'phase1_loss': phase1_loss,
         'phase2_chunk_size': PHASE2_CHUNK_SIZE,
+        'batch_size': max_bs,
+        'phase1_batch_size': phase1_max_bs,
+        'target_batch_size': target_bs,
         'eval_id': eval_id,
         'gpu_id': gpu_id,
         'success': loss < 10.0,
@@ -955,11 +977,13 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
         for d in glob.glob(os.path.join(eval_dir, 'level*')):
             shutil.rmtree(d, ignore_errors=True)
 
-    max_bs, result = find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup)
+    # Use CMA-ES chosen batch_size as target, clamped to max feasible by probe
+    target_bs = params.get('batch_size')
+    max_bs, result = find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup, target_bs=target_bs)
 
-    # Record max batch size that fit
-    with open(os.path.join(eval_dir, 'max_batch_size.txt'), 'w') as f:
-        f.write(str(max_bs))
+    # Record actual batch size used
+    with open(os.path.join(eval_dir, 'batch_size.txt'), 'w') as f:
+        f.write(f"target={target_bs} actual={max_bs}")
 
     # Save stdout/stderr for loss curve recovery
     if result is not None:
@@ -976,6 +1000,8 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
         'params': params,
         'actual_params': actual_params,
         'loss': loss,
+        'batch_size': max_bs,
+        'target_batch_size': target_bs,
         'eval_id': eval_id,
         'gpu_id': gpu_id,
         'success': loss < 10.0,
@@ -1016,8 +1042,9 @@ def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_e
             try:
                 result = future.result()
                 results.append(result)
+                bs_info = f" | bs={result.get('batch_size', '?')}" if 'batch_size' in result else ""
                 print(f"  [Eval {eval_id}] GPU {result['gpu_id']} | {format_params(params)} | "
-                      f"{result['actual_params']/1e6:.1f}M params | Loss: {result['loss']:.4f}")
+                      f"{result['actual_params']/1e6:.1f}M params | Loss: {result['loss']:.4f}{bs_info}")
             except Exception as e:
                 print(f"  [Eval {eval_id}] FAILED: {e}")
                 results.append({
@@ -1566,7 +1593,10 @@ def main():
                 'all_results': [{'params': r['params'], 'loss': r['loss'],
                                  'actual_params': r.get('actual_params'),
                                  'eval_id': r.get('eval_id'),
+                                 'batch_size': r.get('batch_size'),
+                                 'target_batch_size': r.get('target_batch_size'),
                                  'phase1_loss': r.get('phase1_loss'),
+                                 'phase1_batch_size': r.get('phase1_batch_size'),
                                  'phase2_chunk_size': r.get('phase2_chunk_size'),
                                  } for r in results],
                 'elapsed_hours': elapsed,
