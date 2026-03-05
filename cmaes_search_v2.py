@@ -655,8 +655,32 @@ def strip_cmd_arg(cmd, *arg_names):
     return result
 
 
+def parse_average_loss(stdout):
+    """Compute average loss over ALL training steps from stdout.
+
+    This is the CMA-ES fitness metric. Average over all steps avoids lucky-window
+    bias from last-100 averaging, and naturally rewards both learning speed and
+    throughput (more steps at low loss = lower average).
+    """
+    losses = []
+    if stdout:
+        for line in stdout.split('\n'):
+            if line.startswith('step'):
+                match = re.search(r'loss\s+([0-9.]+)', line)
+                if match:
+                    try:
+                        losses.append(float(match.group(1)))
+                    except:
+                        pass
+    if losses:
+        return sum(losses) / len(losses)
+    return float('inf')
+
+
 def parse_final_loss(stdout, phase_dir=None):
-    """Extract FINAL_LOSS_LAST100 from stdout. Falls back to checkpoint filenames."""
+    """Extract FINAL_LOSS_LAST100 from stdout. Falls back to checkpoint filenames.
+    Used for reporting/display, NOT for CMA-ES fitness (use parse_average_loss for that).
+    """
     loss = float('inf')
     if stdout:
         for line in stdout.split('\n'):
@@ -926,11 +950,12 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     with open(os.path.join(eval_dir, 'phase2_batch_size.txt'), 'w') as f:
         f.write(f"target={target_bs} actual={max_bs}")
 
-    # Parse Phase 1 loss
+    # Parse Phase 1 loss (reporting only)
     phase1_loss = parse_final_loss(result1.stdout if result1 else None, phase1_dir)
 
-    # Parse Phase 2 loss
-    loss = parse_final_loss(result2.stdout if result2 else None, phase2_dir)
+    # Parse Phase 2 loss — average over ALL steps for CMA-ES fitness
+    loss = parse_average_loss(result2.stdout if result2 else None)
+    final_loss = parse_final_loss(result2.stdout if result2 else None, phase2_dir)
 
     # Delete Phase 1 checkpoint(s) — only needed for resume, not archival
     for ckpt in glob.glob(os.path.join(phase1_dir, '**', 'checkpoint_*.pt'), recursive=True):
@@ -943,7 +968,8 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     return {
         'params': params,
         'actual_params': actual_params,
-        'loss': loss,
+        'loss': loss,  # average over all Phase 2 steps (CMA-ES fitness)
+        'final_loss': final_loss,  # last-100 avg (reporting only)
         'phase1_loss': phase1_loss,
         'phase2_chunk_size': PHASE2_CHUNK_SIZE,
         'batch_size': max_bs,
@@ -993,13 +1019,15 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
             with open(os.path.join(eval_dir, 'stderr.txt'), 'w') as f:
                 f.write(result.stderr)
 
-    # Parse loss from result
-    loss = parse_final_loss(result.stdout if result else None, eval_dir)
+    # Parse loss — average over all steps for CMA-ES fitness
+    loss = parse_average_loss(result.stdout if result else None)
+    final_loss = parse_final_loss(result.stdout if result else None, eval_dir)
 
     return {
         'params': params,
         'actual_params': actual_params,
-        'loss': loss,
+        'loss': loss,  # average over all steps (CMA-ES fitness)
+        'final_loss': final_loss,  # last-100 avg (reporting only)
         'batch_size': max_bs,
         'target_batch_size': target_bs,
         'eval_id': eval_id,
@@ -1043,8 +1071,9 @@ def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_e
                 result = future.result()
                 results.append(result)
                 bs_info = f" | bs={result.get('batch_size', '?')}" if 'batch_size' in result else ""
+                final = result.get('final_loss', result['loss'])
                 print(f"  [Eval {eval_id}] GPU {result['gpu_id']} | {format_params(params)} | "
-                      f"{result['actual_params']/1e6:.1f}M params | Loss: {result['loss']:.4f}{bs_info}")
+                      f"{result['actual_params']/1e6:.1f}M params | AvgLoss: {result['loss']:.4f} | Final: {final:.4f}{bs_info}")
             except Exception as e:
                 print(f"  [Eval {eval_id}] FAILED: {e}")
                 results.append({
@@ -1590,7 +1619,9 @@ def main():
                 'model': args.model,
                 'best_loss': best['loss'],
                 'best_params': best['params'],
-                'all_results': [{'params': r['params'], 'loss': r['loss'],
+                'all_results': [{'params': r['params'],
+                                 'loss': r['loss'],  # avg over all steps (fitness)
+                                 'final_loss': r.get('final_loss'),  # last-100 avg
                                  'actual_params': r.get('actual_params'),
                                  'eval_id': r.get('eval_id'),
                                  'batch_size': r.get('batch_size'),
