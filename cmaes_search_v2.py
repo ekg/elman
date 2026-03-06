@@ -30,6 +30,7 @@ import subprocess
 import json
 import re
 import shutil
+import pickle
 from pathlib import Path
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -73,6 +74,29 @@ PHASE1_MINUTES = 10
 PHASE2_MINUTES = 20
 PHASE2_CHUNK_SIZE = 32768
 
+# Dynamic GPU file (set from args in main())
+GPU_FILE = None
+DEFAULT_GPUS = [0, 1, 2, 3, 4, 5, 6, 7]
+
+
+def get_available_gpus():
+    """Read available GPUs from GPU_FILE if set, otherwise return DEFAULT_GPUS.
+
+    The file is re-read on every call, so editing it while the search runs
+    takes effect on the next generation/batch. Format: comma-separated GPU IDs
+    on the first line, e.g. "0,1,2,3,4,5,6"
+    """
+    if GPU_FILE and os.path.exists(GPU_FILE):
+        try:
+            with open(GPU_FILE) as f:
+                line = f.readline().strip()
+            if line:
+                gpus = [int(g) for g in line.split(',') if g.strip()]
+                if gpus:
+                    return gpus
+        except (ValueError, IOError) as e:
+            print(f"  WARNING: failed to read GPU file {GPU_FILE}: {e}, using defaults")
+    return list(DEFAULT_GPUS)
 
 
 def get_phase_settings(model_type, chunk_size):
@@ -677,6 +701,35 @@ def parse_average_loss(stdout):
     return float('inf')
 
 
+def recover_completed_evals(output_dir):
+    """Scan for completed evals via .done files. Returns (results, max_eval_id).
+
+    Each completed eval has a .done JSON file written atomically on completion.
+    Missing .done = incomplete/crashed eval (will be re-run).
+    """
+    results = []
+    max_eval_id = -1
+    for done_file in glob.glob(os.path.join(output_dir, 'eval_*', '.done')):
+        eval_id_match = re.search(r'eval_(\d+)', done_file)
+        if not eval_id_match:
+            continue
+        eval_id = int(eval_id_match.group(1))
+        max_eval_id = max(max_eval_id, eval_id)
+        try:
+            with open(done_file) as f:
+                result = json.load(f)
+            result['loss'] = float(result.get('loss', 'inf'))
+            if 'final_loss' in result and result['final_loss'] is not None:
+                result['final_loss'] = float(result['final_loss'])
+            result['eval_id'] = eval_id
+            results.append(result)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"  WARNING: corrupt .done file {done_file}: {e}")
+            continue
+    results.sort(key=lambda r: r.get('eval_id', 0))
+    return results, max_eval_id
+
+
 def parse_final_loss(stdout, phase_dir=None):
     """Extract FINAL_LOSS_LAST100 from stdout. Falls back to checkpoint filenames.
     Used for reporting/display, NOT for CMA-ES fitness (use parse_average_loss for that).
@@ -844,6 +897,10 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
     os.makedirs(phase1_dir, exist_ok=True)
     os.makedirs(phase2_dir, exist_ok=True)
 
+    # Write params.json at start (records what we're attempting)
+    with open(os.path.join(eval_dir, 'params.json'), 'w') as f:
+        json.dump({'params': params, 'model_type': model_type, 'eval_id': eval_id}, f, default=str)
+
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     cwd = os.path.dirname(os.path.abspath(__file__))
@@ -965,7 +1022,7 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
             pass
     # Keep Phase 2 checkpoints — retain_top_checkpoints() will prune non-top-3 later
 
-    return {
+    result = {
         'params': params,
         'actual_params': actual_params,
         'loss': loss,  # average over all Phase 2 steps (CMA-ES fitness)
@@ -980,6 +1037,12 @@ def run_training_progressive(gpu_id, params, model_type, train_minutes, output_d
         'success': loss < 10.0,
     }
 
+    # Write .done file — signals this eval completed successfully
+    with open(os.path.join(eval_dir, '.done'), 'w') as f:
+        json.dump(result, f, default=str)
+
+    return result
+
 
 def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id):
     """Run training for a single configuration."""
@@ -988,6 +1051,10 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
 
     eval_dir = os.path.join(output_dir, f'eval_{eval_id}')
     os.makedirs(eval_dir, exist_ok=True)
+
+    # Write params.json at start (records what we're attempting)
+    with open(os.path.join(eval_dir, 'params.json'), 'w') as f:
+        json.dump({'params': params, 'model_type': model_type, 'eval_id': eval_id}, f, default=str)
 
     cmd_base, actual_params = build_train_command(params, model_type, train_minutes, eval_dir)
 
@@ -1023,7 +1090,7 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
     loss = parse_average_loss(result.stdout if result else None)
     final_loss = parse_final_loss(result.stdout if result else None, eval_dir)
 
-    return {
+    result_dict = {
         'params': params,
         'actual_params': actual_params,
         'loss': loss,  # average over all steps (CMA-ES fitness)
@@ -1034,6 +1101,12 @@ def run_training(gpu_id, params, model_type, train_minutes, output_dir, eval_id)
         'gpu_id': gpu_id,
         'success': loss < 10.0,
     }
+
+    # Write .done file — signals this eval completed successfully
+    with open(os.path.join(eval_dir, '.done'), 'w') as f:
+        json.dump(result_dict, f, default=str)
+
+    return result_dict
 
 
 
@@ -1106,10 +1179,20 @@ def format_params(params):
 # =============================================================================
 def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
                   target_params=480_000_000, fixed_params=None, seed=42):
-    """Run LHS exploration phase."""
+    """Run LHS exploration phase with crash-resume support.
+
+    Config generation is deterministic (seeded). On resume, we regenerate
+    the same config list, recover completed evals from .done files, and
+    only run the remaining configs.
+    """
     print(f"\n{'='*70}")
     print(f"PHASE 1: Latin Hypercube Sampling ({n_samples} valid samples)")
     print(f"{'='*70}")
+
+    # Recover any completed evals from a previous (crashed) run
+    recovered, max_eval_id = recover_completed_evals(output_dir)
+    if recovered:
+        print(f"  RESUME: recovered {len(recovered)} completed evals (max eval_id={max_eval_id})")
 
     # Inject known good configs first (ensures we explore around them)
     valid_configs = []
@@ -1154,20 +1237,34 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
 
     print(f"Total valid configs within ±10% of {target_params/1e6:.0f}M: {len(valid_configs)}")
 
-    # Run evaluations in batches (GPU pool handles backfill automatically)
-    all_results = []
-    batch_size = len(gpus) * 2  # 2x GPU count per batch for good utilization
+    # Skip already-completed configs (deterministic order means eval_id = index)
+    n_recovered = len(recovered)
+    if n_recovered > 0:
+        remaining_configs = valid_configs[n_recovered:]
+        start_eval_id = max_eval_id + 1
+        print(f"  Skipping {n_recovered} already-completed evals, running {len(remaining_configs)} remaining")
+    else:
+        remaining_configs = valid_configs
+        start_eval_id = 0
 
-    for batch_start in range(0, len(valid_configs), batch_size):
-        batch = valid_configs[batch_start:batch_start + batch_size]
-        print(f"\n--- LHS Batch {batch_start // batch_size + 1} ({len(batch)} configs) ---")
+    # Run remaining evaluations in batches (GPU pool handles backfill automatically)
+    new_results = []
+
+    for batch_start in range(0, len(remaining_configs), 16):
+        current_gpus = get_available_gpus()
+        batch_size = len(current_gpus) * 2
+        batch = remaining_configs[batch_start:batch_start + batch_size]
+        batch_num = (n_recovered + batch_start) // batch_size + 1
+        print(f"\n--- LHS Batch {batch_num} ({len(batch)} configs, {len(current_gpus)} GPUs) ---")
 
         results = evaluate_batch(batch, model_type, train_minutes, output_dir,
-                                 gpus, start_eval_id=batch_start)
-        all_results.extend(results)
+                                 current_gpus, start_eval_id=start_eval_id + batch_start)
+        new_results.extend(results)
 
         # Prune checkpoints after each LHS batch: keep only top-3
-        retain_top_checkpoints(output_dir, all_results, top_n=3)
+        retain_top_checkpoints(output_dir, recovered + new_results, top_n=3)
+
+    all_results = recovered + new_results
 
     # Sort by loss
     all_results.sort(key=lambda x: x['loss'])
@@ -1188,12 +1285,17 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
 def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
                     warm_starts, target_params=480_000_000, fixed_params=None,
                     sigma0=0.35, min_generations=6, converge_threshold=0.005,
-                    consecutive_required=3, max_generations=30):
-    """Run CMA-ES refinement phase from warm starts."""
+                    consecutive_required=3, max_generations=30, popsize=16):
+    """Run CMA-ES refinement phase from warm starts with crash-resume support.
+
+    After each generation, serializes the CMA-ES optimizer state to disk.
+    On resume, restores state and continues from the next generation.
+    """
     print(f"\n{'='*70}")
     print(f"PHASE 2: CMA-ES Refinement")
     print(f"{'='*70}")
     print(f"  Warm starts: {len(warm_starts)}")
+    print(f"  Population size: {popsize} (fixed, independent of GPU count)")
     print(f"  Sigma: {sigma0} (refinement: {sigma0 * 0.4:.2f})")
     print(f"  Min generations: {min_generations}")
     print(f"  Converge threshold: {converge_threshold}")
@@ -1201,30 +1303,65 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
 
     all_results = []
 
+    # Check for saved CMA-ES state (crash-resume)
+    state_file = os.path.join(output_dir, 'cmaes_state.pkl')
+    resume_state = None
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, 'rb') as f:
+                resume_state = pickle.load(f)
+            print(f"  RESUME: restored CMA-ES state (ws={resume_state['ws_idx']}, gen={resume_state['gen']})")
+            # Recover all completed evals from disk
+            recovered, _ = recover_completed_evals(output_dir)
+            if recovered:
+                all_results = recovered
+                print(f"  RESUME: recovered {len(recovered)} completed evals")
+        except Exception as e:
+            print(f"  WARNING: failed to load CMA-ES state: {e}, starting fresh")
+            resume_state = None
+
     for ws_idx, warm_start in enumerate(warm_starts):
+        # Skip warm starts already completed in a previous run
+        if resume_state is not None and ws_idx < resume_state['ws_idx']:
+            print(f"\n--- CMA-ES warm start {ws_idx + 1}/{len(warm_starts)} SKIPPED (already complete) ---")
+            continue
+
         print(f"\n--- CMA-ES from warm start {ws_idx + 1}/{len(warm_starts)} ---")
         print(f"    Start config: {format_params(warm_start)}")
 
-        n_dims = get_search_dim(model_type, fixed_params)
-        x0 = encode_params(warm_start, model_type, fixed_params)
+        # Restore or initialize CMA-ES state
+        start_gen = 0
+        if resume_state is not None and ws_idx == resume_state['ws_idx']:
+            # Resume mid-warm-start
+            es = resume_state['es']
+            best_loss = resume_state['best_loss']
+            best_params = resume_state['best_params']
+            generations_without_improvement = resume_state['generations_without_improvement']
+            eval_counter = resume_state['eval_counter']
+            start_gen = resume_state['gen'] + 1
+            print(f"    RESUME: continuing from gen {start_gen + 1}, best={best_loss:.4f}, eval_counter={eval_counter}")
+            resume_state = None  # Only resume once
+        else:
+            n_dims = get_search_dim(model_type, fixed_params)
+            x0 = encode_params(warm_start, model_type, fixed_params)
 
-        # Use smaller sigma for refinement (sigma0 is for exploration, use 40% of it for refinement)
-        refinement_sigma = sigma0 * 0.4  # 0.35 * 0.4 = 0.14
-        es = cma.CMAEvolutionStrategy(x0, refinement_sigma, {
-            'popsize': len(gpus) * 2,  # 16 configs per generation (2 batches)
-            'bounds': [0, 1],
-            'seed': 42 + ws_idx,
-            'verbose': -1,
-        })
+            # Use smaller sigma for refinement (sigma0 is for exploration, use 40% of it for refinement)
+            refinement_sigma = sigma0 * 0.4  # 0.35 * 0.4 = 0.14
+            es = cma.CMAEvolutionStrategy(x0, refinement_sigma, {
+                'popsize': popsize,  # Fixed: independent of GPU count
+                'bounds': [0, 1],
+                'seed': 42 + ws_idx,
+                'verbose': -1,
+            })
 
-        best_loss = float('inf')
-        best_params = None
-        generations_without_improvement = 0
-        eval_counter = len(all_results)
+            best_loss = float('inf')
+            best_params = None
+            generations_without_improvement = 0
+            eval_counter = len(all_results)
 
-        for gen in range(max_generations):
+        for gen in range(start_gen, max_generations):
             # REJECTION SAMPLING: Generate enough valid configs to fill all GPUs
-            target_evals = len(gpus) * 2  # Target 16 valid configs per generation
+            target_evals = popsize  # Fixed: same search regardless of GPU count
             valid_solutions = []
             valid_configs = []
             total_generated = 0
@@ -1250,14 +1387,15 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
                     break
 
             n_valid = len(valid_configs)
-            print(f"\n  Generation {gen + 1}: {n_valid} valid configs (from {total_generated} generated)")
+            current_gpus = get_available_gpus()
+            print(f"\n  Generation {gen + 1}: {n_valid} valid configs (from {total_generated} generated, {len(current_gpus)} GPUs)")
 
             # Evaluate all valid configs (GPU pool handles backfill automatically)
             gen_results = []
             if valid_configs:
                 gen_results = evaluate_batch(
                     valid_configs, model_type, train_minutes, output_dir,
-                    gpus, start_eval_id=eval_counter
+                    current_gpus, start_eval_id=eval_counter
                 )
                 eval_counter += len(gen_results)
 
@@ -1296,12 +1434,28 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             # Prune checkpoints: keep only top-3 across all evals so far
             retain_top_checkpoints(output_dir, all_results, top_n=3)
 
+            # Save CMA-ES state for crash-resume
+            try:
+                with open(state_file, 'wb') as f:
+                    pickle.dump({
+                        'es': es, 'gen': gen, 'ws_idx': ws_idx,
+                        'best_loss': best_loss, 'best_params': best_params,
+                        'generations_without_improvement': generations_without_improvement,
+                        'eval_counter': eval_counter, 'all_results': all_results,
+                    }, f)
+            except Exception as e:
+                print(f"    WARNING: failed to save CMA-ES state: {e}")
+
             # Check convergence (but not before min_generations)
             if gen >= min_generations - 1 and generations_without_improvement >= consecutive_required:
                 print(f"\n    CONVERGED after {gen + 1} generations")
                 break
 
         print(f"\n  Warm start {ws_idx + 1} complete. Best: {best_loss:.4f}")
+
+    # Clean up state file on successful completion
+    if os.path.exists(state_file):
+        os.remove(state_file)
 
     # Sort all results
     all_results.sort(key=lambda x: x['loss'])
@@ -1427,7 +1581,9 @@ def main():
     parser.add_argument('--train_minutes', type=float, default=30,
                         help='Training time per config (minutes)')
     parser.add_argument('--gpus', type=str, default='0,1,2,3,4,5,6,7',
-                        help='Comma-separated GPU IDs')
+                        help='Comma-separated GPU IDs (initial default)')
+    parser.add_argument('--gpu_file', type=str, default=None,
+                        help='File with comma-separated GPU IDs, re-read each generation (overrides --gpus)')
     parser.add_argument('--params', type=str, default='480M',
                         help='Target parameter count (e.g., 480M)')
     parser.add_argument('--output', type=str, default='benchmark_results/cmaes_v2',
@@ -1436,6 +1592,8 @@ def main():
     # LHS options
     parser.add_argument('--lhs_samples', type=int, default=128,
                         help='Number of LHS samples (phase 1)')
+    parser.add_argument('--popsize', type=int, default=16,
+                        help='CMA-ES population size (fixed, independent of GPU count)')
 
     # CMA-ES options
     parser.add_argument('--sigma', type=float, default=0.35,
@@ -1485,11 +1643,29 @@ def main():
     parser.add_argument('--phase2_chunk_size', type=int, default=32768,
                         help='Phase 2 sequence length (default: 32768)')
 
+    # Crash-resume
+    parser.add_argument('--resume', action='store_true',
+                        help='Resume from existing output dir (reuse --output path, skip timestamped subdir)')
+
     args = parser.parse_args()
 
     # Parse params
     target_params = int(args.params.lower().replace('m', '000000').replace('b', '000000000'))
     gpus = [int(g) for g in args.gpus.split(',')]
+
+    # Set up dynamic GPU file
+    global GPU_FILE, DEFAULT_GPUS
+    DEFAULT_GPUS = gpus
+    GPU_FILE = args.gpu_file
+    if GPU_FILE:
+        # Write initial GPU list if file doesn't exist yet
+        if not os.path.exists(GPU_FILE):
+            with open(GPU_FILE, 'w') as f:
+                f.write(','.join(str(g) for g in gpus) + '\n')
+            print(f"Created GPU file: {GPU_FILE} with GPUs {gpus}")
+        else:
+            current = get_available_gpus()
+            print(f"Using GPU file: {GPU_FILE} (current GPUs: {current})")
 
     # Set global compile and sequence settings
     global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
@@ -1506,9 +1682,26 @@ def main():
     PHASE2_MINUTES = args.phase2_minutes
     PHASE2_CHUNK_SIZE = args.phase2_chunk_size
 
-    # Create output directory
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(args.output, f'{args.model}_{timestamp}')
+    # Create or reuse output directory
+    if args.resume:
+        # Resume mode: reuse the --output dir directly (or find latest timestamped subdir)
+        if os.path.exists(args.output) and glob.glob(os.path.join(args.output, 'eval_*')):
+            output_dir = args.output
+        else:
+            # Find latest timestamped subdir matching model
+            candidates = sorted(glob.glob(os.path.join(args.output, f'{args.model}_*')))
+            if candidates:
+                output_dir = candidates[-1]
+            else:
+                print(f"No existing run found in {args.output} for model {args.model}, starting fresh")
+                args.resume = False
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                output_dir = os.path.join(args.output, f'{args.model}_{timestamp}')
+        if args.resume:
+            print(f"RESUME: reusing output dir {output_dir}")
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_dir = os.path.join(args.output, f'{args.model}_{timestamp}')
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"{'='*70}")
@@ -1521,7 +1714,10 @@ def main():
         print(f"Effective time per eval: {PHASE1_MINUTES + PHASE2_MINUTES} min")
     else:
         print(f"Training time: {args.train_minutes} min/config")
-    print(f"GPUs: {gpus}")
+    if GPU_FILE:
+        print(f"GPUs: dynamic from {GPU_FILE} (currently {get_available_gpus()})")
+    else:
+        print(f"GPUs: {gpus}")
     print(f"Output: {output_dir}")
     if not PROGRESSIVE:
         print(f"Chunk size: {CHUNK_SIZE} (batch size auto-scaled)")
@@ -1529,6 +1725,7 @@ def main():
     if args.phase in ['both', 'lhs']:
         print(f"LHS samples: {args.lhs_samples}")
     if args.phase in ['both', 'cmaes']:
+        print(f"CMA-ES popsize: {args.popsize} (fixed)")
         print(f"Sigma: {args.sigma}, Min gens: {args.min_generations}, "
               f"Converge: {args.converge}, Consecutive: {args.consecutive}")
 
@@ -1570,15 +1767,40 @@ def main():
             warm_starts, target_params,
             fixed_params=fixed_params if fixed_params else None,
             sigma0=args.sigma, min_generations=args.min_generations,
-            converge_threshold=args.converge, consecutive_required=args.consecutive
+            converge_threshold=args.converge, consecutive_required=args.consecutive,
+            popsize=args.popsize
         )
 
     else:  # both
-        # Phase 1: LHS
-        lhs_results = run_lhs_phase(
-            args.model, args.lhs_samples, args.train_minutes, output_dir, gpus,
-            target_params, fixed_params=fixed_params if fixed_params else None
-        )
+        phase_file = os.path.join(output_dir, 'phase_status.json')
+        skip_lhs = False
+
+        # Check if LHS already completed (crash-resume for "both" mode)
+        if os.path.exists(phase_file):
+            try:
+                with open(phase_file) as f:
+                    phase_status = json.load(f)
+                if phase_status.get('lhs_complete'):
+                    print(f"RESUME: LHS already complete, recovering results and skipping to CMA-ES")
+                    skip_lhs = True
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        if skip_lhs:
+            # Recover LHS results from .done files
+            lhs_results, _ = recover_completed_evals(output_dir)
+            lhs_results.sort(key=lambda x: x['loss'])
+            print(f"  Recovered {len(lhs_results)} LHS results from .done files")
+        else:
+            # Phase 1: LHS (with crash-resume inside run_lhs_phase)
+            lhs_results = run_lhs_phase(
+                args.model, args.lhs_samples, args.train_minutes, output_dir, gpus,
+                target_params, fixed_params=fixed_params if fixed_params else None
+            )
+
+            # Mark LHS as complete
+            with open(phase_file, 'w') as f:
+                json.dump({'lhs_complete': True, 'n_lhs': len(lhs_results)}, f)
 
         # Phase 2: CMA-ES from top configs
         top_configs = [r['params'] for r in lhs_results[:args.cmaes_refinements] if r['loss'] < 5.0]
@@ -1589,7 +1811,8 @@ def main():
                 top_configs, target_params,
                 fixed_params=fixed_params if fixed_params else None,
                 sigma0=args.sigma, min_generations=args.min_generations,
-                converge_threshold=args.converge, consecutive_required=args.consecutive
+                converge_threshold=args.converge, consecutive_required=args.consecutive,
+                popsize=args.popsize
             )
             results = lhs_results + cmaes_results
         else:
