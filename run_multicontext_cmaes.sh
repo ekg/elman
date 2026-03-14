@@ -1,6 +1,6 @@
 #!/bin/bash
 # Multi-context CMA-ES search: 512, 8K, 32K, 128K
-# 6 models × 4 context lengths = 24 searches, queued one at a time
+# 7 models × 4 context lengths = 28 searches, queued one at a time
 # Each search gets all 8 GPUs for maximum parallelism + backfill efficiency
 # Phase 1: 10 min @ 512, Phase 2: 20 min @ target context
 
@@ -30,6 +30,7 @@ SEARCHES=(
     "512 e1h 16 e1h_n16_512"
     "512 fla-gdn _ fla-gdn_512"
     "512 mamba2 _ mamba2_512"
+    "512 transformer _ transformer_512"
     # Round 2: 512→8K
     "8192 e88 32 e88_n32_8k"
     "8192 e88 16 e88_n16_8k"
@@ -37,6 +38,7 @@ SEARCHES=(
     "8192 e1h 16 e1h_n16_8k"
     "8192 fla-gdn _ fla-gdn_8k"
     "8192 mamba2 _ mamba2_8k"
+    "8192 transformer _ transformer_8k"
     # Round 3: 512→32K
     "32768 e88 32 e88_n32_32k"
     "32768 e88 16 e88_n16_32k"
@@ -44,6 +46,7 @@ SEARCHES=(
     "32768 e1h 16 e1h_n16_32k"
     "32768 fla-gdn _ fla-gdn_32k"
     "32768 mamba2 _ mamba2_32k"
+    "32768 transformer _ transformer_32k"
     # Round 4: 512→128K
     "131072 e88 32 e88_n32_128k"
     "131072 e88 16 e88_n16_128k"
@@ -51,6 +54,7 @@ SEARCHES=(
     "131072 e1h 16 e1h_n16_128k"
     "131072 fla-gdn _ fla-gdn_128k"
     "131072 mamba2 _ mamba2_128k"
+    "131072 transformer _ transformer_128k"
 )
 
 TOTAL=${#SEARCHES[@]}
