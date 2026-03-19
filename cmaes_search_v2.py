@@ -193,7 +193,7 @@ _E88_SEARCH_SPACE = {
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
     'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
     'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
-    'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible by memory probe)'),
+    'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible by memory probe)'),
 }  # 6D (n_state swept separately)
 
 SEARCH_SPACES = {
@@ -211,7 +211,7 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'n_heads': (8, 32, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'mamba2': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -219,7 +219,7 @@ SEARCH_SPACES = {
         'expand': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'transformer': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -227,28 +227,28 @@ SEARCH_SPACES = {
         'expansion': (2, 6, 'int', 'FFN expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'mingru': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'minlstm': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
         'expansion': (1, 4, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'e1': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'e23': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -256,7 +256,7 @@ SEARCH_SPACES = {
         'expansion': (1, 3, 'int', 'Expansion factor'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'e42': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
@@ -264,7 +264,7 @@ SEARCH_SPACES = {
         'depth': (10, 40, 'int', 'Number of layers'),
         'spectral_radius': (0.9, 0.999, 'float', 'Spectral radius'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'e75': {
         'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
@@ -272,7 +272,7 @@ SEARCH_SPACES = {
         'n_state': (16, 64, 'int_mult8', 'State dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
     'e1h': {
         'dim': (1024, 3584, 'int_mult128', 'Model dimension'),
@@ -280,7 +280,7 @@ SEARCH_SPACES = {
         'n_state': (16, 64, 'e88_n_state', 'Per-head state dimension'),
         'depth': (10, 40, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 128, 'int', 'Batch size (clamped to max feasible)'),
+        'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
 }
 
@@ -362,6 +362,11 @@ def decode_params(x, model_type, fixed_params=None):
         elif ptype == 'e88_n_state':
             raw = lo + val * (hi - lo)
             params[name] = min(E88_SUPPORTED_N_STATE, key=lambda x: abs(x - raw))
+        elif ptype == 'int_log':
+            # Log-scale integer: gives more resolution at low end
+            # e.g. batch_size (1,128): sigma=0.14 from bs=1 explores to ~bs=2
+            log_lo, log_hi = np.log10(lo), np.log10(hi)
+            params[name] = max(int(round(10 ** (log_lo + val * (log_hi - log_lo)))), lo)
         elif ptype == 'log':
             log_lo, log_hi = np.log10(lo), np.log10(hi)
             params[name] = 10 ** (log_lo + val * (log_hi - log_lo))
@@ -385,9 +390,9 @@ def encode_params(params, model_type, fixed_params=None):
 
         if ptype == 'binary':
             x_val = 0.75 if val else 0.25
-        elif ptype == 'log':
+        elif ptype in ('log', 'int_log'):
             log_lo, log_hi = np.log10(lo), np.log10(hi)
-            x_val = (np.log10(val) - log_lo) / (log_hi - log_lo)
+            x_val = (np.log10(max(val, lo)) - log_lo) / (log_hi - log_lo)
         else:
             x_val = (val - lo) / (hi - lo)
 
@@ -1343,7 +1348,11 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             resume_state = None  # Only resume once
         else:
             n_dims = get_search_dim(model_type, fixed_params)
-            x0 = encode_params(warm_start, model_type, fixed_params)
+            # Seed warm start at bs=1 — empirically bs=1 dominates due to
+            # more gradient updates in fixed wall time + coherent sequential data
+            warm_start_seeded = dict(warm_start)
+            warm_start_seeded['batch_size'] = 1
+            x0 = encode_params(warm_start_seeded, model_type, fixed_params)
 
             # Use smaller sigma for refinement (sigma0 is for exploration, use 40% of it for refinement)
             refinement_sigma = sigma0 * 0.4  # 0.35 * 0.4 = 0.14
