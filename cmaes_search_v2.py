@@ -1348,11 +1348,7 @@ def run_cmaes_phase(model_type, train_minutes, output_dir, gpus,
             resume_state = None  # Only resume once
         else:
             n_dims = get_search_dim(model_type, fixed_params)
-            # Seed warm start at bs=1 — empirically bs=1 dominates due to
-            # more gradient updates in fixed wall time + coherent sequential data
-            warm_start_seeded = dict(warm_start)
-            warm_start_seeded['batch_size'] = 1
-            x0 = encode_params(warm_start_seeded, model_type, fixed_params)
+            x0 = encode_params(warm_start, model_type, fixed_params)
 
             # Use smaller sigma for refinement (sigma0 is for exploration, use 40% of it for refinement)
             refinement_sigma = sigma0 * 0.4  # 0.35 * 0.4 = 0.14
