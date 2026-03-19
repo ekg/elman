@@ -115,67 +115,8 @@ def get_phase_settings(model_type, chunk_size):
 # Known good configs from previous runs - inject into LHS to ensure exploration around them
 # These configs are validated for 480M±10% with use_gate=True
 # BEST FINDING: narrow dim + many heads + deep works better than wide + shallow
-KNOWN_GOOD_CONFIGS = {
-    'e88': {
-        16: [  # n_state=16: 32K progressive CMA-ES (Mar 2026) + 512 CMA-ES seeds
-            {'dim': 1152, 'n_heads': 269, 'depth': 18, 'lr': 9.07e-4, 'batch_size': 1},   # 32K best: 1.1000
-            {'dim': 1280, 'n_heads': 152, 'depth': 28, 'lr': 1.70e-3, 'batch_size': 1},   # 32K #2: 1.1086
-            {'dim': 1024, 'n_heads': 262, 'depth': 20, 'lr': 4.96e-4, 'batch_size': 1},   # 32K #3: 1.1093
-            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006, 'batch_size': 1},    # 512 CMA-ES best: 1.2794
-        ],
-        32: [  # n_state=32: 32K progressive CMA-ES (Mar 2026) — sub-1.0 nats!
-            {'dim': 1152, 'n_heads': 60, 'depth': 39, 'lr': 1.21e-3, 'batch_size': 1},    # 32K best: 0.9858
-            {'dim': 1024, 'n_heads': 63, 'depth': 46, 'lr': 1.54e-3, 'batch_size': 1},    # 32K #2: 0.9971
-            {'dim': 1280, 'n_heads': 60, 'depth': 42, 'lr': 2.53e-3, 'batch_size': 1},    # 32K #3: 1.0183
-            {'dim': 1024, 'n_heads': 62, 'depth': 47, 'lr': 6.09e-4, 'batch_size': 1},    # 32K #4: 1.0248
-        ],
-    },
-    # e88_fused uses same configs as e88 (fused kernel, same semantics)
-    'e88_fused': {
-        16: [
-            {'dim': 1152, 'n_heads': 269, 'depth': 18, 'lr': 9.07e-4, 'batch_size': 1},
-            {'dim': 1280, 'n_heads': 152, 'depth': 28, 'lr': 1.70e-3, 'batch_size': 1},
-            {'dim': 1024, 'n_heads': 262, 'depth': 20, 'lr': 4.96e-4, 'batch_size': 1},
-            {'dim': 2560, 'n_heads': 153, 'depth': 17, 'lr': 0.0006, 'batch_size': 1},
-        ],
-        32: [
-            {'dim': 1152, 'n_heads': 60, 'depth': 39, 'lr': 1.21e-3, 'batch_size': 1},
-            {'dim': 1024, 'n_heads': 63, 'depth': 46, 'lr': 1.54e-3, 'batch_size': 1},
-            {'dim': 1280, 'n_heads': 60, 'depth': 42, 'lr': 2.53e-3, 'batch_size': 1},
-            {'dim': 1024, 'n_heads': 62, 'depth': 47, 'lr': 6.09e-4, 'batch_size': 1},
-        ],
-    },
-    'fla-gdn': {
-        None: [  # 32K progressive CMA-ES (Mar 2026)
-            {'dim': 1664, 'expansion': 3, 'depth': 13, 'n_heads': 12, 'lr': 7.68e-4, 'batch_size': 1},  # 32K best: 1.1345
-            {'dim': 1408, 'expansion': 3, 'depth': 20, 'n_heads': 15, 'lr': 6.11e-4, 'batch_size': 1},  # 32K #2: 1.1359
-            {'dim': 1664, 'expansion': 3, 'depth': 13, 'n_heads': 8, 'lr': 7.54e-4, 'batch_size': 1},   # 32K #3: 1.1370
-            {'dim': 1664, 'expansion': 3, 'depth': 15, 'n_heads': 10, 'lr': 6.68e-4, 'batch_size': 1},  # 32K #4: 1.1379
-        ],
-    },
-    'mamba2': {
-        None: [  # 32K progressive CMA-ES (Mar 2026) + 512 CMA-ES seeds
-            {'dim': 1920, 'd_state': 208, 'expand': 2, 'depth': 21, 'lr': 3.12e-4, 'batch_size': 1},    # 32K best: 1.1882
-            {'dim': 2176, 'd_state': 192, 'expand': 1, 'depth': 34, 'lr': 3.26e-4, 'batch_size': 1},    # 32K #2: 1.1885
-            {'dim': 2176, 'd_state': 208, 'expand': 1, 'depth': 34, 'lr': 2.98e-4, 'batch_size': 1},    # 32K #3: 1.1895
-            {'dim': 1664, 'd_state': 176, 'expand': 2, 'depth': 26, 'lr': 3.38e-4, 'batch_size': 1},    # 32K #4: 1.1938
-        ],
-    },
-    'e1h': {
-        16: [  # 32K progressive CMA-ES (Mar 2026)
-            {'dim': 1408, 'n_heads': 184, 'depth': 40, 'lr': 6.54e-4, 'batch_size': 1},   # 32K best: 1.2542
-            {'dim': 2304, 'n_heads': 191, 'depth': 23, 'lr': 4.15e-4, 'batch_size': 1},   # 32K #2: 1.2587
-            {'dim': 1920, 'n_heads': 192, 'depth': 26, 'lr': 4.93e-4, 'batch_size': 1},   # 32K #3: 1.2642
-            {'dim': 1280, 'n_heads': 204, 'depth': 39, 'lr': 5.26e-4, 'batch_size': 1},   # 32K #4: 1.2664
-        ],
-        32: [  # 32K progressive CMA-ES (Mar 2026)
-            {'dim': 2048, 'n_heads': 74, 'depth': 35, 'lr': 3.69e-4, 'batch_size': 1},   # 32K best: 1.2322
-            {'dim': 2688, 'n_heads': 44, 'depth': 39, 'lr': 6.03e-4, 'batch_size': 1},   # 32K #2: 1.2410
-            {'dim': 2304, 'n_heads': 57, 'depth': 40, 'lr': 9.85e-4, 'batch_size': 1},   # 32K #3: 1.2641
-            {'dim': 1792, 'n_heads': 159, 'depth': 17, 'lr': 5.18e-4, 'batch_size': 1},  # 32K #4: 1.2717
-        ],
-    },
-}
+## KNOWN_GOOD_CONFIGS removed — pure LHS exploration for uniform methodology
+## across all models. Archived configs are in git history if needed.
 
 # E90 valid (k_fast, k_slow) configurations
 E90_CONFIGS = [
@@ -1199,22 +1140,8 @@ def run_lhs_phase(model_type, n_samples, train_minutes, output_dir, gpus,
     if recovered:
         print(f"  RESUME: recovered {len(recovered)} completed evals (max eval_id={max_eval_id})")
 
-    # Inject known good configs first (ensures we explore around them)
+    # Pure LHS exploration — no seed configs, uniform across all models
     valid_configs = []
-    if model_type in KNOWN_GOOD_CONFIGS:
-        # Get n_state from fixed_params if doing a sweep
-        n_state = fixed_params.get('n_state') if fixed_params else None
-        lookup_key = n_state if n_state is not None else None
-        if lookup_key in KNOWN_GOOD_CONFIGS[model_type]:
-            seed_configs = KNOWN_GOOD_CONFIGS[model_type][lookup_key]
-            for sc in seed_configs:
-                cfg = {**sc}
-                if n_state is not None:
-                    cfg['n_state'] = n_state
-                if is_valid_param_count(cfg, model_type, target_params, 0.10):
-                    valid_configs.append(cfg)
-            if valid_configs:
-                print(f"  Injected {len(valid_configs)} known good configs as seeds")
 
     # Keep sampling until we have enough valid configs
     attempt = 0
