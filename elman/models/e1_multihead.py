@@ -232,6 +232,13 @@ class E1MultiHead(nn.Module):
 
         use_cuda = HAS_CUDA and x.is_cuda and x.dtype == torch.bfloat16
 
+        # The E1H CUDA kernel corrupts GPU state at inference with trained
+        # weights (async illegal memory access that surfaces at the next
+        # cuBLAS call). Force the PyTorch fallback for all eval-mode runs
+        # — it's numerically equivalent and fast enough for generation.
+        if not self.training:
+            use_cuda = False
+
         if not use_cuda:
             return self._forward_pytorch(x, h0)
 
