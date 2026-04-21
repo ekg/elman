@@ -36,3 +36,6 @@ Thumbs.db
 *.pdf
 *.npy
 *.tokens
+
+# Workgraph state (noisy per-run, not meant for repo)
+.workgraph/
