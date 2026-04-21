@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elm
 
 from elman.models import LadderLM, create_ladder_model
 from elman.data import DocumentStreamDataset, BatchedStreamDataset, create_dataloader
+from elman.data.tokenized_dataset import TokenizedStreamDataset
 from elman.models.gru_baseline import GRULM
 from elman.models.lstm_baseline import LSTMLM
 from elman.models.min_rnn_baseline import MinGRULM, MinLSTMLM
@@ -51,6 +52,10 @@ def parse_args():
                         help='Path to training data file')
     parser.add_argument('--val_data', type=str, default=None,
                         help='Path to validation data file')
+    parser.add_argument('--tokenizer', type=str, default=None,
+                        choices=[None, 'gpt2', 'cl100k_base', 'r50k_base', 'p50k_base', 'o200k_base'],
+                        help='tiktoken encoding name. If set, use BPE tokens instead of raw bytes. '
+                             'Default (None) = byte-level, vocab_size=256.')
 
     # Model
     parser.add_argument('--level', type=str, default='3',
@@ -296,13 +301,22 @@ def train(args):
             r_h_mode = 'none'
             print(f"Auto r_h_mode: none (level {level_int} has bounded/no W_h)")
 
+    # Resolve vocab size: 256 for byte-level (default) or tokenizer vocab size
+    if args.tokenizer:
+        import tiktoken
+        _enc = tiktoken.get_encoding(args.tokenizer)
+        vocab_size = _enc.n_vocab
+        print(f"Tokenizer: {args.tokenizer}, vocab_size={vocab_size}")
+    else:
+        vocab_size = 256
+
     # Create model
     if args.level == 'mamba2':
         # Special handling for Mamba2 - use Mamba2LM directly
         from elman.models.mamba2_baseline import Mamba2LM
         if args.dim is not None and args.depth is not None:
             model = Mamba2LM(
-                vocab_size=256,
+                vocab_size=vocab_size,
                 dim=args.dim,
                 depth=args.depth,
                 d_state=args.mamba_d_state,
@@ -311,59 +325,59 @@ def train(args):
             )
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
-            model = create_mamba2_model(target_params=args.params, vocab_size=256, expand=args.mamba_expand)
+            model = create_mamba2_model(target_params=args.params, vocab_size=vocab_size, expand=args.mamba_expand)
     elif args.level == 'gru':
         # GRU baseline
         if args.dim is not None and args.depth is not None:
             model = GRULM(
-                vocab_size=256,
+                vocab_size=vocab_size,
                 dim=args.dim,
                 depth=args.depth,
                 expansion_factor=args.expansion,
             )
         else:
             from elman.models.gru_baseline import create_gru_model
-            model = create_gru_model(target_params=args.params, vocab_size=256)
+            model = create_gru_model(target_params=args.params, vocab_size=vocab_size)
     elif args.level == 'lstm':
         # LSTM baseline
         if args.dim is not None and args.depth is not None:
             model = LSTMLM(
-                vocab_size=256,
+                vocab_size=vocab_size,
                 dim=args.dim,
                 depth=args.depth,
                 expansion_factor=args.expansion,
             )
         else:
             from elman.models.lstm_baseline import create_lstm_model
-            model = create_lstm_model(target_params=args.params, vocab_size=256)
+            model = create_lstm_model(target_params=args.params, vocab_size=vocab_size)
     elif args.level == 'mingru':
         # minGRU baseline (parallel)
         if args.dim is not None and args.depth is not None:
             model = MinGRULM(
-                vocab_size=256,
+                vocab_size=vocab_size,
                 dim=args.dim,
                 depth=args.depth,
                 expansion_factor=args.expansion,
             )
         else:
             from elman.models.min_rnn_baseline import create_mingru_model
-            model = create_mingru_model(target_params=args.params, vocab_size=256)
+            model = create_mingru_model(target_params=args.params, vocab_size=vocab_size)
     elif args.level == 'minlstm':
         # minLSTM baseline (parallel)
         if args.dim is not None and args.depth is not None:
             model = MinLSTMLM(
-                vocab_size=256,
+                vocab_size=vocab_size,
                 dim=args.dim,
                 depth=args.depth,
                 expansion_factor=args.expansion,
             )
         else:
             from elman.models.min_rnn_baseline import create_minlstm_model
-            model = create_minlstm_model(target_params=args.params, vocab_size=256)
+            model = create_minlstm_model(target_params=args.params, vocab_size=vocab_size)
     elif args.level == 'cudagru':
         # CUDA GRU (avoids cuDNN bfloat16 regression)
         model = CudaGRULM(
-            vocab_size=256,
+            vocab_size=vocab_size,
             dim=args.dim,
             depth=args.depth,
             expansion_factor=args.expansion,
@@ -371,7 +385,7 @@ def train(args):
     elif args.level == 'cudalstm':
         # CUDA LSTM (avoids cuDNN bfloat16 regression)
         model = CudaLSTMLM(
-            vocab_size=256,
+            vocab_size=vocab_size,
             dim=args.dim,
             depth=args.depth,
             expansion_factor=args.expansion,
@@ -379,7 +393,7 @@ def train(args):
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)
         model = E88FusedLM(
-            vocab_size=256,
+            vocab_size=vocab_size,
             dim=args.dim,
             depth=args.depth,
             n_heads=args.n_heads,
@@ -390,7 +404,7 @@ def train(args):
         )
     elif args.dim is not None and args.depth is not None:
         model = LadderLM(
-            vocab_size=256,
+            vocab_size=vocab_size,
             dim=args.dim,
             depth=args.depth,
             level=args.level,
@@ -419,7 +433,7 @@ def train(args):
         model = create_ladder_model(
             target_params=args.params,
             level=args.level,
-            vocab_size=256,
+            vocab_size=vocab_size,
             expansion=args.expansion,
             n_groups=args.n_groups,
             state_expansion=args.state_expansion,
@@ -471,11 +485,19 @@ def train(args):
             seed=args.seed,
         )
     else:
-        train_dataset = DocumentStreamDataset(
-            data_path=args.data,
-            chunk_size=args.chunk_size + 1,  # +1 for target
-            seed=args.seed,
-        )
+        if args.tokenizer:
+            train_dataset = TokenizedStreamDataset(
+                data_path=args.data,
+                chunk_size=args.chunk_size + 1,  # +1 for target
+                seed=args.seed,
+                tokenizer_name=args.tokenizer,
+            )
+        else:
+            train_dataset = DocumentStreamDataset(
+                data_path=args.data,
+                chunk_size=args.chunk_size + 1,  # +1 for target
+                seed=args.seed,
+            )
 
     val_loader = None
     if args.val_data:
