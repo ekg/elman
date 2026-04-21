@@ -1358,6 +1358,46 @@ class E88FLAHybrid(nn.Module):
             # Convert list to stacked tensor
             S0 = torch.stack(hidden, dim=1)  # [B, H, n, head_v_dim]
 
+        # === Fast single-token step kernel (Triton) ===
+        # WIP: kernel is correct in isolation (0.006 diff from ref) but end-to-end
+        # end-to-end logit diff grows to ~7 after 10 layers — 20× precision
+        # drift per layer vs the vectorized fallback despite fp32 internals.
+        # Suspect: bf16 rounding order differs vs PyTorch einsum's tensor-core
+        # accumulator. Leaving gated off until root-caused. Set env var
+        # E88_USE_STEP_KERNEL=1 to experiment.
+        import os as _os
+        use_step_kernel = (
+            _os.environ.get('E88_USE_STEP_KERNEL') == '1' and
+            T == 1 and
+            not self.training and
+            x.is_cuda and
+            x.dtype == torch.bfloat16 and
+            n == self.head_v_dim and
+            not self.use_write_gate
+        )
+        if use_step_kernel:
+            from .e88_step_kernel import e88_step
+            # Pre-gate value: gate is applied inside the kernel
+            g_step = None
+            if self.use_gate and self.g_proj is not None:
+                g_step = self.g_proj(x).view(B, T, H, self.head_v_dim)[:, 0]  # [B, H, V]
+            out_t, S_new = e88_step(
+                k[:, 0], q[:, 0], v[:, 0], decay[:, 0],
+                S_in=S0,
+                g=g_step,
+                use_l2_norm=self.use_l2_norm,
+                linear_state=self.linear_state,
+                gate_activation=self.gate_activation,
+            )
+            output = out_t.unsqueeze(1)  # [B, 1, H, V]
+            S_list = [S_new[:, h] for h in range(H)]
+            fused_gate_used = g_step is not None
+            # Skip the remaining recurrence branches; jump straight to head mixing.
+            # Handled by setting markers that the code below checks.
+            _step_kernel_used = True
+        else:
+            _step_kernel_used = False
+
         # === Use CUDA kernel if available ===
         use_cuda = (E88_NATIVE_CUDA_AVAILABLE and x.is_cuda and
                     x.dtype == torch.bfloat16 and self.training)
@@ -1380,7 +1420,9 @@ class E88FLAHybrid(nn.Module):
         # Track whether fused gating was used (to skip separate gating later)
         fused_gate_used = False
 
-        if use_optimized:
+        if _step_kernel_used:
+            pass  # already produced output and S_list above
+        elif use_optimized:
             # === Optimized path: No transpose, 1.17-2.84x faster ===
             input_dtype = x.dtype
 
@@ -1524,58 +1566,49 @@ class E88FLAHybrid(nn.Module):
             S_list = [S_final[:, h] for h in range(H)]
         else:
             # === PyTorch fallback: Recurrence with nonlinear matrix state ===
-            S_list = [S0[:, h].clone() for h in range(H)]  # Convert to list
+            # Vectorized over heads (no per-head loop). Time loop remains for
+            # the recurrence. S has shape [B, H, n, head_v_dim].
+            S = S0.clone()  # [B, H, n, head_v_dim]
 
             outputs = []
             for t in range(T):
-                head_outputs = []
-                for h in range(H):
-                    k_t = k[:, t, h]  # [B, n_state]
-                    q_t = q[:, t, h]  # [B, n_state]
-                    v_t = v[:, t, h]  # [B, head_v_dim]
-                    decay_t = decay[:, t, h:h+1]  # [B, 1]
+                k_t = k[:, t]       # [B, H, n]
+                q_t = q[:, t]       # [B, H, n]
+                v_t = v[:, t]       # [B, H, head_v_dim]
+                decay_t = decay[:, t].unsqueeze(-1).unsqueeze(-1)  # [B, H, 1, 1]
 
-                    # L2 normalize k and q if enabled (FLA-GDN style)
-                    if self.use_l2_norm:
-                        k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
-                        q_norm = q_t / (q_t.norm(dim=-1, keepdim=True) + 1e-6)  # [B, n_state]
-                    else:
-                        k_norm = k_t
-                        q_norm = q_t
+                if self.use_l2_norm:
+                    k_norm = k_t / (k_t.norm(dim=-1, keepdim=True) + 1e-6)
+                    q_norm = q_t / (q_t.norm(dim=-1, keepdim=True) + 1e-6)
+                else:
+                    k_norm = k_t
+                    q_norm = q_t
 
-                    # Retrieve from memory: S @ k_norm -> [B, head_v_dim]
-                    retrieved = torch.einsum('biv,bi->bv', S_list[h], k_norm)
+                # Retrieve from memory: einsum over n_state
+                # S: [B, H, n, head_v_dim], k_norm: [B, H, n] -> retrieved: [B, H, head_v_dim]
+                retrieved = torch.einsum('bhiv,bhi->bhv', S, k_norm)
+                delta = v_t - retrieved  # [B, H, head_v_dim]
 
-                    # Delta update
-                    delta = v_t - retrieved  # [B, head_v_dim]
+                # Outer product: [B, H, n, head_v_dim]
+                outer = torch.einsum('bhv,bhi->bhiv', delta, k_norm)
 
-                    # Outer product: [B, n_state, head_v_dim]
-                    outer = torch.einsum('bv,bi->biv', delta, k_norm)
+                if self.use_write_gate and write_beta is not None:
+                    beta_t = write_beta[:, t].unsqueeze(-1).unsqueeze(-1)  # [B, H, 1, 1]
+                    outer = beta_t * outer
 
-                    # Apply write gate if enabled (FLA-GDN beta style)
-                    if self.use_write_gate and write_beta is not None:
-                        beta_t = write_beta[:, t, h:h+1]  # [B, 1]
-                        outer = beta_t.unsqueeze(-1) * outer  # [B, n_state, head_v_dim]
+                if self.linear_state:
+                    S = decay_t * S + outer
+                else:
+                    S = torch.tanh(decay_t * S + outer)
 
-                    # Gated update (NONLINEAR tanh vs linear for ablation)
-                    # S = tanh(decay * S + outer) or S = decay * S + outer
-                    if self.linear_state:
-                        S_list[h] = decay_t.unsqueeze(-1) * S_list[h] + outer
-                    else:
-                        S_list[h] = torch.tanh(decay_t.unsqueeze(-1) * S_list[h] + outer)
-
-                    # Query the state: S @ q_norm -> [B, head_v_dim]
-                    Sq = torch.einsum('biv,bi->bv', S_list[h], q_norm)
-
-                    # Output directly (FLA-GDN style - gating applied below)
-                    head_outputs.append(Sq)
-
-                # Stack head outputs: [B, H, head_v_dim]
-                out_t = torch.stack(head_outputs, dim=1)
-                outputs.append(out_t)
+                # Query the state: [B, H, head_v_dim]
+                Sq = torch.einsum('bhiv,bhi->bhv', S, q_norm)
+                outputs.append(Sq)
 
             # Stack time: [B, T, H, head_v_dim]
             output = torch.stack(outputs, dim=1)
+            # Materialize S_list for downstream code paths that expect it
+            S_list = [S[:, h] for h in range(H)]
 
         # === Output normalization and gating ===
         # NOTE: Per-head norm hurts E88 (tanh-bounded state doesn't need it)

@@ -882,6 +882,12 @@ class LadderLM(nn.Module):
             for _ in range(depth)
         ])
 
+        # Give each layer a unique index if it supports set_layer_idx (needed
+        # for FLA's Cache to populate/retrieve per-layer state correctly).
+        for i, layer in enumerate(self.layers):
+            if hasattr(layer, 'set_layer_idx'):
+                layer.set_layer_idx(i)
+
         # Final layer norm before output - RMSNorm like Mamba
         self.norm = RMSNorm(dim)
 

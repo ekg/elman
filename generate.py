@@ -119,6 +119,25 @@ def load_model(checkpoint_path):
     ckpt = torch.load(checkpoint_path, map_location='cpu')
     model.load_state_dict(ckpt['model_state_dict'])
 
+    # Schedule-free quirk: in this version, the x-mode (eval) extrapolated weights
+    # produce catastrophic loss at inference (~20 nats), while the y-mode weights
+    # the optimizer uses during training match the reported training loss (~0.8).
+    # train.py saves x-mode (via optimizer.eval() before save), so we must swap
+    # back to y-mode via optimizer.train() to get usable weights.
+    if args.get('optimizer', 'adamw') == 'schedulefree' and 'optimizer_state_dict' in ckpt:
+        try:
+            import schedulefree
+            optimizer = schedulefree.AdamWScheduleFree(
+                model.parameters(),
+                lr=args.get('lr', 3e-4),
+                weight_decay=args.get('weight_decay', 0.01),
+            )
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            optimizer.train()  # swap params from loaded x-mode back to y-mode (the good weights)
+            print("  Schedule-free: swapped params to y-mode (training weights) for inference")
+        except Exception as e:
+            print(f"  WARNING: failed to apply schedule-free swap: {e}")
+
     step = ckpt.get('step', '?')
     loss = ckpt.get('loss', '?')
     print(f"  Step: {step}, Loss: {loss}")
@@ -148,46 +167,40 @@ def sample_top_k(logits, temperature, top_k):
 
 @torch.no_grad()
 def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device):
-    """Generate tokens using LadderLM with return_prev_hiddens for stateful generation."""
-    model.eval()
+    """Stateful autoregressive generation: O(T) per step amortized.
 
+    Feeds the whole prompt in one forward (chunked/parallel kernels), then
+    feeds single tokens with carried per-layer state (fast recurrent path).
+    FLA-GDN uses its Cache; E88/E1H use their hidden state tensors.
+    """
+    model.eval()
     generated = list(prompt_tokens)
     hiddens = None
 
-    # Process prompt tokens one at a time to build up hidden state
+    # Ingest the prompt in one forward (uses chunked kernels for efficiency)
     if len(prompt_tokens) > 0:
-        # Feed entire prompt at once for efficiency
         prompt_tensor = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
         logits, (hiddens, _) = model(
-            prompt_tensor,
-            return_loss=False,
-            return_prev_hiddens=True,
-            prev_hiddens=None,
+            prompt_tensor, return_loss=False,
+            return_prev_hiddens=True, prev_hiddens=None,
         )
-        # logits: [1, T, 256] - take last position
-        next_logits = logits[0, -1, :]  # [256]
+        next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
         sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
 
-    # Generate remaining tokens one at a time
-    tokens_to_generate = max_tokens - (1 if len(prompt_tokens) > 0 else 0)
-    for i in range(tokens_to_generate):
-        # Feed last generated token
+    # Single-token steps with carried state
+    remaining = max_tokens - (1 if len(prompt_tokens) > 0 else 0)
+    for _ in range(remaining):
         token_tensor = torch.tensor([[generated[-1]]], dtype=torch.long, device=device)
         logits, (hiddens, _) = model(
-            token_tensor,
-            return_loss=False,
-            return_prev_hiddens=True,
-            prev_hiddens=hiddens,
+            token_tensor, return_loss=False,
+            return_prev_hiddens=True, prev_hiddens=hiddens,
         )
-        # logits: [1, 1, 256]
-        next_logits = logits[0, -1, :]  # [256]
+        next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
-
-        # Stream output byte by byte
         sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
 

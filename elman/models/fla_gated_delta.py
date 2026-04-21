@@ -92,6 +92,9 @@ class FLAGatedDeltaNetLayer(nn.Module):
 
         # Create FLA's GatedDeltaNet
         # Note: FLA's GatedDeltaNet already has in/out projections built in
+        # layer_idx is required for FLA's Cache to populate/retrieve per-layer state
+        # for stateful autoregressive generation. LadderLM sets it post-construction
+        # via set_layer_idx() so every layer has a unique index.
         self.gdn = FLAGatedDeltaNet(
             hidden_size=dim,
             expand_v=expansion,
@@ -101,10 +104,15 @@ class FLAGatedDeltaNetLayer(nn.Module):
             use_short_conv=use_conv,
             conv_size=d_conv,
             mode='chunk',  # Chunked linear attention (most efficient)
+            layer_idx=0,  # Placeholder; LadderLM overwrites via set_layer_idx()
         )
 
         # Dropout after GDN output
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def set_layer_idx(self, idx):
+        """Set the layer index used by FLA's Cache for stateful inference."""
+        self.gdn.layer_idx = idx
 
     def forward(self, x, h0=None, **kwargs):
         """
@@ -112,19 +120,40 @@ class FLAGatedDeltaNetLayer(nn.Module):
 
         Args:
             x: [B, T, D] input tensor
-            h0: Initial hidden state (not used - FLA handles internally)
+            h0: Initial state. May be None, or a per-layer FLA `Cache` object
+                returned from a prior call. Each LadderLM layer carries its
+                own single-entry Cache; FLA's internal `layer_idx` is set to
+                0 within a per-layer cache (overriding LadderLM's per-layer
+                index, which is only used if we ever shared a Cache).
 
         Returns:
             output: [B, T, D] output tensor
-            h_final: Final hidden state (None - FLA doesn't expose this)
+            h_final: Per-layer FLA Cache (None during training).
         """
-        # FLA expects [B, T, D] and returns tuple (output, past_kv, attentions)
-        output, _, _ = self.gdn(x)
+        # Training: no state, chunked mode, sequences independent.
+        if self.training:
+            output, _, _ = self.gdn(x, use_cache=False)
+            output = self.dropout(output)
+            return output, None
 
+        # Inference: allocate an empty Cache for the first call so FLA will
+        # populate it (its forward only calls cache.update() if non-None).
+        # For subsequent calls, reuse the Cache passed in as h0.
+        if h0 is None:
+            from fla.models.utils import Cache
+            cache = Cache()
+            # Within this per-layer cache we index at position 0
+            saved_idx = self.gdn.layer_idx
+            self.gdn.layer_idx = 0
+            output, _, new_cache = self.gdn(x, past_key_values=cache, use_cache=True)
+            self.gdn.layer_idx = saved_idx
+        else:
+            saved_idx = self.gdn.layer_idx
+            self.gdn.layer_idx = 0
+            output, _, new_cache = self.gdn(x, past_key_values=h0, use_cache=True)
+            self.gdn.layer_idx = saved_idx
         output = self.dropout(output)
-
-        # Return None for h_final as FLA doesn't expose internal state
-        return output, None
+        return output, new_cache
 
     def extra_repr(self):
         return (
