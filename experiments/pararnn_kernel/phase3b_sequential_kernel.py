@@ -117,10 +117,141 @@ def test_one(T, n, seed=0, dtype=torch.float32, device='cuda'):
     return diff
 
 
+# -----------------------------------------------------------------------------
+# Step 2 — batched kernel: one program per (B, H, row).
+#
+# Inputs: D, u, v, b all shape [B, H, T, N].  Output: δ [B, H, T, N].
+# Grid: (B * H,)
+# -----------------------------------------------------------------------------
+
+@triton.jit
+def _seq_scan_r1_kernel_batched(
+    D_ptr, u_ptr, v_ptr, b_ptr, out_ptr,
+    B: tl.constexpr,
+    H: tl.constexpr,
+    T: tl.constexpr,
+    N: tl.constexpr,
+):
+    """One Triton program per (batch, head)."""
+    pid = tl.program_id(0)
+    # Each program handles one (b, h) pair; stride to start of its [T, N] slab
+    bh_offset = pid * T * N
+
+    n_idx = tl.arange(0, N)
+
+    D_p = tl.load(D_ptr + bh_offset + n_idx)
+    u_p = tl.load(u_ptr + bh_offset + n_idx)
+    v_p = tl.load(v_ptr + bh_offset + n_idx)
+    b_p = tl.load(b_ptr + bh_offset + n_idx)
+    tl.store(out_ptr + bh_offset + n_idx, b_p)
+
+    for t in range(1, T):
+        off = bh_offset + t * N + n_idx
+        D_t = tl.load(D_ptr + off)
+        u_t = tl.load(u_ptr + off)
+        v_t = tl.load(v_ptr + off)
+        b_t = tl.load(b_ptr + off)
+
+        D_p, u_p, v_p, b_p = _combine_r1_triton(D_p, u_p, v_p, b_p,
+                                                 D_t, u_t, v_t, b_t)
+        tl.store(out_ptr + off, b_p)
+
+
+def scan_r1_triton_batched(D, u, v, b):
+    """Batched Triton scan. D, u, v, b all [B, H, T, N]. Returns δ [B, H, T, N]."""
+    assert D.shape == u.shape == v.shape == b.shape
+    B, H, T, N = D.shape
+    out = torch.empty_like(b)
+    _seq_scan_r1_kernel_batched[(B * H,)](
+        D.contiguous(), u.contiguous(), v.contiguous(), b.contiguous(),
+        out, B=B, H=H, T=T, N=N,
+    )
+    return out
+
+
+def test_batched(B, H, T, n, seed=0, dtype=torch.float32, device='cuda'):
+    """Verify batched kernel matches independent per-(B,H) single-row scans."""
+    torch.manual_seed(seed)
+    # Generate random inputs
+    D = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    u = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    v = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    b = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+
+    # Oracle: run single-row kernel per (B, H) position
+    delta_oracle = torch.empty_like(b)
+    for bi in range(B):
+        for hi in range(H):
+            delta_oracle[bi, hi] = scan_r1_triton_seq(
+                D[bi, hi], u[bi, hi], v[bi, hi], b[bi, hi]
+            )
+
+    delta_batched = scan_r1_triton_batched(D, u, v, b)
+    diff = (delta_oracle - delta_batched).abs().max().item()
+    status = "PASS" if diff < 1e-4 else "FAIL"
+    print(f"  B={B} H={H:3d} T={T:4d} n={n:3d}  "
+          f"max|per_row − batched|={diff:.3e}  [{status}]")
+    return diff
+
+
+def benchmark_batched():
+    """Rough throughput vs a naive PyTorch loop for sanity."""
+    import time
+    device = 'cuda'
+    dtype = torch.float32
+    B, H, T, n = 4, 112, 512, 32    # full E88 scale
+    torch.manual_seed(0)
+    D = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    u = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    v = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+    b = torch.randn(B, H, T, n, dtype=dtype, device=device) * 0.3
+
+    # Warmup
+    for _ in range(3):
+        _ = scan_r1_triton_batched(D, u, v, b)
+    torch.cuda.synchronize()
+
+    # Triton timing
+    t0 = time.time()
+    N_iter = 10
+    for _ in range(N_iter):
+        _ = scan_r1_triton_batched(D, u, v, b)
+    torch.cuda.synchronize()
+    triton_ms = (time.time() - t0) / N_iter * 1000
+
+    # PyTorch sequential baseline (per-row loop, no kernel)
+    def pytorch_scan_slow():
+        out = torch.empty_like(b)
+        for bi in range(B):
+            for hi in range(H):
+                D_bh, u_bh, v_bh, b_bh = D[bi, hi], u[bi, hi], v[bi, hi], b[bi, hi]
+                D_p, u_p, v_p, b_p = D_bh[0], u_bh[0], v_bh[0], b_bh[0]
+                out[bi, hi, 0] = b_p
+                for t in range(1, T):
+                    D_p, u_p, v_p, b_p = _combine_r1(
+                        D_p, u_p, v_p, b_p, D_bh[t], u_bh[t], v_bh[t], b_bh[t])
+                    out[bi, hi, t] = b_p
+        return out
+
+    t0 = time.time()
+    _ = pytorch_scan_slow()
+    torch.cuda.synchronize()
+    pytorch_ms = (time.time() - t0) * 1000
+
+    print(f"\nBenchmark at full E88 scale B={B} H={H} T={T} n={n}:")
+    print(f"  Triton batched: {triton_ms:.2f} ms/iter")
+    print(f"  PyTorch loop:   {pytorch_ms:.1f} ms/iter (no kernel, per-row loop)")
+    print(f"  Speedup:        {pytorch_ms / triton_ms:.1f}×")
+
+
 if __name__ == '__main__':
     print("Phase 3b step 1: single-row sequential Triton scan (float32).")
     for T, n in [(4, 4), (16, 8), (64, 16), (128, 32), (256, 32), (512, 32)]:
         test_one(T, n)
     print()
-    print("If all PASS, Triton sequential scan with r=1 combine matches")
-    print("the PyTorch reference. Next step: one program per (B, H, row).")
+    print("Phase 3b step 2: batched kernel, one program per (B, H) (float32).")
+    for B, H, T, n in [(1,  4, 64, 16), (1, 32, 128, 32),
+                       (2, 32, 256, 32), (4, 112, 512, 32)]:
+        test_batched(B, H, T, n)
+    print()
+    benchmark_batched()
