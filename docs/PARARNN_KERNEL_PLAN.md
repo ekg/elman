@@ -259,14 +259,25 @@ end-to-end. CI-able.
   The r=1 combine with 2×2 SVD truncation (thin QR + closed-form 2×2
   eigendecomp) matches Phase 1 dense to machine epsilon. Combine is
   pure elementwise/small-matrix ops, portable to Triton.
-- [ ] **Phase 3b — Triton kernel** (deferred): `tl.associative_scan`
-  in Triton 3.5 is elementwise-only — combine_fn receives scalar
-  leaves, not vectors. Our combine needs vector-level ops (dot
-  products, norms). A proper Phase 3b requires a manual Hillis–Steele
-  scan over a [T, N] block tensor, multi-block hierarchical for long T.
-  Triton combine helpers (`_combine_r1_triton`, `_rank2_to_rank1_triton`)
-  are already written and verified against the PyTorch reference —
-  they'll slot into the manual scan when scheduled.
+- [🔄] **Phase 3b — Triton kernel** (in progress):
+  **Critical finding**: r=1 combine is lossless for LEFT-TO-RIGHT
+  sequential scan (Phase 2), but **non-associative** under tree
+  reduction. Tree-order scan with r=1 accumulates ~0.05 error at T=8.
+
+  For true tree-parallel scan we'd need dense n×n matrices (O(n³)
+  combines), as in DEER. But **for E88 at realistic shapes
+  (B×H×n ≈ thousands of independent rows), data parallelism across
+  (batch, head, row) already saturates the GPU** — one program per
+  row running a sequential T-scan uses ~all H100 SMs at B=1, H=112,
+  n=32.
+
+  So the correct kernel design is: **sequential scan in T, parallel
+  over (batch, head, row)**. r=1 combine works (sequential), simple
+  register-owned implementation, fits easily in smem.
+
+  Step 1 (single-row kernel) written in
+  `experiments/pararnn_kernel/phase3b_sequential_kernel.py`; tests
+  pending.
 - [ ] Phase 4 — Multi-head, multi-batch
 - [ ] Phase 5 — Backward pass
 - [ ] Phase 6 — Integration + benchmark
