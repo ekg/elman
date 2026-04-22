@@ -90,20 +90,18 @@ def _fused_newton_iter_kernel(
     # For the first step t=0: build (D_0, u_0, v_0, b_0) and use directly as prefix.
     # Implementation: special-case t=0 outside the loop.
 
-    # t = 0
-    s_prev = tl.load(S0_ptr + s0_row_off + n_idx)                   # [N]
-    K_t = tl.load(K_ptr + bh_T_n + 0 * N + n_idx)                   # [N]
-    V_i = tl.load(V_ptr + bh_T_n + 0 * N + row)                     # scalar
-    dec = tl.load(decay_ptr + bh_T + 0)                             # scalar
+    # t = 0 — load everything as fp32 for arithmetic precision
+    s_prev = tl.load(S0_ptr + s0_row_off + n_idx).to(tl.float32)
+    K_t = tl.load(K_ptr + bh_T_n + 0 * N + n_idx).to(tl.float32)
+    V_i = tl.load(V_ptr + bh_T_n + 0 * N + row).to(tl.float32)
+    dec = tl.load(decay_ptr + bh_T + 0).to(tl.float32)
 
-    retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)        # scalar as [1]
+    retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
     delta_scalar = V_i - retrieved
-    pre = dec * s_prev + delta_scalar * K_t                          # [N]
-    # tanh via exp — Triton 3.5 doesn't expose tanh directly, compute it.
+    pre = dec * s_prev + delta_scalar * K_t
     e2x = tl.exp(2.0 * pre)
     f_val = (e2x - 1.0) / (e2x + 1.0)
-    # Read current S_var row
-    S_var_row = tl.load(S_var_ptr + bh_T_nn + 0 * N * N + row * N + n_idx)
+    S_var_row = tl.load(S_var_ptr + bh_T_nn + 0 * N * N + row * N + n_idx).to(tl.float32)
     r = S_var_row - f_val
     tanh_deriv = 1.0 - f_val * f_val
     D_p = dec * tanh_deriv
@@ -111,25 +109,23 @@ def _fused_newton_iter_kernel(
     v_p = K_t
     b_p = -r
 
-    # Store prefix's b for t=0 as delta[t=0]
-    tl.store(delta_ptr + bh_T_nn + 0 * N * N + row * N + n_idx, b_p)
+    # Store prefix's b for t=0 — cast back to storage dtype
+    tl.store(delta_ptr + bh_T_nn + 0 * N * N + row * N + n_idx,
+             b_p.to(delta_ptr.dtype.element_ty))
 
-    # Sequential scan t = 1..T-1
     for t in range(1, T):
-        # Previous state for this row is S_var[b, h, t-1, row, :]
         s_prev_off = bh_T_nn + (t - 1) * N * N + row * N
-        s_prev = tl.load(S_var_ptr + s_prev_off + n_idx)
-        K_t = tl.load(K_ptr + bh_T_n + t * N + n_idx)
-        V_i = tl.load(V_ptr + bh_T_n + t * N + row)
-        dec = tl.load(decay_ptr + bh_T + t)
+        s_prev = tl.load(S_var_ptr + s_prev_off + n_idx).to(tl.float32)
+        K_t = tl.load(K_ptr + bh_T_n + t * N + n_idx).to(tl.float32)
+        V_i = tl.load(V_ptr + bh_T_n + t * N + row).to(tl.float32)
+        dec = tl.load(decay_ptr + bh_T + t).to(tl.float32)
 
         retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
         delta_scalar = V_i - retrieved
         pre = dec * s_prev + delta_scalar * K_t
-        # tanh via exp — Triton 3.5 doesn't expose tanh directly.
         e2x = tl.exp(2.0 * pre)
         f_val = (e2x - 1.0) / (e2x + 1.0)
-        S_var_row = tl.load(S_var_ptr + bh_T_nn + t * N * N + row * N + n_idx)
+        S_var_row = tl.load(S_var_ptr + bh_T_nn + t * N * N + row * N + n_idx).to(tl.float32)
         r = S_var_row - f_val
         tanh_deriv = 1.0 - f_val * f_val
 
@@ -138,13 +134,13 @@ def _fused_newton_iter_kernel(
         v_step = K_t
         b_step = -r
 
-        # Combine: new_prefix = step ∘ prefix  (apply prefix first, then step)
         D_p, u_p, v_p, b_p = _combine_r1_triton(
             D_p, u_p, v_p, b_p,
             D_step, u_step, v_step, b_step
         )
 
-        tl.store(delta_ptr + bh_T_nn + t * N * N + row * N + n_idx, b_p)
+        tl.store(delta_ptr + bh_T_nn + t * N * N + row * N + n_idx,
+                 b_p.to(delta_ptr.dtype.element_ty))
 
 
 def fused_newton_iter(S0, S_var, K, V, decay):

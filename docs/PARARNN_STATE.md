@@ -63,12 +63,60 @@ To beat CUDA on single-GPU we'd need:
   (b) Quasi-Newton / simpler iteration (lose exact convergence)
   (c) Drop to T regimes where CUDA's memory model breaks down
 
+## Attempted optimization: bf16 Newton
+
+Tried bf16 storage for all tensors to halve memory. Newton convergence
+STALLS at ~2e-3 error (bf16 epsilon ~= 1e-3, can't resolve smaller
+residuals). Each iter loses accuracy to the bf16 round-trip on S_var.
+Not viable without compensation (Kahan summation or similar).
+
+Hybrid bf16 inputs + fp32 S_var converges correctly but saves little
+memory since S_var dominates usage (O(T·n²) per (B, H) vs O(T·n) for
+inputs). No significant memory win from half-precision in this design.
+
+## Memory is the real wall for T=128K
+
+At T=32K, single-GPU with fp32:
+  S_var:  [1, 32, 32K, 32, 32] fp32 = 4 GB per tensor
+  delta:  4 GB
+  + intermediates → OOM on 48 GB GPU
+
+The fundamental issue: Newton requires the full T trajectory in memory
+to compute prefix products. Cannot be chunked without changing the
+algorithm.
+
+Possible algorithmic fix (not implemented): **segmented / block
+Gauss-Seidel Newton**. Solve T in chunks of size C ≤ 2048, each chunk's
+boundary fixed from previous. Much smaller per-chunk memory (O(B·H·C·n²))
+but requires more outer iterations to propagate corrections across
+chunk boundaries. Unclear tradeoff. Significant implementation cost.
+
 Paper claim revision (again): can't claim "faster than CUDA on single
 GPU." Can claim:
   - Correct parallel Newton with rank-1 lossless truncation
-  - 3× cost of sequential kernel, amortizable in distributed/long-T
+  - 2-3× cost of sequential kernel, amortizable in distributed/long-T
   - Enabling for new architectures (no custom kernel needed)
   - Scales to ROCm without a new CUDA kernel
+
+## Summary of where single-GPU single-node effort lands
+
+3× progressively better implementations attempted (split-phase → fused
+kernel → bf16). Each confirmed a fundamental:
+  1. Split-phase: PyTorch op overhead makes this 14× slower than fused.
+  2. Fused: hits the Newton iteration count wall — 3 iters × 1 sweep-
+     equivalent each = 3× the work of sequential CUDA.
+  3. bf16: insufficient precision for Newton convergence.
+
+Further optimization paths are all significant engineering:
+  - Quasi-Newton (lose lossless convergence)
+  - Block Gauss-Seidel (long implementation effort, unclear tradeoff)
+  - Rewrite in CUDA C++ with manual register/smem tuning (weeks)
+  - Hardware-specific: Hopper tensor cores for Newton matmuls
+
+Recommendation: pivot to writing up the **scientific finding** (r=1
+lossless truncation, new algorithmic class of parallelizable RNNs) with
+honest perf characterization, rather than continuing to chase single-
+GPU speed parity with a hand-tuned CUDA kernel.
 
 ## Findings
 
