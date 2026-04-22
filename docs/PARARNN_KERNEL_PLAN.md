@@ -259,25 +259,23 @@ end-to-end. CI-able.
   The r=1 combine with 2×2 SVD truncation (thin QR + closed-form 2×2
   eigendecomp) matches Phase 1 dense to machine epsilon. Combine is
   pure elementwise/small-matrix ops, portable to Triton.
-- [🔄] **Phase 3b — Triton kernel** (in progress):
+- [x] **Phase 3b — Triton kernel** (2026-04-22):
   **Critical finding**: r=1 combine is lossless for LEFT-TO-RIGHT
   sequential scan (Phase 2), but **non-associative** under tree
   reduction. Tree-order scan with r=1 accumulates ~0.05 error at T=8.
 
-  For true tree-parallel scan we'd need dense n×n matrices (O(n³)
-  combines), as in DEER. But **for E88 at realistic shapes
-  (B×H×n ≈ thousands of independent rows), data parallelism across
-  (batch, head, row) already saturates the GPU** — one program per
-  row running a sequential T-scan uses ~all H100 SMs at B=1, H=112,
-  n=32.
+  Realization: **at E88 shapes (B × H ≈ 100s of rows), data
+  parallelism alone already saturates the GPU**. Sequential scan in
+  T with one program per (B, H) is the right design.
 
-  So the correct kernel design is: **sequential scan in T, parallel
-  over (batch, head, row)**. r=1 combine works (sequential), simple
-  register-owned implementation, fits easily in smem.
+  **Step 1** (single-row): `scan_r1_triton_seq` matches Phase 3a
+  PyTorch reference to fp32 tolerance (≤ 2e-6 at T=512).
 
-  Step 1 (single-row kernel) written in
-  `experiments/pararnn_kernel/phase3b_sequential_kernel.py`; tests
-  pending.
+  **Step 2** (batched, one program per (B, H)): byte-identical to
+  per-row baseline at all tested shapes. Full E88 scale test
+  (B=4, H=112, T=512, n=32 = 448 programs) runs in **0.37 ms/iter**.
+
+  `experiments/pararnn_kernel/phase3b_sequential_kernel.py`.
 - [ ] Phase 4 — Multi-head, multi-batch
 - [ ] Phase 5 — Backward pass
 - [ ] Phase 6 — Integration + benchmark
