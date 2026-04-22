@@ -276,6 +276,20 @@ end-to-end. CI-able.
   (B=4, H=112, T=512, n=32 = 448 programs) runs in **0.37 ms/iter**.
 
   `experiments/pararnn_kernel/phase3b_sequential_kernel.py`.
-- [ ] Phase 4 — Multi-head, multi-batch
+- [x] **Phase 4 — Multi-head, multi-batch Newton driver** (2026-04-22):
+  Batched Newton iteration using Phase 3b Triton scan. Converges in
+  4–11 iterations across shape sweep up to full E88 scale
+  (B=4, H=112, T=512, n=32). Max|seq − triton| ≤ 7.6e-6 at fp32.
+
+  Vectorized residual computation (removed Python T-loop) improved
+  per-iter cost ~45%. Still ~8.6× slower than vectorized-PyTorch
+  direct sequential forward at T=512 because Newton needs 11 iterations
+  × full forward per iteration. Speed advantage emerges at very long T
+  (sequential latency-bound) or in distributed settings (time
+  parallelism enables cross-node overlap). For E88's current
+  single-GPU regime at T≤512, Newton is a correctness-proven
+  alternative, not a speed win.
+
+  `experiments/pararnn_kernel/phase4_newton_driver.py`.
 - [ ] Phase 5 — Backward pass
 - [ ] Phase 6 — Integration + benchmark
