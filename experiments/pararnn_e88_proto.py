@@ -44,7 +44,19 @@ class E88ProtoParams(SystemParameters[E88ProtoTrait]):
 
 
 class E88ProtoImpl(RNNCellDenseImpl[E88ProtoParams]):
-    """Dense impl — verifies Newton converges for E88's recurrence."""
+    """Dense impl — handles arbitrary Jacobians correctly.
+
+    Note: we *tried* RNNCellBlockDiagImpl assuming E88's block-diagonal
+    structure (n blocks of n×n). It compiles but gives wrong numerical
+    answers. Reading ParaRNN's source reveals BlockDiagImpl actually
+    requires each block to be DIAGONAL inside (n blocks of n *diagonal*
+    matrices), not dense. E88's blocks are dense (`diag(tanh') · (I − k·kᵀ)`
+    up to rank-1), so BlockDiagImpl's infrastructure doesn't apply.
+
+    A custom kernel for "diagonal + rank-1" block-diagonal Jacobians —
+    which matches E88's actual structure via Sherman-Morrison — is a
+    promising follow-up but non-trivial to build.
+    """
 
     @classmethod
     def recurrence_step(cls, x, h, system_parameters):
@@ -92,19 +104,11 @@ class E88ProtoCell(BaseRNNCell[E88ProtoConfig, E88ProtoParams, E88ProtoImpl]):
         return E88ProtoParams(n_state=self._n_state)
 
 
-def make_impl(n):
-    """Make a fresh BlockDiagImpl class with num_blocks = n."""
-    impl = type(f'E88ProtoImpl_n{n}', (E88ProtoImpl,), {'_BLOCKS': n})
-    return impl
-
-
-def run_test(seq_length=64, batch_size=2, n=4, device='cuda'):
+def run_test(seq_length=64, batch_size=2, n=4, device='cuda', max_its=10):
     """Compare sequential vs parallel on a small E88-proto."""
     torch.manual_seed(0)
 
-    # Make impl class matching this n (block count)
-    impl_cls = make_impl(n)
-
+    from pararnn.parallel_reduction.parallel_reduction import NewtonConfig
     config = E88ProtoConfig(
         state_dim=n * n,
         input_dim=2 * n + 1,
@@ -112,9 +116,9 @@ def run_test(seq_length=64, batch_size=2, n=4, device='cuda'):
         device=torch.device(device),
         dtype=torch.float32,
         n_state=n,
+        newton_config=NewtonConfig(max_its=max_its),
     )
     cell = E88ProtoCell(config).to(device)
-    cell.impl_type = impl_cls  # override generic-derived impl with per-n version
 
     # Inputs: k and v drawn from N(0, 0.3), decay in (0.9, 1.0)
     x = torch.empty(batch_size, seq_length, 2 * n + 1, device=device)

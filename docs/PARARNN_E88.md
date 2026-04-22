@@ -52,10 +52,61 @@ per the upstream README.
   parallelizable on Frontier**, breaking the "sequential RNN can't use CP"
   constraint that was shaping our distributed training plan.
 
+## Status of the implementation attempt
+
+**What works:**
+- `RNNCellDenseImpl` with `max_its=10`: numerically correct on E88's
+  recurrence. Newton converges. `diff ≤ 1e-7` for float32 at
+  seq_len=512, n=8.
+
+**What doesn't:**
+- `RNNCellBlockDiagImpl`: produces wrong answers. ParaRNN's source docstring
+  reveals BlockDiag assumes **diagonal-within-block** structure (N blocks
+  of N diagonal entries each). E88's blocks are dense — ParaRNN can't
+  represent them with its current infrastructure.
+- Template instantiation for `num_hidden_vars=32` in ParaRNN's existing
+  CUDA kernel: NVCC compile hangs (>15 min) due to register blowup on the
+  register-owned reduction at block_size=32.
+
+**Why Dense is too slow for us:**
+- Uses `torch.func.jacrev` to build full n²×n² Jacobian per timestep.
+- Newton solve is O(n⁶). At seq=512, n=8: parallel is 17× *slower* than
+  sequential. Worse at n=32.
+
+## What we actually need — custom kernel for diag+rank-1 blocks
+
+E88's per-row Jacobian has known structure:
+
+```
+J_i = diag(decay · tanh'(pre[i,:])) - (tanh'(pre[i,:]) ⊙ k) ⊗ k
+    = D_i - u_i ⊗ k
+```
+
+This is **diagonal + rank-1**. Sherman-Morrison gives O(n) inversion
+instead of O(n³). The parallel reduction step can be rewritten to
+propagate `(D, u, v)` triples through the associative combine, preserving
+structure without ever materializing dense blocks.
+
+This is the right kernel to write. Non-trivial — probably a 2-3 day
+engineering sprint plus numerical testing. Tracked as future work.
+
 ## Files
 
-- `experiments/pararnn_e88_proto.py` — minimal PoC: Dense impl, verifies
-  Newton convergence on E88's recurrence.
-- (TODO) `elman/cuda/lib/pararnn_block32_gpu.cu.cc` — custom 32×32 kernel.
+- `experiments/pararnn_e88_proto.py` — minimal PoC cell using Dense impl,
+  verifies Newton convergence on E88's recurrence (correct, but slow).
+- (TODO) custom CUDA kernel for diag+rank-1 block-diagonal parallel
+  reduction.
 - (TODO) `experiments/pararnn_e88_full.py` — full per-head + batch +
-  multi-layer integration.
+  multi-layer integration once the kernel is ready.
+
+## Takeaway for the Frontier plan
+
+**Main finding**: ParaRNN in its current form can't be dropped in for E88.
+We have a mathematical foundation (block-diag confirmed, Newton converges,
+rank-1 structure identified) but need custom kernel engineering to make
+it practically fast. This changes the Frontier plan: don't budget a full
+run for ParaRNN acceleration unless the kernel lands first.
+
+The "E88 gets sequence-parallelism for free via ParaRNN" hope is *not*
+ruled out, but also not a 1-week drop-in. It's a real engineering
+project that should be scoped separately.
