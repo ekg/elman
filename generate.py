@@ -59,6 +59,14 @@ def load_model(checkpoint_path):
     level_str = args['level']
     level = parse_level(level_str)
 
+    # Resolve vocab size from tokenizer in args.json (falls back to 256 for byte-level)
+    tokenizer_name = args.get('tokenizer')
+    if tokenizer_name:
+        import tiktoken
+        _vocab_size = tiktoken.get_encoding(tokenizer_name).n_vocab
+    else:
+        _vocab_size = 256
+
     # Determine model type and construct
     if level_str.lower() == 'mamba2':
         print(f"WARNING: Mamba2 models use a different LM wrapper (Mamba2LM).")
@@ -66,7 +74,7 @@ def load_model(checkpoint_path):
         print(f"         Attempting to load anyway...")
         from elman.models.mamba2_baseline import Mamba2LM
         model = Mamba2LM(
-            vocab_size=256,
+            vocab_size=_vocab_size,
             dim=args['dim'],
             depth=args['depth'],
             d_state=args.get('mamba_d_state', 64),
@@ -77,7 +85,7 @@ def load_model(checkpoint_path):
     elif level_str.lower() == 'e88_fused':
         from elman.models.e88_fused import E88FusedLM
         model = E88FusedLM(
-            vocab_size=256,
+            vocab_size=_vocab_size,
             dim=args['dim'],
             depth=args['depth'],
             n_heads=args.get('n_heads'),
@@ -97,7 +105,7 @@ def load_model(checkpoint_path):
         # Standard LadderLM models (E0, E1, E88, E42, fla-gdn, llama, etc.)
         from elman.models import LadderLM
         model = LadderLM(
-            vocab_size=256,
+            vocab_size=_vocab_size,
             dim=args['dim'],
             depth=args['depth'],
             level=level,
@@ -187,7 +195,8 @@ def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device
         next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
-        sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
+        if next_token < 256:
+            sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
 
     # Single-token steps with carried state
@@ -201,7 +210,8 @@ def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device
         next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
-        sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
+        if next_token < 256:
+            sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
 
     return generated
@@ -250,7 +260,8 @@ def generate_e88_fused(model, prompt_tokens, max_tokens, temperature, top_k, dev
         next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
-        sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
+        if next_token < 256:
+            sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
         tokens_to_generate = max_tokens - 1
     else:
@@ -263,7 +274,8 @@ def generate_e88_fused(model, prompt_tokens, max_tokens, temperature, top_k, dev
         next_logits = logits[0, -1, :]
         next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
         generated.append(next_token)
-        sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
+        if next_token < 256:
+            sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
         sys.stdout.flush()
 
     return generated
@@ -299,27 +311,55 @@ def main():
     if device.type == 'cuda':
         model = model.bfloat16()
 
-    # Encode prompt as bytes (byte-level, vocab_size=256)
-    prompt_tokens = list(args.prompt.encode('utf-8')) if args.prompt else []
+    # Determine tokenization: use tokenizer from args.json if it was trained with one
+    tokenizer_name = model_args.get('tokenizer')
+    if tokenizer_name:
+        import tiktoken
+        enc = tiktoken.get_encoding(tokenizer_name)
+        prompt_tokens = enc.encode(args.prompt, disallowed_special=()) if args.prompt else []
+        decode_fn = lambda toks: enc.decode(toks)
+        unit = 'tokens'
+    else:
+        enc = None
+        prompt_tokens = list(args.prompt.encode('utf-8')) if args.prompt else []
+        decode_fn = lambda toks: bytes(toks).decode('utf-8', errors='replace')
+        unit = 'bytes'
 
     print(f"\nGeneration config: temperature={args.temperature}, top_k={args.top_k}, max_tokens={args.max_tokens}")
     if args.prompt:
-        print(f"Prompt ({len(prompt_tokens)} bytes): {repr(args.prompt)}")
+        print(f"Prompt ({len(prompt_tokens)} {unit}): {repr(args.prompt)}")
     print(f"\n--- Generated text ---")
 
-    # Print prompt first
-    if args.prompt:
-        sys.stdout.write(args.prompt)
+    # For tokenized models, suppress streaming (streaming byte-by-byte of multi-byte tokens
+    # would show broken glyphs). Print the whole thing at the end.
+    if enc is not None:
+        # Silence the streaming writes inside generate_ladder by temporarily disabling
+        # sys.stdout.write during generation.
+        import builtins
+        _orig_write = sys.stdout.write
+        sys.stdout.write = lambda *a, **k: None
+        try:
+            if model_type == 'e88_fused':
+                generated = generate_e88_fused(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+            else:
+                generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+        finally:
+            sys.stdout.write = _orig_write
+        # Decode entire output with the tokenizer
+        full = decode_fn(generated)
+        sys.stdout.write(full)
         sys.stdout.flush()
-
-    # Generate
-    if model_type == 'e88_fused':
-        generated = generate_e88_fused(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+        print(f"\n--- End ({len(generated)} tokens / {len(full)} chars) ---")
     else:
-        # LadderLM and mamba2 both support return_prev_hiddens-style interface
-        generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
-
-    print(f"\n--- End ({len(generated)} bytes total) ---")
+        # Byte-level: streaming works fine (each token is a byte)
+        if args.prompt:
+            sys.stdout.write(args.prompt)
+            sys.stdout.flush()
+        if model_type == 'e88_fused':
+            generated = generate_e88_fused(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+        else:
+            generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+        print(f"\n--- End ({len(generated)} bytes total) ---")
 
 
 if __name__ == '__main__':
