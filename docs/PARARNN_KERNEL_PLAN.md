@@ -255,7 +255,18 @@ end-to-end. CI-able.
   prefix is 4n scalars = 256 B at n=32 bf16. Combine needs no SVD —
   just a few vec/mat products. Fits in registers with huge occupancy
   headroom.
-- [ ] Phase 3 — Triton kernel, single head (r=1 fixed, no SVD)
+- [x] **Phase 3a — Explicit-scan PyTorch r=1 combine** (2026-04-22):
+  The r=1 combine with 2×2 SVD truncation (thin QR + closed-form 2×2
+  eigendecomp) matches Phase 1 dense to machine epsilon. Combine is
+  pure elementwise/small-matrix ops, portable to Triton.
+- [ ] **Phase 3b — Triton kernel** (deferred): `tl.associative_scan`
+  in Triton 3.5 is elementwise-only — combine_fn receives scalar
+  leaves, not vectors. Our combine needs vector-level ops (dot
+  products, norms). A proper Phase 3b requires a manual Hillis–Steele
+  scan over a [T, N] block tensor, multi-block hierarchical for long T.
+  Triton combine helpers (`_combine_r1_triton`, `_rank2_to_rank1_triton`)
+  are already written and verified against the PyTorch reference —
+  they'll slot into the manual scan when scheduled.
 - [ ] Phase 4 — Multi-head, multi-batch
 - [ ] Phase 5 — Backward pass
 - [ ] Phase 6 — Integration + benchmark
