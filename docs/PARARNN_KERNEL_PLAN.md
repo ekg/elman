@@ -308,4 +308,24 @@ end-to-end. CI-able.
   J^T = diag(D) − k ⊗ u to the running gradient vector. O(n) per step.
 
   `experiments/pararnn_kernel/phase5_backward.py`.
-- [ ] Phase 6 — Integration + benchmark
+- [x] **Phase 6 — autograd.Function + crossover benchmark** (2026-04-22):
+  `PararnnE88Function.apply(S0, K, V, decay)` wraps Phase 4 forward +
+  Phase 5 backward. End-to-end parity with sequential autograd at fp32
+  across full shape sweep including (B=4, H=112, T=512, n=32):
+  S=7.6e-6, dS0=3.2e-7, dK=7.6e-7, dV=9.6e-7, ddecay=8.4e-7.
+
+  **Crossover measured**:
+  | Shape | Pararnn-Triton | Sequential | Ratio |
+  |-------|---------------|------------|-------|
+  | B=4, H=112, T=512   | 691 ms | 272 ms  | 2.54× slower |
+  | B=2, H=32,  T=1024  | 200 ms | 535 ms  | **2.7× faster** |
+  | B=1, H=32,  T=2048  | 198 ms | 1073 ms | **5.3× faster** |
+
+  Pararnn-Triton time is roughly flat in T (bounded by Newton iter
+  count × scan cost). Sequential scales linearly in T (Python launch
+  overhead). Crossover ≈ T=1024. Extrapolating to E88 progressive
+  training at T=128K: potentially 100× speedup.
+
+  Still TODO (not blocking correctness): wire into
+  `elman/models/e88_fla_hybrid.py` behind `--use_pararnn_kernel` flag,
+  end-to-end training-step parity test, more shape points.
