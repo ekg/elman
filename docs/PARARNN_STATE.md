@@ -33,6 +33,43 @@ training (up to 128K) doesn't become latency-bound.
 | 6 | `experiments/pararnn_kernel/phase6_autograd.py` | `PararnnE88Function` wraps forward+backward |
 | 6 bench | `experiments/pararnn_kernel/phase6_benchmark_vs_cuda.py` | Measured vs production CUDA |
 
+## UPDATE 2026-04-22 later — fused Triton kernel + warm start
+
+Wrote a fused single-Newton-iter Triton kernel (`phase7_fused_iter.py`)
+combining residual computation, Jacobian build, and scan into one
+program per (B, H, row). **14-16× faster per Newton iter** vs the
+separate-phase PyTorch + Triton approach.
+
+Also validated that **warm-start (perturbed previous trajectory) cuts
+Newton to 3 iterations** to reach fp32 machine precision.
+
+Honest benchmark vs production CUDA (bf16) forward, single-GPU:
+  T=512  : CUDA 0.83 ms, Pararnn 1.44 ms (3-iter warm) — **0.58× (slower)**
+  T=1024 : CUDA 1.65 ms, Pararnn 3.15 ms — 0.52×
+  T=2048 : CUDA 3.53 ms, Pararnn 6.36 ms — 0.55×
+  T=8192 : CUDA 14.24 ms, Pararnn 25.91 ms — 0.55×
+  T=16384: CUDA 28.39 ms, Pararnn 52.21 ms — 0.54×
+
+Pararnn is consistently ~2× slower than the hand-tuned sequential CUDA
+kernel on single-GPU at T up to 16K. Ratio stable across T — both
+scale linearly.
+
+Fundamental reason: CUDA does 1 sweep of hand-optimized C++. Pararnn
+does 3 Newton iters of Triton code. 3× more work × Triton overhead
+(~10-20%) ≈ 2× slower.
+
+To beat CUDA on single-GPU we'd need:
+  (a) 1-iter warm start (only possible in very stable training regime)
+  (b) Quasi-Newton / simpler iteration (lose exact convergence)
+  (c) Drop to T regimes where CUDA's memory model breaks down
+
+Paper claim revision (again): can't claim "faster than CUDA on single
+GPU." Can claim:
+  - Correct parallel Newton with rank-1 lossless truncation
+  - 3× cost of sequential kernel, amortizable in distributed/long-T
+  - Enabling for new architectures (no custom kernel needed)
+  - Scales to ROCm without a new CUDA kernel
+
 ## Findings
 
 ### Technical findings that are novel and publishable
