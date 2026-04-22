@@ -242,8 +242,20 @@ end-to-end. CI-able.
   All sweep points (T=32..512, n=4..32) converge in 5–10 Newton iters;
   max|sequential − scan| ≤ 4.4e-12 at float64. Forward-substitution
   solve works cleanly.
-- [ ] Phase 2 — Structured + rank truncation
-- [ ] Phase 3 — Triton kernel, single head
+- [x] **Phase 2 — Structured + rank truncation** (2026-04-22):
+  **r=1 is sufficient** — structured scan matches Phase 1 dense to
+  machine epsilon (< 6e-16 at float64) across all tested shapes and
+  seeds. The low-rank approximation is essentially lossless because
+  each step's Jacobian IS rank-1 in its off-diagonal part, and
+  combined products retain a dominant rank-1 mode. At extreme input
+  amplitudes (not in the realistic E88 regime) Newton itself fails to
+  converge, but that's not a truncation issue.
+
+  **Consequence**: the kernel simplifies dramatically. State per
+  prefix is 4n scalars = 256 B at n=32 bf16. Combine needs no SVD —
+  just a few vec/mat products. Fits in registers with huge occupancy
+  headroom.
+- [ ] Phase 3 — Triton kernel, single head (r=1 fixed, no SVD)
 - [ ] Phase 4 — Multi-head, multi-batch
 - [ ] Phase 5 — Backward pass
 - [ ] Phase 6 — Integration + benchmark
