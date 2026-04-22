@@ -291,5 +291,21 @@ end-to-end. CI-able.
   alternative, not a speed win.
 
   `experiments/pararnn_kernel/phase4_newton_driver.py`.
-- [ ] Phase 5 — Backward pass
+- [x] **Phase 5 — Backward pass** (2026-04-22):
+  **Step 1**: manual reverse-scan + parameter gradient formulas in
+  PyTorch. Matches PyTorch autograd (through an autograd-friendly
+  sequential forward) to ~5e-16 relative error at fp64 across shape
+  sweep B×H×T×n up to (2, 8, 128, 32).
+
+  **Step 2**: Triton kernel — one program per (B, H, row) does a
+  sequential reverse scan over T, outputs g_0, per-row dV, and
+  partial contributions to dK, ddecay (row-summed outside). Matches
+  autograd to ~5e-7 at fp32 across the whole sweep including
+  full E88 scale (B=4, H=112, T=512, n=32): dS_0=3.9e-7, dK=3.3e-7,
+  dV=5.5e-7, ddecay=3.3e-7.
+
+  Per-step backward update: `g_new = D ⊙ g − K_t · (u · g)` — applying
+  J^T = diag(D) − k ⊗ u to the running gradient vector. O(n) per step.
+
+  `experiments/pararnn_kernel/phase5_backward.py`.
 - [ ] Phase 6 — Integration + benchmark
