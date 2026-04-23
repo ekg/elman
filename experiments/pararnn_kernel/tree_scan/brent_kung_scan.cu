@@ -223,6 +223,150 @@ __global__ void intra_block_hillis_steele(
     }
 }
 
+// -----------------------------------------------------------------------------
+// Stage 4: Intra-block scan with explicit INITIAL STATE input.
+// This is the building block for hierarchical scan — with init=identity we
+// get local prefixes; with init=block_prefix we get global prefixes.
+//
+// Produces BOTH:
+//   - δ_out[t]: per-position δ in the block
+//   - block_summary: the final cumulative state at end of block
+//
+// Host orchestration:
+//   Pass 1: run with init=identity, collect block_summary per block.
+//   Pass 2: scan block_summary across blocks (another Hillis call).
+//   Pass 3: re-run with init=block_cum_excl[b], output δ.
+// -----------------------------------------------------------------------------
+
+template<int T_BLOCK, int M_DIM>
+__global__ void intra_block_with_init(
+    const float* __restrict__ M_in,            // input per-position operators
+    const float* __restrict__ init_state,      // per-block initial state [num_blocks, M_DIM, M_DIM]
+    float* __restrict__ delta_out,             // per-position δ output [..., N]
+    float* __restrict__ block_summary_out,     // final cumulative state [num_blocks, M_DIM, M_DIM]
+    const int B, const int H, const int N_row, const int T_full,
+    const int N, const int num_blocks_t,
+    const bool have_init                       // if false, init = identity
+) {
+    const int pid = blockIdx.x;
+    const int t_block = pid % num_blocks_t;
+    const int row = (pid / num_blocks_t) % N_row;
+    const int h = (pid / num_blocks_t / N_row) % H;
+    const int b = pid / num_blocks_t / N_row / H;
+
+    const int warp_id = threadIdx.x / 32;
+    const int lane    = threadIdx.x & 31;
+
+    extern __shared__ float smem[];
+    float* buf_A = smem;
+    float* buf_B = &smem[T_BLOCK * M_DIM * M_DIM];
+
+    const long M_full_bh_stride = (long)H * N_row * T_full * M_DIM * M_DIM;
+    const long M_full_h_stride  = (long)N_row * T_full * M_DIM * M_DIM;
+    const long M_full_r_stride  = (long)T_full * M_DIM * M_DIM;
+    const long t_block_start = (long)t_block * T_BLOCK;
+    const long M_full_base = (long)b * M_full_bh_stride + (long)h * M_full_h_stride +
+                             (long)row * M_full_r_stride + t_block_start * M_DIM * M_DIM;
+
+    const long summary_per_chain = (long)num_blocks_t * M_DIM * M_DIM;
+    const long summary_bh_stride = (long)H * N_row * summary_per_chain;
+    const long summary_h_stride  = (long)N_row * summary_per_chain;
+    const long summary_r_stride  = summary_per_chain;
+    const long summary_base = (long)b * summary_bh_stride + (long)h * summary_h_stride +
+                              (long)row * summary_r_stride + (long)t_block * M_DIM * M_DIM;
+
+    const long O_bh_stride = (long)H * N_row * T_full * N;
+    const long O_h_stride  = (long)N_row * T_full * N;
+    const long O_r_stride  = (long)T_full * N;
+    const long O_base = (long)b * O_bh_stride + (long)h * O_h_stride + (long)row * O_r_stride
+                        + t_block_start * N;
+
+    // Load T_BLOCK matrices.
+    const int total_elems = T_BLOCK * M_DIM * M_DIM;
+    for (int idx = threadIdx.x; idx < total_elems; idx += blockDim.x) {
+        buf_A[idx] = M_in[M_full_base + idx];
+    }
+    __syncthreads();
+
+    // If init_state is given, "compose" it with position 0: buf_A[0] = buf_A[0] @ init
+    // Everything else is as before.
+    if (have_init) {
+        // Need scratch for the composition. Use a small portion of buf_B.
+        // Compute comp = buf_A[0] @ init, store in buf_B[0]
+        const float* init_M = &init_state[summary_base];
+        const float* later  = &buf_A[0];
+        float* out = &buf_B[0];
+        const int total_out = M_DIM * M_DIM;
+        for (int idx = threadIdx.x; idx < total_out; idx += blockDim.x) {
+            const int rr = idx / M_DIM;
+            const int cc = idx % M_DIM;
+            float acc = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < M_DIM; k++) {
+                acc += later[rr * M_DIM + k] * init_M[k * M_DIM + cc];
+            }
+            out[idx] = acc;
+        }
+        __syncthreads();
+        // Copy buf_B[0] back to buf_A[0]
+        for (int idx = threadIdx.x; idx < total_out; idx += blockDim.x) {
+            buf_A[idx] = buf_B[idx];
+        }
+        __syncthreads();
+    }
+
+    float* src = buf_A;
+    float* dst = buf_B;
+
+    for (int d = 1; d < T_BLOCK; d *= 2) {
+        const int t_out = warp_id;
+        if (t_out < T_BLOCK) {
+            if (t_out < d) {
+                const int base = t_out * M_DIM * M_DIM;
+                for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+                    dst[base + idx] = src[base + idx];
+                }
+            } else {
+                const float* M_later   = &src[t_out * M_DIM * M_DIM];
+                const float* M_earlier = &src[(t_out - d) * M_DIM * M_DIM];
+                float* M_out = &dst[t_out * M_DIM * M_DIM];
+                const int total_out = M_DIM * M_DIM;
+                for (int idx = lane; idx < total_out; idx += 32) {
+                    const int rr = idx / M_DIM;
+                    const int cc = idx % M_DIM;
+                    float acc = 0.0f;
+                    #pragma unroll
+                    for (int k = 0; k < M_DIM; k++) {
+                        acc += M_later[rr * M_DIM + k] * M_earlier[k * M_DIM + cc];
+                    }
+                    M_out[idx] = acc;
+                }
+            }
+        }
+        __syncthreads();
+        float* tmp = src; src = dst; dst = tmp;
+    }
+
+    // Store block summary: the LAST position's cumulative state.
+    if (block_summary_out != nullptr) {
+        const float* last = &src[(T_BLOCK - 1) * M_DIM * M_DIM];
+        const int total = M_DIM * M_DIM;
+        for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+            block_summary_out[summary_base + idx] = last[idx];
+        }
+    }
+
+    // Store δ per-position.
+    if (delta_out != nullptr) {
+        const int tot_out = T_BLOCK * N;
+        for (int idx = threadIdx.x; idx < tot_out; idx += blockDim.x) {
+            const int t = idx / N;
+            const int i = idx % N;
+            delta_out[O_base + (long)t * N + i] = src[t * M_DIM * M_DIM + i * M_DIM + N];
+        }
+    }
+}
+
 }  // anonymous namespace
 
 // -----------------------------------------------------------------------------
@@ -329,9 +473,71 @@ torch::Tensor intra_block_hillis(
     return delta;
 }
 
+// Stage 4 launcher: intra-block with init + summary output.
+std::vector<torch::Tensor> intra_block_with_init_py(
+    torch::Tensor M,
+    torch::Tensor init_state,   // [B, H, N_row, num_blocks_t, M_DIM, M_DIM] or empty
+    int N,
+    int T_BLOCK
+) {
+    TORCH_CHECK(M.is_cuda() && M.is_contiguous(), "M must be contiguous CUDA fp32");
+    TORCH_CHECK(M.dtype() == torch::kFloat32, "M must be fp32");
+    TORCH_CHECK(M.dim() == 6, "M must be 6D");
+
+    const int B = M.size(0);
+    const int H = M.size(1);
+    const int N_row = M.size(2);
+    const int T = M.size(3);
+    const int M_DIM = M.size(4);
+    TORCH_CHECK(T % T_BLOCK == 0, "T must be multiple of T_BLOCK");
+
+    const int num_blocks_t = T / T_BLOCK;
+    auto delta = torch::zeros({B, H, N_row, T, N},
+                              torch::dtype(torch::kFloat32).device(M.device()));
+    auto summary = torch::zeros({B, H, N_row, num_blocks_t, M_DIM, M_DIM},
+                                 torch::dtype(torch::kFloat32).device(M.device()));
+
+    const bool have_init = (init_state.numel() > 0);
+    const float* init_ptr = have_init ? init_state.data_ptr<float>() : nullptr;
+
+    const int grid = B * H * N_row * num_blocks_t;
+    const int threads = 32 * T_BLOCK;
+    const size_t shmem = 2ull * T_BLOCK * M_DIM * M_DIM * sizeof(float);
+
+#define DISPATCH2(TB, MD) do { \
+    auto kfn = intra_block_with_init<TB, MD>; \
+    cudaError_t attr_err = cudaFuncSetAttribute( \
+        kfn, cudaFuncAttributeMaxDynamicSharedMemorySize, 99328); \
+    if (attr_err != cudaSuccess) cudaGetLastError(); \
+    kfn<<<grid, threads, shmem>>>( \
+        M.data_ptr<float>(), init_ptr, \
+        delta.data_ptr<float>(), summary.data_ptr<float>(), \
+        B, H, N_row, T, N, num_blocks_t, have_init); \
+} while (0)
+
+    if (T_BLOCK == 16 && M_DIM == 24) DISPATCH2(16, 24);
+    else if (T_BLOCK == 8  && M_DIM == 24) DISPATCH2(8, 24);
+    else if (T_BLOCK == 8  && M_DIM == 32) DISPATCH2(8, 32);
+    else if (T_BLOCK == 8  && M_DIM == 40) DISPATCH2(8, 40);
+    else if (T_BLOCK == 4  && M_DIM == 40) DISPATCH2(4, 40);
+    else if (T_BLOCK == 4  && M_DIM == 32) DISPATCH2(4, 32);
+    else if (T_BLOCK == 4  && M_DIM == 24) DISPATCH2(4, 24);
+    else TORCH_CHECK(false, "Unsupported (T_BLOCK, M_DIM) combination: ", T_BLOCK, " ", M_DIM);
+
+#undef DISPATCH2
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "kernel failed: ", cudaGetErrorString(err));
+
+    return {delta, summary};
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("intra_block_sequential", &intra_block_sequential,
           "Sequential scan within block using shared memory.");
     m.def("intra_block_hillis", &intra_block_hillis,
           "Hillis-Steele parallel scan within block.");
+    m.def("intra_block_with_init", &intra_block_with_init_py,
+          "Hillis-Steele within block with explicit initial state + "
+          "output block summary.");
 }
