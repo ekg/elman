@@ -19,10 +19,91 @@
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
+#include <mma.h>
 #include <cstdio>
 #include <cstdint>
 
+using namespace nvcuda;
+
 namespace {
+
+// -----------------------------------------------------------------------------
+// Stage 6: WMMA tensor core matmul helper for 32×32 matmul.
+//
+// Assumes A and B are 32×32 matrices in shared memory, row-major, fp32.
+// Output C (32×32) is accumulated in fp32.
+// Uses bf16 WMMA (m16n16k16) for 32×32 as 2×2 output tiles × 2 K-steps = 8 mmas.
+//
+// Each warp does the full 32×32 × 32×32 matmul.
+// A_smem, B_smem, C_smem are 32×32 tiles in shared memory.
+// -----------------------------------------------------------------------------
+
+__device__ __forceinline__ void wmma_matmul_32x32_bf16(
+    const float* __restrict__ A_smem,
+    const float* __restrict__ B_smem,
+    float* __restrict__ C_smem
+) {
+    // First convert A, B fp32 → bf16 in local buffer (in shared mem we'd need
+    // extra shared buffer). For simplicity, convert on load via direct
+    // fragment init from fp32 buffer.
+    //
+    // Ampere WMMA: load_matrix_sync converts fp32 → bf16 if fragment is bf16.
+    // Actually no — load_matrix_sync expects matching type. Must convert first.
+    //
+    // Approach: use TF32 fragments (m16n16k8) which accept fp32 directly.
+
+    // Cast A_smem, B_smem via TF32 fragments
+    using FragA = wmma::fragment<wmma::matrix_a, 16, 16, 8, wmma::precision::tf32, wmma::row_major>;
+    using FragB = wmma::fragment<wmma::matrix_b, 16, 16, 8, wmma::precision::tf32, wmma::row_major>;
+    using FragC = wmma::fragment<wmma::accumulator, 16, 16, 8, float>;
+
+    // 2×2 output tiles, each 16×16. K dim = 32, so 4 K-steps of 8 each.
+    // Total: 4 output tiles × 4 K-steps = 16 mma calls.
+    // (For bf16 with k=16 it'd be 4×2=8, but bf16 needs conversion.)
+
+    FragC acc00, acc01, acc10, acc11;
+    wmma::fill_fragment(acc00, 0.0f);
+    wmma::fill_fragment(acc01, 0.0f);
+    wmma::fill_fragment(acc10, 0.0f);
+    wmma::fill_fragment(acc11, 0.0f);
+
+    // K-steps over the 32-dim contraction axis, stride 8 (TF32 k=8).
+    #pragma unroll
+    for (int k0 = 0; k0 < 32; k0 += 8) {
+        FragA a0, a1;
+        FragB b0, b1;
+        // A rows 0..15 and 16..31 at K=[k0, k0+8)
+        wmma::load_matrix_sync(a0, A_smem + 0 * 32 + k0, 32);
+        wmma::load_matrix_sync(a1, A_smem + 16 * 32 + k0, 32);
+        // B rows [k0, k0+8), cols 0..15 and 16..31
+        wmma::load_matrix_sync(b0, B_smem + k0 * 32 + 0, 32);
+        wmma::load_matrix_sync(b1, B_smem + k0 * 32 + 16, 32);
+
+        // Round-to-nearest conversion fp32 → TF32 happens inside WMMA.
+        // Convert each fragment element explicitly (required before mma_sync).
+        #pragma unroll
+        for (int i = 0; i < a0.num_elements; i++) {
+            a0.x[i] = wmma::__float_to_tf32(a0.x[i]);
+            a1.x[i] = wmma::__float_to_tf32(a1.x[i]);
+        }
+        #pragma unroll
+        for (int i = 0; i < b0.num_elements; i++) {
+            b0.x[i] = wmma::__float_to_tf32(b0.x[i]);
+            b1.x[i] = wmma::__float_to_tf32(b1.x[i]);
+        }
+
+        wmma::mma_sync(acc00, a0, b0, acc00);
+        wmma::mma_sync(acc01, a0, b1, acc01);
+        wmma::mma_sync(acc10, a1, b0, acc10);
+        wmma::mma_sync(acc11, a1, b1, acc11);
+    }
+
+    // Store output 2×2 tiles back to shared memory (row-major, stride 32)
+    wmma::store_matrix_sync(C_smem + 0 * 32 + 0,   acc00, 32, wmma::mem_row_major);
+    wmma::store_matrix_sync(C_smem + 0 * 32 + 16,  acc01, 32, wmma::mem_row_major);
+    wmma::store_matrix_sync(C_smem + 16 * 32 + 0,  acc10, 32, wmma::mem_row_major);
+    wmma::store_matrix_sync(C_smem + 16 * 32 + 16, acc11, 32, wmma::mem_row_major);
+}
 
 // -----------------------------------------------------------------------------
 // Sequential-within-block CUDA scan, shared-memory cumulative state.
@@ -624,6 +705,173 @@ __global__ void intra_block_fused_build(
 }
 
 // -----------------------------------------------------------------------------
+// Stage 6: WMMA-accelerated intra-block scan for M_DIM=32, N=16.
+//
+// Uses the wmma_matmul_32x32_bf16 (actually TF32) helper. Each warp handles
+// one pair's matmul via WMMA instead of scalar FMA.
+//
+// T_BLOCK=8 is the largest that fits in 99KB shmem: 2 * 8 * 32² * 4 = 64KB.
+// -----------------------------------------------------------------------------
+
+template<int T_BLOCK>
+__global__ void intra_block_fused_wmma(
+    const float* __restrict__ S0,
+    const float* __restrict__ S_var,
+    const float* __restrict__ K_ptr,
+    const float* __restrict__ V_ptr,
+    const float* __restrict__ decay_ptr,
+    const float* __restrict__ init_state,
+    float* __restrict__ delta_out,
+    float* __restrict__ summary_out,
+    const int B, const int H, const int T,
+    const int num_blocks_t,
+    const bool have_init
+) {
+    constexpr int N = 16;
+    constexpr int M_DIM = 32;
+    const int pid = blockIdx.x;
+    const int t_block = pid % num_blocks_t;
+    const int row = (pid / num_blocks_t) % N;
+    const int h = (pid / num_blocks_t / N) % H;
+    const int b = pid / num_blocks_t / N / H;
+
+    const int warp_id = threadIdx.x / 32;
+    const int lane    = threadIdx.x & 31;
+
+    extern __shared__ float smem[];
+    float* buf_A = smem;
+    float* buf_B = &smem[T_BLOCK * M_DIM * M_DIM];
+
+    const long S0_base = ((long)b * H + h) * N * N + (long)row * N;
+    const long Sv_base_bh = ((long)b * H + h) * T * N * N;
+    const long Sv_t_stride = (long)N * N;
+    const long K_base_bh = ((long)b * H + h) * T * N;
+    const long K_t_stride = N;
+    const long dec_base_bh = ((long)b * H + h) * T;
+    const long t_block_start = (long)t_block * T_BLOCK;
+
+    const long O_base = ((((long)b * H + h) * N + row) * T + t_block_start) * N;
+    const long summary_base = (((long)b * H + h) * N + row) * num_blocks_t * M_DIM * M_DIM
+                              + (long)t_block * M_DIM * M_DIM;
+
+    const int t_out = warp_id;
+    const int t_glob = t_block_start + t_out;
+
+    // Build augmented matrix for this warp's position
+    if (t_out < T_BLOCK && t_glob < T) {
+        float S_prev_reg[N];
+        if (t_glob == 0) {
+            for (int j = 0; j < N; j++) S_prev_reg[j] = S0[S0_base + j];
+        } else {
+            long off = Sv_base_bh + (long)(t_glob - 1) * Sv_t_stride + (long)row * N;
+            for (int j = 0; j < N; j++) S_prev_reg[j] = S_var[off + j];
+        }
+
+        float K_vec[N];
+        long K_off = K_base_bh + (long)t_glob * K_t_stride;
+        for (int j = 0; j < N; j++) K_vec[j] = K_ptr[K_off + j];
+
+        float V_val = V_ptr[K_base_bh + (long)t_glob * K_t_stride + row];
+        float dec = decay_ptr[dec_base_bh + t_glob];
+
+        float retrieved = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < N; j++) retrieved += S_prev_reg[j] * K_vec[j];
+        float delta_scalar = V_val - retrieved;
+
+        float f_val[N], tanh_deriv[N];
+        #pragma unroll
+        for (int j = 0; j < N; j++) {
+            float pre_j = dec * S_prev_reg[j] + delta_scalar * K_vec[j];
+            float e2x = __expf(2.0f * pre_j);
+            f_val[j] = (e2x - 1.0f) / (e2x + 1.0f);
+            tanh_deriv[j] = 1.0f - f_val[j] * f_val[j];
+        }
+
+        float S_var_row[N];
+        long Sv_off = Sv_base_bh + (long)t_glob * Sv_t_stride + (long)row * N;
+        for (int j = 0; j < N; j++) S_var_row[j] = S_var[Sv_off + j];
+
+        float* M_my = &buf_A[t_out * M_DIM * M_DIM];
+        const int total = M_DIM * M_DIM;
+        for (int idx = lane; idx < total; idx += 32) {
+            const int r = idx / M_DIM;
+            const int c = idx % M_DIM;
+            float val;
+            if (r < N && c < N) {
+                float D_r = dec * tanh_deriv[r];
+                float u_r = tanh_deriv[r] * K_vec[r];
+                val = (r == c ? D_r : 0.0f) - u_r * K_vec[c];
+            } else if (r < N && c == N) {
+                val = f_val[r] - S_var_row[r];
+            } else if (r == c) {
+                val = 1.0f;
+            } else {
+                val = 0.0f;
+            }
+            M_my[idx] = val;
+        }
+    }
+    __syncthreads();
+
+    // Apply init state if provided
+    if (have_init) {
+        if (warp_id == 0) {
+            // Use WMMA for init composition too.
+            // C = buf_A[0] @ init_state (scan order: init first, so buf_A @ init)
+            wmma_matmul_32x32_bf16(&buf_A[0], &init_state[summary_base], &buf_B[0]);
+        }
+        __syncthreads();
+        if (warp_id == 0) {
+            for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+                buf_A[idx] = buf_B[idx];
+            }
+        }
+        __syncthreads();
+    }
+
+    float* src = buf_A;
+    float* dst = buf_B;
+
+    // Hillis-Steele with WMMA combine
+    for (int d = 1; d < T_BLOCK; d *= 2) {
+        if (t_out < T_BLOCK) {
+            if (t_out < d) {
+                // Pass-through copy
+                const int base = t_out * M_DIM * M_DIM;
+                for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+                    dst[base + idx] = src[base + idx];
+                }
+            } else {
+                // WMMA matmul: dst[t_out] = src[t_out] @ src[t_out - d]
+                wmma_matmul_32x32_bf16(
+                    &src[t_out * M_DIM * M_DIM],
+                    &src[(t_out - d) * M_DIM * M_DIM],
+                    &dst[t_out * M_DIM * M_DIM]
+                );
+            }
+        }
+        __syncthreads();
+        float* tmp = src; src = dst; dst = tmp;
+    }
+
+    // Write outputs
+    if (summary_out != nullptr && t_out == T_BLOCK - 1) {
+        const float* last = &src[(T_BLOCK - 1) * M_DIM * M_DIM];
+        for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+            summary_out[summary_base + idx] = last[idx];
+        }
+    }
+
+    if (delta_out != nullptr && t_out < T_BLOCK && t_glob < T) {
+        for (int i = lane; i < N; i += 32) {
+            delta_out[O_base + (long)t_out * N + i] =
+                src[t_out * M_DIM * M_DIM + i * M_DIM + N];
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Stage 5: single-level parallel combine kernel for inter-block scan.
 //
 // Given a chain of N matrices, one LEVEL of Hillis-Steele does:
@@ -899,6 +1147,61 @@ std::vector<torch::Tensor> intra_block_fused_py(
     return {delta, summary};
 }
 
+// Stage 6 launcher: WMMA variant for N=16.
+std::vector<torch::Tensor> intra_block_fused_wmma_py(
+    torch::Tensor S0, torch::Tensor S_var,
+    torch::Tensor K, torch::Tensor V, torch::Tensor decay,
+    torch::Tensor init_state,
+    int T_BLOCK
+) {
+    TORCH_CHECK(S_var.dtype() == torch::kFloat32);
+    TORCH_CHECK(S_var.is_cuda() && S_var.is_contiguous());
+    TORCH_CHECK(S_var.dim() == 5);
+
+    const int B = S_var.size(0);
+    const int H = S_var.size(1);
+    const int T = S_var.size(2);
+    const int N = S_var.size(3);
+    TORCH_CHECK(N == 16, "WMMA variant: only N=16 for now");
+    TORCH_CHECK(T % T_BLOCK == 0);
+    const int M_DIM = 32;
+    const int num_blocks_t = T / T_BLOCK;
+
+    auto delta = torch::zeros({B, H, N, T, N},
+                              torch::dtype(torch::kFloat32).device(S_var.device()));
+    auto summary = torch::zeros({B, H, N, num_blocks_t, M_DIM, M_DIM},
+                                 torch::dtype(torch::kFloat32).device(S_var.device()));
+
+    const bool have_init = (init_state.numel() > 0);
+    const float* init_ptr = have_init ? init_state.data_ptr<float>() : nullptr;
+
+    const int grid = B * H * N * num_blocks_t;
+    const int threads = 32 * T_BLOCK;
+    const size_t shmem = 2ull * T_BLOCK * M_DIM * M_DIM * sizeof(float);
+
+#define DISPATCH_WMMA(TB) do { \
+    auto kfn = intra_block_fused_wmma<TB>; \
+    cudaError_t attr_err = cudaFuncSetAttribute( \
+        kfn, cudaFuncAttributeMaxDynamicSharedMemorySize, 99328); \
+    if (attr_err != cudaSuccess) cudaGetLastError(); \
+    kfn<<<grid, threads, shmem>>>( \
+        S0.data_ptr<float>(), S_var.data_ptr<float>(), \
+        K.data_ptr<float>(), V.data_ptr<float>(), decay.data_ptr<float>(), \
+        init_ptr, delta.data_ptr<float>(), summary.data_ptr<float>(), \
+        B, H, T, num_blocks_t, have_init); \
+} while (0)
+
+    if (T_BLOCK == 8) DISPATCH_WMMA(8);
+    else if (T_BLOCK == 4) DISPATCH_WMMA(4);
+    else TORCH_CHECK(false, "WMMA: Unsupported T_BLOCK=", T_BLOCK, " (only 4, 8)");
+
+#undef DISPATCH_WMMA
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "WMMA kernel failed: ", cudaGetErrorString(err));
+    return {delta, summary};
+}
+
 // Stage 5 launcher: scan a chain of matrices in-place via repeated one-level calls.
 torch::Tensor inclusive_matrix_prefix_scan(
     torch::Tensor M    // [chains..., num_pos, M_DIM, M_DIM]
@@ -963,4 +1266,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("intra_block_fused", &intra_block_fused_py,
           "Fused-build intra-block scan — takes raw S0/S_var/K/V/decay, "
           "no pre-materialized A tensor.");
+    m.def("intra_block_fused_wmma", &intra_block_fused_wmma_py,
+          "Stage 6: fused intra-block scan with TF32 tensor-core combines (N=16).");
 }
