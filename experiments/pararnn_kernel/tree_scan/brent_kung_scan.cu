@@ -367,6 +367,58 @@ __global__ void intra_block_with_init(
     }
 }
 
+// -----------------------------------------------------------------------------
+// Stage 5: single-level parallel combine kernel for inter-block scan.
+//
+// Given a chain of N matrices, one LEVEL of Hillis-Steele does:
+//   for each position p: M_out[p] = (p >= d) ? M_in[p] @ M_in[p - d] : M_in[p]
+//
+// All positions combine in parallel. Host calls this log2(N) times with
+// d=1, 2, 4, ... Each call is O(N) parallel matmuls.
+//
+// For block summary scan: input shape [B, H, N_row, num_blocks, M_DIM, M_DIM].
+// Grid: B * H * N_row * num_blocks. Each block processes one matmul.
+// Threads cooperate on the M_DIM × M_DIM result.
+// -----------------------------------------------------------------------------
+
+template<int M_DIM>
+__global__ void scan_one_level(
+    const float* __restrict__ M_in,
+    float* __restrict__ M_out,
+    const int num_pos,
+    const int d,
+    const long chain_stride  // = num_pos * M_DIM * M_DIM
+) {
+    const int pid = blockIdx.x;
+    const int pos = pid % num_pos;
+    const long chain_base = (long)(pid / num_pos) * chain_stride;
+
+    const float* src_pos = &M_in[chain_base + (long)pos * M_DIM * M_DIM];
+    float* dst_pos = &M_out[chain_base + (long)pos * M_DIM * M_DIM];
+
+    if (pos < d) {
+        // Pass through
+        const int total = M_DIM * M_DIM;
+        for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+            dst_pos[idx] = src_pos[idx];
+        }
+    } else {
+        const float* src_left = &M_in[chain_base + (long)(pos - d) * M_DIM * M_DIM];
+        // M_out[pos] = M_in[pos] @ M_in[pos - d]
+        const int total = M_DIM * M_DIM;
+        for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
+            const int rr = idx / M_DIM;
+            const int cc = idx % M_DIM;
+            float acc = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < M_DIM; k++) {
+                acc += src_pos[rr * M_DIM + k] * src_left[k * M_DIM + cc];
+            }
+            dst_pos[idx] = acc;
+        }
+    }
+}
+
 }  // anonymous namespace
 
 // -----------------------------------------------------------------------------
@@ -532,6 +584,56 @@ std::vector<torch::Tensor> intra_block_with_init_py(
     return {delta, summary};
 }
 
+// Stage 5 launcher: scan a chain of matrices in-place via repeated one-level calls.
+torch::Tensor inclusive_matrix_prefix_scan(
+    torch::Tensor M    // [chains..., num_pos, M_DIM, M_DIM]
+) {
+    TORCH_CHECK(M.is_cuda() && M.is_contiguous(), "M must be contiguous CUDA fp32");
+    TORCH_CHECK(M.dtype() == torch::kFloat32, "M must be fp32");
+
+    auto sizes = M.sizes().vec();
+    TORCH_CHECK(sizes.size() >= 3, "Input must have at least 3 dims");
+    const int M_DIM = sizes[sizes.size() - 1];
+    const int M_DIM2 = sizes[sizes.size() - 2];
+    TORCH_CHECK(M_DIM == M_DIM2, "Last two dims must be equal");
+    const int num_pos = sizes[sizes.size() - 3];
+
+    int num_chains = 1;
+    for (size_t i = 0; i + 3 < sizes.size(); i++) num_chains *= sizes[i];
+
+    const long chain_stride = (long)num_pos * M_DIM * M_DIM;
+    const int grid = num_chains * num_pos;
+    const int threads = 128;
+
+    auto scratch = torch::empty_like(M);
+    float* src = M.data_ptr<float>();
+    float* dst = scratch.data_ptr<float>();
+
+#define DISPATCH_LEVEL(MD) do { \
+    scan_one_level<MD><<<grid, threads>>>(src, dst, num_pos, d, chain_stride); \
+} while (0)
+
+    for (int d = 1; d < num_pos; d *= 2) {
+        if (M_DIM == 24) DISPATCH_LEVEL(24);
+        else if (M_DIM == 32) DISPATCH_LEVEL(32);
+        else if (M_DIM == 40) DISPATCH_LEVEL(40);
+        else TORCH_CHECK(false, "Unsupported M_DIM: ", M_DIM);
+        cudaError_t err = cudaGetLastError();
+        TORCH_CHECK(err == cudaSuccess, "level kernel failed: ", cudaGetErrorString(err));
+        std::swap(src, dst);
+    }
+#undef DISPATCH_LEVEL
+
+    // src now points to the result. Copy into M_out if it's scratch.
+    if (src != M.data_ptr<float>()) {
+        cudaMemcpyAsync(M.data_ptr<float>(), src,
+                        (size_t)num_chains * chain_stride * sizeof(float),
+                        cudaMemcpyDeviceToDevice);
+    }
+
+    return M;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("intra_block_sequential", &intra_block_sequential,
           "Sequential scan within block using shared memory.");
@@ -540,4 +642,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("intra_block_with_init", &intra_block_with_init_py,
           "Hillis-Steele within block with explicit initial state + "
           "output block summary.");
+    m.def("inclusive_matrix_prefix_scan", &inclusive_matrix_prefix_scan,
+          "In-place Hillis-Steele prefix scan on a chain of matrices, "
+          "O(log N) kernel launches.");
 }

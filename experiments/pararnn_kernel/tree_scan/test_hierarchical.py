@@ -64,21 +64,11 @@ def hierarchical_scan_cuda(A, b, T_BLOCK=16):
     _, summaries = ext.intra_block_with_init(M, empty, N, T_BLOCK)
     # summaries shape: [B, H, N_row, num_blocks_t, M_DIM, M_DIM]
 
-    # Pass 2: inclusive prefix scan of block summaries, done with torch.matmul
-    # (uses cuBLAS bmm, fine for small num_blocks_t). Result gives summary_cum[b]
-    # such that summary_cum[b] = summary[b] @ summary[b-1] @ ... @ summary[0].
-    # Then block_cum_excl[b] = summary_cum[b-1] (identity for b=0).
-
-    # summaries shape: [B, H, N_row, num_blocks_t, M_DIM, M_DIM]
-    # Compute inclusive prefix sequentially (cheap at num_blocks_t ≤ 8K)
-    summary_cum = summaries.clone()
-    for bi in range(1, num_blocks_t):
-        # summary_cum[bi] = summaries[bi] @ summary_cum[bi-1]
-        summary_cum[:, :, :, bi] = torch.einsum(
-            '...ij,...jk->...ik',
-            summaries[:, :, :, bi],
-            summary_cum[:, :, :, bi - 1]
-        )
+    # Pass 2: GPU-side inclusive prefix scan of summaries via Hillis-Steele.
+    # O(log num_blocks_t) kernel launches, each with num_blocks_t parallel matmuls.
+    # summaries is updated in place to hold summary_cum[b].
+    summary_cum = ext.inclusive_matrix_prefix_scan(summaries.clone())
+    # summary_cum[b] = summaries[b] @ summaries[b-1] @ ... @ summaries[0]
 
     # block_cum_excl[b] = summary_cum[b-1] for b >= 1, identity for b = 0
     block_cum_excl = torch.zeros(B, H, N_row, num_blocks_t, M_DIM, M_DIM,
