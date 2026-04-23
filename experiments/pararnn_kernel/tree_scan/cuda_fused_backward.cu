@@ -23,6 +23,25 @@ namespace {
 __device__ __forceinline__ float bf2f(__nv_bfloat16 x) { return __bfloat162float(x); }
 __device__ __forceinline__ __nv_bfloat16 f2bf(float x) { return __float2bfloat16(x); }
 
+// Vectorized load: 8 bf16 (16 bytes) in one HBM transaction.
+// Source pointer must be 16-byte aligned.
+__device__ __forceinline__ void load_8bf16_to_f32(const __nv_bfloat16* __restrict__ src,
+                                                    float* __restrict__ dst) {
+    uint4 vec = *reinterpret_cast<const uint4*>(src);
+    __nv_bfloat162 b0 = reinterpret_cast<__nv_bfloat162&>(vec.x);
+    __nv_bfloat162 b1 = reinterpret_cast<__nv_bfloat162&>(vec.y);
+    __nv_bfloat162 b2 = reinterpret_cast<__nv_bfloat162&>(vec.z);
+    __nv_bfloat162 b3 = reinterpret_cast<__nv_bfloat162&>(vec.w);
+    float2 f0 = __bfloat1622float2(b0);
+    float2 f1 = __bfloat1622float2(b1);
+    float2 f2 = __bfloat1622float2(b2);
+    float2 f3 = __bfloat1622float2(b3);
+    dst[0] = f0.x; dst[1] = f0.y;
+    dst[2] = f1.x; dst[3] = f1.y;
+    dst[4] = f2.x; dst[5] = f2.y;
+    dst[6] = f3.x; dst[7] = f3.y;
+}
+
 // Warp-level sum reduction (32 lanes)
 __device__ __forceinline__ float warp_sum(float v) {
     #pragma unroll
@@ -56,6 +75,194 @@ __device__ __forceinline__ void cp_async_commit() {
 template<int N_MINUS>
 __device__ __forceinline__ void cp_async_wait() {
     asm volatile("cp.async.wait_group %0;\n" :: "n"(N_MINUS));
+}
+
+
+// Version 2: cp.async double-buffered S_prev prefetch.
+// Reads step t's S_prev while computing step t+1 (reverse scan).
+
+template<int N, int NUM_WARPS>
+__launch_bounds__(NUM_WARPS * 32, 4)  // target 4 blocks per SM = ≤128 regs/thread
+__global__ void fused_backward_cpasync(
+    const __nv_bfloat16* __restrict__ S_traj,
+    const __nv_bfloat16* __restrict__ K,
+    const __nv_bfloat16* __restrict__ V,
+    const __nv_bfloat16* __restrict__ decay,
+    const __nv_bfloat16* __restrict__ g_T,
+    const __nv_bfloat16* __restrict__ dL_dout,
+    const __nv_bfloat16* __restrict__ q,
+    __nv_bfloat16* __restrict__ g_out,
+    __nv_bfloat16* __restrict__ dK_out,
+    __nv_bfloat16* __restrict__ dV_out,
+    __nv_bfloat16* __restrict__ ddecay_out,
+    int B, int H, int T
+) {
+    constexpr int WARP_ROWS = (N + NUM_WARPS - 1) / NUM_WARPS;
+    constexpr int BLOCK_THREADS = NUM_WARPS * 32;
+
+    const int bh = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int warp_id = tid / 32;
+    const int lane = tid & 31;
+
+    const long NN = (long)N * N;
+    const long S_traj_base = (long)bh * (T + 1) * NN;
+    const long K_base = (long)bh * T * N;
+    const long dec_base = (long)bh * T;
+    const long g_head_base = (long)bh * NN;
+
+    extern __shared__ unsigned char smem_raw[];
+
+    // Layout:
+    //   g_smem:          NN fp32
+    //   S_prev_bf16[0]:  NN bf16   (prefetch buffer 0)
+    //   S_prev_bf16[1]:  NN bf16   (prefetch buffer 1)
+    //   K_smem:          N fp32
+    //   V_smem:          N fp32
+    //   dL_smem:         N fp32
+    //   q_smem:          N fp32
+    //   dK_perwarp:      NUM_WARPS * N fp32
+    //   ddec_perwarp:    NUM_WARPS fp32
+    //   dec_smem:        1 fp32
+
+    float* g_smem = reinterpret_cast<float*>(smem_raw);
+    __nv_bfloat16* S_prev_bf16[2];
+    S_prev_bf16[0] = reinterpret_cast<__nv_bfloat16*>(&g_smem[NN]);
+    S_prev_bf16[1] = reinterpret_cast<__nv_bfloat16*>(&S_prev_bf16[0][NN]);
+    float* K_smem = reinterpret_cast<float*>(&S_prev_bf16[1][NN]);
+    float* V_smem = &K_smem[N];
+    float* dL_smem = &V_smem[N];
+    float* q_smem = &dL_smem[N];
+    float* dK_perwarp = &q_smem[N];
+    float* ddec_perwarp = &dK_perwarp[NUM_WARPS * N];
+    float* dec_smem_p = &ddec_perwarp[NUM_WARPS];
+
+    // Load g_T (scalar, cheap)
+    for (int i = tid; i < N * N; i += BLOCK_THREADS) {
+        g_smem[i] = bf2f(g_T[g_head_base + i]);
+    }
+
+    // ========================================================================
+    // Prefetch step t = T-1 into buffer 0 via cp.async.
+    // Each cp.async instruction copies 16 bytes (8 bf16) from global to shared.
+    // Total: NN bf16 = NN/8 cp.async instructions.
+    // ========================================================================
+    const int vec_count = NN / 8;  // 32 for N=16, 128 for N=32
+    {
+        const int t_init = T - 1;
+        const __nv_bfloat16* src_base = &S_traj[S_traj_base + (long)t_init * NN];
+        for (int vi = tid; vi < vec_count; vi += BLOCK_THREADS) {
+            cp_async_16B(&S_prev_bf16[0][vi * 8], &src_base[vi * 8]);
+        }
+    }
+    cp_async_commit();
+
+    int cur_buf = 0;
+    // ========================================================================
+    // Reverse scan
+    // ========================================================================
+    for (int t = T - 1; t >= 0; t--) {
+        int next_buf = 1 - cur_buf;
+
+        // Prefetch S_traj[t-1] into next buffer (if not last iteration)
+        if (t > 0) {
+            const __nv_bfloat16* src_base = &S_traj[S_traj_base + (long)(t - 1) * NN];
+            for (int vi = tid; vi < vec_count; vi += BLOCK_THREADS) {
+                cp_async_16B(&S_prev_bf16[next_buf][vi * 8], &src_base[vi * 8]);
+            }
+            cp_async_commit();
+            // Wait until the t-1 group is NOT done yet (1 group pending OK),
+            // ensuring t's group (older, committed 2 rounds ago) is done.
+            cp_async_wait<1>();
+        } else {
+            // No more prefetches; wait for the current (t=0) to finish.
+            cp_async_wait<0>();
+        }
+
+        __syncthreads();  // ensure smem visible to all threads
+
+        // Also load per-step broadcasts (K, V, dL, q, decay) — cheap scalar
+        if (tid < N) {
+            K_smem[tid] = bf2f(K[K_base + (long)t * N + tid]);
+            V_smem[tid] = bf2f(V[K_base + (long)t * N + tid]);
+            dL_smem[tid] = bf2f(dL_dout[K_base + (long)t * N + tid]);
+            q_smem[tid] = bf2f(q[K_base + (long)t * N + tid]);
+        }
+        if (tid == 0) {
+            *dec_smem_p = bf2f(decay[dec_base + t]);
+        }
+        if (tid < NUM_WARPS * N) dK_perwarp[tid] = 0.0f;
+        if (tid < NUM_WARPS) ddec_perwarp[tid] = 0.0f;
+        __syncthreads();
+
+        // Read S_prev from current buffer (bf16)
+        const __nv_bfloat16* S_prev_cur = S_prev_bf16[cur_buf];
+        const float dec = *dec_smem_p;
+
+        // Per-warp processing of WARP_ROWS rows
+        #pragma unroll
+        for (int r_local = 0; r_local < WARP_ROWS; r_local++) {
+            const int r = warp_id * WARP_ROWS + r_local;
+            if (r >= N) continue;
+
+            const float K_c = (lane < N) ? K_smem[lane] : 0.0f;
+            const float S_prev_rc = (lane < N) ? bf2f(S_prev_cur[r * N + lane]) : 0.0f;
+            const float V_r = V_smem[r];
+            const float g_rc = (lane < N) ? g_smem[r * N + lane] : 0.0f;
+
+            float retrieved_partial = S_prev_rc * K_c;
+            float retrieved = warp_sum(retrieved_partial);
+            float delta_row = V_r - retrieved;
+
+            float pre_rc = (lane < N) ? (dec * S_prev_rc + delta_row * K_c) : 0.0f;
+            float e2x = __expf(2.0f * pre_rc);
+            float tanh_val = (e2x - 1.0f) / (e2x + 1.0f);
+            float tanh_deriv = 1.0f - tanh_val * tanh_val;
+            float u_rc = tanh_deriv * K_c;
+
+            float gu_partial = g_rc * u_rc;
+            float gu_r = warp_sum(gu_partial);
+            float ddec_partial = g_rc * tanh_deriv * S_prev_rc;
+            float ddec_r = warp_sum(ddec_partial);
+
+            if (lane == 0) {
+                dV_out[K_base + (long)t * N + r] = f2bf(gu_r);
+                ddec_perwarp[warp_id] += ddec_r;
+            }
+            if (lane < N) {
+                float dk_rc = delta_row * (g_rc * tanh_deriv) - S_prev_rc * gu_r;
+                dK_perwarp[warp_id * N + lane] += dk_rc;
+            }
+            if (lane < N) {
+                float D_rc = dec * tanh_deriv;
+                float g_new_rc = D_rc * g_rc - K_c * gu_r;
+                float ext_rc = dL_smem[r] * q_smem[lane];
+                g_smem[r * N + lane] = g_new_rc + ext_rc;
+            }
+        }
+        __syncthreads();
+
+        if (tid < N) {
+            float acc = 0.0f;
+            #pragma unroll
+            for (int w = 0; w < NUM_WARPS; w++) acc += dK_perwarp[w * N + tid];
+            dK_out[K_base + (long)t * N + tid] = f2bf(acc);
+        }
+        if (tid == 0) {
+            float acc = 0.0f;
+            #pragma unroll
+            for (int w = 0; w < NUM_WARPS; w++) acc += ddec_perwarp[w];
+            ddecay_out[dec_base + t] = f2bf(acc);
+        }
+        __syncthreads();
+
+        cur_buf = next_buf;
+    }
+
+    // Write final g → dL/dS_0
+    for (int i = tid; i < N * N; i += BLOCK_THREADS) {
+        g_out[g_head_base + i] = f2bf(g_smem[i]);
+    }
 }
 
 
@@ -125,9 +332,13 @@ __global__ void fused_backward_warp_parallel(
             ddec_perwarp[tid] = 0.0f;
         }
 
-        // Load S_traj[t] (S_prev) into shared memory (scalar bf16 for now)
-        for (int i = tid; i < N * N; i += BLOCK_THREADS) {
-            S_prev_smem[i] = bf2f(S_traj[S_traj_base + (long)t * NN + i]);
+        // Load S_traj[t] (S_prev) vectorized — 8 bf16 / thread / iteration.
+        {
+            const __nv_bfloat16* src_base = &S_traj[S_traj_base + (long)t * NN];
+            const int vec_count = (N * N) / 8;
+            for (int vi = tid; vi < vec_count; vi += BLOCK_THREADS) {
+                load_8bf16_to_f32(&src_base[vi * 8], &S_prev_smem[vi * 8]);
+            }
         }
         __syncthreads();
 
@@ -278,7 +489,81 @@ std::vector<torch::Tensor> cuda_fused_backward(
 }
 
 
+std::vector<torch::Tensor> cuda_fused_backward_cpasync(
+    torch::Tensor S_traj, torch::Tensor K, torch::Tensor V, torch::Tensor decay,
+    torch::Tensor g_T, torch::Tensor dL_dout, torch::Tensor q
+) {
+    TORCH_CHECK(S_traj.dtype() == torch::kBFloat16);
+    TORCH_CHECK(S_traj.is_cuda() && S_traj.is_contiguous());
+    const int B = S_traj.size(0);
+    const int H = S_traj.size(1);
+    const int T = S_traj.size(2) - 1;
+    const int N = S_traj.size(3);
+
+    auto opts = torch::dtype(torch::kBFloat16).device(S_traj.device());
+    auto g_out = torch::zeros({B, H, N, N}, opts);
+    auto dK = torch::zeros({B, H, T, N}, opts);
+    auto dV = torch::zeros({B, H, T, N}, opts);
+    auto ddec = torch::zeros({B, H, T}, opts);
+
+    const int grid = B * H;
+
+    // Shared mem layout:
+    //   g (fp32): NN floats → 4*NN bytes
+    //   S_prev_bf16[2]: 2*NN bf16 = 4*NN bytes
+    //   K, V, dL, q: 4*N floats = 16*N bytes
+    //   dK_perwarp: NUM_WARPS * N floats
+    //   ddec_perwarp: NUM_WARPS floats
+    //   dec: 1 float
+    // Total: 8*NN + 4*N*(1+?) + ... Over-allocate generously.
+    const int NW = 16;  // enough for both paths (over-allocates slightly for N=32)
+    const int bytes_shmem = 4 * N * N       // g fp32
+                           + 2 * 2 * N * N  // S_prev_bf16 double buffer
+                           + 4 * 4 * N      // K,V,dL,q fp32
+                           + 4 * NW * N     // dK_perwarp
+                           + 4 * NW         // ddec_perwarp
+                           + 4              // dec
+                           + 64;            // padding
+    size_t shmem = bytes_shmem;
+
+    auto S_ptr = reinterpret_cast<const __nv_bfloat16*>(S_traj.data_ptr());
+    auto K_ptr = reinterpret_cast<const __nv_bfloat16*>(K.data_ptr());
+    auto V_ptr = reinterpret_cast<const __nv_bfloat16*>(V.data_ptr());
+    auto dec_ptr = reinterpret_cast<const __nv_bfloat16*>(decay.data_ptr());
+    auto gT_ptr = reinterpret_cast<const __nv_bfloat16*>(g_T.data_ptr());
+    auto dL_ptr = reinterpret_cast<const __nv_bfloat16*>(dL_dout.data_ptr());
+    auto q_ptr = reinterpret_cast<const __nv_bfloat16*>(q.data_ptr());
+    auto go_ptr = reinterpret_cast<__nv_bfloat16*>(g_out.data_ptr());
+    auto dK_ptr = reinterpret_cast<__nv_bfloat16*>(dK.data_ptr());
+    auto dV_ptr = reinterpret_cast<__nv_bfloat16*>(dV.data_ptr());
+    auto dd_ptr = reinterpret_cast<__nv_bfloat16*>(ddec.data_ptr());
+
+    // Dispatch: more warps = more row-level parallelism, but more smem/regs.
+    // Measured sweet spot at production configs:
+    //   N=16 → NW=8 (2 rows/warp)
+    //   N=32 → NW=8 (4 rows/warp)
+    if (N == 16) {
+        fused_backward_cpasync<16, 16><<<grid, 32 * 16, shmem>>>(
+            S_ptr, K_ptr, V_ptr, dec_ptr, gT_ptr, dL_ptr, q_ptr,
+            go_ptr, dK_ptr, dV_ptr, dd_ptr, B, H, T);
+    } else if (N == 32) {
+        fused_backward_cpasync<32, 8><<<grid, 32 * 8, shmem>>>(
+            S_ptr, K_ptr, V_ptr, dec_ptr, gT_ptr, dL_ptr, q_ptr,
+            go_ptr, dK_ptr, dV_ptr, dd_ptr, B, H, T);
+    } else {
+        TORCH_CHECK(false, "Unsupported N=", N);
+    }
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "CUDA cpasync backward failed: ", cudaGetErrorString(err));
+
+    return {g_out, dK, dV, ddec};
+}
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("cuda_fused_backward", &cuda_fused_backward,
-          "CUDA fused Pararnn backward — warp-parallel version (no cp.async yet).");
+          "CUDA fused Pararnn backward — warp-parallel version.");
+    m.def("cuda_fused_backward_cpasync", &cuda_fused_backward_cpasync,
+          "CUDA fused backward with cp.async double-buffered S_prev prefetch.");
 }

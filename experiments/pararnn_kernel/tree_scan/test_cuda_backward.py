@@ -16,7 +16,8 @@ _CUDA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda_fused_bac
 print(f"Compiling {_CUDA}...")
 ext = load(name='cuda_bwd_proto', sources=[_CUDA],
            extra_cuda_cflags=['-O3', '-std=c++17', '--use_fast_math',
-                               '-gencode=arch=compute_80,code=sm_80'],
+                               '-gencode=arch=compute_80,code=sm_80',
+                               '--ptxas-options=-v'],
            verbose=True)
 print("Compiled.")
 
@@ -48,8 +49,8 @@ def test_correctness(B, H, T, N):
         S_traj, K, V, decay, g_T, dL_dout, q,
         num_warps=4 if N == 32 else 1, num_stages=1)
 
-    # CUDA warp-parallel
-    dS0_c, dK_c, dV_c, ddec_c = ext.cuda_fused_backward(
+    # CUDA cp.async version
+    dS0_c, dK_c, dV_c, ddec_c = ext.cuda_fused_backward_cpasync(
         S_traj, K, V, decay, g_T, dL_dout, q)
 
     def rel(a, b):
@@ -75,7 +76,7 @@ def bench(B, H, T, N, n_repeat=3):
                                          num_warps=4 if N == 32 else 1, num_stages=1)
 
     def run_cuda():
-        return ext.cuda_fused_backward(S_traj, K, V, decay, g_T, dL_dout, q)
+        return ext.cuda_fused_backward_cpasync(S_traj, K, V, decay, g_T, dL_dout, q)
 
     for _ in range(3): run_triton()
     torch.cuda.synchronize()
