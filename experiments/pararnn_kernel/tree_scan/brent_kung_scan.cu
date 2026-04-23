@@ -116,29 +116,36 @@ __global__ void intra_block_scan_sequential(
 // Threads: 1 warp per block. Each thread handles one ROW of the matmul output.
 // For M_DIM ≤ 32, 32 threads suffice.
 
+// Stage 3: parallelized Hillis-Steele with ping-pong buffers.
+//
+// T_BLOCK warps per block, one per pair at level 0. log2(T_BLOCK) sync barriers.
+// Ping-pong between two buffers means we skip the copy-back step entirely.
+//
+// Inclusive prefix scan: result[t] = combine(input[0], input[1], ..., input[t]).
+// Hillis algorithm: at level d, output[t] = combine(input[t-d], input[t]) for t>=d.
+
 template<int T_BLOCK, int M_DIM>
 __global__ void intra_block_hillis_steele(
-    const float* __restrict__ M_in,     // [B, H, N_row, num_blocks, T_BLOCK, M_DIM, M_DIM]
-    float* __restrict__ delta_out,      // [B, H, N_row, num_blocks * T_BLOCK, N]
+    const float* __restrict__ M_in,
+    float* __restrict__ delta_out,
     const int B, const int H, const int N_row, const int T_full,
     const int N, const int num_blocks_t
 ) {
-    // Each block handles one (b, h, row, t_block) combination.
-    // Grid: B * H * N_row * num_blocks_t
     const int pid = blockIdx.x;
     const int t_block = pid % num_blocks_t;
     const int row = (pid / num_blocks_t) % N_row;
     const int h = (pid / num_blocks_t / N_row) % H;
     const int b = pid / num_blocks_t / N_row / H;
 
-    const int tid = threadIdx.x;
+    const int warp_id = threadIdx.x / 32;
+    const int lane    = threadIdx.x & 31;
 
-    // Shared memory: two ping-pong buffers for [T_BLOCK, M_DIM, M_DIM]
+    // Two ping-pong buffers. Pointers swap each level.
     extern __shared__ float smem[];
-    float* cur = smem;                                       // current scan state
-    float* scratch = &smem[T_BLOCK * M_DIM * M_DIM];         // result buffer
+    float* buf_A = smem;
+    float* buf_B = &smem[T_BLOCK * M_DIM * M_DIM];
 
-    // Base offsets
+    // Offsets
     const long M_full_bh_stride = (long)H * N_row * T_full * M_DIM * M_DIM;
     const long M_full_h_stride  = (long)N_row * T_full * M_DIM * M_DIM;
     const long M_full_r_stride  = (long)T_full * M_DIM * M_DIM;
@@ -152,61 +159,67 @@ __global__ void intra_block_hillis_steele(
     const long O_base = (long)b * O_bh_stride + (long)h * O_h_stride + (long)row * O_r_stride
                         + t_block_start * N;
 
-    // Load T_BLOCK matrices into shared memory. Each thread loads across multiple elems.
+    // Cooperative load into buf_A.
     const int total_elems = T_BLOCK * M_DIM * M_DIM;
-    for (int idx = tid; idx < total_elems; idx += blockDim.x) {
-        cur[idx] = M_in[M_full_base + idx];
+    for (int idx = threadIdx.x; idx < total_elems; idx += blockDim.x) {
+        buf_A[idx] = M_in[M_full_base + idx];
     }
     __syncthreads();
 
-    // Hillis-Steele scan: for d = 1, 2, 4, ..., T_BLOCK/2
-    // at each level, for t >= d: cur[t] = cur[t] @ cur[t - d]
-    // "later @ earlier" — matches our convention.
+    float* src = buf_A;
+    float* dst = buf_B;
 
     for (int d = 1; d < T_BLOCK; d *= 2) {
-        // For positions t in [d, T_BLOCK - 1], combine cur[t-d] and cur[t].
-        // Each position's combine is (M_DIM × M_DIM) @ (M_DIM × M_DIM) = (M_DIM × M_DIM).
-        // Distribute the work: each thread handles one row-column pair.
-        // Total outputs per level: (T_BLOCK - d) positions × M_DIM² elements each.
+        // For t < d: output[t] = input[t] (unchanged). Copy src -> dst.
+        // For t >= d: output[t] = combine(input[t-d], input[t]).
 
-        // For simplicity: 32-thread warp, each thread handles M_DIM outputs per position.
-        // Iterate positions t one at a time (reduces shared mem pressure).
-        for (int t = d; t < T_BLOCK; t++) {
-            // Compute cur_new[t] = cur[t] @ cur[t - d]
-            // Output is M_DIM × M_DIM. Each thread handles one row.
-            const float* M_later   = &cur[t * M_DIM * M_DIM];
-            const float* M_earlier = &cur[(t - d) * M_DIM * M_DIM];
-            float* M_out = &scratch[t * M_DIM * M_DIM];
+        const int t_this = warp_id + d;
+        const bool active_combine = (t_this < T_BLOCK);
 
-            for (int rr = tid; rr < M_DIM; rr += blockDim.x) {
-                for (int cc = 0; cc < M_DIM; cc++) {
+        // Warp warp_id < d handles copying src[warp_id] -> dst[warp_id] (pass-through).
+        // Warp warp_id >= d handles combine for t = warp_id + d... wait that's wrong.
+        // Let me re-index: warp_id directly maps to the OUTPUT position.
+        // Output pos = warp_id. For warp_id < d: dst[warp_id] = src[warp_id].
+        //              For warp_id >= d: dst[warp_id] = combine(src[warp_id - d], src[warp_id]).
+        const int t_out = warp_id;
+        if (t_out < T_BLOCK) {
+            if (t_out < d) {
+                // Copy src -> dst at position t_out
+                const int base = t_out * M_DIM * M_DIM;
+                for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+                    dst[base + idx] = src[base + idx];
+                }
+            } else {
+                const float* M_later   = &src[t_out * M_DIM * M_DIM];
+                const float* M_earlier = &src[(t_out - d) * M_DIM * M_DIM];
+                float* M_out = &dst[t_out * M_DIM * M_DIM];
+
+                const int total_out = M_DIM * M_DIM;
+                for (int idx = lane; idx < total_out; idx += 32) {
+                    const int rr = idx / M_DIM;
+                    const int cc = idx % M_DIM;
                     float acc = 0.0f;
-                    #pragma unroll 16
+                    #pragma unroll
                     for (int k = 0; k < M_DIM; k++) {
                         acc += M_later[rr * M_DIM + k] * M_earlier[k * M_DIM + cc];
                     }
-                    M_out[rr * M_DIM + cc] = acc;
+                    M_out[idx] = acc;
                 }
             }
         }
         __syncthreads();
 
-        // Copy scratch back to cur for combined positions
-        for (int t = d; t < T_BLOCK; t++) {
-            const int base = t * M_DIM * M_DIM;
-            for (int idx = tid; idx < M_DIM * M_DIM; idx += blockDim.x) {
-                cur[base + idx] = scratch[base + idx];
-            }
-        }
-        __syncthreads();
+        // Swap src <-> dst
+        float* tmp = src; src = dst; dst = tmp;
     }
 
-    // Extract δ[t] from each cur[t]: column N, rows 0..N-1.
-    // Write to global output.
-    for (int t = 0; t < T_BLOCK; t++) {
-        if (tid < N) {
-            delta_out[O_base + (long)t * N + tid] = cur[t * M_DIM * M_DIM + tid * M_DIM + N];
-        }
+    // After the loop, src holds the final inclusive prefix.
+    // Extract δ[t, i] = src[t, i, N] for i < N.
+    const int tot_out = T_BLOCK * N;
+    for (int idx = threadIdx.x; idx < tot_out; idx += blockDim.x) {
+        const int t = idx / N;
+        const int i = idx % N;
+        delta_out[O_base + (long)t * N + i] = src[t * M_DIM * M_DIM + i * M_DIM + N];
     }
 }
 
@@ -275,7 +288,8 @@ torch::Tensor intra_block_hillis(
                               torch::dtype(torch::kFloat32).device(M.device()));
 
     const int grid = B * H * N_row * num_blocks_t;
-    const int threads = 32;  // one warp
+    // Thread count: T_BLOCK warps — one per pair at level 0 — each warp 32 threads.
+    const int threads = 32 * T_BLOCK;
 
     // Shared mem: 2 × T_BLOCK × M_DIM²
     const size_t shmem = 2ull * T_BLOCK * M_DIM * M_DIM * sizeof(float);
