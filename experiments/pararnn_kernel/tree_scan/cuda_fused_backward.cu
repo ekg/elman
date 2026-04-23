@@ -125,9 +125,11 @@ __global__ void fused_backward_cpasync(
     //   ddec_perwarp:    NUM_WARPS fp32
     //   dec_smem:        1 fp32
 
-    float* g_smem = reinterpret_cast<float*>(smem_raw);
+    // g lives in PER-THREAD REGISTERS. Each thread holds WARP_ROWS values
+    // (one per row the thread's warp handles). Thread lane = column index.
+    // Only lanes < N hold valid g data; others are padding.
     __nv_bfloat16* S_prev_bf16[2];
-    S_prev_bf16[0] = reinterpret_cast<__nv_bfloat16*>(&g_smem[NN]);
+    S_prev_bf16[0] = reinterpret_cast<__nv_bfloat16*>(smem_raw);
     S_prev_bf16[1] = reinterpret_cast<__nv_bfloat16*>(&S_prev_bf16[0][NN]);
     float* K_smem = reinterpret_cast<float*>(&S_prev_bf16[1][NN]);
     float* V_smem = &K_smem[N];
@@ -137,17 +139,26 @@ __global__ void fused_backward_cpasync(
     float* ddec_perwarp = &dK_perwarp[NUM_WARPS * N];
     float* dec_smem_p = &ddec_perwarp[NUM_WARPS];
 
-    // Load g_T (scalar, cheap)
-    for (int i = tid; i < N * N; i += BLOCK_THREADS) {
-        g_smem[i] = bf2f(g_T[g_head_base + i]);
+    // g in registers: g_reg[r_local] is the element at (warp_id * WARP_ROWS + r_local, lane)
+    float g_reg[WARP_ROWS];
+
+    // Load g_T into registers
+    #pragma unroll
+    for (int r_local = 0; r_local < WARP_ROWS; r_local++) {
+        const int r = warp_id * WARP_ROWS + r_local;
+        if (r < N && lane < N) {
+            g_reg[r_local] = bf2f(g_T[g_head_base + r * N + lane]);
+        } else {
+            g_reg[r_local] = 0.0f;
+        }
     }
 
-    // ========================================================================
-    // Prefetch step t = T-1 into buffer 0 via cp.async.
-    // Each cp.async instruction copies 16 bytes (8 bf16) from global to shared.
-    // Total: NN bf16 = NN/8 cp.async instructions.
-    // ========================================================================
-    const int vec_count = NN / 8;  // 32 for N=16, 128 for N=32
+    // Init accumulators (reset before first iter)
+    if (tid < NUM_WARPS * N) dK_perwarp[tid] = 0.0f;
+    if (tid < NUM_WARPS) ddec_perwarp[tid] = 0.0f;
+
+    // Prefetch step t=T-1 into buffer 0
+    const int vec_count = NN / 8;
     {
         const int t_init = T - 1;
         const __nv_bfloat16* src_base = &S_traj[S_traj_base + (long)t_init * NN];
@@ -171,28 +182,26 @@ __global__ void fused_backward_cpasync(
                 cp_async_16B(&S_prev_bf16[next_buf][vi * 8], &src_base[vi * 8]);
             }
             cp_async_commit();
-            // Wait until the t-1 group is NOT done yet (1 group pending OK),
-            // ensuring t's group (older, committed 2 rounds ago) is done.
-            cp_async_wait<1>();
-        } else {
-            // No more prefetches; wait for the current (t=0) to finish.
-            cp_async_wait<0>();
         }
 
-        __syncthreads();  // ensure smem visible to all threads
-
-        // Also load per-step broadcasts (K, V, dL, q, decay) — cheap scalar
+        // Load per-step broadcasts (K, V, dL, q, decay).
+        // Use __ldg for hardware-cached global loads (goes through L1 tex cache).
         if (tid < N) {
-            K_smem[tid] = bf2f(K[K_base + (long)t * N + tid]);
-            V_smem[tid] = bf2f(V[K_base + (long)t * N + tid]);
-            dL_smem[tid] = bf2f(dL_dout[K_base + (long)t * N + tid]);
-            q_smem[tid] = bf2f(q[K_base + (long)t * N + tid]);
+            K_smem[tid] = bf2f(__ldg(&K[K_base + (long)t * N + tid]));
+            V_smem[tid] = bf2f(__ldg(&V[K_base + (long)t * N + tid]));
+            dL_smem[tid] = bf2f(__ldg(&dL_dout[K_base + (long)t * N + tid]));
+            q_smem[tid] = bf2f(__ldg(&q[K_base + (long)t * N + tid]));
         }
         if (tid == 0) {
-            *dec_smem_p = bf2f(decay[dec_base + t]);
+            *dec_smem_p = bf2f(__ldg(&decay[dec_base + t]));
         }
-        if (tid < NUM_WARPS * N) dK_perwarp[tid] = 0.0f;
-        if (tid < NUM_WARPS) ddec_perwarp[tid] = 0.0f;
+
+        // Wait for S_prev load to complete
+        if (t > 0) {
+            cp_async_wait<1>();  // keep next_buf's load in flight
+        } else {
+            cp_async_wait<0>();
+        }
         __syncthreads();
 
         // Read S_prev from current buffer (bf16)
@@ -208,7 +217,7 @@ __global__ void fused_backward_cpasync(
             const float K_c = (lane < N) ? K_smem[lane] : 0.0f;
             const float S_prev_rc = (lane < N) ? bf2f(S_prev_cur[r * N + lane]) : 0.0f;
             const float V_r = V_smem[r];
-            const float g_rc = (lane < N) ? g_smem[r * N + lane] : 0.0f;
+            const float g_rc = g_reg[r_local];  // from register (not smem)
 
             float retrieved_partial = S_prev_rc * K_c;
             float retrieved = warp_sum(retrieved_partial);
@@ -233,35 +242,50 @@ __global__ void fused_backward_cpasync(
                 float dk_rc = delta_row * (g_rc * tanh_deriv) - S_prev_rc * gu_r;
                 dK_perwarp[warp_id * N + lane] += dk_rc;
             }
-            if (lane < N) {
+            {
                 float D_rc = dec * tanh_deriv;
                 float g_new_rc = D_rc * g_rc - K_c * gu_r;
-                float ext_rc = dL_smem[r] * q_smem[lane];
-                g_smem[r * N + lane] = g_new_rc + ext_rc;
+                float ext_rc = (lane < N) ? (dL_smem[r] * q_smem[lane]) : 0.0f;
+                g_reg[r_local] = g_new_rc + ext_rc;  // back to register (no smem)
             }
         }
         __syncthreads();
 
+        // Reduce dK and ddec, write outputs, AND RESET accumulators in one pass.
+        // This avoids the final sync before next iter — reset is done in the
+        // same thread that just read the values.
         if (tid < N) {
             float acc = 0.0f;
             #pragma unroll
-            for (int w = 0; w < NUM_WARPS; w++) acc += dK_perwarp[w * N + tid];
+            for (int w = 0; w < NUM_WARPS; w++) {
+                acc += dK_perwarp[w * N + tid];
+                dK_perwarp[w * N + tid] = 0.0f;
+            }
             dK_out[K_base + (long)t * N + tid] = f2bf(acc);
         }
         if (tid == 0) {
             float acc = 0.0f;
             #pragma unroll
-            for (int w = 0; w < NUM_WARPS; w++) acc += ddec_perwarp[w];
+            for (int w = 0; w < NUM_WARPS; w++) {
+                acc += ddec_perwarp[w];
+                ddec_perwarp[w] = 0.0f;
+            }
             ddecay_out[dec_base + t] = f2bf(acc);
         }
-        __syncthreads();
+        // No sync here — next iter's compute doesn't touch dK_perwarp until
+        // after its own cp.async wait + sync, at which point these writes are
+        // visible. The reset-after-read pattern is race-free.
 
         cur_buf = next_buf;
     }
 
-    // Write final g → dL/dS_0
-    for (int i = tid; i < N * N; i += BLOCK_THREADS) {
-        g_out[g_head_base + i] = f2bf(g_smem[i]);
+    // Write final g → dL/dS_0 (from registers)
+    #pragma unroll
+    for (int r_local = 0; r_local < WARP_ROWS; r_local++) {
+        const int r = warp_id * WARP_ROWS + r_local;
+        if (r < N && lane < N) {
+            g_out[g_head_base + r * N + lane] = f2bf(g_reg[r_local]);
+        }
     }
 }
 
@@ -517,8 +541,7 @@ std::vector<torch::Tensor> cuda_fused_backward_cpasync(
     //   dec: 1 float
     // Total: 8*NN + 4*N*(1+?) + ... Over-allocate generously.
     const int NW = 16;  // enough for both paths (over-allocates slightly for N=32)
-    const int bytes_shmem = 4 * N * N       // g fp32
-                           + 2 * 2 * N * N  // S_prev_bf16 double buffer
+    const int bytes_shmem = 2 * 2 * N * N   // S_prev_bf16 double buffer (g is in regs now)
                            + 4 * 4 * N      // K,V,dL,q fp32
                            + 4 * NW * N     // dK_perwarp
                            + 4 * NW         // ddec_perwarp
