@@ -368,6 +368,262 @@ __global__ void intra_block_with_init(
 }
 
 // -----------------------------------------------------------------------------
+// Stage 7: fused-build intra-block scan.
+//
+// Avoids the huge [B, H, T, N_row, N, N] materialized A tensor by building
+// each position's augmented matrix IN SHARED MEMORY from raw inputs:
+//   S_prev (from S0 for t=0, else S_var[t-1]), K, V, decay.
+//
+// Same math, same output, but no PyTorch overhead.
+//
+// Inputs:
+//   S0: [B, H, N, N]                  initial state
+//   S_var: [B, H, T, N, N]            current Newton iterate (for S_prev[t] = S_var[t-1])
+//   K, V: [B, H, T, N]                projections
+//   decay: [B, H, T]                  scalar per position
+// Output:
+//   delta: [B, H, T, N_row, N]        per-position δ = -(J^{-1} r)
+//
+// For each (b, h, row, t): build A_t = diag(D_t[row]) - u_t[row] v_t^T
+// on-the-fly into shared-mem, combined with scan.
+// -----------------------------------------------------------------------------
+
+template<int T_BLOCK, int M_DIM, int N>
+__global__ void intra_block_fused_build(
+    const float* __restrict__ S0,       // [B, H, N, N]
+    const float* __restrict__ S_var,    // [B, H, T, N, N]
+    const float* __restrict__ K_ptr,    // [B, H, T, N]
+    const float* __restrict__ V_ptr,    // [B, H, T, N]
+    const float* __restrict__ decay_ptr,// [B, H, T]
+    const float* __restrict__ init_state, // [B, H, N_row, num_blocks_t, M_DIM, M_DIM] or null
+    float* __restrict__ delta_out,      // [B, H, N_row, T, N]
+    float* __restrict__ summary_out,    // [B, H, N_row, num_blocks_t, M_DIM, M_DIM] or null
+    const int B, const int H, const int T,
+    const int num_blocks_t,
+    const bool have_init
+) {
+    // Grid: B * H * N_row * num_blocks_t
+    // blockDim.x = 32 * T_BLOCK (one warp per scan position)
+    const int pid = blockIdx.x;
+    const int t_block = pid % num_blocks_t;
+    const int row = (pid / num_blocks_t) % N;      // row within head
+    const int h = (pid / num_blocks_t / N) % H;
+    const int b = pid / num_blocks_t / N / H;
+
+    const int warp_id = threadIdx.x / 32;
+    const int lane    = threadIdx.x & 31;
+
+    extern __shared__ float smem[];
+    float* buf_A = smem;
+    float* buf_B = &smem[T_BLOCK * M_DIM * M_DIM];
+
+    // Offsets for raw inputs
+    const long S0_base = ((long)b * H + h) * N * N + (long)row * N;
+    const long Sv_bh_stride = (long)H * T * N * N;
+    const long Sv_h_stride  = (long)T * N * N;
+    const long Sv_t_stride  = (long)N * N;
+    const long Sv_base_bh = (long)b * Sv_bh_stride + (long)h * Sv_h_stride;
+
+    const long K_bh_stride = (long)H * T * N;
+    const long K_h_stride  = (long)T * N;
+    const long K_t_stride  = N;
+    const long K_base_bh = (long)b * K_bh_stride + (long)h * K_h_stride;
+
+    const long dec_bh_stride = (long)H * T;
+    const long dec_h_stride  = (long)T;
+    const long dec_base_bh = (long)b * dec_bh_stride + (long)h * dec_h_stride;
+
+    const long t_block_start = (long)t_block * T_BLOCK;
+
+    const long O_base = ((((long)b * H + h) * N + row) * T + t_block_start) * N;
+
+    const long summary_per_chain = (long)num_blocks_t * M_DIM * M_DIM;
+    const long summary_base = (((long)b * H + h) * N + row) * summary_per_chain
+                              + (long)t_block * M_DIM * M_DIM;
+
+    // Step A: each warp builds one position's augmented matrix M[t] into buf_A.
+    // M[t] = [[A[t], b[t]], [0, 1], [0, 0, I_pad]]
+    // A[t, i, j] = delta_ij * D[t, row] - u[t, row] * K[t, j]   (row is fixed per program)
+    // Wait: A is N×N matrix, but we're on row=row. So actually A is A[t] for that row:
+    //   A[t] = diag(D[t, row, :]) - u[t, row, :] * v[t, :]^T
+    // where D, u, v are N-dim (per row i=row, these have N entries).
+    //
+    // Per-position build:
+    //   pre[t, :] = decay[t] * S_prev[t, :] + (V[t, row] - K[t] · S_prev[t, :]) * K[t]
+    //     where S_prev[t, :] = S_var[t-1, row, :] or S0[row, :] if t==0
+    //   tanh_deriv[t, :] = 1 - tanh(pre[t, :])^2
+    //   D[t, :] = decay[t] * tanh_deriv[t, :]
+    //   u[t, :] = tanh_deriv[t, :] * K[t, :]
+    //   b_vec[t, :] = -(S_var[t, row, :] - tanh(pre[t, :]))
+    // Then M[t, i, j] = D[i]*delta_ij - u[i]*K[j]  for i,j < N
+    //      M[t, i, N] = b_vec[i]  (column N holds b)
+    //      M[t, N, N] = 1 (identity pivot)
+    //      M[t, p, p] = 1 for p > N (padding identity)
+
+    const int t_out = warp_id;
+    const int t_glob = t_block_start + t_out;
+
+    if (t_out < T_BLOCK && t_glob < T) {
+        // Load S_prev[t, row, :] into a register array (N = M_DIM - 1 or similar)
+        float S_prev[N];
+        if (t_glob == 0) {
+            // Load from S0[row, :]
+            for (int j = lane; j < N; j += 32) {
+                // Only lanes < N actually need the value, but we need all threads to have it.
+                // Use shared memory or shuffle. Simpler: every lane loads.
+            }
+            for (int j = 0; j < N; j++) {
+                S_prev[j] = S0[S0_base + j];
+            }
+        } else {
+            long off = Sv_base_bh + (long)(t_glob - 1) * Sv_t_stride + (long)row * N;
+            for (int j = 0; j < N; j++) {
+                S_prev[j] = S_var[off + j];
+            }
+        }
+
+        // Load K[t, :] — broadcast
+        float K_vec[N];
+        long K_off = K_base_bh + (long)t_glob * K_t_stride;
+        for (int j = 0; j < N; j++) K_vec[j] = K_ptr[K_off + j];
+
+        // V[t, row]
+        float V_val = V_ptr[K_base_bh + (long)t_glob * K_t_stride + row];
+        float dec = decay_ptr[dec_base_bh + t_glob];
+
+        // retrieved = sum_j S_prev[j] * K_vec[j]
+        float retrieved = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < N; j++) retrieved += S_prev[j] * K_vec[j];
+
+        float delta_scalar = V_val - retrieved;
+
+        // pre[j] = dec * S_prev[j] + delta_scalar * K_vec[j]
+        // f_val[j] = tanh(pre[j])
+        // tanh_deriv[j] = 1 - f_val^2
+        // D[j] = dec * tanh_deriv[j]
+        // u[j] = tanh_deriv[j] * K_vec[j]
+        // b_vec[j] = -(S_var[t, row, j] - f_val[j])
+
+        float pre[N], f_val[N], tanh_deriv[N];
+        #pragma unroll
+        for (int j = 0; j < N; j++) {
+            pre[j] = dec * S_prev[j] + delta_scalar * K_vec[j];
+            float e2x = __expf(2.0f * pre[j]);
+            f_val[j] = (e2x - 1.0f) / (e2x + 1.0f);
+            tanh_deriv[j] = 1.0f - f_val[j] * f_val[j];
+        }
+
+        // Load S_var[t, row, j] to compute b_vec[j] = -(S_var - f_val)
+        float S_var_row[N];
+        long Sv_off = Sv_base_bh + (long)t_glob * Sv_t_stride + (long)row * N;
+        for (int j = 0; j < N; j++) S_var_row[j] = S_var[Sv_off + j];
+
+        // Write M[t] into buf_A[t_out]
+        float* M_my = &buf_A[t_out * M_DIM * M_DIM];
+        // Clear the whole M_DIM x M_DIM tile first (identity on padding diag)
+        const int total = M_DIM * M_DIM;
+        for (int idx = lane; idx < total; idx += 32) {
+            const int r = idx / M_DIM;
+            const int c = idx % M_DIM;
+            float val;
+            if (r < N && c < N) {
+                // A[r, c] = D[r] * (r==c) - u[r] * K_vec[c]   (u[r] = tanh_deriv[r] * K_vec[r])
+                float D_r = dec * tanh_deriv[r];
+                float u_r = tanh_deriv[r] * K_vec[r];
+                val = (r == c ? D_r : 0.0f) - u_r * K_vec[c];
+            } else if (r < N && c == N) {
+                // b column: b_vec[r] = f_val[r] - S_var[r]
+                val = f_val[r] - S_var_row[r];
+            } else if (r == c) {
+                val = 1.0f;
+            } else {
+                val = 0.0f;
+            }
+            M_my[idx] = val;
+        }
+    }
+    __syncthreads();
+
+    // Step B: apply init_state at position 0 if provided
+    if (have_init) {
+        if (warp_id == 0) {
+            float* my0 = &buf_A[0];
+            const float* init_M = &init_state[summary_base];
+            float* my0_out = &buf_B[0];
+            const int total_out = M_DIM * M_DIM;
+            for (int idx = lane; idx < total_out; idx += 32) {
+                const int rr = idx / M_DIM;
+                const int cc = idx % M_DIM;
+                float acc = 0.0f;
+                #pragma unroll
+                for (int k = 0; k < M_DIM; k++) {
+                    acc += my0[rr * M_DIM + k] * init_M[k * M_DIM + cc];
+                }
+                my0_out[idx] = acc;
+            }
+        }
+        __syncthreads();
+        if (warp_id == 0) {
+            const int total = M_DIM * M_DIM;
+            for (int idx = lane; idx < total; idx += 32) {
+                buf_A[idx] = buf_B[idx];
+            }
+        }
+        __syncthreads();
+    }
+
+    // Step C: Hillis-Steele tree scan (ping-pong)
+    float* src = buf_A;
+    float* dst = buf_B;
+
+    for (int d = 1; d < T_BLOCK; d *= 2) {
+        if (t_out < T_BLOCK) {
+            if (t_out < d) {
+                const int base = t_out * M_DIM * M_DIM;
+                for (int idx = lane; idx < M_DIM * M_DIM; idx += 32) {
+                    dst[base + idx] = src[base + idx];
+                }
+            } else {
+                const float* M_later   = &src[t_out * M_DIM * M_DIM];
+                const float* M_earlier = &src[(t_out - d) * M_DIM * M_DIM];
+                float* M_out = &dst[t_out * M_DIM * M_DIM];
+                const int total_out = M_DIM * M_DIM;
+                for (int idx = lane; idx < total_out; idx += 32) {
+                    const int rr = idx / M_DIM;
+                    const int cc = idx % M_DIM;
+                    float acc = 0.0f;
+                    #pragma unroll
+                    for (int k = 0; k < M_DIM; k++) {
+                        acc += M_later[rr * M_DIM + k] * M_earlier[k * M_DIM + cc];
+                    }
+                    M_out[idx] = acc;
+                }
+            }
+        }
+        __syncthreads();
+        float* tmp = src; src = dst; dst = tmp;
+    }
+
+    // Step D: write outputs
+    if (summary_out != nullptr && t_out == T_BLOCK - 1) {
+        const float* last = &src[(T_BLOCK - 1) * M_DIM * M_DIM];
+        const int total = M_DIM * M_DIM;
+        for (int idx = lane; idx < total; idx += 32) {
+            summary_out[summary_base + idx] = last[idx];
+        }
+    }
+
+    if (delta_out != nullptr && t_out < T_BLOCK && t_glob < T) {
+        // Extract δ[t, row, i] from src[t, i, N] for i < N
+        for (int i = lane; i < N; i += 32) {
+            delta_out[O_base + (long)t_out * N + i] =
+                src[t_out * M_DIM * M_DIM + i * M_DIM + N];
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Stage 5: single-level parallel combine kernel for inter-block scan.
 //
 // Given a chain of N matrices, one LEVEL of Hillis-Steele does:
@@ -584,6 +840,65 @@ std::vector<torch::Tensor> intra_block_with_init_py(
     return {delta, summary};
 }
 
+// Stage 7 launcher: fused-build intra-block scan.
+std::vector<torch::Tensor> intra_block_fused_py(
+    torch::Tensor S0, torch::Tensor S_var,
+    torch::Tensor K, torch::Tensor V, torch::Tensor decay,
+    torch::Tensor init_state,
+    int T_BLOCK
+) {
+    TORCH_CHECK(S_var.is_cuda() && S_var.is_contiguous(), "S_var must be CUDA fp32");
+    TORCH_CHECK(S_var.dtype() == torch::kFloat32, "fp32 only for now");
+    TORCH_CHECK(S_var.dim() == 5, "S_var shape [B, H, T, N, N]");
+
+    const int B = S_var.size(0);
+    const int H = S_var.size(1);
+    const int T = S_var.size(2);
+    const int N = S_var.size(3);
+    TORCH_CHECK(S_var.size(4) == N);
+    TORCH_CHECK(T % T_BLOCK == 0, "T must be multiple of T_BLOCK");
+
+    const int num_blocks_t = T / T_BLOCK;
+    const int M_DIM = ((N + 1 + 7) / 8) * 8;  // round up to multiple of 8
+
+    auto delta = torch::zeros({B, H, N, T, N},
+                              torch::dtype(torch::kFloat32).device(S_var.device()));
+    auto summary = torch::zeros({B, H, N, num_blocks_t, M_DIM, M_DIM},
+                                 torch::dtype(torch::kFloat32).device(S_var.device()));
+
+    const bool have_init = (init_state.numel() > 0);
+    const float* init_ptr = have_init ? init_state.data_ptr<float>() : nullptr;
+
+    const int grid = B * H * N * num_blocks_t;
+    const int threads = 32 * T_BLOCK;
+    const size_t shmem = 2ull * T_BLOCK * M_DIM * M_DIM * sizeof(float);
+
+#define DISPATCH3(TB, MD, NN) do { \
+    auto kfn = intra_block_fused_build<TB, MD, NN>; \
+    cudaError_t attr_err = cudaFuncSetAttribute( \
+        kfn, cudaFuncAttributeMaxDynamicSharedMemorySize, 99328); \
+    if (attr_err != cudaSuccess) cudaGetLastError(); \
+    kfn<<<grid, threads, shmem>>>( \
+        S0.data_ptr<float>(), S_var.data_ptr<float>(), \
+        K.data_ptr<float>(), V.data_ptr<float>(), decay.data_ptr<float>(), \
+        init_ptr, delta.data_ptr<float>(), summary.data_ptr<float>(), \
+        B, H, T, num_blocks_t, have_init); \
+} while (0)
+
+    if (T_BLOCK == 16 && N == 16) DISPATCH3(16, 24, 16);
+    else if (T_BLOCK == 8 && N == 16) DISPATCH3(8, 24, 16);
+    else if (T_BLOCK == 8 && N == 32) DISPATCH3(8, 40, 32);
+    else if (T_BLOCK == 4 && N == 16) DISPATCH3(4, 24, 16);
+    else if (T_BLOCK == 4 && N == 32) DISPATCH3(4, 40, 32);
+    else TORCH_CHECK(false, "Unsupported (T_BLOCK, N) combination: ", T_BLOCK, " ", N);
+
+#undef DISPATCH3
+
+    cudaError_t err = cudaGetLastError();
+    TORCH_CHECK(err == cudaSuccess, "fused kernel failed: ", cudaGetErrorString(err));
+    return {delta, summary};
+}
+
 // Stage 5 launcher: scan a chain of matrices in-place via repeated one-level calls.
 torch::Tensor inclusive_matrix_prefix_scan(
     torch::Tensor M    // [chains..., num_pos, M_DIM, M_DIM]
@@ -645,4 +960,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("inclusive_matrix_prefix_scan", &inclusive_matrix_prefix_scan,
           "In-place Hillis-Steele prefix scan on a chain of matrices, "
           "O(log N) kernel launches.");
+    m.def("intra_block_fused", &intra_block_fused_py,
+          "Fused-build intra-block scan — takes raw S0/S_var/K/V/decay, "
+          "no pre-materialized A tensor.");
 }
