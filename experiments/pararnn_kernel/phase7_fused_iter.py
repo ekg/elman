@@ -67,8 +67,8 @@ def _fused_newton_iter_kernel(
       (combine into running prefix)
       store prefix's b  → delta[b,h,t,row,:]
     """
-    pid = tl.program_id(0)
-    n_idx = tl.arange(0, N)
+    pid = tl.program_id(0).to(tl.int64)       # int64 to avoid overflow at large T
+    n_idx = tl.arange(0, N).to(tl.int64)
 
     # Decode pid → (b, h, row)
     b_idx = pid // (H * N)
@@ -76,19 +76,12 @@ def _fused_newton_iter_kernel(
     row = pid % N
 
     # Base offsets into the 5D tensors [B, H, T, n, n]
-    #   flat = (((b*H + h)*T + t)*n + row)*n + col
+    # All arithmetic in int64 since bh * T * N * N can exceed 2^31 at T≥128K
     bh = b_idx * H + h_idx
     bh_T_nn = bh * T * N * N
-    # Initial S0 row: [B, H, n, n] → (bh * n + row) * n
     s0_row_off = (bh * N + row) * N
-
-    # K/V/decay offsets
     bh_T_n = bh * T * N
     bh_T = bh * T
-
-    # Initialize prefix state = None (identity for combine)
-    # For the first step t=0: build (D_0, u_0, v_0, b_0) and use directly as prefix.
-    # Implementation: special-case t=0 outside the loop.
 
     # t = 0 — load everything as fp32 for arithmetic precision
     s_prev = tl.load(S0_ptr + s0_row_off + n_idx).to(tl.float32)
@@ -154,6 +147,275 @@ def fused_newton_iter(S0, S_var, K, V, decay):
         delta, B=B, H=H, T=T, N=n,
     )
     return delta
+
+
+def fused_newton_iter_inplace(S0, S_var, K, V, decay, num_stages=2, num_warps=1):
+    """Run ONE Newton iteration, update S_var in-place, no δ buffer.
+
+    Jacobi-style: the combine scan reads the OLD values of S_var (cached
+    in registers across loop iterations), not the just-written ones.
+    Convergence is identical to fused_newton_iter but uses HALF the memory.
+
+    Returns max |δ| scalar for convergence monitoring.
+
+    num_stages: Triton software pipelining depth (default 3 for load hiding).
+    num_warps:  threads/block in units of 32 (N=32 → 1 warp suffices).
+    """
+    B, H, T, n, _ = S_var.shape
+    max_delta = torch.zeros(B * H * n, dtype=torch.float32, device=S_var.device)
+    grid = (B * H * n,)
+    _fused_newton_iter_inplace_kernel[grid](
+        S0.contiguous(), S_var,
+        K.contiguous(), V.contiguous(), decay.contiguous(),
+        max_delta,
+        B=B, H=H, T=T, N=n,
+        num_stages=num_stages, num_warps=num_warps,
+    )
+    return max_delta.max().item()
+
+
+@triton.jit
+def _fused_newton_iter_inplace_kernel(
+    S0_ptr, S_var_ptr,             # S_var IS IN/OUT
+    K_ptr, V_ptr, decay_ptr,
+    max_delta_ptr,                 # [B*H*n] per-row max |delta|
+    B: tl.constexpr,
+    H: tl.constexpr,
+    T: tl.constexpr,
+    N: tl.constexpr,
+):
+    """Jacobi-in-place Newton-iter — no delta buffer.
+
+    Trick: cache the OLD value of S_var[t] in a register before overwriting.
+    At t+1, use that cached value as s_prev (not the just-updated value).
+    This gives Jacobi convergence (same as the separate-phase path) while
+    writing updates directly into S_var, eliminating the 16 GB δ buffer.
+    """
+    pid = tl.program_id(0).to(tl.int64)
+    n_idx = tl.arange(0, N).to(tl.int64)
+
+    b_idx = pid // (H * N)
+    h_idx = (pid // N) % H
+    row = pid % N
+
+    bh = b_idx * H + h_idx
+    bh_T_nn = bh * T * N * N
+    s0_row_off = (bh * N + row) * N
+    bh_T_n = bh * T * N
+    bh_T = bh * T
+
+    max_abs = 0.0
+
+    # t = 0 — s_prev from S0
+    s_prev = tl.load(S0_ptr + s0_row_off + n_idx).to(tl.float32)
+    K_t = tl.load(K_ptr + bh_T_n + 0 * N + n_idx).to(tl.float32)
+    V_i = tl.load(V_ptr + bh_T_n + 0 * N + row).to(tl.float32)
+    dec = tl.load(decay_ptr + bh_T + 0).to(tl.float32)
+    retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
+    delta_scalar = V_i - retrieved
+    pre = dec * s_prev + delta_scalar * K_t
+    e2x = tl.exp(2.0 * pre)
+    f_val = (e2x - 1.0) / (e2x + 1.0)
+    s_row_off_t = bh_T_nn + 0 * N * N + row * N
+    S_var_old = tl.load(S_var_ptr + s_row_off_t + n_idx).to(tl.float32)
+    r = S_var_old - f_val
+    tanh_deriv = 1.0 - f_val * f_val
+
+    D_p = dec * tanh_deriv
+    u_p = tanh_deriv * K_t
+    v_p = K_t
+    b_p = -r
+    # Apply update in-place; remember OLD value for next iteration's s_prev
+    tl.store(S_var_ptr + s_row_off_t + n_idx,
+             (S_var_old + b_p).to(S_var_ptr.dtype.element_ty))
+    s_prev_cached = S_var_old
+    max_abs = tl.maximum(max_abs, tl.max(tl.abs(b_p)))
+
+    for t in range(1, T):
+        # Use the CACHED old value — this is the Jacobi update, not GS.
+        s_prev = s_prev_cached
+        K_t = tl.load(K_ptr + bh_T_n + t * N + n_idx).to(tl.float32)
+        V_i = tl.load(V_ptr + bh_T_n + t * N + row).to(tl.float32)
+        dec = tl.load(decay_ptr + bh_T + t).to(tl.float32)
+
+        retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
+        delta_scalar = V_i - retrieved
+        pre = dec * s_prev + delta_scalar * K_t
+        e2x = tl.exp(2.0 * pre)
+        f_val = (e2x - 1.0) / (e2x + 1.0)
+        s_row_off_t = bh_T_nn + t * N * N + row * N
+        S_var_old = tl.load(S_var_ptr + s_row_off_t + n_idx).to(tl.float32)
+        r = S_var_old - f_val
+        tanh_deriv = 1.0 - f_val * f_val
+
+        D_step = dec * tanh_deriv
+        u_step = tanh_deriv * K_t
+        v_step = K_t
+        b_step = -r
+
+        D_p, u_p, v_p, b_p = _combine_r1_triton(
+            D_p, u_p, v_p, b_p,
+            D_step, u_step, v_step, b_step
+        )
+
+        tl.store(S_var_ptr + s_row_off_t + n_idx,
+                 (S_var_old + b_p).to(S_var_ptr.dtype.element_ty))
+        s_prev_cached = S_var_old
+        max_abs = tl.maximum(max_abs, tl.max(tl.abs(b_p)))
+
+    tl.store(max_delta_ptr + pid, max_abs)
+
+
+# -----------------------------------------------------------------------------
+# Chunked parallel Newton — split T into C chunks run in parallel.
+# -----------------------------------------------------------------------------
+
+@triton.jit
+def _fused_newton_iter_chunked_kernel(
+    bdy_ptr,                       # [B, H, C, N, N] chunk-start s_prev buffer
+    S_var_ptr,                     # [B, H, T, N, N] in/out
+    K_ptr, V_ptr, decay_ptr,
+    max_delta_ptr,                 # [B*H*N*C] per-program max |δ|
+    B: tl.constexpr,
+    H: tl.constexpr,
+    T: tl.constexpr,
+    N: tl.constexpr,
+    C: tl.constexpr,               # number of chunks
+    T_CHUNK: tl.constexpr,         # chunk size (last chunk may be shorter)
+):
+    """One program per (b, h, row, chunk). Jacobi-in-place within each chunk.
+
+    Boundary s_prev (chunk's t_s value of S_prev) is pre-cached into bdy_ptr
+    by the host before each Newton iter, so chunks don't race reading S_var.
+    Within a chunk, the cached-register trick avoids the GS race.
+
+    Scan restarts fresh at each chunk's start — so δ at chunk interior is
+    computed assuming δ at chunk boundary = 0. Global convergence then
+    propagates one chunk per Newton iter.
+    """
+    pid = tl.program_id(0).to(tl.int64)
+    n_idx = tl.arange(0, N).to(tl.int64)
+
+    # Decode: (b, h, row, c)
+    HNC = H * N * C
+    NC = N * C
+    b_idx = pid // HNC
+    rem = pid % HNC
+    h_idx = rem // NC
+    rem = rem % NC
+    row = rem // C
+    c = rem % C
+
+    bh = b_idx * H + h_idx
+    bh_T_nn = bh * T * N * N
+    bh_T_n = bh * T * N
+    bh_T = bh * T
+    # Boundary: [B, H, C, N, N]
+    bdy_row_off = (((bh) * C + c) * N + row) * N
+
+    t_s = c * T_CHUNK
+    t_e = tl.minimum(t_s + T_CHUNK, T)
+
+    max_abs = 0.0
+
+    # t = t_s — s_prev from boundary buffer
+    s_prev = tl.load(bdy_ptr + bdy_row_off + n_idx).to(tl.float32)
+    K_t = tl.load(K_ptr + bh_T_n + t_s * N + n_idx).to(tl.float32)
+    V_i = tl.load(V_ptr + bh_T_n + t_s * N + row).to(tl.float32)
+    dec = tl.load(decay_ptr + bh_T + t_s).to(tl.float32)
+    retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
+    delta_scalar = V_i - retrieved
+    pre = dec * s_prev + delta_scalar * K_t
+    e2x = tl.exp(2.0 * pre)
+    f_val = (e2x - 1.0) / (e2x + 1.0)
+    s_row_off = bh_T_nn + t_s * N * N + row * N
+    S_var_old = tl.load(S_var_ptr + s_row_off + n_idx).to(tl.float32)
+    r = S_var_old - f_val
+    tanh_deriv = 1.0 - f_val * f_val
+
+    D_p = dec * tanh_deriv
+    u_p = tanh_deriv * K_t
+    v_p = K_t
+    b_p = -r
+    tl.store(S_var_ptr + s_row_off + n_idx,
+             (S_var_old + b_p).to(S_var_ptr.dtype.element_ty))
+    s_prev_cached = S_var_old
+    max_abs = tl.maximum(max_abs, tl.max(tl.abs(b_p)))
+
+    for t in range(t_s + 1, t_e):
+        s_prev = s_prev_cached
+        K_t = tl.load(K_ptr + bh_T_n + t * N + n_idx).to(tl.float32)
+        V_i = tl.load(V_ptr + bh_T_n + t * N + row).to(tl.float32)
+        dec = tl.load(decay_ptr + bh_T + t).to(tl.float32)
+
+        retrieved = tl.sum(s_prev * K_t, axis=-1, keep_dims=True)
+        delta_scalar = V_i - retrieved
+        pre = dec * s_prev + delta_scalar * K_t
+        e2x = tl.exp(2.0 * pre)
+        f_val = (e2x - 1.0) / (e2x + 1.0)
+        s_row_off = bh_T_nn + t * N * N + row * N
+        S_var_old = tl.load(S_var_ptr + s_row_off + n_idx).to(tl.float32)
+        r = S_var_old - f_val
+        tanh_deriv = 1.0 - f_val * f_val
+
+        D_step = dec * tanh_deriv
+        u_step = tanh_deriv * K_t
+        v_step = K_t
+        b_step = -r
+
+        D_p, u_p, v_p, b_p = _combine_r1_triton(
+            D_p, u_p, v_p, b_p,
+            D_step, u_step, v_step, b_step
+        )
+
+        tl.store(S_var_ptr + s_row_off + n_idx,
+                 (S_var_old + b_p).to(S_var_ptr.dtype.element_ty))
+        s_prev_cached = S_var_old
+        max_abs = tl.maximum(max_abs, tl.max(tl.abs(b_p)))
+
+    tl.store(max_delta_ptr + pid, max_abs)
+
+
+def _refresh_chunk_boundaries(S0, S_var, boundary, C, T_CHUNK):
+    """boundary[b, h, 0] = S0[b, h]; boundary[b, h, c>0] = S_var[b, h, c*T_CHUNK - 1]."""
+    boundary[:, :, 0] = S0
+    for c in range(1, C):
+        t_boundary = c * T_CHUNK - 1
+        boundary[:, :, c] = S_var[:, :, t_boundary]
+
+
+def fused_newton_iter_chunked(S0, S_var, K, V, decay, boundary, C):
+    """Chunked Newton iter. `boundary` must be pre-populated.
+
+    Returns max |δ| for convergence tracking.
+    """
+    B, H, T, n, _ = S_var.shape
+    T_CHUNK = (T + C - 1) // C
+    max_delta = torch.zeros(B * H * n * C, dtype=torch.float32, device=S_var.device)
+    grid = (B * H * n * C,)
+    _fused_newton_iter_chunked_kernel[grid](
+        boundary, S_var,
+        K.contiguous(), V.contiguous(), decay.contiguous(),
+        max_delta,
+        B=B, H=H, T=T, N=n, C=C, T_CHUNK=T_CHUNK,
+    )
+    return max_delta.max().item()
+
+
+def newton_chunked(S0, K, V, decay, S_init, C=8, max_iters=10, tol=1e-4):
+    """Full chunked Newton solver. S_init is warm-start S_var (modified in-place)."""
+    B, H, T, n = K.shape
+    T_CHUNK = (T + C - 1) // C
+    boundary = torch.empty(B, H, C, n, n, dtype=S_init.dtype, device=S_init.device)
+
+    S_var = S_init
+    d_max = float('inf')
+    for it in range(max_iters):
+        _refresh_chunk_boundaries(S0, S_var, boundary, C, T_CHUNK)
+        d_max = fused_newton_iter_chunked(S0, S_var, K, V, decay, boundary, C)
+        if d_max < tol:
+            break
+    return S_var, it + 1, d_max
 
 
 # -----------------------------------------------------------------------------
