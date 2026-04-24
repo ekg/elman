@@ -34,6 +34,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elman', 'cuda'))
 
 from elman.models import LadderLM, create_ladder_model
+
+# Optional: swap E88FLAHybridCUDAFunction for PararnnHybridE88V2 Triton kernel.
+# See experiments/pararnn_kernel/tree_scan/install_hybrid.py
+if os.environ.get('ELMAN_PARARNN_HYBRID') == '1':
+    _hybrid_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'experiments/pararnn_kernel/tree_scan')
+    sys.path.insert(0, _hybrid_root)
+    from install_hybrid import install as _install_hybrid
+    _install_hybrid()
+
 from elman.data import DocumentStreamDataset, BatchedStreamDataset, create_dataloader
 from elman.data.tokenized_dataset import TokenizedStreamDataset
 from elman.models.gru_baseline import GRULM
