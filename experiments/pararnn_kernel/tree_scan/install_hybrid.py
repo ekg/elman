@@ -8,6 +8,12 @@ Usage in train.py:
 The patched `apply` dispatches by shape:
   - Square state (n_state == head_v_dim): use PararnnHybridE88V2
   - Anything else: fall through to original CUDA kernel
+
+Additional env var:
+  ELMAN_PARARNN_FP8=1  -> store S_traj as fp8-E4M3 (halves activation memory;
+                          ~1.05x faster fwd, neutral on bwd; gradient
+                          rel-err <5%; no observed training-loss impact).
+                          Square state only.
 """
 
 import os

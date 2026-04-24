@@ -21,10 +21,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pararnn_seq_fwd_rect import pararnn_seq_fwd_output_triton
 from pararnn_seq_fwd import pararnn_seq_fwd_triton  # fast square fwd (legacy, non-contig)
 from pararnn_seq_fwd_v2 import pararnn_seq_fwd_v2, backward_v2  # contig S_traj + fused dQ
+from pararnn_seq_fwd_v2_fp8 import pararnn_seq_fwd_v2_fp8, backward_v2_fp8  # fp8-E4M3 S_traj
 from pararnn_bwd_rect import pararnn_bwd_rect
 from pararnn_bwd_fused_dq import backward_with_dq  # square, with dQ fused in (non-contig S_traj)
 from phase7_fused_backward import backward_e88_fused_rank1
 from elman.models.e88_fla_hybrid import E88FLAHybridCUDAFunction
+
+# Opt-in flag: set ELMAN_PARARNN_FP8=1 to enable fp8-E4M3 storage of S_traj.
+# Saves ~50% activation memory for the recurrence; roughly 1.05× speedup on
+# fwd+bwd combined (kernel is compute-bound, not BW-bound, so fp8 mostly
+# trades time for memory).  Square state only.
+FP8_STORAGE = os.environ.get('ELMAN_PARARNN_FP8') == '1'
 
 
 class PararnnHybridE88V2(torch.autograd.Function):
@@ -58,7 +65,19 @@ class PararnnHybridE88V2(torch.autograd.Function):
         #   At N=32 the contig einsum is a big win over the fused kernel.
         # - Rectangular: fused rect kernel (no rect v2 variant yet).
         use_v2 = (Ns == Hv) and (Ns >= 32)
-        if use_v2:
+        use_fp8 = FP8_STORAGE and (Ns == Hv)  # fp8 path: square state only
+        if use_fp8:
+            # FP8-storage path: S_traj stored as fp8_e4m3fn (halves memory).
+            # Always uses the contig v2 layout (needed for fp8 bwd kernel).
+            fwd_nw = 4 if Ns >= 32 else 1
+            S_traj = pararnn_seq_fwd_v2_fp8(S0_p, K_p, V_p, decay_p, num_warps=fwd_nw)
+            # Sq einsum requires a non-fp8 dtype — rehydrate to bf16 view.
+            S_traj_bf16 = S_traj.to(torch.bfloat16)
+            Sq = torch.einsum('bhtpq,bhtq->bhtp', S_traj_bf16, Q_p)
+            S_final_p = S_traj_bf16[:, :, -1]
+            # Free the transient bf16 rehydration; we keep only the fp8 tensor.
+            del S_traj_bf16
+        elif use_v2:
             fwd_nw = 4
             S_traj = pararnn_seq_fwd_v2(S0_p, K_p, V_p, decay_p, num_warps=fwd_nw)
             Sq = torch.einsum('bhtpq,bhtq->bhtp', S_traj, Q_p)
@@ -72,17 +91,18 @@ class PararnnHybridE88V2(torch.autograd.Function):
         S_final = S_final_p.transpose(-1, -2).contiguous()
         output = Sq.permute(2, 0, 1, 3).contiguous()
 
-        if use_v2:
+        if use_fp8 or use_v2:
             ctx.save_for_backward(K_p, V_p, Q_p, decay_p, S_traj, S0_p)
         else:
             ctx.save_for_backward(K_p, V_p, Q_p, decay_p, S_traj)
-        ctx.dims = (T, B, H, Ns, Hv, fwd_nw, use_v2)
+        ctx.dims = (T, B, H, Ns, Hv, fwd_nw, use_v2, use_fp8)
         return S_final, output
 
     @staticmethod
     def backward(ctx, dS_final, d_output):
         use_v2 = ctx.dims[6]
-        if use_v2:
+        use_fp8 = ctx.dims[7] if len(ctx.dims) > 7 else False
+        if use_fp8 or use_v2:
             K_p, V_p, Q_p, decay_p, S_traj, S0_p = ctx.saved_tensors
         else:
             K_p, V_p, Q_p, decay_p, S_traj = ctx.saved_tensors
@@ -92,7 +112,14 @@ class PararnnHybridE88V2(torch.autograd.Function):
         g_T_p = dS_final.transpose(-1, -2).contiguous()
         bwd_nw = 2 if Ns >= 32 else 1
 
-        if use_v2:
+        if use_fp8:
+            # fp8 backward: tuned num_warps (N=16 -> 1, N=32 -> 4 per bench)
+            fp8_bwd_nw = 1 if Ns <= 16 else 4
+            dS0_p, dK_p, dV_p, dQ_p, ddec_p = backward_v2_fp8(
+                S0_p, S_traj, K_p, V_p, decay_p, g_T_p, dL_dout_p, Q_p,
+                num_warps=fp8_bwd_nw, num_stages=1,
+            )
+        elif use_v2:
             # v2: contig S_traj [B, H, T, N, N] (S_1..S_T), S0 separate.
             # backward_v2 fuses dQ and handles the S_0 boundary branch-free.
             dS0_p, dK_p, dV_p, dQ_p, ddec_p = backward_v2(

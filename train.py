@@ -35,11 +35,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elm
 
 from elman.models import LadderLM, create_ladder_model
 
-# Optional: swap E88FLAHybridCUDAFunction for PararnnHybridE88V2 Triton kernel.
-# See experiments/pararnn_kernel/tree_scan/install_hybrid.py
-if os.environ.get('ELMAN_PARARNN_HYBRID') == '1':
-    _hybrid_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 'experiments/pararnn_kernel/tree_scan')
+# Optional: swap E88FLAHybridCUDAFunction for PararnnHybridE88V2/V3 Triton kernel.
+# V3 ([B,T,H,N]-native, no permutes) is preferred when available.
+# See experiments/pararnn_kernel/tree_scan/install_hybrid{,_v3}.py
+_hybrid_root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'experiments/pararnn_kernel/tree_scan')
+if os.environ.get('ELMAN_PARARNN_HYBRID_V3') == '1':
+    sys.path.insert(0, _hybrid_root)
+    from install_hybrid_v3 import install as _install_hybrid_v3
+    _install_hybrid_v3()
+elif os.environ.get('ELMAN_PARARNN_HYBRID') == '1':
     sys.path.insert(0, _hybrid_root)
     from install_hybrid import install as _install_hybrid
     _install_hybrid()
