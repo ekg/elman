@@ -152,6 +152,13 @@ def _fused_backward_rank1_kernel(
     for t_inv in range(T):
         t = T - 1 - t_inv
 
+        # Inject output_t contribution: output_t = S_{t+1} @ q_t, so
+        # dL/dS_{t+1} receives dL_dout[t, row] * q[t, col].  At this point
+        # g holds dL/dS_{t+1} (pre-injection), so add the output term here.
+        dL_dout_t = tl.load(dL_dout_ptr + bh * K_head_stride + t * N + row_idx).to(tl.float32)
+        q_t = tl.load(q_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
+        g = g + dL_dout_t[:, None] * q_t[None, :]
+
         K_t = tl.load(K_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
         V_t = tl.load(V_ptr + bh * K_head_stride + t * N + row_idx).to(tl.float32)
         dec = tl.load(decay_ptr + bh * dec_head_stride + t).to(tl.float32)
@@ -180,13 +187,7 @@ def _fused_backward_rank1_kernel(
         tl.store(ddecay_ptr + bh * dec_head_stride + t, ddec_t)
 
         D_mat = dec * tanh_deriv
-        g_new = D_mat * g - K_t[None, :] * gu_row[:, None]
-
-        # Rank-1 external grad: dL/dS[t, row, col] = dL_dout[t, row] * q[t, col]
-        dL_dout_t = tl.load(dL_dout_ptr + bh * K_head_stride + t * N + row_idx).to(tl.float32)
-        q_t = tl.load(q_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
-        ext = dL_dout_t[:, None] * q_t[None, :]
-        g = g_new + ext
+        g = D_mat * g - K_t[None, :] * gu_row[:, None]
 
     tl.store(g_out_ptr + gT_base + tile_2d, g.to(g_out_ptr.dtype.element_ty))
 
@@ -234,6 +235,11 @@ def _fused_backward_rank1_dQ_kernel(
         dQ_t = tl.sum(dL_dout_t[:, None] * S_next, axis=0)
         tl.store(dQ_ptr + bh * K_head_stride + t * N + col_idx, dQ_t)
 
+        # Inject output_t contribution into g (= dL/dS_{t+1} at this point):
+        # output_t = S_{t+1} @ q_t, so dL_dout[t, row] * q[t, col] → dL/dS_{t+1}.
+        q_t = tl.load(q_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
+        g = g + dL_dout_t[:, None] * q_t[None, :]
+
         # Load for the backward step (uses S_prev = S[t])
         K_t = tl.load(K_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
         V_t = tl.load(V_ptr + bh * K_head_stride + t * N + row_idx).to(tl.float32)
@@ -263,11 +269,7 @@ def _fused_backward_rank1_dQ_kernel(
         tl.store(ddecay_ptr + bh * dec_head_stride + t, ddec_t)
 
         D_mat = dec * tanh_deriv
-        g_new = D_mat * g - K_t[None, :] * gu_row[:, None]
-
-        q_t = tl.load(q_ptr + bh * K_head_stride + t * N + col_idx).to(tl.float32)
-        ext = dL_dout_t[:, None] * q_t[None, :]
-        g = g_new + ext
+        g = D_mat * g - K_t[None, :] * gu_row[:, None]
 
         # S_prev becomes next iteration's S_next (S[t] = next iter's S_next)
         S_next = S_prev

@@ -217,7 +217,11 @@ __global__ void fused_backward_cpasync(
             const float K_c = (lane < N) ? K_smem[lane] : 0.0f;
             const float S_prev_rc = (lane < N) ? bf2f(S_prev_cur[r * N + lane]) : 0.0f;
             const float V_r = V_smem[r];
-            const float g_rc = g_reg[r_local];  // from register (not smem)
+            // Inject output_t grad: output_t = S_{t+1} @ q_t, so
+            // dL/dS_{t+1} receives dL_dout[t,r] * q[t,c].  g_reg holds
+            // dL/dS_{t+1} at iter t pre-injection.
+            const float ext_rc = (lane < N) ? (dL_smem[r] * q_smem[lane]) : 0.0f;
+            const float g_rc = g_reg[r_local] + ext_rc;
 
             float retrieved_partial = S_prev_rc * K_c;
             float retrieved = warp_sum(retrieved_partial);
@@ -244,9 +248,9 @@ __global__ void fused_backward_cpasync(
             }
             {
                 float D_rc = dec * tanh_deriv;
-                float g_new_rc = D_rc * g_rc - K_c * gu_r;
-                float ext_rc = (lane < N) ? (dL_smem[r] * q_smem[lane]) : 0.0f;
-                g_reg[r_local] = g_new_rc + ext_rc;  // back to register (no smem)
+                // g_rc now == dL/dS_{t+1} including output_t's contribution.
+                // g_new_rc = dL/dS_t (will get output_{t-1}'s contribution at next iter).
+                g_reg[r_local] = D_rc * g_rc - K_c * gu_r;
             }
         }
         __syncthreads();
@@ -378,7 +382,10 @@ __global__ void fused_backward_warp_parallel(
             const float K_c = (lane < N) ? K_smem[lane] : 0.0f;
             const float S_prev_rc = (lane < N) ? S_prev_smem[r * N + lane] : 0.0f;
             const float V_r = V_smem[r];
-            const float g_rc = (lane < N) ? g_smem[r * N + lane] : 0.0f;
+            // Inject output_t grad before using g as dL/dS_{t+1}:
+            // output_t = S_{t+1} @ q_t → dL/dS_{t+1} += dL_dout[t,r] * q[t,c].
+            const float ext_inj = (lane < N) ? (dL_smem[r] * q_smem[lane]) : 0.0f;
+            const float g_rc = ((lane < N) ? g_smem[r * N + lane] : 0.0f) + ext_inj;
 
             // retrieved[r] = sum_c S_prev[r, c] * K[c]  (warp reduction)
             float retrieved_partial = S_prev_rc * K_c;
@@ -418,12 +425,11 @@ __global__ void fused_backward_warp_parallel(
                 dK_perwarp[warp_id * N + lane] += dk_rc;
             }
 
-            // Update g[r, c]: g_new = D * g - K_t * gu_r, then add outer(dL, q)
+            // Update g[r, c]: g_new = D * g - K_t * gu_r.  Output_t injection
+            // was already folded into g_rc at read-time.
             if (lane < N) {
                 float D_rc = dec * tanh_deriv;
-                float g_new_rc = D_rc * g_rc - K_c * gu_r;
-                float ext_rc = dL_smem[r] * q_smem[lane];
-                g_smem[r * N + lane] = g_new_rc + ext_rc;
+                g_smem[r * N + lane] = D_rc * g_rc - K_c * gu_r;
             }
         }
         __syncthreads();
