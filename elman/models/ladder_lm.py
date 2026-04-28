@@ -91,6 +91,7 @@ from .e67_h_gated import E67HGated, E67HGatedDiagonal, E67HGatedLowRank
 from .e68_self_gating import E68SelfGating, E68SelfGatingStandard, E68SelfGatingInverse
 from .gated_delta_net import GatedDeltaNet, GatedDeltaNetVector
 from .fla_gated_delta import FLAGatedDeltaNetLayer
+from .e91_matmat import E91MatMat
 from .llama_baseline import LlamaLayer
 from .e70_matrix_linear import E70MatrixLinear
 from .e71_matrix_gated import E71MatrixGated
@@ -417,6 +418,12 @@ def get_ladder_level(level):
         # with E75's nonlinear matrix state: S = tanh(decay * S + outer(delta, k_norm))
         88: E88FLAHybrid,
         'E88': E88FLAHybrid,
+        'E91': E91MatMat,
+        91: E91MatMat,
+        'E91r1': lambda **kw: E91MatMat(**{**kw, 'rank': 1}),
+        'E91r4': lambda **kw: E91MatMat(**{**kw, 'rank': 4}),
+        'E91r8': lambda **kw: E91MatMat(**{**kw, 'rank': 8}),
+        'E91r16': lambda **kw: E91MatMat(**{**kw, 'rank': 16}),
         'E88h4': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4}),
         'E88h8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8}),
         'E88h16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16}),
