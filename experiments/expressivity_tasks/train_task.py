@@ -47,6 +47,11 @@ def build_model(level, dim, depth, vocab_size, **kwargs):
             use_gate=True,
             gate_activation='silu',
         )
+    elif level == 'E92':
+        common.update(
+            n_heads=kwargs.get('n_heads', 8),
+            n_state=kwargs.get('n_state', 16),
+        )
     elif level == 'fla-gdn':
         common.update(
             expansion=kwargs.get('expansion', 2),

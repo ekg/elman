@@ -129,11 +129,11 @@ E90_CONFIGS = [
 
 # E88 base search space (shared by ablation variants)
 _E88_SEARCH_SPACE = {
-    'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
-    'n_heads': (32, 400, 'int', 'Number of attention heads'),  # Expanded to 400 - n16 wants many small heads
+    'dim': (1024, 4096, 'int_mult128', 'Model dimension'),
+    'n_heads': (32, 2000, 'int', 'Number of attention heads — push high for SM multi-programming'),
     'n_state': (16, 64, 'e88_n_state', 'State dimension (16,32,48,64)'),
-    'depth': (10, 50, 'int', 'Number of layers'),  # Expanded from 40 - deep networks work with many heads
-    'lr': (1e-4, 3e-3, 'log', 'Learning rate'),  # Raised upper bound - models can handle higher LR
+    'depth': (10, 50, 'int', 'Number of layers'),
+    'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
     'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible by memory probe)'),
 }  # 6D (n_state swept separately)
 
@@ -142,15 +142,17 @@ SEARCH_SPACES = {
     # memory probe clamps to max feasible if CMA-ES picks too large.
     'e88': _E88_SEARCH_SPACE,  # baseline: use_gate=1, linear_state=0
     'e88_fused': _E88_SEARCH_SPACE,  # E88 with fused CUDA kernel (faster training)
+    'e91': _E88_SEARCH_SPACE,  # E91 matrix-matrix variant (rank-r delta rule, default rank=n_state)
+    'e92': _E88_SEARCH_SPACE,  # E92 matrix-matrix variant with learned W_h per-layer transform
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
     'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
     'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
     'e88-wgate': _E88_SEARCH_SPACE,  # ablation: add write gate (beta) like FLA-GDN
     'fla-gdn': {
-        'dim': (1024, 3072, 'int_mult128', 'Model dimension'),
+        'dim': (1024, 4096, 'int_mult128', 'Model dimension'),
         'expansion': (1, 3, 'int', 'Value expansion factor'),
-        'depth': (10, 40, 'int', 'Number of layers'),
-        'n_heads': (8, 32, 'int', 'Number of heads'),
+        'depth': (10, 50, 'int', 'Number of layers'),
+        'n_heads': (8, 64, 'int', 'Number of heads'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 128, 'int_log', 'Batch size (log-scale, clamped to max feasible)'),
         },
@@ -229,6 +231,7 @@ SEARCH_SPACES = {
 DISCRETE_SWEEP_PARAMS = {
     'e88': {'n_state': [16, 32]},
     'e88_fused': {'n_state': [16, 32]},  # fused CUDA kernel variant
+    'e91': {'n_state': [16, 32]},  # E91 — rank=n_state by default
     'e88-linear': {'n_state': [16, 32]},  # ablation: remove tanh
     'e88-nogate': {'n_state': [16, 32]},  # ablation: remove gating
     'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
@@ -249,11 +252,11 @@ def get_search_space(model_type, fixed_params=None):
     if model_type.startswith('e88') and 'n_heads' in space:
         n_state = fixed_params.get('n_state')
         if n_state == 16:
-            # n_state=16 wants many small heads: 96-400
-            space['n_heads'] = (96, 400, 'int', 'Number of attention heads (n16: many small)')
+            # n_state=16: push to 2000 (1B winners hit H=940 ceiling at 1000)
+            space['n_heads'] = (96, 2000, 'int', 'Number of attention heads (n16: many small)')
         elif n_state == 32:
-            # n_state=32 prefers fewer larger heads: 32-160
-            space['n_heads'] = (32, 160, 'int', 'Number of attention heads (n32: fewer large)')
+            # n_state=32: 32-1500
+            space['n_heads'] = (32, 1500, 'int', 'Number of attention heads (n32: large range)')
         # else: use default range
 
     # Adjust n_heads range for E1H based on n_state
@@ -397,6 +400,30 @@ def estimate_params_for_config(params, model_type):
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32),
                                expansion=params.get('expansion', 1.0), use_gate=use_gate)
+    elif model_type == 'e91':
+        # E91 rank-r matrix-matrix: K, V projections are dim×(H·N·R), Q is dim×(H·N).
+        # Default rank = n_state (full rank). Compute approximate per-layer params.
+        n_heads = params.get('n_heads', 96)
+        n_state = params.get('n_state', 16)
+        rank = params.get('rank', n_state)  # default full rank
+        dim_inner = n_heads * n_state
+        kv_params = 2 * dim * n_heads * n_state * rank
+        qgo_params = 3 * dim * dim_inner
+        decay_params = dim * n_heads + 2 * n_heads
+        per_layer = kv_params + qgo_params + decay_params
+        vocab = 256
+        embed = vocab * dim
+        return per_layer * depth + embed
+    elif model_type == 'e92':
+        # E92: K, V, Q rank-1 (like E88) plus W_h [H, N, N] per layer.
+        # No output gate, no l2 norm. Per layer: 3*dim*H*N (kvq) + dim*H (decay) + H*N*N (W_h) + H*N*dim (out)
+        n_heads = params.get('n_heads', 96)
+        n_state = params.get('n_state', 16)
+        flat = n_heads * n_state
+        per_layer = 3 * dim * flat + dim * n_heads + n_heads * n_state * n_state + flat * dim
+        vocab = 256
+        embed = vocab * dim
+        return per_layer * depth + embed
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -434,6 +461,9 @@ def is_valid_param_count(params, model_type, target_params, tolerance=0.10):
 # =============================================================================
 # TRAINING COMMAND BUILDER
 # =============================================================================
+TOKENIZER_NAME = None  # Set via CLI; if not None, adds --tokenizer to train.py
+
+
 def build_train_command(params, model_type, train_minutes, output_dir):
     """Build training command for a configuration."""
     dim = params['dim']
@@ -461,6 +491,9 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         '--keep_checkpoints', '1',  # Keep final checkpoint for top-3 retention
     ]
 
+    if TOKENIZER_NAME:
+        cmd.extend(['--tokenizer', TOKENIZER_NAME])
+
     # Add torch.compile if enabled (global settings)
     if COMPILE_ENABLED:
         cmd.extend(['--compile', '--compile_mode', COMPILE_MODE])
@@ -479,6 +512,28 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--expansion', '1.0',  # Fixed - E88 requires square state
             '--use_gate', '1',  # Gate enabled - best result (0.8272) was WITH gate
             '--gate_activation', 'silu',  # SiLU gating
+        ])
+
+    elif model_type == 'e91':
+        # E91 matrix-matrix nonlinear RNN — rank-r delta rule with tanh.
+        # Default rank=n_state (full rank) is hardwired in E91MatMat when rank=None.
+        cmd.extend([
+            '--level', 'E91',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--gate_activation', 'silu',
+        ])
+
+    elif model_type == 'e92':
+        # E92: matrix-matrix nonlinear RNN with learned per-layer W_h transform.
+        # Rank-1 K, V (like E88) but adds W_h @ S matmul per step. No output gate, no L2 norm.
+        cmd.extend([
+            '--level', 'E92',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
         ])
 
     elif model_type == 'e88_fused':
@@ -1544,6 +1599,11 @@ def main():
                         help='Discrete parameter to sweep (e.g., n_state)')
     parser.add_argument('--fixed_n_state', type=int, default=None,
                         help='Fix n_state to this value (skip sweep)')
+    parser.add_argument('--fixed_batch_size', type=int, default=None,
+                        help='Fix batch_size to this value (memory probe still clamps)')
+    parser.add_argument('--tokenizer', type=str, default=None,
+                        choices=[None, 'gpt2', 'cl100k_base', 'r50k_base', 'p50k_base', 'o200k_base'],
+                        help='If set, train with BPE tokenizer instead of bytes')
 
     # Warm start
     parser.add_argument('--warm_start', type=str, default=None,
@@ -1666,6 +1726,13 @@ def main():
     if args.fixed_n_state is not None:
         fixed_params['n_state'] = args.fixed_n_state
         print(f"Fixed n_state: {args.fixed_n_state}")
+    if args.fixed_batch_size is not None:
+        fixed_params['batch_size'] = args.fixed_batch_size
+        print(f"Fixed batch_size: {args.fixed_batch_size}")
+    if args.tokenizer:
+        global TOKENIZER_NAME
+        TOKENIZER_NAME = args.tokenizer
+        print(f"Tokenizer: {args.tokenizer}")
 
     # Log to file
     log_file = os.path.join(output_dir, 'search.log')
