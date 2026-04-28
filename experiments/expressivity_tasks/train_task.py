@@ -52,6 +52,11 @@ def build_model(level, dim, depth, vocab_size, **kwargs):
             n_heads=kwargs.get('n_heads', 8),
             n_state=kwargs.get('n_state', 16),
         )
+    elif level == 'E93':
+        common.update(
+            n_state=kwargs.get('n_state', 16),
+            # m_state defaults to dim if not specified; user can override via n_heads*n_state convention
+        )
     elif level == 'fla-gdn':
         common.update(
             expansion=kwargs.get('expansion', 2),

@@ -93,6 +93,7 @@ from .gated_delta_net import GatedDeltaNet, GatedDeltaNetVector
 from .fla_gated_delta import FLAGatedDeltaNetLayer
 from .e91_matmat import E91MatMat
 from .e92_matmat import E92MatMat
+from .e93_minimal import E93Minimal
 from .llama_baseline import LlamaLayer
 from .e70_matrix_linear import E70MatrixLinear
 from .e71_matrix_gated import E71MatrixGated
@@ -427,6 +428,8 @@ def get_ladder_level(level):
         'E91r16': lambda **kw: E91MatMat(**{**kw, 'rank': 16}),
         'E92': E92MatMat,
         92: E92MatMat,
+        'E93': E93Minimal,
+        93: E93Minimal,
         'E88h4': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4}),
         'E88h8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8}),
         'E88h16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16}),

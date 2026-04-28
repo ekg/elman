@@ -144,6 +144,13 @@ SEARCH_SPACES = {
     'e88_fused': _E88_SEARCH_SPACE,  # E88 with fused CUDA kernel (faster training)
     'e91': _E88_SEARCH_SPACE,  # E91 matrix-matrix variant (rank-r delta rule, default rank=n_state)
     'e92': _E88_SEARCH_SPACE,  # E92 matrix-matrix variant with learned W_h per-layer transform
+    'e93': {
+        'dim': (1024, 4096, 'int_mult128', 'Model dimension'),
+        'n_state': (16, 64, 'e88_n_state', 'State row dim N'),
+        'depth': (10, 50, 'int', 'Number of layers'),
+        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
+        'batch_size': (1, 128, 'int_log', 'Batch size'),
+    },
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
     'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
     'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
@@ -424,6 +431,15 @@ def estimate_params_for_config(params, model_type):
         vocab = 256
         embed = vocab * dim
         return per_layer * depth + embed
+    elif model_type == 'e93':
+        # E93: single rectangular state [N, M] where M defaults to dim.
+        # Per layer: k_proj (dim*N) + v_proj (dim*M=dim²) + decay_proj (dim) + W_h (N²) + out_proj (N*M*dim = N*dim²)
+        n_state = params.get('n_state', 16)
+        m_state = dim  # E93Minimal default: M = dim
+        per_layer = dim * n_state + dim * m_state + dim + n_state * n_state + n_state * m_state * dim
+        vocab = 256
+        embed = vocab * dim
+        return per_layer * depth + embed
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -532,6 +548,15 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         cmd.extend([
             '--level', 'E92',
             '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+        ])
+
+    elif model_type == 'e93':
+        # E93: minimal matrix-matrix RNN — single rectangular state [N, M], no heads.
+        # M defaults to dim in E93Minimal (state width = residual width).
+        cmd.extend([
+            '--level', 'E93',
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',
         ])
