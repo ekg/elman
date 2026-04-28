@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 import time
+STARTUP_TIME = time.time()
 import argparse
 import torch
 import torch.nn as nn
@@ -572,12 +573,16 @@ def train(args):
         optimizer.train()  # Schedule-free needs this
     step = start_step
 
-    # Time-based training setup
-    train_start_time = time.time()
+    # Time-based training setup — clock starts at PROCESS startup, not here.
+    # This way slow-to-init configs (compile, probe) are penalized in fitness.
+    train_start_time = STARTUP_TIME
     train_end_time = None
     if args.train_minutes is not None:
         train_end_time = train_start_time + args.train_minutes * 60
-        print(f"Time-based training: {args.train_minutes} minutes")
+        elapsed_init = time.time() - STARTUP_TIME
+        remaining = max(0.0, args.train_minutes * 60 - elapsed_init)
+        print(f"Time-based training: {args.train_minutes} min budget (from process start). "
+              f"Init took {elapsed_init:.1f}s, {remaining:.1f}s remaining for training.")
 
     def should_continue():
         if train_end_time is not None:

@@ -56,7 +56,7 @@ class PararnnHybridE88V3(torch.autograd.Function):
         S0_p = S0.transpose(-1, -2).contiguous()
 
         # Forward: returns S_traj [B, H, T, N, N] and Sq [B, T, H, N]
-        fwd_nw = 4 if N >= 32 else 1
+        fwd_nw = 8 if N >= 32 else 2
         S_traj, Sq = pararnn_seq_fwd_v3_bthn(
             S0_p, k, v, q, decay, num_warps=fwd_nw,
         )
