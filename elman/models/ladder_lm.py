@@ -430,6 +430,18 @@ def get_ladder_level(level):
         92: E92MatMat,
         'E93': E93Minimal,
         93: E93Minimal,
+        # E93 ablation cells (Python loop fallback for non-vanilla)
+        'E93a_vanilla': E93Minimal,
+        'E93a_no_wh': lambda **kw: E93Minimal(**{**kw, 'use_w_h': False}),
+        'E93a_no_delta': lambda **kw: E93Minimal(**{**kw, 'use_delta': False}),
+        'E93a_no_decay': lambda **kw: E93Minimal(**{**kw, 'use_decay': False}),
+        'E93a_linear': lambda **kw: E93Minimal(**{**kw, 'nonlinearity': 'linear'}),
+        'E93a_min_tanh': lambda **kw: E93Minimal(**{**kw, 'use_w_h': False, 'use_delta': False, 'use_decay': False, 'nonlinearity': 'tanh'}),
+        'E93a_min_lin': lambda **kw: E93Minimal(**{**kw, 'use_w_h': False, 'use_delta': False, 'use_decay': False, 'nonlinearity': 'linear'}),
+        # Minimal-2: drop W_h + decay, keep tanh + delta (the proposed "shipping minimum")
+        'E93a_no_wh_no_decay': lambda **kw: E93Minimal(**{**kw, 'use_w_h': False, 'use_decay': False}),
+        # Minimal-2-linear: drop W_h + decay AND tanh, keep delta only
+        'E93a_no_wh_no_decay_lin': lambda **kw: E93Minimal(**{**kw, 'use_w_h': False, 'use_decay': False, 'nonlinearity': 'linear'}),
         'E88h4': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 4}),
         'E88h8': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 8}),
         'E88h16': lambda **kw: E88FLAHybrid(**{**kw, 'n_heads': 16}),

@@ -64,6 +64,12 @@ class E93Minimal(nn.Module):
         dropout: float = 0.0,
         gradient_checkpointing: bool = False,
         chunk_size: int = 0,
+        # Ablation flags
+        use_w_h: bool = True,        # learned [N,N] state transform; False => identity
+        use_decay: bool = True,      # data-dep decay; False => alpha=1 (no forgetting)
+        use_delta: bool = True,      # delta rule subtraction; False => raw outer product
+        nonlinearity: str = 'tanh',  # 'tanh' | 'silu' | 'linear'
+        use_l2_norm_k: bool = True,  # L2 normalize k along N
         # Compatibility kwargs (ignored): n_heads, expansion, use_gate, etc.
         **kwargs,
     ):
@@ -75,15 +81,26 @@ class E93Minimal(nn.Module):
         self.M = m_state
         self.gradient_checkpointing = gradient_checkpointing
         self.chunk_size = chunk_size
+        self.use_w_h = use_w_h
+        self.use_decay = use_decay
+        self.use_delta = use_delta
+        self.nonlinearity = nonlinearity
+        self.use_l2_norm_k = use_l2_norm_k
 
         self.k_proj = nn.Linear(dim, self.N, bias=False)
         self.v_proj = nn.Linear(dim, self.M, bias=False)
-        self.decay_proj = nn.Linear(dim, 1, bias=False)
+        if use_decay:
+            self.decay_proj = nn.Linear(dim, 1, bias=False)
+        else:
+            self.decay_proj = None
         self.out_proj = nn.Linear(self.N * self.M, dim, bias=False)
 
-        # W_h: per-layer learned [N, N], initialized near identity
-        W_h = torch.eye(self.N) + 0.01 * torch.randn(self.N, self.N)
-        self.W_h = nn.Parameter(W_h)
+        # W_h: per-layer learned [N, N], initialized near identity (or fixed identity)
+        if use_w_h:
+            W_h = torch.eye(self.N) + 0.01 * torch.randn(self.N, self.N)
+            self.W_h = nn.Parameter(W_h)
+        else:
+            self.register_buffer('W_h', torch.eye(self.N))
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -94,18 +111,26 @@ class E93Minimal(nn.Module):
 
         k = self.k_proj(x)                           # [B, T, N]
         v = self.v_proj(x)                           # [B, T, M]
-        alpha = torch.sigmoid(self.decay_proj(x)).squeeze(-1)  # [B, T]
+        if self.use_decay:
+            alpha = torch.sigmoid(self.decay_proj(x)).squeeze(-1)  # [B, T]
+        else:
+            alpha = torch.ones(B, T, device=x.device, dtype=x.dtype)
         # L2 normalize k along N (delta-rule stability)
-        k = F.normalize(k, dim=-1)
+        if self.use_l2_norm_k:
+            k = F.normalize(k, dim=-1)
 
         if prev_hidden is None:
             S0 = torch.zeros(B, N, M, device=x.device, dtype=torch.float32)
         else:
             S0 = prev_hidden.float()
 
-        use_triton = E93_TRITON_AVAILABLE and x.is_cuda and (M % 16 == 0)
+        # Triton supports all ablation flags except silu (which we don't need)
+        nl_kind = 0 if self.nonlinearity == 'tanh' else (1 if self.nonlinearity == 'linear' else -1)
+        use_triton = (
+            E93_TRITON_AVAILABLE and x.is_cuda and (M % 16 == 0)
+            and nl_kind in (0, 1)
+        )
         if use_triton:
-            # Choose M_TILE based on M (needs to divide M)
             for cand in (64, 32, 16):
                 if M % cand == 0:
                     M_TILE = cand
@@ -114,20 +139,36 @@ class E93Minimal(nn.Module):
                 S0.contiguous(), self.W_h.contiguous(),
                 k.contiguous(), v.contiguous(), alpha.contiguous(),
                 M_TILE,
+                self.use_w_h, self.use_decay, self.use_delta, nl_kind,
             )
         else:
             S = S0.clone()
             W_h = self.W_h.float()
+            use_w_h = self.use_w_h
+            use_delta = self.use_delta
+            nl = self.nonlinearity
             out_list = []
             for t in range(T):
                 k_t = k[:, t].float()
                 v_t = v[:, t].float()
                 alpha_t = alpha[:, t].view(B, 1, 1)
-                retrieved = torch.einsum('bnm,bn->bm', S, k_t)
-                delta = v_t - retrieved
+                if use_delta:
+                    retrieved = torch.einsum('bnm,bn->bm', S, k_t)
+                    delta = v_t - retrieved
+                else:
+                    delta = v_t
                 update = torch.einsum('bn,bm->bnm', k_t, delta)
-                Wh_S = torch.einsum('np,bpm->bnm', W_h, S)
-                S = torch.tanh(alpha_t * Wh_S + update)
+                if use_w_h:
+                    Wh_S = torch.einsum('np,bpm->bnm', W_h, S)
+                else:
+                    Wh_S = S
+                pre = alpha_t * Wh_S + update
+                if nl == 'tanh':
+                    S = torch.tanh(pre)
+                elif nl == 'silu':
+                    S = F.silu(pre)
+                else:  # 'linear'
+                    S = pre
                 out_list.append(S.reshape(B, N * M))
             out = torch.stack(out_list, dim=1)
         out = self.out_proj(out)
