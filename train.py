@@ -406,6 +406,18 @@ def train(args):
             depth=args.depth,
             expansion_factor=args.expansion,
         )
+    elif args.level == 'E94':
+        # E94: symmetric matrix-state RNN (per-head W_h_time + W_h_layer, no dim collapse).
+        # Uses --n_heads (H), --n_state (head_dim, default 16), --depth.
+        from elman.models.e94 import E94Model
+        model = E94Model(
+            vocab_size=vocab_size,
+            n_heads=args.n_heads,
+            head_dim=args.n_state,
+            depth=args.depth,
+            dropout=args.dropout,
+            share_layer_weights=False,
+        )
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)
         model = E88FusedLM(
