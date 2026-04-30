@@ -154,7 +154,7 @@ SEARCH_SPACES = {
     'e93_no_decay': {
         'dim': (1024, 4096, 'int_mult128', 'Model dimension'),
         'n_state': (16, 64, 'e88_n_state', 'State row dim N'),
-        'depth': (10, 50, 'int', 'Number of layers'),
+        'depth': (10, 100, 'int', 'Number of layers'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 128, 'int_log', 'Batch size'),
     },
@@ -1849,8 +1849,10 @@ def main():
             with open(phase_file, 'w') as f:
                 json.dump({'lhs_complete': True, 'n_lhs': len(lhs_results)}, f)
 
-        # Phase 2: CMA-ES from top configs
-        top_configs = [r['params'] for r in lhs_results[:args.cmaes_refinements] if r['loss'] < 5.0]
+        # Phase 2: CMA-ES from top configs.
+        # Threshold is tokenizer-aware: byte-level gets ~2-3 loss, BPE gets ~6-9.
+        # We just want to filter out NaN/diverged runs. 100 is plenty.
+        top_configs = [r['params'] for r in lhs_results[:args.cmaes_refinements] if r['loss'] < 100.0]
 
         if top_configs:
             cmaes_results = run_cmaes_phase(
