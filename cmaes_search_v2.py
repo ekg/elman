@@ -158,6 +158,14 @@ SEARCH_SPACES = {
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 128, 'int_log', 'Batch size'),
     },
+    'e94': {
+        # H · head_dim = M (state width). All independent except this constraint.
+        'n_heads': (16, 1024, 'int_log', 'Number of heads (H)'),
+        'depth': (4, 30, 'int', 'Number of layers (L)'),
+        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
+        'batch_size': (1, 64, 'int_log', 'Batch size'),
+        # head_dim fixed at 16 by default — switch to 32 via --fixed_head_dim if you want
+    },
     'e88-linear': _E88_SEARCH_SPACE,  # ablation: remove tanh (linear_state=1)
     'e88-nogate': _E88_SEARCH_SPACE,  # ablation: remove gating (use_gate=0)
     'e88-minimal': _E88_SEARCH_SPACE,  # ablation: remove both
@@ -455,6 +463,19 @@ def estimate_params_for_config(params, model_type):
         vocab = 256
         embed = vocab * dim
         return per_layer * depth + embed
+    elif model_type == 'e94':
+        # E94: per-head W_h_time + cross-head W_h_layer at transitions, no out_proj.
+        # Token embed uses H*N (k) + H*hd (v) per token; head: N*hd -> vocab.
+        H = params.get('n_heads', 64)
+        head_dim = params.get('head_dim', 16)
+        N = head_dim
+        L = depth
+        vocab = 50000 if TOKENIZER_NAME else 256
+        embed = vocab * H * N + vocab * H * head_dim
+        w_h_time = L * H * N * N
+        w_h_layer = (L - 1) * H * H
+        head = N * head_dim * vocab
+        return embed + w_h_time + w_h_layer + head
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -498,7 +519,12 @@ DATA_PATH = '/mnt/nvme1n1/erikg/comma_v0.1_training_dataset/commapile.txt'  # Se
 
 def build_train_command(params, model_type, train_minutes, output_dir):
     """Build training command for a configuration."""
-    dim = params['dim']
+    # E94 derives "dim" from H * head_dim; doesn't use it directly. Pass placeholder.
+    if model_type == 'e94':
+        head_dim = params.get('head_dim', 16)
+        dim = params['n_heads'] * head_dim
+    else:
+        dim = params['dim']
     actual_params = estimate_params_for_config(params, model_type)
 
     # Batch size: CMA-ES searched, clamped to max feasible by memory probe
@@ -582,6 +608,16 @@ def build_train_command(params, model_type, train_minutes, output_dir):
         cmd.extend([
             '--level', 'E93a_no_decay',
             '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+        ])
+    elif model_type == 'e94':
+        # E94: per-head W_h_time + cross-head W_h_layer, no dim collapse out_proj.
+        # head_dim = n_state. M = H * head_dim derived from n_heads * head_dim.
+        head_dim = params.get('head_dim', 16)
+        cmd.extend([
+            '--level', 'E94',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(head_dim),  # head_dim doubles as N
             '--expansion', '1.0',
         ])
 

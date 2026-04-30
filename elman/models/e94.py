@@ -95,16 +95,18 @@ class E94Model(nn.Module):
         self.embed_k = nn.Embedding(vocab_size, H * N)
         self.embed_v = nn.Embedding(vocab_size, H * hd)
 
-        # Per-(layer, head) matrices
+        # Per-(layer, head) time recurrence matrices [N, N] per head
         if share_layer_weights:
             self.W_h_time = nn.Parameter(self._init_eye(H, N))
-            self.W_h_layer = nn.Parameter(self._init_eye(H, N))
+            # Cross-head layer transition matrix [H, H] (single, shared across all transitions)
+            self.W_h_layer = nn.Parameter(self._init_eye_HH(H))
         else:
             self.W_h_time = nn.Parameter(
                 torch.stack([self._init_eye(H, N) for _ in range(L)], dim=0)
             )  # [L, H, N, N]
+            # Cross-head matrix per transition: [L-1, H, H]
             self.W_h_layer = nn.Parameter(
-                torch.stack([self._init_eye(H, N) for _ in range(L - 1)], dim=0)
+                torch.stack([self._init_eye_HH(H) for _ in range(L - 1)], dim=0)
             ) if L > 1 else None
 
         # Final readout: state → vocab. Uses tanh-merge across heads then linear.
@@ -121,6 +123,11 @@ class E94Model(nn.Module):
     def _init_eye(H, N):
         eye = torch.eye(N).unsqueeze(0).expand(H, -1, -1).contiguous()
         return eye + 0.01 * torch.randn(H, N, N)
+
+    @staticmethod
+    def _init_eye_HH(H):
+        # Cross-head [H, H] init near identity (so layer transition is near-passthrough)
+        return torch.eye(H) + 0.01 * torch.randn(H, H)
 
     def num_params(self):
         return sum(p.numel() for p in self.parameters())
@@ -177,9 +184,10 @@ class E94Model(nn.Module):
                         s_prev = s_new
                     state_l = new_state
             else:
-                # Layer l>0: write = W_h_layer · prev_layer_state at each t
-                # Pre-compute writes (parallel over t — no time loop here)
-                writes = torch.einsum('hnp,bthpc->bthnc', W_d, state_l)  # [B, T, H, N, hd]
+                # Layer l>0: cross-head mix of prev-layer state
+                # W_d shape [H, H] mixes ACROSS heads at fixed (n, hd) positions.
+                # writes[b, t, h_out, n, c] = sum_{h_in} W_d[h_out, h_in] * state_l[b, t, h_in, n, c]
+                writes = torch.einsum('oi,btinc->btonc', W_d, state_l)  # [B, T, H, N, hd]
                 if use_triton:
                     state_l = E94TimeWriteFunction.apply(
                         S0_zeros, W_t.contiguous(),
@@ -218,7 +226,7 @@ def count_params(vocab_size=256, H=32, head_dim=16, L=6):
     N = head_dim
     embed = vocab_size * H * N + vocab_size * H * head_dim
     w_h_time = L * H * N * N
-    w_h_layer = (L - 1) * H * N * N
+    w_h_layer = (L - 1) * H * H   # cross-head [H, H] per transition
     head = N * head_dim * vocab_size
     total = embed + w_h_time + w_h_layer + head
     print(f"E94 params (vocab={vocab_size}, H={H}, head_dim={head_dim}, L={L}):")
