@@ -78,6 +78,8 @@ def parse_args():
                         help='Ladder level: 0-6 (linear) or log_0 to log_5 (log-space)')
     parser.add_argument('--params', type=str, default='100m',
                         help='Target parameter count (e.g., 100m, 500m, 1b)')
+    parser.add_argument('--embed_dim', type=int, default=256,
+                        help='Bottleneck embedding dim for E94 (default: 256)')
     parser.add_argument('--dim', type=int, default=None,
                         help='Model dimension (overrides --params)')
     parser.add_argument('--depth', type=int, default=None,
@@ -408,13 +410,14 @@ def train(args):
         )
     elif args.level == 'E94':
         # E94: symmetric matrix-state RNN (per-head W_h_time + W_h_layer, no dim collapse).
-        # Uses --n_heads (H), --n_state (head_dim, default 16), --depth.
+        # Uses --n_heads (H), --n_state (head_dim, default 16), --depth, --embed_dim.
         from elman.models.e94 import E94Model
         model = E94Model(
             vocab_size=vocab_size,
             n_heads=args.n_heads,
             head_dim=args.n_state,
             depth=args.depth,
+            embed_dim=args.embed_dim,
             dropout=args.dropout,
             share_layer_weights=False,
         )
