@@ -75,7 +75,7 @@ class E94Model(nn.Module):
         n_heads: int = 32,                # H — number of head-chunks (M = H · 16)
         depth: int = 6,
         head_dim: int = 16,               # N (= head_dim by design symmetry)
-        embed_dim: int = 256,             # bottleneck embedding dimension
+        embed_dim: int = 1024,            # bottleneck embedding dimension
         dropout: float = 0.0,
         share_layer_weights: bool = False,
     ):

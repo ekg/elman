@@ -162,7 +162,7 @@ SEARCH_SPACES = {
         # H · head_dim = M (state width).
         'n_heads': (16, 4096, 'int_log', 'Number of heads (H)'),
         'depth': (4, 30, 'int', 'Number of layers (L)'),
-        'embed_dim': (128, 2048, 'int_log', 'Bottleneck embed dim (entry/exit projection)'),
+        'embed_dim': (512, 4096, 'int_log', 'Bottleneck embed dim (entry/exit projection)'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 64, 'int_log', 'Batch size'),
         # head_dim fixed via --fixed_n_state {16, 32}; default 16 here

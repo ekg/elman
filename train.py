@@ -78,8 +78,8 @@ def parse_args():
                         help='Ladder level: 0-6 (linear) or log_0 to log_5 (log-space)')
     parser.add_argument('--params', type=str, default='100m',
                         help='Target parameter count (e.g., 100m, 500m, 1b)')
-    parser.add_argument('--embed_dim', type=int, default=256,
-                        help='Bottleneck embedding dim for E94 (default: 256)')
+    parser.add_argument('--embed_dim', type=int, default=1024,
+                        help='Bottleneck embedding dim for E94 (default: 1024)')
     parser.add_argument('--dim', type=int, default=None,
                         help='Model dimension (overrides --params)')
     parser.add_argument('--depth', type=int, default=None,
