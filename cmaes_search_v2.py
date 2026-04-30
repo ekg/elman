@@ -493,6 +493,7 @@ def is_valid_param_count(params, model_type, target_params, tolerance=0.10):
 # TRAINING COMMAND BUILDER
 # =============================================================================
 TOKENIZER_NAME = None  # Set via CLI; if not None, adds --tokenizer to train.py
+DATA_PATH = '/mnt/nvme1n1/erikg/comma_v0.1_training_dataset/commapile.txt'  # Set via CLI
 
 
 def build_train_command(params, model_type, train_minutes, output_dir):
@@ -507,7 +508,7 @@ def build_train_command(params, model_type, train_minutes, output_dir):
 
     cmd = [
         'python', 'train.py',
-        '--data', '/mnt/nvme1n1/erikg/comma_v0.1_training_dataset/commapile.txt',
+        '--data', DATA_PATH,
         '--dim', str(dim),
         '--depth', str(params['depth']),
         '--lr', str(lr),
@@ -1683,6 +1684,11 @@ def main():
     parser.add_argument('--phase2_chunk_size', type=int, default=32768,
                         help='Phase 2 sequence length (default: 32768)')
 
+    # Data
+    parser.add_argument('--data', type=str,
+                        default='/mnt/nvme1n1/erikg/comma_v0.1_training_dataset/commapile.txt',
+                        help='Training data file (default: commapile)')
+
     # Crash-resume
     parser.add_argument('--resume', action='store_true',
                         help='Resume from existing output dir (reuse --output path, skip timestamped subdir)')
@@ -1777,6 +1783,9 @@ def main():
     if args.fixed_batch_size is not None:
         fixed_params['batch_size'] = args.fixed_batch_size
         print(f"Fixed batch_size: {args.fixed_batch_size}")
+    global DATA_PATH
+    DATA_PATH = args.data
+    print(f"Data: {args.data}")
     if args.tokenizer:
         global TOKENIZER_NAME
         TOKENIZER_NAME = args.tokenizer
