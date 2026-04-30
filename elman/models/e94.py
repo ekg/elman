@@ -41,11 +41,27 @@ Parameter budget (each layer):
   + final readout (state → vocab) once
 """
 import math
+import os, sys
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Triton fast path
+try:
+    _PARARNN_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'experiments', 'pararnn_kernel', 'tree_scan'
+    )
+    if _PARARNN_PATH not in sys.path:
+        sys.path.insert(0, _PARARNN_PATH)
+    from e94_autograd import E94TimeFunction, E94TimeWriteFunction
+    E94_TRITON_AVAILABLE = True
+except Exception as e:
+    E94TimeFunction = None
+    E94TimeWriteFunction = None
+    E94_TRITON_AVAILABLE = False
 
 
 class E94Model(nn.Module):
@@ -127,6 +143,9 @@ class E94Model(nn.Module):
         # state_l: [B, T, H, N, hd] — current layer's full trajectory
         state_l = None
 
+        # Initial S0 for time recurrence (zeros at every layer entry)
+        S0_zeros = torch.zeros(B, H, N, hd, device=tokens.device, dtype=torch.float32)
+
         for l in range(L):
             if self.share_layer_weights:
                 W_t = self.W_h_time   # [H, N, N]
@@ -135,33 +154,46 @@ class E94Model(nn.Module):
                 W_t = self.W_h_time[l]                                      # [H, N, N]
                 W_d = self.W_h_layer[l - 1] if (l > 0 and self.W_h_layer is not None) else None
 
-            # Time recurrence within this layer
-            new_state = torch.zeros(B, T, H, N, hd,
-                                    device=tokens.device, dtype=torch.float32)
-            s_prev = torch.zeros(B, H, N, hd,
-                                 device=tokens.device, dtype=torch.float32)
+            use_triton = E94_TRITON_AVAILABLE and tokens.is_cuda
 
-            for t in range(T):
-                # Time mix: W_t[h] · S_prev[h]  per head
-                # W_t: [H, N, N], s_prev: [B, H, N, hd]
-                wh_t = torch.einsum('hnp,bhpc->bhnc', W_t, s_prev)          # [B, H, N, hd]
-
-                if l == 0:
-                    # Input enters via delta-rule write at layer 0
-                    # retrieved_h = S_prev_h^T · k_h
-                    retrieved = torch.einsum('bhnc,bhn->bhc', s_prev, k[:, t])  # [B, H, hd]
-                    delta = v_emb[:, t] - retrieved                              # [B, H, hd]
-                    write = torch.einsum('bhn,bhc->bhnc', k[:, t], delta)        # [B, H, N, hd]
+            if l == 0:
+                # Layer 0: delta-rule input via embedding
+                if use_triton:
+                    state_l = E94TimeFunction.apply(
+                        S0_zeros, W_t.contiguous(),
+                        k.contiguous(), v_emb.contiguous(),
+                    )
                 else:
-                    # Input enters via cross-layer mix of prev layer's state at t
-                    # state_l[:, t]: [B, H, N, hd]; mix N rows with W_d[h]
-                    write = torch.einsum('hnp,bhpc->bhnc', W_d, state_l[:, t])
-
-                s_new = torch.tanh(wh_t + write)
-                new_state[:, t] = s_new
-                s_prev = s_new
-
-            state_l = new_state  # [B, T, H, N, hd]
+                    # Python fallback
+                    new_state = torch.zeros(B, T, H, N, hd, device=tokens.device, dtype=torch.float32)
+                    s_prev = S0_zeros
+                    for t in range(T):
+                        wh_t = torch.einsum('hnp,bhpc->bhnc', W_t, s_prev)
+                        retrieved = torch.einsum('bhnc,bhn->bhc', s_prev, k[:, t])
+                        delta = v_emb[:, t] - retrieved
+                        write = torch.einsum('bhn,bhc->bhnc', k[:, t], delta)
+                        s_new = torch.tanh(wh_t + write)
+                        new_state[:, t] = s_new
+                        s_prev = s_new
+                    state_l = new_state
+            else:
+                # Layer l>0: write = W_h_layer · prev_layer_state at each t
+                # Pre-compute writes (parallel over t — no time loop here)
+                writes = torch.einsum('hnp,bthpc->bthnc', W_d, state_l)  # [B, T, H, N, hd]
+                if use_triton:
+                    state_l = E94TimeWriteFunction.apply(
+                        S0_zeros, W_t.contiguous(),
+                        writes.contiguous(),
+                    )
+                else:
+                    new_state = torch.zeros(B, T, H, N, hd, device=tokens.device, dtype=torch.float32)
+                    s_prev = S0_zeros
+                    for t in range(T):
+                        wh_t = torch.einsum('hnp,bhpc->bhnc', W_t, s_prev)
+                        s_new = torch.tanh(wh_t + writes[:, t])
+                        new_state[:, t] = s_new
+                        s_prev = s_new
+                    state_l = new_state
 
         state_l = self.dropout(state_l)
 
