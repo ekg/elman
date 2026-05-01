@@ -408,25 +408,14 @@ def train(args):
             depth=args.depth,
             expansion_factor=args.expansion,
         )
-    elif args.level == 'E94':
-        # E94: original (no residual) — kept for ablation; not recommended for scale.
+    elif args.level in ('E94', 'E94r'):
+        # E94 — canonical: per-head 16x16 (or 32x32) W_h_time, fixed per-layer head
+        # permutation, dim-wide residual stream, tied embed/lm_head.
+        # 'E94r' kept as alias for in-flight runs; semantically identical to 'E94'.
+        # --use_gate 1: silu output gating (E88-style depth nonlinearity).
+        # --gradient_checkpointing: per-layer activation checkpointing.
         from elman.models.e94 import E94Model
         model = E94Model(
-            vocab_size=vocab_size,
-            n_heads=args.n_heads,
-            head_dim=args.n_state,
-            depth=args.depth,
-            dropout=args.dropout,
-            share_layer_weights=False,
-        )
-    elif args.level == 'E94r':
-        # E94r: E94 wrapped in dim-wide residual stream — scales like E88/FLA-GDN.
-        # Per-head [N, hd] state with W_h_time recurrence (Triton), per-layer permutation,
-        # all wrapped by dim-wide residual + projections + tied embedding.
-        # --use_gate 1 enables silu output gating (E88-style depth nonlinearity).
-        # --gradient_checkpointing enables per-layer activation checkpointing.
-        from elman.models.e94 import E94ResidualModel
-        model = E94ResidualModel(
             vocab_size=vocab_size,
             dim=args.dim,
             n_heads=args.n_heads,
@@ -436,6 +425,17 @@ def train(args):
             tie_embedding=True,
             use_gate=bool(args.use_gate),
             gradient_checkpointing=args.gradient_checkpointing,
+        )
+    elif args.level == 'E94nr':
+        # ABLATION ONLY: original no-residual E94. Doesn't scale beyond ~100M.
+        from elman.models.e94 import E94NoResidualModel
+        model = E94NoResidualModel(
+            vocab_size=vocab_size,
+            n_heads=args.n_heads,
+            head_dim=args.n_state,
+            depth=args.depth,
+            dropout=args.dropout,
+            share_layer_weights=False,
         )
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)

@@ -159,18 +159,25 @@ SEARCH_SPACES = {
         'batch_size': (1, 128, 'int_log', 'Batch size'),
     },
     'e94': {
-        # H · head_dim = M (state width). Direct embedding (no bottleneck).
-        'n_heads': (16, 4096, 'int_log', 'Number of heads (H)'),
-        'depth': (4, 30, 'int', 'Number of layers (L)'),
-        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
-        'batch_size': (1, 64, 'int_log', 'Batch size'),
-        # head_dim fixed via --fixed_n_state {16, 32}; default 16 here
-    },
-    'e94r': {
-        # E94 + dim-wide residual. Scales like E88/FLA-GDN.
+        # E94 (canonical = with residual stream). Per-head W_h_time + permuted heads.
         'dim': (1024, 4096, 'int_mult128', 'Residual stream dim'),
         'n_heads': (16, 256, 'int_log', 'Number of heads (H)'),
         'depth': (8, 30, 'int', 'Number of layers (L)'),
+        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
+        'batch_size': (1, 64, 'int_log', 'Batch size'),
+    },
+    # Backward-compat alias for in-flight searches that used 'e94r' as model_type.
+    'e94r': {
+        'dim': (1024, 4096, 'int_mult128', 'Residual stream dim'),
+        'n_heads': (16, 256, 'int_log', 'Number of heads (H)'),
+        'depth': (8, 30, 'int', 'Number of layers (L)'),
+        'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
+        'batch_size': (1, 64, 'int_log', 'Batch size'),
+    },
+    'e94nr': {
+        # ABLATION: no-residual E94 (original, doesn't scale beyond ~100M).
+        'n_heads': (16, 4096, 'int_log', 'Number of heads (H)'),
+        'depth': (4, 30, 'int', 'Number of layers (L)'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 64, 'int_log', 'Batch size'),
     },
@@ -474,20 +481,9 @@ def estimate_params_for_config(params, model_type):
         vocab = 256
         embed = vocab * dim
         return per_layer * depth + embed
-    elif model_type == 'e94':
-        # E94: SHARED embedding (across heads) + per-head matrices + permuted heads.
-        H = params.get('n_heads', 64)
-        head_dim = params.get('n_state', params.get('head_dim', 16))
-        N = head_dim
-        L = depth
-        vocab = 50000 if TOKENIZER_NAME else 256
-        embed = vocab * N + vocab * head_dim
-        w_h_time = L * H * N * N
-        w_h_layer = (L - 1) * H * N * N
-        head = N * head_dim * vocab
-        return embed + w_h_time + w_h_layer + head
-    elif model_type == 'e94r':
-        # E94 with dim-wide residual stream. Tied embedding/lm_head.
+    elif model_type in ('e94', 'e94r'):
+        # E94 canonical: per-head W_h_time + permuted heads + dim-wide residual.
+        # Tied embedding/lm_head.
         H = params.get('n_heads', 64)
         head_dim = params.get('n_state', params.get('head_dim', 16))
         N = head_dim
@@ -500,6 +496,18 @@ def estimate_params_for_config(params, model_type):
         out_proj = L * (H * N * head_dim) * dim
         w_h_time = L * H * N * N
         return embed + norm + k_proj + v_proj + out_proj + w_h_time
+    elif model_type == 'e94nr':
+        # ABLATION: original no-residual E94.
+        H = params.get('n_heads', 64)
+        head_dim = params.get('n_state', params.get('head_dim', 16))
+        N = head_dim
+        L = depth
+        vocab = 50000 if TOKENIZER_NAME else 256
+        embed = vocab * N + vocab * head_dim
+        w_h_time = L * H * N * N
+        w_h_layer = (L - 1) * H * N * N
+        head = N * head_dim * vocab
+        return embed + w_h_time + w_h_layer + head
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -634,8 +642,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',
         ])
-    elif model_type == 'e94':
-        # E94: direct embedding + per-head matrices + permuted heads.
+    elif model_type in ('e94', 'e94r'):
+        # E94 canonical (with residual stream).
         head_dim = params.get('n_state', params.get('head_dim', 16))
         cmd.extend([
             '--level', 'E94',
@@ -643,11 +651,11 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--n_state', str(head_dim),
             '--expansion', '1.0',
         ])
-    elif model_type == 'e94r':
-        # E94 with dim-wide residual stream.
+    elif model_type == 'e94nr':
+        # ABLATION: original no-residual E94.
         head_dim = params.get('n_state', params.get('head_dim', 16))
         cmd.extend([
-            '--level', 'E94r',
+            '--level', 'E94nr',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(head_dim),
             '--expansion', '1.0',

@@ -64,8 +64,15 @@ except Exception as e:
     E94_TRITON_AVAILABLE = False
 
 
-class E94Model(nn.Module):
-    """E94 full model — heads as M-chunks, dual recurrence."""
+class E94NoResidualModel(nn.Module):
+    """ABLATION ONLY — original E94 without residual stream.
+
+    Kept for ablation studies showing why the residual stream is needed.
+    The canonical E94 architecture is E94Model (defined below) which has
+    the residual stream wrapper. This class doesn't scale beyond ~100M
+    params on a single GPU due to state-vs-parameter coupling.
+
+    Heads as M-chunks, dual recurrence (time + permuted layer)."""
 
     HEAD_DIM = 16
 
@@ -240,7 +247,7 @@ class E94Model(nn.Module):
         return logits
 
 
-class E94ResidualModel(nn.Module):
+class E94Model(nn.Module):
     """E94 wrapped in a dim-wide residual stream — scales like E88/FLA-GDN/Mamba.
 
     Per layer:
