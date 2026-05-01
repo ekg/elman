@@ -437,6 +437,22 @@ def train(args):
             dropout=args.dropout,
             share_layer_weights=False,
         )
+    elif args.level == 'E94oh':
+        # E94-OneHot: pure architecture, no learned input/output projections.
+        # Token → one-hot tile K times → residual stream of dim K·vocab.
+        # Per layer: LayerNorm → reshape to per-head → permute heads → time recurrence
+        # via Triton (W_h_time + tanh) → reshape back → residual add.
+        # Output: mean across K tiles → vocab logits. NO learned head.
+        # K is set via --n_heads (overloaded), head_dim via --n_state.
+        from elman.models.e94 import E94OneHotModel
+        model = E94OneHotModel(
+            vocab_size=vocab_size,
+            K=args.n_heads,                          # overload: --n_heads = K (tile factor)
+            head_dim=args.n_state,
+            depth=args.depth,
+            dropout=args.dropout,
+            gradient_checkpointing=args.gradient_checkpointing,
+        )
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)
         model = E88FusedLM(

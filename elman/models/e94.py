@@ -445,6 +445,163 @@ def count_params_residual(vocab_size=50000, dim=1024, H=64, head_dim=16, L=15, t
     return total
 
 
+class E94OneHotModel(nn.Module):
+    """E94 with non-parametric input AND output. No projections at all.
+
+    Architecture (the cleanest possible E94):
+
+        tokens → one_hot → tile K times                   # NO learned embedding
+        residual stream of dim = K · vocab
+
+        For each layer l:
+            r_norm = LayerNorm(r)
+            s_in = reshape(r_norm) → [B, T, H, N, hd]      # divide dim among heads
+            if l > 0: s_in = s_in[:, :, perm[l-1]]         # permute heads (free, no params)
+
+            For each (b, h), per timestep:
+                S_h^t = tanh( W_h_time[l, h] · S_h^{t-1} + s_in[b, t, h] )
+                                ↑                            ↑
+                                only learned matrix          per-head residual input
+
+            r ← r + reshape(state_traj) → [B, T, dim]      # residual add
+
+        r_final = LayerNorm(r)
+        logits = sum across K tiles                         # NO learned head
+                = r_final.reshape(B, T, K, vocab).sum(dim=2)
+
+    Learnable parameters (per layer): W_h_time + LayerNorm gain/bias.
+    Total params ≈ L · H · N² + L · 2·dim   — tiny.
+
+    Massive state activation memory but trivial parameter count. Use
+    --gradient_checkpointing for any non-trivial config.
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 50000,
+        K: int = 4,                  # tile factor: dim = K · vocab
+        head_dim: int = 16,
+        depth: int = 8,
+        dropout: float = 0.0,
+        gradient_checkpointing: bool = False,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.K = K
+        self.N = head_dim
+        self.head_dim = head_dim
+
+        # dim must be divisible by head_dim² for clean per-head reshape.
+        # Pad if not.
+        target_dim = K * vocab_size
+        n_sq = head_dim * head_dim
+        self.dim = ((target_dim + n_sq - 1) // n_sq) * n_sq    # round up to multiple
+        self.padded = (self.dim - target_dim)
+        self.H = self.dim // n_sq
+        self.L = depth
+        self.gradient_checkpointing = gradient_checkpointing
+
+        H, N, hd, L = self.H, head_dim, head_dim, depth
+
+        # Per-(layer, head) time recurrence matrices, N×N each
+        self.W_h_time = nn.Parameter(
+            torch.stack([self._init_eye(H, N) for _ in range(L)], dim=0)
+        )
+
+        # Per-layer fixed head permutation (no learnable params)
+        if L > 1:
+            gen = torch.Generator().manual_seed(42)
+            perms = torch.stack(
+                [torch.randperm(H, generator=gen) for _ in range(L - 1)], dim=0
+            )
+            self.register_buffer('layer_perm', perms)
+        else:
+            self.layer_perm = None
+
+        # LayerNorms per layer + final
+        self.norm = nn.ModuleList([nn.LayerNorm(self.dim) for _ in range(L)])
+        self.norm_final = nn.LayerNorm(self.dim)
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    @staticmethod
+    def _init_eye(H, N):
+        eye = torch.eye(N).unsqueeze(0).expand(H, -1, -1).contiguous()
+        return eye + 0.01 * torch.randn(H, N, N)
+
+    def num_params(self):
+        return sum(p.numel() for p in self.parameters())
+
+    def get_num_params(self):
+        return self.num_params()
+
+    def _layer_forward(self, r, l, S0_zeros):
+        B, T, _ = r.shape
+        H, N, hd = self.H, self.N, self.head_dim
+
+        r_norm = self.norm[l](r)                                # [B, T, dim]
+        s_in = r_norm.view(B, T, H, N, hd)
+
+        if l > 0 and self.layer_perm is not None:
+            perm = self.layer_perm[l - 1]
+            s_in = s_in.index_select(2, perm).contiguous()
+
+        # Time recurrence: per-head state evolves under W_h_time + residual input as write
+        if E94_TRITON_AVAILABLE and r.is_cuda:
+            state_traj = E94TimeWriteFunction.apply(
+                S0_zeros, self.W_h_time[l].contiguous(),
+                s_in.contiguous(),
+            )
+        else:
+            state_traj = torch.zeros(B, T, H, N, hd, device=r.device, dtype=torch.float32)
+            s_prev = S0_zeros
+            for t in range(T):
+                wh_t = torch.einsum('hnp,bhpc->bhnc', self.W_h_time[l], s_prev)
+                s_new = torch.tanh(wh_t + s_in[:, t])
+                state_traj[:, t] = s_new
+                s_prev = s_new
+
+        return self.dropout(state_traj.reshape(B, T, self.dim))
+
+    def forward(self, tokens: torch.Tensor, return_loss: bool = False):
+        B, T = tokens.shape
+        H, N, hd, L = self.H, self.N, self.head_dim, self.L
+        K, vocab = self.K, self.vocab_size
+
+        # One-hot tile input (no learned embedding)
+        one_hot = F.one_hot(tokens, num_classes=vocab).to(torch.float32)   # [B, T, vocab]
+        r = one_hot.repeat(1, 1, K)                                          # [B, T, K·vocab]
+        if self.padded > 0:
+            r = F.pad(r, (0, self.padded))                                   # [B, T, dim]
+
+        S0_zeros = torch.zeros(B, H, N, hd, device=tokens.device, dtype=torch.float32)
+
+        for l in range(L):
+            if self.gradient_checkpointing and self.training:
+                state_out = torch.utils.checkpoint.checkpoint(
+                    self._layer_forward, r, l, S0_zeros, use_reentrant=False
+                )
+            else:
+                state_out = self._layer_forward(r, l, S0_zeros)
+            r = r + state_out
+
+        r = self.norm_final(r)
+        # Mean across K tiles to get vocab logits (no learned head)
+        if self.padded > 0:
+            r = r[:, :, : K * vocab]
+        logits = r.view(B, T, K, vocab).mean(dim=2)                          # [B, T, vocab]
+
+        if return_loss:
+            shift_logits = logits[:, :-1].contiguous()
+            shift_targets = tokens[:, 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.reshape(-1, vocab),
+                shift_targets.reshape(-1),
+            )
+            return loss
+        return logits
+
+
 def count_params(vocab_size=256, H=32, head_dim=16, L=6):
     """Rough breakdown of E94 parameters (shared embedding across heads)."""
     N = head_dim
