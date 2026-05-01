@@ -273,6 +273,7 @@ class E94Model(nn.Module):
         dropout: float = 0.0,
         tie_embedding: bool = True,
         use_gate: bool = False,            # silu output gate (E88-style)
+        use_permutation: bool = True,      # fixed per-layer head permutation (cross-head info flow)
         gradient_checkpointing: bool = False,  # wrap each layer in torch.utils.checkpoint
     ):
         super().__init__()
@@ -285,6 +286,7 @@ class E94Model(nn.Module):
         self.L = depth
         self.tie_embedding = tie_embedding
         self.use_gate = use_gate
+        self.use_permutation = use_permutation
         self.gradient_checkpointing = gradient_checkpointing
 
         H, N, hd, L = n_heads, head_dim, head_dim, depth
@@ -309,7 +311,8 @@ class E94Model(nn.Module):
         )
 
         # Per-layer head permutation (fixed at init, no learned params)
-        if L > 1:
+        # use_permutation=False uses identity instead → ablation disables cross-head info flow
+        if L > 1 and use_permutation:
             gen = torch.Generator().manual_seed(42)
             perms = torch.stack(
                 [torch.randperm(H, generator=gen) for _ in range(L - 1)], dim=0
@@ -525,8 +528,14 @@ class E94OneHotModel(nn.Module):
 
     @staticmethod
     def _init_eye(H, N):
-        eye = torch.eye(N).unsqueeze(0).expand(H, -1, -1).contiguous()
-        return eye + 0.01 * torch.randn(H, N, N)
+        # Contractive init for E94OneHot: ||W_h|| < 1.
+        # In OneHot, the residual is sparse; most state positions receive zero input
+        # most of the time. The recurrence dynamics for those positions are pure
+        # W_h · s_prev. With ||W_h|| > 1, gradients explode through time
+        # (||W_h||^T = 1.08^512 ≈ 1e17). Contractive init (0.9·I + small noise)
+        # ensures the recurrence is stable in dead positions.
+        eye = 0.9 * torch.eye(N).unsqueeze(0).expand(H, -1, -1).contiguous()
+        return eye + 0.005 * torch.randn(H, N, N)
 
     def num_params(self):
         return sum(p.numel() for p in self.parameters())

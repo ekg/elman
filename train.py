@@ -103,7 +103,9 @@ def parse_args():
     parser.add_argument('--k_slow', type=int, default=None,
                         help='Slow state dimension for E90 Dual-Rate (default=48)')
     parser.add_argument('--use_gate', type=int, default=1,
-                        help='Use output gating for E88 (0=no gate, 1=gate, default=1)')
+                        help='Use output gating for E88/E94 (0=no gate, 1=gate, default=1)')
+    parser.add_argument('--use_permutation', type=int, default=1,
+                        help='E94: cross-head permutation between layers (0=off, 1=on, default=1)')
     parser.add_argument('--gate_activation', type=str, default='sigmoid',
                         help='Gate activation for E88 (sigmoid=E88 original, silu=FLA-GDN style)')
     parser.add_argument('--linear_state', type=int, default=0,
@@ -413,6 +415,7 @@ def train(args):
         # permutation, dim-wide residual stream, tied embed/lm_head.
         # 'E94r' kept as alias for in-flight runs; semantically identical to 'E94'.
         # --use_gate 1: silu output gating (E88-style depth nonlinearity).
+        # --use_permutation 0: ablation, disable cross-head info flow.
         # --gradient_checkpointing: per-layer activation checkpointing.
         from elman.models.e94 import E94Model
         model = E94Model(
@@ -424,6 +427,7 @@ def train(args):
             dropout=args.dropout,
             tie_embedding=True,
             use_gate=bool(args.use_gate),
+            use_permutation=bool(getattr(args, 'use_permutation', 1)),
             gradient_checkpointing=args.gradient_checkpointing,
         )
     elif args.level == 'E94nr':
