@@ -159,10 +159,9 @@ SEARCH_SPACES = {
         'batch_size': (1, 128, 'int_log', 'Batch size'),
     },
     'e94': {
-        # H · head_dim = M (state width).
+        # H · head_dim = M (state width). Direct embedding (no bottleneck).
         'n_heads': (16, 4096, 'int_log', 'Number of heads (H)'),
         'depth': (4, 30, 'int', 'Number of layers (L)'),
-        'embed_dim': (512, 4096, 'int_log', 'Bottleneck embed dim (entry/exit projection)'),
         'lr': (1e-4, 3e-3, 'log', 'Learning rate'),
         'batch_size': (1, 64, 'int_log', 'Batch size'),
         # head_dim fixed via --fixed_n_state {16, 32}; default 16 here
@@ -468,20 +467,17 @@ def estimate_params_for_config(params, model_type):
         embed = vocab * dim
         return per_layer * depth + embed
     elif model_type == 'e94':
-        # E94: bottleneck embedding + per-head matrices + permuted heads.
+        # E94: direct embedding + per-head matrices + permuted heads.
         H = params.get('n_heads', 64)
         head_dim = params.get('n_state', params.get('head_dim', 16))
         N = head_dim
         L = depth
-        E = params.get('embed_dim', 256)
         vocab = 50000 if TOKENIZER_NAME else 256
-        embed = vocab * E
-        proj_k = E * H * N
-        proj_v = E * H * head_dim
+        embed = vocab * H * N + vocab * H * head_dim   # direct embed_k + embed_v
         w_h_time = L * H * N * N
-        w_h_layer = (L - 1) * H * N * N    # per-head row mix (NOT cross-head)
+        w_h_layer = (L - 1) * H * N * N
         head = N * head_dim * vocab
-        return embed + proj_k + proj_v + w_h_time + w_h_layer + head
+        return embed + w_h_time + w_h_layer + head
     elif model_type == 'fla-gdn':
         return calc_fla_gdn_params(dim, depth=depth, expansion=params.get('expansion', 2))
     elif model_type == 'mamba2':
@@ -617,14 +613,12 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--expansion', '1.0',
         ])
     elif model_type == 'e94':
-        # E94: bottleneck embedding + per-head matrices + permuted heads.
+        # E94: direct embedding + per-head matrices + permuted heads.
         head_dim = params.get('n_state', params.get('head_dim', 16))
-        embed_dim = params.get('embed_dim', 256)
         cmd.extend([
             '--level', 'E94',
             '--n_heads', str(params['n_heads']),
             '--n_state', str(head_dim),
-            '--embed_dim', str(embed_dim),
             '--expansion', '1.0',
         ])
 

@@ -75,7 +75,7 @@ class E94Model(nn.Module):
         n_heads: int = 32,                # H — number of head-chunks (M = H · 16)
         depth: int = 6,
         head_dim: int = 16,               # N (= head_dim by design symmetry)
-        embed_dim: int = 1024,            # bottleneck embedding dimension
+        embed_dim: int = None,            # ignored; kept for arg compat
         dropout: float = 0.0,
         share_layer_weights: bool = False,
     ):
@@ -86,16 +86,13 @@ class E94Model(nn.Module):
         self.head_dim = head_dim
         self.M = n_heads * head_dim
         self.L = depth
-        self.embed_dim = embed_dim
         self.share_layer_weights = share_layer_weights
 
         H, N, hd, M, L = n_heads, head_dim, head_dim, self.M, depth
-        E = embed_dim
 
-        # Bottleneck embedding: token -> [E] via Embedding, then project -> per-head [k, v]
-        self.embed = nn.Embedding(vocab_size, E)
-        self.proj_k = nn.Linear(E, H * N, bias=False)
-        self.proj_v = nn.Linear(E, H * hd, bias=False)
+        # Direct embedding: token -> per-head [k, v] vectors (NO bottleneck projection).
+        self.embed_k = nn.Embedding(vocab_size, H * N)
+        self.embed_v = nn.Embedding(vocab_size, H * hd)
 
         # Per-(layer, head) time recurrence matrices [N, N] per head
         if share_layer_weights:
@@ -129,9 +126,8 @@ class E94Model(nn.Module):
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
-        nn.init.normal_(self.embed.weight, std=0.02)
-        nn.init.normal_(self.proj_k.weight, std=0.02)
-        nn.init.normal_(self.proj_v.weight, std=0.02)
+        nn.init.normal_(self.embed_k.weight, std=0.02)
+        nn.init.normal_(self.embed_v.weight, std=0.02)
         nn.init.normal_(self.head.weight, std=0.02 / math.sqrt(N * hd))
 
     @staticmethod
@@ -156,10 +152,9 @@ class E94Model(nn.Module):
         B, T = tokens.shape
         H, N, hd, M, L = self.H, self.N, self.head_dim, self.M, self.L
 
-        # Bottleneck embedding: token -> [B, T, E] -> per-head k, v
-        e = self.embed(tokens)                                # [B, T, E]
-        k_raw = self.proj_k(e).view(B, T, H, N)               # [B, T, H, N]
-        v_emb = self.proj_v(e).view(B, T, H, hd)              # [B, T, H, hd]
+        # Direct embedding: per-head k, v lookup (no bottleneck projection)
+        k_raw = self.embed_k(tokens).view(B, T, H, N)         # [B, T, H, N]
+        v_emb = self.embed_v(tokens).view(B, T, H, hd)        # [B, T, H, hd]
         k = F.normalize(k_raw, dim=-1)                         # delta-rule stability
 
         # Process layer 0 first (input via embeddings), then subsequent layers.
@@ -239,25 +234,20 @@ class E94Model(nn.Module):
         return logits
 
 
-def count_params(vocab_size=256, H=32, head_dim=16, L=6, embed_dim=256):
-    """Rough breakdown of E94 parameters."""
+def count_params(vocab_size=256, H=32, head_dim=16, L=6):
+    """Rough breakdown of E94 parameters (direct embedding)."""
     N = head_dim
-    E = embed_dim
-    embed = vocab_size * E
-    proj_k = E * H * N
-    proj_v = E * H * head_dim
+    embed = vocab_size * H * N + vocab_size * H * head_dim   # k + v
     w_h_time = L * H * N * N
-    w_h_layer = (L - 1) * H * N * N   # per-head row mix (NOT cross-head HxH)
+    w_h_layer = (L - 1) * H * N * N
     head = N * head_dim * vocab_size
-    total = embed + proj_k + proj_v + w_h_time + w_h_layer + head
-    print(f"E94 params (vocab={vocab_size}, H={H}, head_dim={head_dim}, L={L}, E={E}):")
-    print(f"  embed (vocab x E): {embed:>12,}")
-    print(f"  proj_k (E x H*N):  {proj_k:>12,}")
-    print(f"  proj_v (E x H*hd): {proj_v:>12,}")
-    print(f"  W_h_time:          {w_h_time:>12,}")
+    total = embed + w_h_time + w_h_layer + head
+    print(f"E94 params (vocab={vocab_size}, H={H}, head_dim={head_dim}, L={L}):")
+    print(f"  embed (k+v):              {embed:>12,}")
+    print(f"  W_h_time:                 {w_h_time:>12,}")
     print(f"  W_h_layer (per-head NxN): {w_h_layer:>12,}")
-    print(f"  head (N*hd x vocab): {head:>12,}")
-    print(f"  TOTAL:             {total:>12,}  (~{total/1e6:.1f}M)")
+    print(f"  head (N*hd x vocab):      {head:>12,}")
+    print(f"  TOTAL:                    {total:>12,}  (~{total/1e6:.1f}M)")
     return total
 
 
@@ -284,8 +274,7 @@ if __name__ == '__main__':
     loss.backward()
     print(f"W_h_time.grad: {model.W_h_time.grad.norm().item():.4f}")
     print(f"W_h_layer.grad: {model.W_h_layer.grad.norm().item():.4f}")
-    print(f"embed.grad: {model.embed.weight.grad.norm().item():.4f}")
-    print(f"proj_k.grad: {model.proj_k.weight.grad.norm().item():.4f}")
-    print(f"proj_v.grad: {model.proj_v.weight.grad.norm().item():.4f}")
+    print(f"embed_k.grad: {model.embed_k.weight.grad.norm().item():.4f}")
+    print(f"embed_v.grad: {model.embed_v.weight.grad.norm().item():.4f}")
     print(f"head.grad: {model.head.weight.grad.norm().item():.4f}")
     print("PASS" if all(p.grad is not None and p.grad.norm().item() > 0 for p in model.parameters()) else "FAIL")
