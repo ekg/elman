@@ -266,6 +266,7 @@ class E94ResidualModel(nn.Module):
         dropout: float = 0.0,
         tie_embedding: bool = True,
         use_gate: bool = False,            # silu output gate (E88-style)
+        gradient_checkpointing: bool = False,  # wrap each layer in torch.utils.checkpoint
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -277,6 +278,7 @@ class E94ResidualModel(nn.Module):
         self.L = depth
         self.tie_embedding = tie_embedding
         self.use_gate = use_gate
+        self.gradient_checkpointing = gradient_checkpointing
 
         H, N, hd, L = n_heads, head_dim, head_dim, depth
 
@@ -343,52 +345,60 @@ class E94ResidualModel(nn.Module):
     def get_num_params(self):
         return self.num_params()
 
+    def _layer_forward(self, x, l, S0_zeros):
+        """One layer's body — extracted so we can wrap in torch.utils.checkpoint."""
+        B, T, _ = x.shape
+        H, N, hd = self.H, self.N, self.head_dim
+
+        x_norm = self.norm[l](x)
+        k_raw = self.k_proj[l](x_norm).view(B, T, H, N)
+        v = self.v_proj[l](x_norm).view(B, T, H, hd)
+        k = F.normalize(k_raw, dim=-1)
+
+        if l > 0 and self.layer_perm is not None:
+            perm = self.layer_perm[l - 1]
+            k = k.index_select(2, perm).contiguous()
+            v = v.index_select(2, perm).contiguous()
+
+        if E94_TRITON_AVAILABLE and x.is_cuda:
+            state_traj = E94TimeFunction.apply(
+                S0_zeros, self.W_h_time[l].contiguous(),
+                k.contiguous(), v.contiguous(),
+            )
+        else:
+            state_traj = torch.zeros(B, T, H, N, hd, device=x.device, dtype=torch.float32)
+            s_prev = S0_zeros
+            for t in range(T):
+                wh_t = torch.einsum('hnp,bhpc->bhnc', self.W_h_time[l], s_prev)
+                retrieved = torch.einsum('bhnc,bhn->bhc', s_prev, k[:, t])
+                delta = v[:, t] - retrieved
+                write = torch.einsum('bhn,bhc->bhnc', k[:, t], delta)
+                s_new = torch.tanh(wh_t + write)
+                state_traj[:, t] = s_new
+                s_prev = s_new
+
+        out = self.out_proj[l](state_traj.reshape(B, T, H * N * hd))
+        if self.g_proj is not None:
+            g = self.g_proj[l](x_norm)
+            out = out * F.silu(g)
+        out = self.dropout(out)
+        return out
+
     def forward(self, tokens: torch.Tensor, return_loss: bool = False):
         B, T = tokens.shape
         H, N, hd, L = self.H, self.N, self.head_dim, self.L
-        dim = self.dim
 
-        x = self.embed(tokens)  # [B, T, dim]
+        x = self.embed(tokens)
         S0_zeros = torch.zeros(B, H, N, hd, device=tokens.device, dtype=torch.float32)
 
         for l in range(L):
-            x_norm = self.norm[l](x)
-            k_raw = self.k_proj[l](x_norm).view(B, T, H, N)
-            v = self.v_proj[l](x_norm).view(B, T, H, hd)
-            k = F.normalize(k_raw, dim=-1)
-
-            # Per-layer head permutation (l > 0): shuffle which heads see which projections
-            if l > 0 and self.layer_perm is not None:
-                perm = self.layer_perm[l - 1]
-                k = k.index_select(2, perm).contiguous()
-                v = v.index_select(2, perm).contiguous()
-
-            # Time recurrence using E94 Triton kernel
-            if E94_TRITON_AVAILABLE and tokens.is_cuda:
-                state_traj = E94TimeFunction.apply(
-                    S0_zeros, self.W_h_time[l].contiguous(),
-                    k.contiguous(), v.contiguous(),
+            if self.gradient_checkpointing and self.training:
+                # Wrap layer body in checkpoint — recomputes during backward, saves memory
+                out = torch.utils.checkpoint.checkpoint(
+                    self._layer_forward, x, l, S0_zeros, use_reentrant=False
                 )
             else:
-                # Python fallback
-                state_traj = torch.zeros(B, T, H, N, hd, device=tokens.device, dtype=torch.float32)
-                s_prev = S0_zeros
-                for t in range(T):
-                    wh_t = torch.einsum('hnp,bhpc->bhnc', self.W_h_time[l], s_prev)
-                    retrieved = torch.einsum('bhnc,bhn->bhc', s_prev, k[:, t])
-                    delta = v[:, t] - retrieved
-                    write = torch.einsum('bhn,bhc->bhnc', k[:, t], delta)
-                    s_new = torch.tanh(wh_t + write)
-                    state_traj[:, t] = s_new
-                    s_prev = s_new
-
-            # Project state back to dim
-            out = self.out_proj[l](state_traj.reshape(B, T, H * N * hd))
-            # Optional silu output gate (E88-style multiplicative nonlinearity in depth)
-            if self.g_proj is not None:
-                g = self.g_proj[l](x_norm)            # [B, T, dim]
-                out = out * F.silu(g)
-            out = self.dropout(out)
+                out = self._layer_forward(x, l, S0_zeros)
             x = x + out
 
         x = self.norm_final(x)
