@@ -423,6 +423,7 @@ def train(args):
         # E94r: E94 wrapped in dim-wide residual stream — scales like E88/FLA-GDN.
         # Per-head [N, hd] state with W_h_time recurrence (Triton), per-layer permutation,
         # all wrapped by dim-wide residual + projections + tied embedding.
+        # --use_gate 1 enables silu output gating (E88-style depth nonlinearity).
         from elman.models.e94 import E94ResidualModel
         model = E94ResidualModel(
             vocab_size=vocab_size,
@@ -432,6 +433,7 @@ def train(args):
             depth=args.depth,
             dropout=args.dropout,
             tie_embedding=True,
+            use_gate=bool(args.use_gate),
         )
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)

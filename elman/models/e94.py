@@ -265,6 +265,7 @@ class E94ResidualModel(nn.Module):
         head_dim: int = 16,
         dropout: float = 0.0,
         tie_embedding: bool = True,
+        use_gate: bool = False,            # silu output gate (E88-style)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -275,6 +276,7 @@ class E94ResidualModel(nn.Module):
         self.M = n_heads * head_dim
         self.L = depth
         self.tie_embedding = tie_embedding
+        self.use_gate = use_gate
 
         H, N, hd, L = n_heads, head_dim, head_dim, depth
 
@@ -285,6 +287,12 @@ class E94ResidualModel(nn.Module):
         self.k_proj = nn.ModuleList([nn.Linear(dim, H * N, bias=False) for _ in range(L)])
         self.v_proj = nn.ModuleList([nn.Linear(dim, H * hd, bias=False) for _ in range(L)])
         self.out_proj = nn.ModuleList([nn.Linear(H * N * hd, dim, bias=False) for _ in range(L)])
+        # Silu output gate: gate ∈ ℝ^dim per layer, multiplied with out_proj output.
+        # Adds multiplicative nonlinearity in depth (E88-style).
+        if use_gate:
+            self.g_proj = nn.ModuleList([nn.Linear(dim, dim, bias=False) for _ in range(L)])
+        else:
+            self.g_proj = None
 
         # Per-(layer, head) time recurrence matrices, 16x16 each
         self.W_h_time = nn.Parameter(
@@ -313,6 +321,8 @@ class E94ResidualModel(nn.Module):
             nn.init.normal_(self.k_proj[l].weight, std=0.02)
             nn.init.normal_(self.v_proj[l].weight, std=0.02)
             nn.init.normal_(self.out_proj[l].weight, std=0.02 / math.sqrt(L))
+            if self.g_proj is not None:
+                nn.init.normal_(self.g_proj[l].weight, std=0.02)
 
     @staticmethod
     def _init_eye(H, N):
@@ -372,8 +382,12 @@ class E94ResidualModel(nn.Module):
                     state_traj[:, t] = s_new
                     s_prev = s_new
 
-            # Project state back to dim and add to residual
+            # Project state back to dim
             out = self.out_proj[l](state_traj.reshape(B, T, H * N * hd))
+            # Optional silu output gate (E88-style multiplicative nonlinearity in depth)
+            if self.g_proj is not None:
+                g = self.g_proj[l](x_norm)            # [B, T, dim]
+                out = out * F.silu(g)
             out = self.dropout(out)
             x = x + out
 
