@@ -518,9 +518,8 @@ class E94OneHotModel(nn.Module):
         else:
             self.layer_perm = None
 
-        # LayerNorms per layer + final
-        self.norm = nn.ModuleList([nn.LayerNorm(self.dim) for _ in range(L)])
-        self.norm_final = nn.LayerNorm(self.dim)
+        # No LayerNorm in this variant — sparse residual + tanh-bounded state means
+        # LayerNorm would over-amplify (std≈1/sqrt(dim) → divide by tiny → blow up).
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -539,8 +538,12 @@ class E94OneHotModel(nn.Module):
         B, T, _ = r.shape
         H, N, hd = self.H, self.N, self.head_dim
 
-        r_norm = self.norm[l](r)                                # [B, T, dim]
-        s_in = r_norm.view(B, T, H, N, hd)
+        # NO LayerNorm in this architecture — the residual is sparse (mostly zeros
+        # with a few active positions from the one-hot input + tanh-bounded state).
+        # LayerNorm divides by std~1/sqrt(dim), amplifying active positions by ~sqrt(dim).
+        # State is naturally bounded by tanh ∈ [-1, 1] so explicit normalization is
+        # unnecessary and harmful here.
+        s_in = r.view(B, T, H, N, hd)
 
         if l > 0 and self.layer_perm is not None:
             perm = self.layer_perm[l - 1]
@@ -585,8 +588,7 @@ class E94OneHotModel(nn.Module):
                 state_out = self._layer_forward(r, l, S0_zeros)
             r = r + state_out
 
-        r = self.norm_final(r)
-        # Mean across K tiles to get vocab logits (no learned head)
+        # Mean across K tiles to get vocab logits (no learned head, no final norm)
         if self.padded > 0:
             r = r[:, :, : K * vocab]
         logits = r.view(B, T, K, vocab).mean(dim=2)                          # [B, T, vocab]
