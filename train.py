@@ -409,17 +409,29 @@ def train(args):
             expansion_factor=args.expansion,
         )
     elif args.level == 'E94':
-        # E94: symmetric matrix-state RNN (per-head W_h_time + W_h_layer, no dim collapse).
-        # Uses --n_heads (H), --n_state (head_dim, default 16), --depth, --embed_dim.
+        # E94: original (no residual) — kept for ablation; not recommended for scale.
         from elman.models.e94 import E94Model
         model = E94Model(
             vocab_size=vocab_size,
             n_heads=args.n_heads,
             head_dim=args.n_state,
             depth=args.depth,
-            embed_dim=args.embed_dim,
             dropout=args.dropout,
             share_layer_weights=False,
+        )
+    elif args.level == 'E94r':
+        # E94r: E94 wrapped in dim-wide residual stream — scales like E88/FLA-GDN.
+        # Per-head [N, hd] state with W_h_time recurrence (Triton), per-layer permutation,
+        # all wrapped by dim-wide residual + projections + tied embedding.
+        from elman.models.e94 import E94ResidualModel
+        model = E94ResidualModel(
+            vocab_size=vocab_size,
+            dim=args.dim,
+            n_heads=args.n_heads,
+            head_dim=args.n_state,
+            depth=args.depth,
+            dropout=args.dropout,
+            tie_embedding=True,
         )
     elif isinstance(args.level, str) and args.level.lower() == 'e88_fused':
         # E88 Fused: optimized kernel with [B, T, H, dim] layout (no transpose overhead)

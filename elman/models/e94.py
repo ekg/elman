@@ -90,9 +90,12 @@ class E94Model(nn.Module):
 
         H, N, hd, M, L = n_heads, head_dim, head_dim, self.M, depth
 
-        # Direct embedding: token -> per-head [k, v] vectors (NO bottleneck projection).
-        self.embed_k = nn.Embedding(vocab_size, H * N)
-        self.embed_v = nn.Embedding(vocab_size, H * hd)
+        # SHARED embedding: token -> single [N] (key) and [hd] (value) vectors.
+        # All H heads receive the same input (k, v) at l=0; heads differentiate
+        # purely through their distinct W_h_time and W_h_layer matrices.
+        # Cuts embedding cost by H× (e.g., 128× at H=128).
+        self.embed_k = nn.Embedding(vocab_size, N)
+        self.embed_v = nn.Embedding(vocab_size, hd)
 
         # Per-(layer, head) time recurrence matrices [N, N] per head
         if share_layer_weights:
@@ -152,9 +155,12 @@ class E94Model(nn.Module):
         B, T = tokens.shape
         H, N, hd, M, L = self.H, self.N, self.head_dim, self.M, self.L
 
-        # Direct embedding: per-head k, v lookup (no bottleneck projection)
-        k_raw = self.embed_k(tokens).view(B, T, H, N)         # [B, T, H, N]
-        v_emb = self.embed_v(tokens).view(B, T, H, hd)        # [B, T, H, hd]
+        # Shared embedding: token -> [B, T, N], [B, T, hd] — broadcast to all H heads
+        k_shared = self.embed_k(tokens)                        # [B, T, N]
+        v_shared = self.embed_v(tokens)                        # [B, T, hd]
+        # Expand to per-head shape (broadcast — no params, no copy needed in einsum)
+        k_raw = k_shared.unsqueeze(2).expand(B, T, H, N).contiguous()  # [B, T, H, N]
+        v_emb = v_shared.unsqueeze(2).expand(B, T, H, hd).contiguous() # [B, T, H, hd]
         k = F.normalize(k_raw, dim=-1)                         # delta-rule stability
 
         # Process layer 0 first (input via embeddings), then subsequent layers.
@@ -234,10 +240,184 @@ class E94Model(nn.Module):
         return logits
 
 
-def count_params(vocab_size=256, H=32, head_dim=16, L=6):
-    """Rough breakdown of E94 parameters (direct embedding)."""
+class E94ResidualModel(nn.Module):
+    """E94 wrapped in a dim-wide residual stream — scales like E88/FLA-GDN/Mamba.
+
+    Per layer:
+      x_norm = LayerNorm(x_residual)             [B, T, dim]
+      k = L2_norm(k_proj(x_norm))                [B, T, H, N]
+      v = v_proj(x_norm)                         [B, T, H, hd]
+      [optionally permute heads of (k, v) by layer permutation, l>0]
+      state_traj = E94TimeFunction(zeros, W_h_time[l], k, v)   [B, T, H, N, hd]
+      out = out_proj(state_traj.flatten(start_dim=-3))         [B, T, dim]
+      x_residual = x_residual + out
+
+    Final:
+      logits = lm_head(LayerNorm(x_residual))    (lm_head tied with embed)
+    """
+
+    def __init__(
+        self,
+        vocab_size: int = 256,
+        dim: int = 512,
+        n_heads: int = 32,
+        depth: int = 6,
+        head_dim: int = 16,
+        dropout: float = 0.0,
+        tie_embedding: bool = True,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.H = n_heads
+        self.N = head_dim
+        self.head_dim = head_dim
+        self.M = n_heads * head_dim
+        self.L = depth
+        self.tie_embedding = tie_embedding
+
+        H, N, hd, L = n_heads, head_dim, head_dim, depth
+
+        self.embed = nn.Embedding(vocab_size, dim)
+
+        # Per-layer projections
+        self.norm = nn.ModuleList([nn.LayerNorm(dim) for _ in range(L)])
+        self.k_proj = nn.ModuleList([nn.Linear(dim, H * N, bias=False) for _ in range(L)])
+        self.v_proj = nn.ModuleList([nn.Linear(dim, H * hd, bias=False) for _ in range(L)])
+        self.out_proj = nn.ModuleList([nn.Linear(H * N * hd, dim, bias=False) for _ in range(L)])
+
+        # Per-(layer, head) time recurrence matrices, 16x16 each
+        self.W_h_time = nn.Parameter(
+            torch.stack([self._init_eye(H, N) for _ in range(L)], dim=0)
+        )
+
+        # Per-layer head permutation (fixed at init, no learned params)
+        if L > 1:
+            gen = torch.Generator().manual_seed(42)
+            perms = torch.stack(
+                [torch.randperm(H, generator=gen) for _ in range(L - 1)], dim=0
+            )
+            self.register_buffer('layer_perm', perms)
+        else:
+            self.layer_perm = None
+
+        self.norm_final = nn.LayerNorm(dim)
+        self.lm_head = nn.Linear(dim, vocab_size, bias=False)
+        if tie_embedding:
+            self.lm_head.weight = self.embed.weight
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+        nn.init.normal_(self.embed.weight, std=0.02)
+        for l in range(L):
+            nn.init.normal_(self.k_proj[l].weight, std=0.02)
+            nn.init.normal_(self.v_proj[l].weight, std=0.02)
+            nn.init.normal_(self.out_proj[l].weight, std=0.02 / math.sqrt(L))
+
+    @staticmethod
+    def _init_eye(H, N):
+        eye = torch.eye(N).unsqueeze(0).expand(H, -1, -1).contiguous()
+        return eye + 0.01 * torch.randn(H, N, N)
+
+    def num_params(self):
+        # Adjust for tied weights — count lm_head only if not tied
+        n = 0
+        seen = set()
+        for p in self.parameters():
+            pid = id(p)
+            if pid in seen: continue
+            seen.add(pid)
+            n += p.numel()
+        return n
+
+    def get_num_params(self):
+        return self.num_params()
+
+    def forward(self, tokens: torch.Tensor, return_loss: bool = False):
+        B, T = tokens.shape
+        H, N, hd, L = self.H, self.N, self.head_dim, self.L
+        dim = self.dim
+
+        x = self.embed(tokens)  # [B, T, dim]
+        S0_zeros = torch.zeros(B, H, N, hd, device=tokens.device, dtype=torch.float32)
+
+        for l in range(L):
+            x_norm = self.norm[l](x)
+            k_raw = self.k_proj[l](x_norm).view(B, T, H, N)
+            v = self.v_proj[l](x_norm).view(B, T, H, hd)
+            k = F.normalize(k_raw, dim=-1)
+
+            # Per-layer head permutation (l > 0): shuffle which heads see which projections
+            if l > 0 and self.layer_perm is not None:
+                perm = self.layer_perm[l - 1]
+                k = k.index_select(2, perm).contiguous()
+                v = v.index_select(2, perm).contiguous()
+
+            # Time recurrence using E94 Triton kernel
+            if E94_TRITON_AVAILABLE and tokens.is_cuda:
+                state_traj = E94TimeFunction.apply(
+                    S0_zeros, self.W_h_time[l].contiguous(),
+                    k.contiguous(), v.contiguous(),
+                )
+            else:
+                # Python fallback
+                state_traj = torch.zeros(B, T, H, N, hd, device=tokens.device, dtype=torch.float32)
+                s_prev = S0_zeros
+                for t in range(T):
+                    wh_t = torch.einsum('hnp,bhpc->bhnc', self.W_h_time[l], s_prev)
+                    retrieved = torch.einsum('bhnc,bhn->bhc', s_prev, k[:, t])
+                    delta = v[:, t] - retrieved
+                    write = torch.einsum('bhn,bhc->bhnc', k[:, t], delta)
+                    s_new = torch.tanh(wh_t + write)
+                    state_traj[:, t] = s_new
+                    s_prev = s_new
+
+            # Project state back to dim and add to residual
+            out = self.out_proj[l](state_traj.reshape(B, T, H * N * hd))
+            out = self.dropout(out)
+            x = x + out
+
+        x = self.norm_final(x)
+        logits = self.lm_head(x)
+
+        if return_loss:
+            shift_logits = logits[:, :-1].contiguous()
+            shift_targets = tokens[:, 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.reshape(-1, self.vocab_size),
+                shift_targets.reshape(-1),
+            )
+            return loss
+        return logits
+
+
+def count_params_residual(vocab_size=50000, dim=1024, H=64, head_dim=16, L=15, tie=True):
+    """Param breakdown for E94ResidualModel."""
     N = head_dim
-    embed = vocab_size * H * N + vocab_size * H * head_dim   # k + v
+    M = H * head_dim
+    embed = vocab_size * dim
+    norm = 2 * dim * L + 2 * dim   # gamma + beta per LayerNorm, L+1 norms (final too)
+    k_proj = L * dim * H * N
+    v_proj = L * dim * H * head_dim
+    out_proj = L * (H * N * head_dim) * dim
+    w_h_time = L * H * N * N
+    lm_head = 0 if tie else vocab_size * dim
+    total = embed + norm + k_proj + v_proj + out_proj + w_h_time + lm_head
+    print(f"E94r params (vocab={vocab_size}, dim={dim}, H={H}, hd={head_dim}, L={L}, tied={tie}):")
+    print(f"  embed:       {embed:>12,}  (tied with lm_head: {tie})")
+    print(f"  k_proj:      {k_proj:>12,}")
+    print(f"  v_proj:      {v_proj:>12,}")
+    print(f"  out_proj:    {out_proj:>12,}  ← largest typically")
+    print(f"  W_h_time:    {w_h_time:>12,}")
+    print(f"  norm + head: {norm + lm_head:>12,}")
+    print(f"  TOTAL:       {total:>12,}  (~{total/1e6:.1f}M)")
+    return total
+
+
+def count_params(vocab_size=256, H=32, head_dim=16, L=6):
+    """Rough breakdown of E94 parameters (shared embedding across heads)."""
+    N = head_dim
+    embed = vocab_size * N + vocab_size * head_dim   # shared k + v (no H factor)
     w_h_time = L * H * N * N
     w_h_layer = (L - 1) * H * N * N
     head = N * head_dim * vocab_size
