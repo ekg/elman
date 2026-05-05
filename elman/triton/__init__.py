@@ -17,8 +17,16 @@ from .e88_triton_forward import (
     e88_triton_forward,
     e88_torch_reference,
 )
+from .e88_triton_backward import (
+    e88_triton_backward,
+    e88_triton,
+    E88TritonFunction,
+)
 
 __all__ = [
     "e88_triton_forward",
     "e88_torch_reference",
+    "e88_triton_backward",
+    "e88_triton",
+    "E88TritonFunction",
 ]
