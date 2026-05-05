@@ -1,9 +1,11 @@
-# Length-extrapolation results — modular_counter K=5
+# Length-extrapolation results
 
 **Protocol:** Train at sequence length T=40, evaluate at T ∈ {40, 80, 160, 320, 500}.
 A model that *learns the algorithm* extrapolates; a model that *memorizes the training-length distribution* does not.
 
-**Config:** dim=384, depth=4, n_heads=32, n_state=32, sf-AdamW, 5K steps, batch_size=32. 3 patterns × 3 seeds.
+**Config:** dim=384, depth=4, n_heads=32, n_state=32, sf-AdamW, 5K steps, batch_size=32, 3 seeds.
+
+## modular_counter K=5
 
 ## Results (mean ± std over 3 seeds)
 
@@ -33,6 +35,23 @@ This is the expected separation. E88's nonlinear-in-time matrix recurrence with 
 - 5K steps is short — longer training might let FLA reach the canonical-sweep accuracy of 0.65 at T=40. The extrapolation pattern is the more durable signal.
 - Only modular_counter K=5 here. Parity also length-extrapolates well for E88 (0.81 at T=500 from earlier smoke). FSM tracking + Dyck-2 should be added.
 - Sequence length of training matters: at T=40, FLA is well below grok threshold; at T=128 (canonical sweep) it's at 0.65. Length-extrap from a stronger base would be more informative.
+
+## fsm_tracking K=4
+
+| Pattern        | T=40 (train)     | T=80             | T=160            | T=320            | T=500            |
+|----------------|------------------|------------------|------------------|------------------|------------------|
+| **pure_E88**   | **1.000 ± 0.000**| **1.000 ± 0.001**| **0.903 ± 0.065**| **0.711 ± 0.103**| **0.591 ± 0.102**|
+| pure_FLA       | 0.988 ± 0.006    | 0.924 ± 0.037    | 0.677 ± 0.081    | 0.473 ± 0.048    | 0.387 ± 0.034    |
+
+Random baseline = 0.25 (4-state FSM).
+
+**Read.** Both patterns grok at training length (E88 1.000, FLA 0.988). On extrapolation, E88 holds 0.59 at T=500 (12.5× training length, well above 0.25 random); FLA falls to 0.39 — closer to random. The gap widens monotonically with T: at T=160 E88 still has 0.90, FLA already at 0.68. This is the same pattern as modular_counter, but with a stronger FLA baseline (FLA actually learns FSM at T=40, just doesn't extrapolate).
+
+## Joint take
+
+Across two state-tracking tasks (modular_counter K=5 and fsm_tracking K=4), pure E88 extrapolates substantially better than pure FLA-GDN. On modular_counter the gap is dramatic (E88 doesn't degrade to random at T=500; FLA never groks at T=40). On fsm_tracking the gap is monotone and growing — both grok at T=40, but E88 retains 0.59 at T=500 vs FLA's 0.39.
+
+Hybrid_AABB (modular_counter only — not run for fsm) tracks FLA, not E88. Stacking E88 with FLA does not preserve E88's extrapolation; the FLA layers degrade what pure E88 can do alone.
 
 ## Reproduce
 
