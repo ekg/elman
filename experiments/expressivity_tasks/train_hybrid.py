@@ -59,6 +59,12 @@ def main():
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--label', required=True)
     ap.add_argument('--output_dir', default='experiments/expressivity_tasks/results')
+    ap.add_argument('--eval_lengths', type=int, nargs='+', default=None,
+                    help='If set, after training, eval at each of these T values '
+                         '(Délétang length-extrapolation protocol). Records per-T '
+                         "accuracy under log['length_extrap'].")
+    ap.add_argument('--eval_lengths_n_batches', type=int, default=8,
+                    help='Number of eval batches per length in --eval_lengths.')
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -138,6 +144,35 @@ def main():
     log['final_acc'] = float(acc); log['final_loss'] = float(eval_loss)
     log['elapsed_total_s'] = float(time.time() - t0)
     print(f"\nFINAL: acc={acc:.4f}  loss={eval_loss:.4f}  baseline={task.random_baseline_acc():.4f}", flush=True)
+
+    # Length-extrapolation eval (Délétang protocol): test at lengths the
+    # model never trained on. A model that learned the algorithm
+    # extrapolates; a model that memorized the training-length
+    # distribution does not.
+    if args.eval_lengths is not None:
+        log['length_extrap'] = {}
+        # Use a smaller per-batch B at very long T to avoid OOM.
+        for T_eval in args.eval_lengths:
+            B_eval = args.batch_size
+            # Cap memory: scale batch down for very long sequences.
+            if T_eval > 4 * args.seq_len:
+                B_eval = max(2, args.batch_size // (T_eval // (4 * args.seq_len)))
+            try:
+                acc_T, loss_T = evaluate(
+                    model, task, B_eval, T_eval,
+                    args.eval_lengths_n_batches, rng, device,
+                )
+                print(f"  length_extrap T={T_eval:>5d} (B={B_eval}): "
+                      f"acc={acc_T:.4f}  loss={loss_T:.4f}", flush=True)
+                log['length_extrap'][str(T_eval)] = {
+                    'acc': float(acc_T),
+                    'loss': float(loss_T),
+                    'B_eval': int(B_eval),
+                }
+            except Exception as e:
+                print(f"  length_extrap T={T_eval}: ERROR {type(e).__name__}: {e}",
+                      flush=True)
+                log['length_extrap'][str(T_eval)] = {'error': str(e)}
 
     os.makedirs(args.output_dir, exist_ok=True)
     out_path = os.path.join(args.output_dir, f'{args.label}.json')
