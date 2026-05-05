@@ -847,6 +847,7 @@ class E88FLAHybrid(nn.Module):
         gate_activation: str = 'silu',  # Gate activation: 'silu' (FLA-GDN style, enables optimized kernels) or 'sigmoid'
         checkpoint_interval: int = 16,  # Steps between state checkpoints (larger = less memory, more recompute)
         projection_chunk_size: int = 0,  # Chunk size for projection recomputation (0=disabled). Saves ~5GB/layer at T=32K.
+        use_triton: bool = False,  # Use Triton fwd+bwd kernels instead of CUDA register-owned (portable across NVIDIA/AMD ROCm)
         **kwargs
     ):
         super().__init__()
@@ -878,6 +879,7 @@ class E88FLAHybrid(nn.Module):
         self.use_l2_norm = use_l2_norm
         self.use_output_norm = use_output_norm
         self.head_mix = head_mix
+        self.use_triton = use_triton
 
         # Key and query dimensions (like FLA-GDN: key_dim = num_heads * head_k_dim)
         self.key_dim = n_heads * n_state
@@ -1189,10 +1191,17 @@ class E88FLAHybrid(nn.Module):
         """
         k, v, q, decay, g = self._compute_projections(x_chunk, input_dtype, use_fused_l2)
 
-        S_new, output = E88OptimizedCUDAFunction.apply(
-            self.training, k, v, q, decay, g, S_prev,
-            self.n_heads, True, use_fused_l2, self.checkpoint_interval
-        )
+        if self.use_triton:
+            from elman.triton.e88_triton_optimized import e88_triton_optimized_apply
+            S_new, output = e88_triton_optimized_apply(
+                self.training, k, v, q, decay, g, S_prev,
+                self.n_heads, True, use_fused_l2, self.checkpoint_interval,
+            )
+        else:
+            S_new, output = E88OptimizedCUDAFunction.apply(
+                self.training, k, v, q, decay, g, S_prev,
+                self.n_heads, True, use_fused_l2, self.checkpoint_interval
+            )
         return S_new, output
 
     def forward(
@@ -1485,13 +1494,22 @@ class E88FLAHybrid(nn.Module):
                 # Compute gate projection (kept in [B, T, H, dim] layout)
                 g = self.g_proj(x).view(B, T, H, self.head_v_dim).to(input_dtype)
 
-                # Call optimized kernel (auto-selects warp vs coalesced based on n_state)
-                S_final, output = E88OptimizedCUDAFunction.apply(
-                    self.training,
-                    k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
-                    g, S0.to(input_dtype), H, True, use_fused_l2,  # apply_gate=True, normalize_kq
-                    self.checkpoint_interval
-                )
+                if self.use_triton:
+                    from elman.triton.e88_triton_optimized import e88_triton_optimized_apply
+                    S_final, output = e88_triton_optimized_apply(
+                        self.training,
+                        k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
+                        g, S0.to(input_dtype), H, True, use_fused_l2,
+                        self.checkpoint_interval,
+                    )
+                else:
+                    # Call optimized kernel (auto-selects warp vs coalesced based on n_state)
+                    S_final, output = E88OptimizedCUDAFunction.apply(
+                        self.training,
+                        k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
+                        g, S0.to(input_dtype), H, True, use_fused_l2,  # apply_gate=True, normalize_kq
+                        self.checkpoint_interval
+                    )
 
             fused_gate_used = True
 
