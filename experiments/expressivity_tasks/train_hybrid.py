@@ -75,6 +75,7 @@ def main():
     task_kwargs = {}
     if args.task == 'modular_counter':       task_kwargs['K'] = args.K
     elif args.task == 'dyck':                 task_kwargs['max_depth'] = args.K
+    elif args.task == 'dyck2':                task_kwargs['max_depth'] = args.K
     elif args.task == 'fsm_tracking':         task_kwargs['n_states'] = args.K
     elif args.task == 'selective_copy':       task_kwargs['n_to_copy'] = args.K
     elif args.task == 'assoc_recall':         task_kwargs['n_pairs'] = args.K
