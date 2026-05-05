@@ -22,6 +22,9 @@ from .e88_triton_backward import (
     e88_triton,
     E88TritonFunction,
 )
+from .e88_triton_optimized import (
+    e88_triton_optimized_apply,
+)
 
 __all__ = [
     "e88_triton_forward",
@@ -29,4 +32,5 @@ __all__ = [
     "e88_triton_backward",
     "e88_triton",
     "E88TritonFunction",
+    "e88_triton_optimized_apply",
 ]
