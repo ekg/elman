@@ -115,28 +115,34 @@ class LlamaAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0.0,
                 causal=True
             )
-        else:
-            # Standard attention
-            # [B, H, T, D]
+        elif x.is_cuda:
+            # Use PyTorch's built-in SDPA which dispatches to FlashAttention v2 / mem-efficient
+            # backend automatically. O(T) memory like flash_attn package.
+            # SDPA expects [B, H, T, D]
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
-
-            # Scaled dot-product attention
+            output = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True,
+            )
+            output = output.transpose(1, 2).contiguous()  # [B, T, H, D]
+        else:
+            # CPU fallback: standard attention
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
             scale = 1.0 / math.sqrt(self.head_dim)
             scores = torch.matmul(q, k.transpose(-2, -1)) * scale
-
-            # Causal mask
             if mask is None:
                 mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
             scores = scores.masked_fill(mask, float('-inf'))
-
             attn = F.softmax(scores, dim=-1)
             if self.dropout > 0 and self.training:
                 attn = F.dropout(attn, p=self.dropout)
-
-            output = torch.matmul(attn, v)  # [B, H, T, D]
-            output = output.transpose(1, 2).contiguous()  # [B, T, H, D]
+            output = torch.matmul(attn, v)
+            output = output.transpose(1, 2).contiguous()
 
         # Project output
         output = output.view(B, T, -1)

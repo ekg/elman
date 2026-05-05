@@ -34,8 +34,10 @@ class Mamba2LM(nn.Module):
         expand=2,
         headdim=64,
         dropout=0.0,
+        loss_chunk_size=0,
     ):
         super().__init__()
+        self.loss_chunk_size = loss_chunk_size
 
         if not MAMBA2_AVAILABLE:
             raise ImportError("mamba_ssm not installed. Install with: pip install mamba-ssm")
@@ -102,27 +104,45 @@ class Mamba2LM(nn.Module):
 
         # Output
         x = self.norm(x)
-        logits = self.lm_head(x)
 
         if return_loss:
-            # Mask out padded positions if actual_length is provided
             if actual_length is not None:
-                device = logits.device
-                # Create mask: valid positions are 0 to actual_length-2 (shifted by 1 for targets)
+                device = x.device
                 positions = torch.arange(target.size(1), device=device).unsqueeze(0)
                 valid_mask = positions < (actual_length.unsqueeze(1) - 1)
                 target = target.clone()
                 target[~valid_mask] = -100
 
-            loss = F.cross_entropy(
-                logits.view(-1, self.vocab_size),
-                target.reshape(-1),
-                ignore_index=-100,
-            )
+            T_total = x.size(1)
+            loss_chunk = getattr(self, 'loss_chunk_size', 0)
+            if loss_chunk > 0 and T_total > loss_chunk:
+                total_sum = x.new_zeros(())
+                total_count = 0
+                for t0 in range(0, T_total, loss_chunk):
+                    t1 = min(t0 + loss_chunk, T_total)
+                    logits_c = self.lm_head(x[:, t0:t1])
+                    target_c = target[:, t0:t1]
+                    chunk_loss_sum = F.cross_entropy(
+                        logits_c.reshape(-1, self.vocab_size),
+                        target_c.reshape(-1),
+                        ignore_index=-100,
+                        reduction='sum',
+                    )
+                    total_sum = total_sum + chunk_loss_sum
+                    total_count = total_count + (target_c != -100).sum()
+                loss = total_sum / total_count.clamp(min=1)
+            else:
+                logits = self.lm_head(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, self.vocab_size),
+                    target.reshape(-1),
+                    ignore_index=-100,
+                )
             if return_prev_hiddens:
                 return loss, (None, None)
             return loss
 
+        logits = self.lm_head(x)
         if return_prev_hiddens:
             return logits, (None, None)
         return logits

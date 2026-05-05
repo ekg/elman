@@ -839,6 +839,7 @@ class LadderLM(nn.Module):
         checkpoint_interval=16,  # For E88: steps between state checkpoints (larger = less memory)
         gradient_checkpointing=False,  # Recompute layer forward during backward (saves ~16GB at 25 layers)
         projection_chunk_size=0,  # For E88: chunk size for projection recomputation (0=disabled, saves ~5GB/layer at T=32K)
+        loss_chunk_size=0,  # Chunk T dimension when computing lm_head + cross_entropy (0=disabled, saves T*V*2 bytes at long T)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -858,6 +859,7 @@ class LadderLM(nn.Module):
         self.use_conv = use_conv
         self.d_conv = d_conv
         self.gradient_checkpointing = gradient_checkpointing
+        self.loss_chunk_size = loss_chunk_size
 
         # Get the layer class for this level
         LayerClass = get_ladder_level(level)
@@ -1014,29 +1016,47 @@ class LadderLM(nn.Module):
             )
         else:
             x = self.norm((x + residual).to(dtype=self.norm.weight.dtype))
-        logits = self.lm_head(x)
-
         if return_loss:
             # Mask out padded positions if actual_length is provided
             if actual_length is not None:
-                device = logits.device
-                # Create mask: valid positions are 0 to actual_length-2 (shifted by 1 for targets)
+                device = x.device
                 positions = torch.arange(target.size(1), device=device).unsqueeze(0)
                 valid_mask = positions < (actual_length.unsqueeze(1) - 1)
                 target = target.clone()
                 target[~valid_mask] = -100
 
-            # Compute cross-entropy loss
-            loss = F.cross_entropy(
-                logits.view(-1, self.vocab_size),
-                target.reshape(-1),
-                ignore_index=-100,
-            )
+            # Chunked CE: when T is large, materializing logits=(B,T,V) costs T*V*2 bytes.
+            # At T=128K, V=50281, bf16 → 13GB just for logits. Stream through time in chunks.
+            T_total = x.size(1)
+            loss_chunk = getattr(self, 'loss_chunk_size', 0)
+            if loss_chunk > 0 and T_total > loss_chunk:
+                total_sum = x.new_zeros(())
+                total_count = 0
+                for t0 in range(0, T_total, loss_chunk):
+                    t1 = min(t0 + loss_chunk, T_total)
+                    logits_c = self.lm_head(x[:, t0:t1])
+                    target_c = target[:, t0:t1]
+                    chunk_loss_sum = F.cross_entropy(
+                        logits_c.reshape(-1, self.vocab_size),
+                        target_c.reshape(-1),
+                        ignore_index=-100,
+                        reduction='sum',
+                    )
+                    total_sum = total_sum + chunk_loss_sum
+                    total_count = total_count + (target_c != -100).sum()
+                loss = total_sum / total_count.clamp(min=1)
+            else:
+                logits = self.lm_head(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, self.vocab_size),
+                    target.reshape(-1),
+                    ignore_index=-100,
+                )
             if return_prev_hiddens:
-                # Return (loss, (hidden_states, conv_buffers)) format expected by train.py
                 return loss, (new_hidden_states, None)
             return loss
 
+        logits = self.lm_head(x)
         if return_prev_hiddens:
             return logits, (new_hidden_states, None)
         return logits

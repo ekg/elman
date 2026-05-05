@@ -155,26 +155,41 @@ def load_model(checkpoint_path):
     return model, model_type, args
 
 
-def sample_top_k(logits, temperature, top_k):
-    """Sample from logits with temperature and top-k filtering."""
+def sample_top_k(logits, temperature, top_k, history=None, rep_penalty=1.0, top_p=0.0):
+    """Sample from logits with temperature, top-k, top-p, and repetition penalty.
+    history: list of recent token ids to penalize.
+    rep_penalty: 1.0 = no penalty, >1.0 = penalize recently-seen tokens.
+    top_p: 0 = disabled, 0<top_p<1 = nucleus filtering after temperature.
+    """
+    if rep_penalty != 1.0 and history:
+        # divide pos logits, multiply neg logits — standard HF behavior
+        for t in set(history):
+            v = logits[..., t]
+            logits[..., t] = torch.where(v > 0, v / rep_penalty, v * rep_penalty)
     if temperature <= 0:
-        # Greedy
         return logits.argmax(dim=-1)
-
     logits = logits / temperature
-
     if top_k > 0 and top_k < logits.size(-1):
-        # Zero out everything outside top-k
         values, _ = torch.topk(logits, top_k, dim=-1)
         min_value = values[..., -1:]
         logits = torch.where(logits < min_value, torch.full_like(logits, float('-inf')), logits)
-
+    if 0 < top_p < 1.0:
+        sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumprobs = torch.cumsum(sorted_probs, dim=-1)
+        # Keep at least one
+        sorted_mask = cumprobs > top_p
+        sorted_mask[..., 0] = False
+        sorted_logits[sorted_mask] = float('-inf')
+        # scatter back
+        logits = torch.empty_like(logits).scatter_(-1, sorted_idx, sorted_logits)
     probs = F.softmax(logits, dim=-1)
     return torch.multinomial(probs.view(-1, probs.size(-1)), num_samples=1).view(probs.shape[:-1])
 
 
 @torch.no_grad()
-def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device):
+def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device,
+                    top_p=0.0, rep_penalty=1.0, rep_window=64):
     """Stateful autoregressive generation: O(T) per step amortized.
 
     Feeds the whole prompt in one forward (chunked/parallel kernels), then
@@ -193,7 +208,8 @@ def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device
             return_prev_hiddens=True, prev_hiddens=None,
         )
         next_logits = logits[0, -1, :]
-        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
+        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k,
+                                    history=generated[-rep_window:], rep_penalty=rep_penalty, top_p=top_p).item()
         generated.append(next_token)
         if next_token < 256:
             sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
@@ -208,7 +224,8 @@ def generate_ladder(model, prompt_tokens, max_tokens, temperature, top_k, device
             return_prev_hiddens=True, prev_hiddens=hiddens,
         )
         next_logits = logits[0, -1, :]
-        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
+        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k,
+                                    history=generated[-rep_window:], rep_penalty=rep_penalty, top_p=top_p).item()
         generated.append(next_token)
         if next_token < 256:
             sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
@@ -258,7 +275,8 @@ def generate_e88_fused(model, prompt_tokens, max_tokens, temperature, top_k, dev
         # Last prompt token: get logits for next prediction
         logits, layer_hiddens = forward_one_token(prompt_tokens[-1], layer_hiddens)
         next_logits = logits[0, -1, :]
-        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
+        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k,
+                                    history=generated[-rep_window:], rep_penalty=rep_penalty, top_p=top_p).item()
         generated.append(next_token)
         if next_token < 256:
             sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
@@ -272,7 +290,8 @@ def generate_e88_fused(model, prompt_tokens, max_tokens, temperature, top_k, dev
     for i in range(tokens_to_generate):
         logits, layer_hiddens = forward_one_token(generated[-1], layer_hiddens)
         next_logits = logits[0, -1, :]
-        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k).item()
+        next_token = sample_top_k(next_logits.unsqueeze(0), temperature, top_k,
+                                    history=generated[-rep_window:], rep_penalty=rep_penalty, top_p=top_p).item()
         generated.append(next_token)
         if next_token < 256:
             sys.stdout.write(bytes([next_token]).decode('utf-8', errors='replace'))
@@ -293,6 +312,12 @@ def main():
                         help='Maximum number of tokens to generate')
     parser.add_argument('--top_k', type=int, default=40,
                         help='Top-k sampling (0 = no filtering)')
+    parser.add_argument('--top_p', type=float, default=0.0,
+                        help='Top-p (nucleus) sampling (0 = disabled). Applied after top_k.')
+    parser.add_argument('--rep_penalty', type=float, default=1.0,
+                        help='Repetition penalty (1.0 = none, >1.0 penalizes recently-seen tokens).')
+    parser.add_argument('--rep_window', type=int, default=64,
+                        help='How many recent tokens contribute to repetition penalty')
     parser.add_argument('--seed', type=int, default=None,
                         help='Random seed for reproducibility')
     parser.add_argument('--device', type=str, default='cuda',
@@ -342,7 +367,7 @@ def main():
             if model_type == 'e88_fused':
                 generated = generate_e88_fused(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
             else:
-                generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+                generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device, top_p=args.top_p, rep_penalty=args.rep_penalty, rep_window=args.rep_window)
         finally:
             sys.stdout.write = _orig_write
         # Decode entire output with the tokenizer
@@ -358,7 +383,7 @@ def main():
         if model_type == 'e88_fused':
             generated = generate_e88_fused(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
         else:
-            generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device)
+            generated = generate_ladder(model, prompt_tokens, args.max_tokens, args.temperature, args.top_k, device, top_p=args.top_p, rep_penalty=args.rep_penalty, rep_window=args.rep_window)
         print(f"\n--- End ({len(generated)} bytes total) ---")
 
 

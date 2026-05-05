@@ -137,6 +137,8 @@ def parse_args():
                         help='E88 state checkpoint interval (larger=less memory, more recompute)')
     parser.add_argument('--gradient_checkpointing', action='store_true',
                         help='Recompute layer forward during backward (saves ~16GB, enables larger batch/seq)')
+    parser.add_argument('--loss_chunk_size', type=int, default=0,
+                        help='Chunk T dim when computing lm_head + cross_entropy (saves T*V*2 bytes at long T)')
     parser.add_argument('--projection_chunk_size', type=int, default=0,
                         help='E88 projection recomputation chunk size (0=disabled, 512=recommended for T>=8K). Saves ~5GB/layer.')
     parser.add_argument('--lr', type=float, default=1e-4,
@@ -342,6 +344,7 @@ def train(args):
                 d_state=args.mamba_d_state,
                 expand=args.mamba_expand,
                 headdim=64,
+                loss_chunk_size=args.loss_chunk_size,
             )
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
@@ -495,6 +498,7 @@ def train(args):
             checkpoint_interval=args.checkpoint_interval,
             gradient_checkpointing=args.gradient_checkpointing,
             projection_chunk_size=args.projection_chunk_size,
+            loss_chunk_size=args.loss_chunk_size,
         )
     else:
         model = create_ladder_model(
