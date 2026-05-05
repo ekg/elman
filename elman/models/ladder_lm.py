@@ -840,6 +840,7 @@ class LadderLM(nn.Module):
         gradient_checkpointing=False,  # Recompute layer forward during backward (saves ~16GB at 25 layers)
         projection_chunk_size=0,  # For E88: chunk size for projection recomputation (0=disabled, saves ~5GB/layer at T=32K)
         loss_chunk_size=0,  # Chunk T dimension when computing lm_head + cross_entropy (0=disabled, saves T*V*2 bytes at long T)
+        use_triton=False,  # For E88: use Triton fwd+bwd kernels instead of CUDA register-owned (portable across NVIDIA/AMD ROCm)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -905,6 +906,7 @@ class LadderLM(nn.Module):
                 k_slow=k_slow,  # For E90 Dual-Rate: slow state dimension
                 checkpoint_interval=checkpoint_interval,  # For E88: state checkpoint interval
                 projection_chunk_size=projection_chunk_size,  # For E88: projection recomputation chunks
+                use_triton=use_triton,  # For E88: route fwd+bwd through Triton kernels
             )
             for _ in range(depth)
         ])

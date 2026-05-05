@@ -74,6 +74,8 @@ def parse_args():
                              'Default (None) = byte-level, vocab_size=256.')
 
     # Model
+    parser.add_argument('--use_triton', type=int, default=0,
+                        help='For E88: use Triton fwd+bwd kernels instead of CUDA register-owned (0=CUDA, 1=Triton)')
     parser.add_argument('--level', type=str, default='3',
                         help='Ladder level: 0-6 (linear) or log_0 to log_5 (log-space)')
     parser.add_argument('--params', type=str, default='100m',
@@ -499,6 +501,7 @@ def train(args):
             gradient_checkpointing=args.gradient_checkpointing,
             projection_chunk_size=args.projection_chunk_size,
             loss_chunk_size=args.loss_chunk_size,
+            use_triton=bool(args.use_triton),
         )
     else:
         model = create_ladder_model(
