@@ -14,6 +14,7 @@ Vocabulary is small per-task (e.g. 4 for parity). Models can use vocab=256
 from .parity import ParityTask
 from .modular_counter import ModularCounterTask
 from .dyck import DyckTask
+from .dyck2 import Dyck2Task
 from .fsm_tracking import FSMTrackingTask
 from .selective_copy import SelectiveCopyTask
 from .assoc_recall import AssocRecallTask
@@ -22,6 +23,7 @@ ALL_TASKS = {
     'parity': ParityTask,
     'modular_counter': ModularCounterTask,
     'dyck': DyckTask,
+    'dyck2': Dyck2Task,
     'fsm_tracking': FSMTrackingTask,
     'selective_copy': SelectiveCopyTask,
     'assoc_recall': AssocRecallTask,

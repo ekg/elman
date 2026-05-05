@@ -53,6 +53,8 @@ def main():
     ap.add_argument('--seq_len', type=int, default=128)
     ap.add_argument('--batch_size', type=int, default=32)
     ap.add_argument('--lr', type=float, default=3e-4)
+    ap.add_argument('--optimizer', type=str, default='adamw',
+                    choices=['adamw', 'schedulefree'])
     ap.add_argument('--K', type=int, default=2)
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--label', required=True)
@@ -86,7 +88,14 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Params: {n_params:,}", flush=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    if args.optimizer == 'schedulefree':
+        import schedulefree
+        optimizer = schedulefree.AdamWScheduleFree(
+            model.parameters(), lr=args.lr, weight_decay=0.01, betas=(0.9, 0.95))
+        print(f"Using schedule-free AdamW (lr={args.lr})", flush=True)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+        print(f"Using vanilla AdamW (lr={args.lr})", flush=True)
 
     log = {'task': task.name, 'pattern': model.actual_pattern, 'dim': args.dim, 'depth': args.depth,
            'seq_len': args.seq_len, 'batch_size': args.batch_size, 'lr': args.lr,
@@ -97,6 +106,7 @@ def main():
     t0 = time.time()
     eval_interval = max(50, args.steps // 20)
     model.train()
+    if hasattr(optimizer, 'train'): optimizer.train()
     for step in range(args.steps):
         inp, tgt, mask = task.generate_batch(args.batch_size, args.seq_len, rng)
         x = torch.from_numpy(inp).to(device)
@@ -113,7 +123,9 @@ def main():
         optimizer.step()
 
         if step % eval_interval == 0 or step == args.steps - 1:
+            if hasattr(optimizer, 'eval'): optimizer.eval()
             acc, eval_loss = evaluate(model, task, args.batch_size, args.seq_len, 4, rng, device)
+            if hasattr(optimizer, 'train'): optimizer.train()
             elapsed = time.time() - t0
             print(f"  step {step:>5d}  train_loss={loss.item():.4f}  eval_acc={acc:.4f}  eval_loss={eval_loss:.4f}  ({elapsed:.0f}s)", flush=True)
             log['steps'].append({'step': step, 'train_loss': float(loss.item()),
@@ -121,6 +133,7 @@ def main():
                                   'elapsed_s': float(elapsed)})
             model.train()
 
+    if hasattr(optimizer, 'eval'): optimizer.eval()
     acc, eval_loss = evaluate(model, task, args.batch_size, args.seq_len, 16, rng, device)
     log['final_acc'] = float(acc); log['final_loss'] = float(eval_loss)
     log['elapsed_total_s'] = float(time.time() - t0)
