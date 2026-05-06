@@ -978,8 +978,11 @@ def find_max_batch_size(cmd_no_bs, env, cwd, timeout, cleanup_fn=None, target_bs
     Returns (actual_bs, result) where result is the subprocess result from
     the final successful run, or (0, None) if even bs=1 OOMs.
     """
-    # Memory probe to estimate max feasible bs (fast — seconds, not minutes)
-    max_feasible = probe_max_batch_size(cmd_no_bs, env, cwd)
+    # Memory probe only up to the CMA-ES target when one is provided.  We only
+    # need to know whether the proposed batch fits, or the largest smaller
+    # batch if it does not; probing above target is pure overhead.
+    probe_cap = target_bs if target_bs is not None else 256
+    max_feasible = probe_max_batch_size(cmd_no_bs, env, cwd, max_bs_cap=probe_cap)
     if max_feasible == 0:
         return (0, None)
 
