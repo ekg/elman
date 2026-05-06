@@ -18,7 +18,7 @@ COMMON="--params 1270M --train_minutes 5 --popsize 4 \
 launch() {
     local gpu=$1; local model=$2; shift 2
     local extra="$@"
-    nohup python3 -u /home/erikg/elman/cmaes_search_v2.py \
+    setsid nohup python3 -u /home/erikg/elman/cmaes_search_v2.py \
         --model $model --gpus $gpu \
         --output $OUTDIR/$model \
         $COMMON $extra \
