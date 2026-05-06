@@ -5,10 +5,10 @@
 # Each subsequent stage resumes from prior stage output.
 
 set -e
-OUTDIR=/tmp/ctxscale_v2
+OUTDIR=${OUTDIR:-/tmp/ctxscale_v3_triton_e88}
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
-PRIOR=/tmp/cmaes_winners_stage0
+PRIOR=${PRIOR:-/tmp/cmaes_winners_stage0_triton_e88}
 
 # Model architectures (must match stage-0). Append --batch_size dynamically per stage.
 E88_ARGS="--level E88 --dim 1408 --depth 14 --n_heads 386 --n_state 32 --use_gate 1 --gate_activation silu --use_triton 1 --lr 1.054e-3"

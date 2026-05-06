@@ -3,7 +3,7 @@
 # 5 models × 3 seeds = 15 jobs. Schedule on 7 GPUs (3 batches).
 
 set -e
-OUTDIR=/tmp/cmaes_winners_stage0
+OUTDIR=${OUTDIR:-/tmp/cmaes_winners_stage0_triton_e88}
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
 

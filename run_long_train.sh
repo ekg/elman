@@ -4,10 +4,10 @@
 # Mamba2 skipped: OOMs at ctx=32K with CMA-ES winner config (depth=32 expand=3 d_state=160).
 
 set -e
-OUTDIR=/tmp/long_train_ctx32k
+OUTDIR=${OUTDIR:-/tmp/long_train_ctx32k_triton_e88}
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
-PRIOR=/tmp/ctxscale_v2/stage3_ctx32k
+PRIOR=${PRIOR:-/tmp/ctxscale_v3_triton_e88/stage3_ctx32k}
 
 # Common args: 48h, hourly checkpoints, keep last 72 hours of ckpts
 COMMON="--bf16 --tokenizer p50k_base --train_minutes 2880 --chunk_size 32768 --batch_size 1 \
