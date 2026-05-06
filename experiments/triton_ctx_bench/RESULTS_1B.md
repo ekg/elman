@@ -125,3 +125,41 @@ Final bench at production E88 1.27B (3 min Pile, sf-AdamW, bf16, `--gradient_che
 **What's left.** The remaining 14% throughput gap is in the backward kernel: per-call Triton bwd is 1.23× CUDA's. CUDA reg-own's trick is column-per-thread register-owned state with warp-shuffle communication, hard to express in Triton's program-level abstraction. Closing this would require either a register-owned redesign (multi-day rewrite) or a different fundamental approach. For now Triton at 1.27B is **memory-competitive and within 14% throughput of CUDA**, which makes it production-usable for the ROCm-portability story and for any campaign that benefits from headroom for larger batches at the same memory budget.
 
 **Recommendation update.** Triton is now a viable backend for the 1.27B campaign. CUDA still wins on raw throughput by 14% at this shape. Choose Triton if portability matters or if a workload benefits from the memory headroom; choose CUDA if you want maximum tokens/wall-clock right now.
+
+## Update (May 6, late evening) — num_warps=1 at large B*H
+
+The CUDA reg-own design uses 32 threads (1 warp) per block, with each thread owning one column of the state matrix. Triton's `num_warps=1` setting produces an analogous layout: 32 threads/program, smaller per-warp register footprint, and at large B*H the grid already saturates the SMs so extra warps don't help with latency hiding — they just contend for registers.
+
+Empirical at H=386 N=V=32 BLOCK_H=1 (forward kernel, sparse-ckpt):
+| B | T | nw=1 | nw=2 | best |
+|---|---|---|---|---|
+| 1 | 512 | 0.46 ms | 0.45 ms | nw=2 (close) |
+| 1 | 4K | 5.18 ms | 4.26 ms | nw=2 |
+| 4 | 2K | **3.54 ms** | 5.71 ms | **nw=1 (38% faster)** |
+| **8** | **512** | **1.38 ms** | 2.60 ms | **nw=1 (47% faster)** |
+
+Heuristic: `nw=1 if B*H >= 1024 else nw=2` (at H>=64). Applied symmetrically to forward and backward.
+
+**End-to-end at production 1.27B T=512 bs=8:**
+- Triton tok/s: 3873 → **4050** (+4.6%)
+- Memory: 11.96 GB unchanged (parity with CUDA's 11.8 GB)
+- Gap to CUDA: was 14%, now **10%**
+
+**Per-call kernel profile (B=8 T=512 H=386 N=V=32):**
+
+| | Triton (with nw=1) | CUDA reg-own |
+|---|---|---|
+| fwd | **1.52 ms** | 4.27 ms |
+| bwd | **5.39 ms** | 9.09 ms |
+| fwd+bwd | **6.91 ms** | 13.36 ms |
+
+Triton kernel is now **1.93× FASTER than CUDA** on the recurrence kernels. At depth=14 with grad_ckpt, that's 117 ms vs CUDA's 246 ms in recurrence per training step — Triton saves 129 ms there.
+
+**But end-to-end Triton is still 10% slower.** The kernel saves 129 ms/step; something else in the layer wrapper costs ~25-30 µs/token (~190 ms/step at bs=8 T=512). Likely candidates:
+- Per-layer Python ops outside the kernel: gate apply (silu(g) + multiply), L2 norm of k/q (when normalize_kq=True), the post-kernel transposes (no-copy but with metadata).
+- Autograd graph traversal at depth=14.
+- Memory allocator pressure from per-layer transient tensors.
+
+Closing this gap would require fusing the gate + norm INTO the Triton kernel (CUDA does this), or refactoring the layer wrapper to reduce per-layer Python cost. Both are real engineering — not in the kernel itself.
+
+**Final state:** Triton matches/beats CUDA at the kernel level. The remaining 10% end-to-end gap is wrapper overhead, not kernel work. Production-usable; ROCm-portable; further wins require pulling more ops into the Triton kernel.
