@@ -19,7 +19,7 @@ if _REPO_ROOT not in sys.path:
 import torch
 import triton
 
-from elman.triton.e88_triton_forward import e88_triton_forward
+from elman.triton.e88_triton_forward import e88_triton_forward, DEFAULT_CKPT_INTERVAL
 from elman.triton.e88_triton_backward import (
     _e88_backward_kernel,
     _next_pow2,
@@ -45,7 +45,8 @@ def make_inputs(B, T, H, N, V, dtype, device):
     )
 
 
-def call_backward_with_block_h(k, v, q, decay, S_ckpt, d_out, block_h, num_warps):
+def call_backward_with_block_h(k, v, q, decay, S_ckpt, d_out, block_h, num_warps,
+                                ckpt_interval=DEFAULT_CKPT_INTERVAL):
     """Manually launch the backward kernel with explicit (block_h, num_warps)."""
     T, B, H, N = k.shape
     Vsz = v.shape[-1]
@@ -64,10 +65,20 @@ def call_backward_with_block_h(k, v, q, decay, S_ckpt, d_out, block_h, num_warps
     d_decay = torch.empty_like(d_c)
     d_S0 = torch.empty((B, H, N, Vsz), dtype=out_dtype, device=k.device)
 
-    grid = (B, (H + block_h - 1) // block_h)
+    num_progs_h = (H + block_h - 1) // block_h
+    grid = (B, num_progs_h)
+
+    # Per-program scratch (matches the wrapper allocation).
+    scratch_numel = (
+        B * num_progs_h
+        * (ckpt_interval + 1)
+        * block_h * BLOCK_N * BLOCK_V
+    )
+    seg_scratch = torch.empty(scratch_numel, dtype=torch.float32, device=k.device)
 
     _e88_backward_kernel[grid](
         k_c, v_c, q_c, d_c, sc_c,
+        seg_scratch,
         do_c, dsf_c,
         d_k, d_v, d_q, d_decay, d_S0,
         k_c.stride(0), k_c.stride(1), k_c.stride(2), k_c.stride(3),
@@ -86,6 +97,8 @@ def call_backward_with_block_h(k, v, q, decay, S_ckpt, d_out, block_h, num_warps
         T=T, B=B, H=H, N=N, V=Vsz,
         BLOCK_N=BLOCK_N, BLOCK_V=BLOCK_V,
         BLOCK_H=block_h,
+        CKPT_INTERVAL=ckpt_interval,
+        NUM_PROGS_H=num_progs_h,
         num_warps=num_warps,
     )
 
