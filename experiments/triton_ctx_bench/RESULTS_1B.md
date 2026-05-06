@@ -94,3 +94,34 @@ For the 1.27B 32K/64K campaign:
 Parity preserved end-to-end: forward parity tests pass at fp32 (~1e-7
 max_rel) and bf16 (~5e-3); backward parity passes at fp32 (~5e-5 abs)
 and bf16 (~5e-2 abs); E88-layer use_triton smoke test passes at bf16.
+
+## Update (May 6, evening) — wrapper copy elimination + bf16 scratch
+
+Profile (`tests/profile_triton_vs_cuda_1B.py`) showed the recurrence kernel itself is only 10% slower than CUDA at production shape:
+- Triton fwd:  **2.81 ms** (CUDA fwd: 3.50 ms — Triton is **0.80x = 20% FASTER**)
+- Triton bwd:  9.93 ms (CUDA bwd: 8.06 ms — Triton 1.23x slower)
+- Triton fwd+bwd: 12.74 ms vs CUDA's 11.55 ms = 1.10x slower
+
+So the kernel-only gap is +10%; the rest of the +17% training gap was outside the kernel. Two non-kernel fixes:
+
+1. **Skip `.contiguous()` on transposed views.** Production E88 uses `[B, T, H, *]` layout; Triton kernel uses `[T, B, H, *]`; the wrapper transposed dims 0/1 then ALWAYS called `.contiguous()`. At B=8 T=512 H=386 N=V=32 each copy is ~100 MB; 14 layers × 3 grad_ckpt invocations × 4 tensors = many GB bandwidth/step. The kernel reads via explicit strides, so non-contiguous views work fine as long as last-dim is unit-stride (preserved by transposing dims 0/1). Done.
+
+2. **bf16 segment-replay scratch.** Matches CUDA reg-own's segment_cache dtype. Numerically OK (S is tanh-bounded). Halves global-memory bandwidth for the segment replay; small win at this shape (scratch ~100 MB) but compounds at larger contexts. Done.
+
+Final bench at production E88 1.27B (3 min Pile, sf-AdamW, bf16, `--gradient_checkpointing`):
+
+| ctx | bs | backend | tok/s | peak GB | gap to CUDA |
+|---|---|---|---|---|---|
+| 512 | 8 | CUDA | 4501 | 11.8 | — |
+| 512 | 8 | Triton (initial dense) | 3413 | 17.7 | 28% |
+| 512 | 8 | Triton (sparse-ckpt) | 3728 | 12.0 | 17% |
+| 512 | 8 | **Triton (final, no-copy + bf16 scratch)** | **3873** | **11.96** | **14%** |
+| 4K | 2 | CUDA | 4456 | 12.4 | — |
+| 4K | 2 | Triton (initial dense) | OOM | — | — |
+| 4K | 2 | **Triton (final)** | **3812** | **14.16** | **14%** |
+
+**Cumulative session progress at 1.27B T=512:** Triton went from 3413 tok/s, 17.7 GB peak (28% slower, 50% more memory) → **3873 tok/s, 11.96 GB peak (14% slower, memory parity)**. T=4K bs=2 went from OOM-crash → 3812 tok/s, 14.16 GB.
+
+**What's left.** The remaining 14% throughput gap is in the backward kernel: per-call Triton bwd is 1.23× CUDA's. CUDA reg-own's trick is column-per-thread register-owned state with warp-shuffle communication, hard to express in Triton's program-level abstraction. Closing this would require either a register-owned redesign (multi-day rewrite) or a different fundamental approach. For now Triton at 1.27B is **memory-competitive and within 14% throughput of CUDA**, which makes it production-usable for the ROCm-portability story and for any campaign that benefits from headroom for larger batches at the same memory budget.
+
+**Recommendation update.** Triton is now a viable backend for the 1.27B campaign. CUDA still wins on raw throughput by 14% at this shape. Choose Triton if portability matters or if a workload benefits from the memory headroom; choose CUDA if you want maximum tokens/wall-clock right now.
