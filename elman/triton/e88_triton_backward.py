@@ -410,20 +410,28 @@ def e88_triton_backward(
     d_S0 = torch.empty((B, H, N, Vsz), dtype=out_dtype, device=k.device)
 
     # Default heads-per-program. Empirically tuned at H=386 N=V=32:
-    # BLOCK_H=1 num_warps=2 is ~2x faster than BLOCK_H=4 num_warps=4 at
-    # production scale. Despite "more parallelism" intuition, BLOCK_H>1
-    # at high H gets worse SM utilization here — likely register spills
-    # of the [BLOCK_H, N, V] state tile (16 KB per BLOCK_H step at fp32).
-    # See tests/sweep_triton_block_h_at_386.py for the sweep.
+    #   - BLOCK_H=1 is best (BLOCK_H>1 spills the [BH, N, V] state tile).
+    #   - num_warps depends on B: nw=1 wins when B*H is large enough to
+    #     saturate the SMs already (e.g. B=8, H=386: 3088 programs, no
+    #     need for extra warps per program — register pressure hurts).
+    #     nw=2 wins at small B (e.g. B=1) where we need extra warps for
+    #     latency hiding.
+    # Empirical (B=8, T=512, H=386, N=V=32, sparse-ckpt + bf16 scratch):
+    #   nw=1: 4.49 ms; nw=2: 6.58 ms; nw=4: 9.43 ms
+    # At B=1: nw=2 is best (1.08 ms vs nw=1: 1.25 ms).
+    # See tests/sweep_triton_block_h_at_386.py for the original sweep.
     if block_h is None:
-        if H >= 64:
-            # Sweet spot at scale: 1 head per program, 2 warps per program.
-            block_h = 1
-            if num_warps is None:
+        block_h = 1
+        if num_warps is None:
+            # B is the static_argnum here, so we can branch on it.
+            T_, B_, _, _ = k.shape
+            if B_ * H >= 1024 and H >= 64:
+                # Production training shape: GPU is saturated, fewer
+                # warps per program reduces register pressure.
+                num_warps = 1
+            elif H >= 64:
                 num_warps = 2
-        else:
-            block_h = 1
-            if num_warps is None:
+            else:
                 num_warps = 4
     if num_warps is None:
         num_warps = 2 if block_h == 1 else (4 if block_h <= 4 else 8)

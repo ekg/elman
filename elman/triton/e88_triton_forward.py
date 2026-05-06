@@ -452,13 +452,18 @@ def e88_triton_forward(
 
     # Pick BLOCK_H + num_warps.
     if block_h is None:
-        # Production-scale heuristic: at H >= 64 the empirical sweep at
-        # H=386 N=V=32 shows BLOCK_H=1 num_warps=2 is fastest (1.83x vs
-        # the autotune's choice of (4, 2)). Use this directly to skip
-        # the autotune launch cost at training start.
-        # See tests/sweep_triton_block_h_at_386.py.
+        # BLOCK_H=1 is always best at H >= 64 (BLOCK_H>1 spills the
+        # [BH, N, V] register state). num_warps depends on B*H: when the
+        # (B, H) grid already saturates the SMs, fewer warps/program
+        # means less register pressure (CUDA-reg-own's design philosophy).
+        # Empirical at H=386 N=V=32:
+        #   B=1 T=512:  nw=2 (0.45 ms)  vs nw=1 (0.46 ms) — close
+        #   B=1 T=4K:   nw=2 (4.26 ms)  vs nw=1 (5.18 ms) — nw=2 wins
+        #   B=8 T=512:  nw=1 (1.38 ms)  vs nw=2 (2.60 ms) — nw=1 wins by 47%
+        # Threshold B*H >= 1024 captures the production training shape.
         if H >= 64:
-            block_h_chosen, nw = 1, 2
+            block_h_chosen = 1
+            nw = 1 if (B * H >= 1024) else 2
         else:
             launch_args = (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides)
             block_h_chosen, nw = _autotune_kernel(
