@@ -507,14 +507,12 @@ def e88_triton_backward(
     if block_h is None:
         block_h = 1
         if num_warps is None:
-            # B is the static_argnum here, so we can branch on it.
-            T_, B_, _, _ = k.shape
-            if B_ * H >= 1024 and H >= 64:
-                # Production training shape: GPU is saturated, fewer
-                # warps per program reduces register pressure.
+            # After fusion (gate + L2-norm) lands, nw=1 wins at every
+            # shape we care about at H>=64. See sweep in
+            # tests/sweep_num_stages_at_386.py and inline data in the
+            # forward kernel docstring.
+            if H >= 64:
                 num_warps = 1
-            elif H >= 64:
-                num_warps = 2
             else:
                 num_warps = 4
     if num_warps is None:

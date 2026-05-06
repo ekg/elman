@@ -500,17 +500,19 @@ def e88_triton_forward(
     # Pick BLOCK_H + num_warps.
     if block_h is None:
         # BLOCK_H=1 is always best at H >= 64 (BLOCK_H>1 spills the
-        # [BH, N, V] register state). num_warps depends on B*H: when the
-        # (B, H) grid already saturates the SMs, fewer warps/program
-        # means less register pressure (CUDA-reg-own's design philosophy).
-        # Empirical at H=386 N=V=32:
-        #   B=1 T=512:  nw=2 (0.45 ms)  vs nw=1 (0.46 ms) — close
-        #   B=1 T=4K:   nw=2 (4.26 ms)  vs nw=1 (5.18 ms) — nw=2 wins
-        #   B=8 T=512:  nw=1 (1.38 ms)  vs nw=2 (2.60 ms) — nw=1 wins by 47%
-        # Threshold B*H >= 1024 captures the production training shape.
+        # [BH, N, V] register state). After fusing gate + L2-norm into
+        # the kernel, the per-step register pressure goes UP, and
+        # nw=1 (CUDA-reg-own's design philosophy) wins or ties at every
+        # shape:
+        #   B=1 T=512   (B*H=386):   nw=1: 0.66 ms,  nw=2: 0.66 ms (tie)
+        #   B=2 T=4K    (B*H=772):   nw=1: 7.85 ms,  nw=2: 8.18 ms
+        #   B=4 T=2K    (B*H=1544):  nw=1: 4.22 ms,  nw=2: 4.76 ms
+        #   B=8 T=512   (B*H=3088):  nw=1: 1.88 ms,  nw=2: 2.10 ms
+        #   B=1 T=16K   (B*H=386):   nw=1: 24.3 ms,  nw=2: 24.5 ms
+        # so we always use nw=1 at H>=64.
         if H >= 64:
             block_h_chosen = 1
-            nw = 1 if (B * H >= 1024) else 2
+            nw = 1
         else:
             launch_args = (k_c, v_c, q_c, d_c, s0_c, g_c, apply_gate, out, S_final, S_ckpt, strides)
             block_h_chosen, nw = _autotune_kernel(
