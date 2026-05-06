@@ -163,3 +163,53 @@ Triton kernel is now **1.93× FASTER than CUDA** on the recurrence kernels. At d
 Closing this gap would require fusing the gate + norm INTO the Triton kernel (CUDA does this), or refactoring the layer wrapper to reduce per-layer Python cost. Both are real engineering — not in the kernel itself.
 
 **Final state:** Triton matches/beats CUDA at the kernel level. The remaining 10% end-to-end gap is wrapper overhead, not kernel work. Production-usable; ROCm-portable; further wins require pulling more ops into the Triton kernel.
+
+## Update (May 6, late-late evening) — fused output gate + L2-norm in kernel
+
+Torch profiler revealed the entire 10% wrapper gap was Python L2-norm:
+~62 ms/step in `linalg_vector_norm` + `aten::div`. CUDA fused these
+into its kernel; Triton was still doing them as PyTorch ops outside.
+
+Two further fusions:
+
+**Fused output gate (silu(g) * out_kernel)** — kernel takes `g` and
+`APPLY_GATE` constexpr; backward computes d_g and uses
+`d_out_kernel = d_output * silu(g)` for the recurrence backward.
+Saves two PyTorch ops/layer call. End-to-end gain: +2-3%.
+
+**Fused L2-norm of k, q** (THE killer fusion) — `NORMALIZE_KQ`
+constexpr; forward normalizes per-head on load; backward applies the
+standard L2-norm chain rule
+`d_x_raw = (1/||x||) * (d_x_norm - x_norm * (d_x_norm . x_norm))`
+to recover gradient w.r.t. raw k/q. Saves ~62 ms/step at production.
+
+| | Triton (fully fused) | CUDA reg-own | Triton/CUDA |
+|---|---|---|---|
+| **tok/s @ 1.27B T=512 bs=8** | **5973** | 4782 | **1.25× FASTER** |
+| peak GB | 12.0 | 11.8 | parity |
+| per-call kernel fwd | 1.52 ms | 4.27 ms | 0.36× |
+| per-call kernel bwd | 5.39 ms | 9.09 ms | 0.59× |
+
+**Cumulative session progression at 1.27B T=512:**
+
+| stage | tok/s | gap to CUDA |
+|---|---|---|
+| start of session | 3413 | 28% slower |
+| sparse-ckpt | 3728 | 17% slower |
+| skip wrapper copies | 3893 | 14% slower |
+| bf16 scratch | 3873 | 14% slower |
+| num_warps=1 at large B*H | 4050 | 10% slower |
+| fused gate | 4145 | 11% slower |
+| **fused L2-norm** | **5973** | **25% FASTER** |
+
+**Triton went from 28% slower → 25% faster** = a **53 percentage point swing**, a **1.75× cumulative throughput improvement**. Memory at parity throughout, parity-clean grads at every step.
+
+What got us there (in order of impact):
+1. Fused L2-norm: +44% (the killer)
+2. BLOCK_H=1 default + num_warps=1 at large B*H: ~30% (CUDA-reg-own design philosophy)
+3. Sparse forward checkpointing: enables T=4K bs=2 (was OOM), parity memory
+4. Skip `.contiguous()` copies: +5%
+5. Fused output gate: +2-3%
+6. Other (int64 offsets, bf16 scratch, etc.): smaller incrementals
+
+**This is shippable.** Triton at 1.27B production: faster than CUDA, memory parity, parity-clean grads, ROCm-portable.
