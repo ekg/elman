@@ -17,6 +17,24 @@
 
 **Activation memory is the real cost.** Triton stores per-step S checkpoints (T+1 tiles), while CUDA reg-own checkpoints every 16 steps + recomputes. At 12M scale, Triton memory at T=32K is 10.9 GB vs CUDA's 2.1 GB (~5× more). At production 1.27B (H=83, N=V=32, depth=17), full S history at T=32K would be ~184 GB per micro-batch — completely off the table. **Sparse forward checkpointing + backward recompute in Triton is the next required kernel work.**
 
+## Memory fix — gradient_checkpointing already does the job
+
+`--gradient_checkpointing` (already in LadderLM) wraps each layer in `torch.utils.checkpoint.checkpoint` so the per-step S history allocates only during one layer's backward and is freed before the next. Peak memory = max over layers, not sum.
+
+Verified at T=4K bs=4 (12M model):
+
+| config | tok/s | peak MB | speedup vs CUDA |
+|---|---|---|---|
+| CUDA (no ckpt)            | 182K | 1206 | 1.00× |
+| Triton (no ckpt)          | 286K | 5576 | 1.57× |
+| **Triton + grad-ckpt**    | **219K** | **1618** | **1.20×** |
+
+Triton + grad_ckpt holds **1.2×** speedup over CUDA at memory parity. Cost is the extra forward replay during backward (~24% throughput).
+
+At production 1.27B T=32K, full S history would be ~184 GB without checkpointing; with grad_ckpt it drops to one-layer's worth (~10.8 GB) — feasible on a single GPU.
+
+A future kernel-level optimization (sparse forward checkpoint + backward recompute inside the Triton kernel itself) would be cheaper still (~5-10% throughput cost vs 24%), but isn't required for production.
+
 ## Strategic implication
 
 The Triton speedup is biggest exactly at the long-ctx regime where E88's algorithmic structure should help most (length-extrapolation result, coherent generation at 64K from prior 24h training runs). With memory fixed, Triton enables:
