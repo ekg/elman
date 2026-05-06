@@ -1254,7 +1254,7 @@ def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_e
     gpu_pool = queue.Queue()
     for g in gpus:
         gpu_pool.put(g)
-    results = []
+    results = [None] * len(configs)
 
     def worker(params, eval_id):
         gpu_id = gpu_pool.get()  # Block until GPU free
@@ -1268,28 +1268,28 @@ def evaluate_batch(configs, model_type, train_minutes, output_dir, gpus, start_e
         for i, params in enumerate(configs):
             eval_id = start_eval_id + i
             future = executor.submit(worker, params, eval_id)
-            futures[future] = (eval_id, params)
+            futures[future] = (i, eval_id, params)
 
         for future in as_completed(futures):
-            eval_id, params = futures[future]
+            i, eval_id, params = futures[future]
             try:
                 result = future.result()
-                results.append(result)
+                results[i] = result
                 bs_info = f" | bs={result.get('batch_size', '?')}" if 'batch_size' in result else ""
                 final = result.get('final_loss', result['loss'])
                 print(f"  [Eval {eval_id}] GPU {result['gpu_id']} | {format_params(params)} | "
                       f"{result['actual_params']/1e6:.1f}M params | AvgLoss: {result['loss']:.4f} | Final: {final:.4f}{bs_info}")
             except Exception as e:
                 print(f"  [Eval {eval_id}] FAILED: {e}")
-                results.append({
+                results[i] = {
                     'params': params,
                     'loss': float('inf'),
                     'eval_id': eval_id,
                     'success': False,
                     'error': str(e),
-                })
+                }
 
-    return results
+    return [r for r in results if r is not None]
 
 
 def format_params(params):
