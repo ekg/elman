@@ -80,6 +80,7 @@ def _e88_forward_kernel(
     Q_ptr,            # [T, B, H, N]
     D_ptr,            # [T, B, H]
     S0_ptr,           # [B, H, N, V]
+    G_ptr,            # [T, B, H, V] gate (used iff APPLY_GATE)
     # Outputs
     Out_ptr,          # [T, B, H, V]
     Sfinal_ptr,       # [B, H, N, V]
@@ -93,6 +94,7 @@ def _e88_forward_kernel(
     sq_t, sq_b, sq_h, sq_n,
     sd_t, sd_b, sd_h,
     s0_b, s0_h, s0_n, s0_v,
+    sg_t, sg_b, sg_h, sg_v,  # gate strides (zero/dummy when APPLY_GATE=False)
     so_t, so_b, so_h, so_v,
     sf_b, sf_h, sf_n, sf_v,
     sc_t, sc_b, sc_h, sc_n, sc_v,
@@ -102,6 +104,7 @@ def _e88_forward_kernel(
     BLOCK_N: tl.constexpr, BLOCK_V: tl.constexpr,
     BLOCK_H: tl.constexpr,
     CKPT_INTERVAL: tl.constexpr,
+    APPLY_GATE: tl.constexpr,  # if True, output = silu(g) * S^T@q
 ):
     """One program per (batch, head_block). Sequential time loop."""
     # 2D launch grid: (B, ceil(H / BLOCK_H))
@@ -191,6 +194,20 @@ def _e88_forward_kernel(
 
         # Output: out[h, v] = sum_n S[h, n, v] * q[h, n]   (reduce over N axis=1)
         out_vec = tl.sum(S * q_vec[:, :, None], axis=1)     # [BH, BV]
+
+        # Optional fused output gate: output = silu(g) * out_vec.
+        # silu(x) = x * sigmoid(x) = x / (1 + exp(-x)).
+        # We fuse here so the gate doesn't become two extra kernel
+        # launches (silu, multiply) per layer in Python.
+        if APPLY_GATE:
+            g_off = (
+                t_i64 * sg_t + b * sg_b
+                + h_idx[:, None] * sg_h
+                + v_idx[None, :] * sg_v
+            )
+            g_val = tl.load(G_ptr + g_off, mask=mask_hv, other=0.0).to(tl.float32)
+            silu_g = g_val / (1.0 + tl.exp(-g_val))
+            out_vec = silu_g * out_vec
 
         out_off = (
             t_i64 * so_t + b * so_b
@@ -293,7 +310,7 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
     best = None
     best_t = float("inf")
 
-    (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides) = launch_args
+    (k_c, v_c, q_c, d_c, s0_c, g_c, apply_gate, out, S_final, S_ckpt, strides) = launch_args
 
     for bh in bh_candidates:
         if bh > H:
@@ -304,13 +321,14 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
                 # Warmup
                 for _ in range(3):
                     _e88_forward_kernel[grid](
-                        k_c, v_c, q_c, d_c, s0_c,
+                        k_c, v_c, q_c, d_c, s0_c, g_c,
                         out, S_final, S_ckpt,
                         *strides,
                         T=T, B=B, H=H, N=N, V=Vsz,
                         BLOCK_N=_next_pow2(N), BLOCK_V=_next_pow2(Vsz),
                         BLOCK_H=bh,
                         CKPT_INTERVAL=ckpt_interval,
+                        APPLY_GATE=apply_gate,
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -318,13 +336,14 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
                 iters = 5
                 for _ in range(iters):
                     _e88_forward_kernel[grid](
-                        k_c, v_c, q_c, d_c, s0_c,
+                        k_c, v_c, q_c, d_c, s0_c, g_c,
                         out, S_final, S_ckpt,
                         *strides,
                         T=T, B=B, H=H, N=N, V=Vsz,
                         BLOCK_N=_next_pow2(N), BLOCK_V=_next_pow2(Vsz),
                         BLOCK_H=bh,
                         CKPT_INTERVAL=ckpt_interval,
+                        APPLY_GATE=apply_gate,
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -352,6 +371,7 @@ def e88_triton_forward(
     block_h: int = None,
     num_warps: int = None,
     ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
+    g: torch.Tensor = None,  # [T, B, H, V] gate; if None, no fused gate
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 forward recurrence in Triton.
 
@@ -423,6 +443,17 @@ def e88_triton_forward(
     d_c = decay if _strided_ok(decay) else decay.contiguous()
     s0_c = S0 if _strided_ok(S0) else S0.contiguous()
 
+    apply_gate = g is not None
+    if apply_gate:
+        g_c = g if _strided_ok(g) else g.contiguous()
+        assert g_c.shape == (T, B, H, Vsz), \
+            f"gate shape must be [T, B, H, V] = {(T, B, H, Vsz)}, got {tuple(g_c.shape)}"
+        g_strides = (g_c.stride(0), g_c.stride(1), g_c.stride(2), g_c.stride(3))
+    else:
+        # Pass a dummy pointer + zero strides; kernel guards via APPLY_GATE constexpr.
+        g_c = k_c  # any valid CUDA tensor
+        g_strides = (0, 0, 0, 0)
+
     out_dtype = k_c.dtype
     out = torch.empty((T, B, H, Vsz), dtype=out_dtype, device=k.device)
     S_final = torch.empty_like(s0_c)
@@ -441,6 +472,8 @@ def e88_triton_forward(
         d_c.stride(0), d_c.stride(1), d_c.stride(2),
         # S0 strides
         s0_c.stride(0), s0_c.stride(1), s0_c.stride(2), s0_c.stride(3),
+        # gate strides
+        *g_strides,
         # out strides
         out.stride(0), out.stride(1), out.stride(2), out.stride(3),
         # S_final strides
@@ -465,7 +498,7 @@ def e88_triton_forward(
             block_h_chosen = 1
             nw = 1 if (B * H >= 1024) else 2
         else:
-            launch_args = (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides)
+            launch_args = (k_c, v_c, q_c, d_c, s0_c, g_c, apply_gate, out, S_final, S_ckpt, strides)
             block_h_chosen, nw = _autotune_kernel(
                 launch_args, B, T, H, N, Vsz, out_dtype, ckpt_interval
             )
@@ -476,13 +509,14 @@ def e88_triton_forward(
     grid = (B, (H + block_h_chosen - 1) // block_h_chosen)
 
     _e88_forward_kernel[grid](
-        k_c, v_c, q_c, d_c, s0_c,
+        k_c, v_c, q_c, d_c, s0_c, g_c,
         out, S_final, S_ckpt,
         *strides,
         T=T, B=B, H=H, N=N, V=Vsz,
         BLOCK_N=BLOCK_N, BLOCK_V=BLOCK_V,
         BLOCK_H=block_h_chosen,
         CKPT_INTERVAL=ckpt_interval,
+        APPLY_GATE=apply_gate,
         num_warps=nw,
     )
     return out, S_final, S_ckpt

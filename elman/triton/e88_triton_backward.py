@@ -77,6 +77,7 @@ def _e88_backward_kernel(
     Q_ptr,              # [T, B, H, N]
     D_ptr,              # [T, B, H]
     Sckpt_ptr,          # [num_ckpts, B, H, N, V]  SPARSE
+    G_ptr,              # [T, B, H, V] gate (read iff APPLY_GATE)
     # Scratch staging buffer (per program × (K+1) × BLOCK_H × N × V, fp32).
     Scratch_ptr,
     # Upstream grads.
@@ -87,6 +88,7 @@ def _e88_backward_kernel(
     DV_ptr,             # [T, B, H, V]
     DQ_ptr,             # [T, B, H, N]
     DD_ptr,             # [T, B, H]
+    DG_ptr,             # [T, B, H, V] (written iff APPLY_GATE)
     DS0_ptr,            # [B, H, N, V]
     # Strides for every tensor (in elements).
     sk_t, sk_b, sk_h, sk_n,
@@ -94,12 +96,14 @@ def _e88_backward_kernel(
     sq_t, sq_b, sq_h, sq_n,
     sd_t, sd_b, sd_h,
     sc_t, sc_b, sc_h, sc_n, sc_v,
+    sg_t, sg_b, sg_h, sg_v,
     sdo_t, sdo_b, sdo_h, sdo_v,
     sdsf_b, sdsf_h, sdsf_n, sdsf_v,
     sdk_t, sdk_b, sdk_h, sdk_n,
     sdv_t, sdv_b, sdv_h, sdv_v,
     sdq_t, sdq_b, sdq_h, sdq_n,
     sdd_t, sdd_b, sdd_h,
+    sdg_t, sdg_b, sdg_h, sdg_v,
     sds0_b, sds0_h, sds0_n, sds0_v,
     # Sizes.
     T: tl.constexpr, B: tl.constexpr, H: tl.constexpr,
@@ -108,6 +112,7 @@ def _e88_backward_kernel(
     BLOCK_H: tl.constexpr,
     CKPT_INTERVAL: tl.constexpr,
     NUM_PROGS_H: tl.constexpr,
+    APPLY_GATE: tl.constexpr,
 ):
     """One program per (batch, head_block). Reverse-segment loop."""
     b = tl.program_id(0).to(tl.int64)
@@ -250,6 +255,36 @@ def _e88_backward_kernel(
             )
             d_out = tl.load(DOut_ptr + do_off, mask=mask_hv, other=0.0).to(tl.float32)
 
+            # Optional fused gate: forward applied output_layer = silu(g) * out_kernel.
+            # In backward, that means:
+            #   d_out_kernel = d_out_layer * silu(g)
+            #   d_g           = d_out_layer * out_kernel * silu_prime(g)
+            # silu(g) = g * sigmoid(g);  silu_prime(g) = sigmoid(g) * (1 + g * (1 - sigmoid(g))).
+            # Compute out_kernel inline as one extra reduction; cheap relative
+            # to the full step.
+            if APPLY_GATE:
+                g_off = (
+                    t_i64 * sg_t + b * sg_b
+                    + h_idx[:, None] * sg_h
+                    + v_idx[None, :] * sg_v
+                )
+                g_val = tl.load(G_ptr + g_off, mask=mask_hv, other=0.0).to(tl.float32)
+                sigmoid_g = 1.0 / (1.0 + tl.exp(-g_val))
+                silu_g = g_val * sigmoid_g
+                silu_prime_g = sigmoid_g * (1.0 + g_val * (1.0 - sigmoid_g))
+                # out_kernel before gating: same expression as forward output.
+                out_kernel = tl.sum(S_t * q_vec[:, :, None], axis=1)  # [BH, BV]
+                d_g = d_out * out_kernel * silu_prime_g
+                # Replace d_out with the upstream gradient w.r.t. the un-gated kernel output.
+                d_out = d_out * silu_g
+                # Store d_g.
+                dg_off = (
+                    t_i64 * sdg_t + b * sdg_b
+                    + h_idx[:, None] * sdg_h
+                    + v_idx[None, :] * sdg_v
+                )
+                tl.store(DG_ptr + dg_off, d_g.to(DG_ptr.dtype.element_ty), mask=mask_hv)
+
             # dS_t = carry + outer(q_t, d_out_t)
             dS_t = dS_carry + q_vec[:, :, None] * d_out[:, None, :]
 
@@ -333,6 +368,7 @@ def e88_triton_backward(
     block_h: int = None,
     num_warps: int = None,
     ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
+    g: torch.Tensor = None,  # [T, B, H, V] gate; if None, no fused-gate handling
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 backward recurrence in Triton.
 
@@ -402,6 +438,21 @@ def e88_triton_backward(
         dsf_c = d_S_final if _strided_ok(d_S_final) else d_S_final.contiguous()
     assert dsf_c.shape == (B, H, N, Vsz)
 
+    apply_gate = g is not None
+    if apply_gate:
+        g_c = g if _strided_ok(g) else g.contiguous()
+        assert g_c.shape == (T, B, H, Vsz), \
+            f"gate shape must be [T, B, H, V] = {(T, B, H, Vsz)}, got {tuple(g_c.shape)}"
+        g_strides = (g_c.stride(0), g_c.stride(1), g_c.stride(2), g_c.stride(3))
+        d_g = torch.empty_like(g_c)
+        dg_strides = (d_g.stride(0), d_g.stride(1), d_g.stride(2), d_g.stride(3))
+    else:
+        # Pass dummy pointers + zero strides; kernel guards via APPLY_GATE constexpr.
+        g_c = k_c
+        g_strides = (0, 0, 0, 0)
+        d_g = k_c  # same dummy
+        dg_strides = (0, 0, 0, 0)
+
     out_dtype = k_c.dtype
     d_k = torch.empty_like(k_c)
     d_v = torch.empty_like(v_c)
@@ -454,33 +505,39 @@ def e88_triton_backward(
     seg_scratch = torch.empty(scratch_numel, dtype=k.dtype, device=k.device)
 
     _e88_backward_kernel[grid](
-        k_c, v_c, q_c, d_c, sc_c,
+        k_c, v_c, q_c, d_c, sc_c, g_c,
         seg_scratch,
         do_c, dsf_c,
-        d_k, d_v, d_q, d_decay, d_S0,
-        # k, v, q, d, ckpt, d_out, d_S_final, d_k, d_v, d_q, d_decay, d_S0 strides
+        d_k, d_v, d_q, d_decay, d_g, d_S0,
+        # strides
         k_c.stride(0), k_c.stride(1), k_c.stride(2), k_c.stride(3),
         v_c.stride(0), v_c.stride(1), v_c.stride(2), v_c.stride(3),
         q_c.stride(0), q_c.stride(1), q_c.stride(2), q_c.stride(3),
         d_c.stride(0), d_c.stride(1), d_c.stride(2),
         sc_c.stride(0), sc_c.stride(1), sc_c.stride(2),
         sc_c.stride(3), sc_c.stride(4),
+        *g_strides,
         do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
         dsf_c.stride(0), dsf_c.stride(1), dsf_c.stride(2), dsf_c.stride(3),
         d_k.stride(0), d_k.stride(1), d_k.stride(2), d_k.stride(3),
         d_v.stride(0), d_v.stride(1), d_v.stride(2), d_v.stride(3),
         d_q.stride(0), d_q.stride(1), d_q.stride(2), d_q.stride(3),
         d_decay.stride(0), d_decay.stride(1), d_decay.stride(2),
+        *dg_strides,
         d_S0.stride(0), d_S0.stride(1), d_S0.stride(2), d_S0.stride(3),
         T=T, B=B, H=H, N=N, V=Vsz,
         BLOCK_N=BLOCK_N, BLOCK_V=BLOCK_V,
         BLOCK_H=block_h,
         CKPT_INTERVAL=ckpt_interval,
         NUM_PROGS_H=num_progs_h,
+        APPLY_GATE=apply_gate,
         num_warps=num_warps,
     )
 
-    return d_k, d_v, d_q, d_decay, d_S0
+    if apply_gate:
+        return d_k, d_v, d_q, d_decay, d_g, d_S0
+    else:
+        return d_k, d_v, d_q, d_decay, d_S0
 
 
 # ---------------------------------------------------------------------------
@@ -490,31 +547,58 @@ def e88_triton_backward(
 class E88TritonFunction(torch.autograd.Function):
     """torch.autograd.Function gluing forward + backward Triton kernels.
 
-    Ignores `linear_state=True` (not currently supported by the Triton path
-    — the forward kernel always applies tanh).
+    Optionally supports a fused output gate (output = silu(g) * S^T@q)
+    when ``g`` is provided. The fused gate avoids two extra kernel
+    launches per layer call (silu, multiply) and matches CUDA's
+    register-owned forward.
+
+    Ignores ``linear_state=True`` (not currently supported by the Triton
+    path — the forward kernel always applies tanh).
     """
 
     @staticmethod
-    def forward(ctx, S0, k, v, q, decay):
+    def forward(ctx, S0, k, v, q, decay, g=None):
         from elman.triton.e88_triton_forward import e88_triton_forward
-        out, S_final, S_ckpt = e88_triton_forward(S0, k, v, q, decay)
+        out, S_final, S_ckpt = e88_triton_forward(S0, k, v, q, decay, g=g)
         # Save for backward. Note: S0 isn't strictly required (it equals
-        # S_ckpt[0]), but saving it is cheap and explicit.
-        ctx.save_for_backward(k, v, q, decay, S_ckpt)
+        # S_ckpt[0]), but saving it is cheap and explicit. We must save
+        # g if present because backward needs it for d_g and to scale d_out.
+        if g is not None:
+            ctx.save_for_backward(k, v, q, decay, S_ckpt, g)
+            ctx.has_gate = True
+        else:
+            ctx.save_for_backward(k, v, q, decay, S_ckpt)
+            ctx.has_gate = False
         return out, S_final
 
     @staticmethod
     def backward(ctx, d_out, d_S_final):
-        k, v, q, decay, S_ckpt = ctx.saved_tensors
-        d_k, d_v, d_q, d_decay, d_S0 = e88_triton_backward(
-            k, v, q, decay, S_ckpt,
-            d_out=d_out.contiguous(),
-            d_S_final=d_S_final.contiguous() if d_S_final is not None else None,
-        )
-        # Match forward signature order (S0, k, v, q, decay).
-        return d_S0, d_k, d_v, d_q, d_decay
+        if ctx.has_gate:
+            k, v, q, decay, S_ckpt, g = ctx.saved_tensors
+            d_k, d_v, d_q, d_decay, d_g, d_S0 = e88_triton_backward(
+                k, v, q, decay, S_ckpt,
+                d_out=d_out.contiguous(),
+                d_S_final=d_S_final.contiguous() if d_S_final is not None else None,
+                g=g,
+            )
+            # Match forward signature order (S0, k, v, q, decay, g).
+            return d_S0, d_k, d_v, d_q, d_decay, d_g
+        else:
+            k, v, q, decay, S_ckpt = ctx.saved_tensors
+            d_k, d_v, d_q, d_decay, d_S0 = e88_triton_backward(
+                k, v, q, decay, S_ckpt,
+                d_out=d_out.contiguous(),
+                d_S_final=d_S_final.contiguous() if d_S_final is not None else None,
+            )
+            # Match forward signature order (S0, k, v, q, decay).
+            return d_S0, d_k, d_v, d_q, d_decay, None
 
 
-def e88_triton(S0, k, v, q, decay):
-    """Differentiable Triton E88 — returns (out, S_final)."""
-    return E88TritonFunction.apply(S0, k, v, q, decay)
+def e88_triton(S0, k, v, q, decay, g=None):
+    """Differentiable Triton E88 — returns (out, S_final).
+
+    If ``g`` is provided, applies the fused output gate
+    ``output = silu(g) * S^T@q`` inside the kernel (saves two kernel
+    launches per call). ``g`` must have shape [T, B, H, V].
+    """
+    return E88TritonFunction.apply(S0, k, v, q, decay, g)

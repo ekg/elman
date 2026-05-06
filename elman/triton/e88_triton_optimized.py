@@ -69,15 +69,20 @@ def e88_triton_optimized_apply(
             (B, H, N, Vsz), dtype=k.dtype, device=k.device,
         )
 
-    # Triton forward + backward (autograd-wrapped).
-    out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t)
-
-    # Back to [B, T, H, V] view (no copy — the layer downstream just
-    # reads via strides).
-    output = out_t.transpose(0, 1)
-
-    # Post-gate: output = output * silu(g)
-    if apply_gate and g is not None and getattr(g, "numel", lambda: 0)() > 0:
-        output = output * torch.nn.functional.silu(g)
+    # Forward gate is fused INSIDE the kernel when apply_gate=True and
+    # g is non-empty. This saves two extra kernel launches per layer
+    # (silu, multiply) and matches CUDA's register-owned forward.
+    use_fused_gate = (
+        apply_gate
+        and g is not None
+        and getattr(g, "numel", lambda: 0)() > 0
+    )
+    if use_fused_gate:
+        g_t = g.transpose(0, 1)  # [T, B, H, V] view (last dim contiguous)
+        out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t, g_t)
+        output = out_t.transpose(0, 1)
+    else:
+        out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t)
+        output = out_t.transpose(0, 1)
 
     return S_final, output
