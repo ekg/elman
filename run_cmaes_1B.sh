@@ -1,10 +1,12 @@
 #!/bin/bash
 # Parallel CMA-ES at 1.27B target params, ctx=512, 5min/eval.
-# 5 models, 1 GPU each, pop=4 internal. Spare GPUs 5,7 for fast lane.
+# Default: all 5 models, 1 GPU each, pop=4 internal. Use MODELS=e88 for
+# the Triton-specific E88 rerun without rerunning unchanged baselines.
 
 set -e
 
-OUTDIR=/tmp/cmaes_1B
+OUTDIR=${OUTDIR:-/tmp/cmaes_1B_triton_e88}
+MODELS=${MODELS:-"e88 fla-gdn mamba2 transformer e94"}
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
 
@@ -24,12 +26,32 @@ launch() {
     echo "GPU $gpu: $model -> $OUTDIR/${model}.log (pid $!)"
 }
 
-launch 0 e88        --fixed_n_state 32 --use_triton_e88
-launch 1 fla-gdn
-launch 2 mamba2
-launch 3 transformer
-launch 4 e94        --fixed_n_state 16
+launched=0
+for model in $MODELS; do
+    case "$model" in
+        e88)
+            launch 0 e88 --fixed_n_state 32 --use_triton_e88
+            ;;
+        fla-gdn)
+            launch 1 fla-gdn
+            ;;
+        mamba2)
+            launch 2 mamba2
+            ;;
+        transformer)
+            launch 3 transformer
+            ;;
+        e94)
+            launch 4 e94 --fixed_n_state 16
+            ;;
+        *)
+            echo "Unknown model '$model'. Valid: e88 fla-gdn mamba2 transformer e94" >&2
+            exit 1
+            ;;
+    esac
+    launched=$((launched + 1))
+done
 
 echo
-echo "All 5 CMA-ES searches launched. Spare GPUs 5,7 available."
+echo "$launched CMA-ES search(es) launched. MODELS=$MODELS"
 echo "Monitor: tail -f $OUTDIR/*.log"
