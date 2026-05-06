@@ -388,8 +388,16 @@ def e88_triton_forward(
 
     # Pick BLOCK_H + num_warps.
     if block_h is None:
-        launch_args = (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides)
-        block_h_chosen, nw = _autotune_kernel(launch_args, B, T, H, N, Vsz, out_dtype)
+        # Production-scale heuristic: at H >= 64 the empirical sweep at
+        # H=386 N=V=32 shows BLOCK_H=1 num_warps=2 is fastest (1.83x vs
+        # the autotune's choice of (4, 2)). Use this directly to skip
+        # the autotune launch cost at training start.
+        # See tests/sweep_triton_block_h_at_386.py.
+        if H >= 64:
+            block_h_chosen, nw = 1, 2
+        else:
+            launch_args = (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides)
+            block_h_chosen, nw = _autotune_kernel(launch_args, B, T, H, N, Vsz, out_dtype)
     else:
         block_h_chosen = int(block_h)
         nw = int(num_warps) if num_warps is not None else (8 if block_h_chosen >= 8 else 4)

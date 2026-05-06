@@ -316,19 +316,24 @@ def e88_triton_backward(
     d_decay = torch.empty_like(d_c)
     d_S0 = torch.empty((B, H, N, Vsz), dtype=out_dtype, device=k.device)
 
-    # Default heads-per-program. Mirrors forward autotune choices observed
-    # at H ∈ {32, 128, 386}: BLOCK_H grows with H, modestly. We keep it
-    # simple here — a small fixed table is good enough until benchmarks
-    # demand a tuned cache.
+    # Default heads-per-program. Empirically tuned at H=386 N=V=32:
+    # BLOCK_H=1 num_warps=2 is ~2x faster than BLOCK_H=4 num_warps=4 at
+    # production scale. Despite "more parallelism" intuition, BLOCK_H>1
+    # at high H gets worse SM utilization here — likely register spills
+    # of the [BLOCK_H, N, V] state tile (16 KB per BLOCK_H step at fp32).
+    # See tests/sweep_triton_block_h_at_386.py for the sweep.
     if block_h is None:
-        if H >= 256:
-            block_h = 4
-        elif H >= 64:
-            block_h = 2
+        if H >= 64:
+            # Sweet spot at scale: 1 head per program, 2 warps per program.
+            block_h = 1
+            if num_warps is None:
+                num_warps = 2
         else:
             block_h = 1
+            if num_warps is None:
+                num_warps = 4
     if num_warps is None:
-        num_warps = 4 if block_h <= 4 else 8
+        num_warps = 2 if block_h == 1 else (4 if block_h <= 4 else 8)
 
     grid = (B, (H + block_h - 1) // block_h)
 
