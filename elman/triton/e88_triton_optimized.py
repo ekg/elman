@@ -49,10 +49,10 @@ def e88_triton_optimized_apply(
     assert v.shape == (B, T, H, Vsz)
     assert decay.shape == (B, T, H)
 
-    # Optional L2 normalization (matches the CUDA `normalize_kq` flag).
-    if normalize_kq:
-        k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
-        q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+    # L2 normalization is fused inside the Triton kernel when normalize_kq=True
+    # — this saves a Python `linalg_vector_norm` + `aten::div` per layer call,
+    # which adds up to ~50-60 ms/step at 1.27B production. The kernel handles
+    # the L2-norm gradient via the standard chain rule.
 
     # Triton kernels expect [T, B, H, *]. We use .transpose() WITHOUT
     # .contiguous() — the kernel reads via explicit strides, and last-dim
@@ -79,10 +79,14 @@ def e88_triton_optimized_apply(
     )
     if use_fused_gate:
         g_t = g.transpose(0, 1)  # [T, B, H, V] view (last dim contiguous)
-        out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t, g_t)
+        out_t, S_final = e88_triton(
+            S0, k_t, v_t, q_t, decay_t, g_t, normalize_kq=normalize_kq,
+        )
         output = out_t.transpose(0, 1)
     else:
-        out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t)
+        out_t, S_final = e88_triton(
+            S0, k_t, v_t, q_t, decay_t, None, normalize_kq=normalize_kq,
+        )
         output = out_t.transpose(0, 1)
 
     return S_final, output

@@ -105,6 +105,7 @@ def _e88_forward_kernel(
     BLOCK_H: tl.constexpr,
     CKPT_INTERVAL: tl.constexpr,
     APPLY_GATE: tl.constexpr,  # if True, output = silu(g) * S^T@q
+    NORMALIZE_KQ: tl.constexpr,  # if True, L2-normalize k and q on load (per head, last dim)
 ):
     """One program per (batch, head_block). Sequential time loop."""
     # 2D launch grid: (B, ceil(H / BLOCK_H))
@@ -178,6 +179,18 @@ def _e88_forward_kernel(
         q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
         v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)   # [BH, BV]
         d_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)    # [BH]
+
+        # Optional fused L2 normalization on k and q (per head, last-dim).
+        # Saves two PyTorch ops per (k, q) per layer call (norm, divide):
+        # at depth=14 with grad_ckpt this is ~50-60 ms/step at 1.27B.
+        # Matches CUDA reg-own's `normalize_kq=True` path.
+        if NORMALIZE_KQ:
+            k_norm_sq = tl.sum(k_vec * k_vec, axis=1)            # [BH]
+            q_norm_sq = tl.sum(q_vec * q_vec, axis=1)            # [BH]
+            inv_k_norm = 1.0 / (tl.sqrt(k_norm_sq) + 1e-6)        # [BH]
+            inv_q_norm = 1.0 / (tl.sqrt(q_norm_sq) + 1e-6)        # [BH]
+            k_vec = k_vec * inv_k_norm[:, None]
+            q_vec = q_vec * inv_q_norm[:, None]
 
         # Retrieve: r[h, v] = sum_n S[h, n, v] * k[h, n]   (reduce over N axis=1)
         retrieved = tl.sum(S * k_vec[:, :, None], axis=1)   # [BH, BV]
@@ -372,6 +385,7 @@ def e88_triton_forward(
     num_warps: int = None,
     ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
     g: torch.Tensor = None,  # [T, B, H, V] gate; if None, no fused gate
+    normalize_kq: bool = False,  # if True, kernel L2-normalizes k and q on load
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 forward recurrence in Triton.
 
@@ -517,6 +531,7 @@ def e88_triton_forward(
         BLOCK_H=block_h_chosen,
         CKPT_INTERVAL=ckpt_interval,
         APPLY_GATE=apply_gate,
+        NORMALIZE_KQ=bool(normalize_kq),
         num_warps=nw,
     )
     return out, S_final, S_ckpt
