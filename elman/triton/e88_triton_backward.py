@@ -114,6 +114,7 @@ def _e88_backward_kernel(
     NUM_PROGS_H: tl.constexpr,
     APPLY_GATE: tl.constexpr,
     NORMALIZE_KQ: tl.constexpr,
+    APPLY_SILU_QKV: tl.constexpr,
 ):
     """One program per (batch, head_block). Reverse-segment loop."""
     b = tl.program_id(0).to(tl.int64)
@@ -201,6 +202,10 @@ def _e88_backward_kernel(
             v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)
             decay_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)
 
+            if APPLY_SILU_QKV:
+                k_vec = k_vec / (1.0 + tl.exp(-k_vec))
+                v_vec = v_vec / (1.0 + tl.exp(-v_vec))
+
             # Forward replay — match the forward kernel's L2-norm if enabled.
             if NORMALIZE_KQ:
                 k_norm_sq = tl.sum(k_vec * k_vec, axis=1)
@@ -252,22 +257,34 @@ def _e88_backward_kernel(
 
             k_raw = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)
             q_raw = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)
-            v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)
+            v_raw = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)
             decay_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)
+
+            if APPLY_SILU_QKV:
+                sigmoid_k = 1.0 / (1.0 + tl.exp(-k_raw))
+                sigmoid_q = 1.0 / (1.0 + tl.exp(-q_raw))
+                sigmoid_v = 1.0 / (1.0 + tl.exp(-v_raw))
+                k_base = k_raw * sigmoid_k
+                q_base = q_raw * sigmoid_q
+                v_vec = v_raw * sigmoid_v
+            else:
+                k_base = k_raw
+                q_base = q_raw
+                v_vec = v_raw
 
             # If kernel-fused L2 norm: compute k_norm, q_norm here and use
             # them as `k_vec`, `q_vec` for the recurrence backward. Save
             # 1/||k||, 1/||q|| for the post-hoc d_k_raw / d_q_raw conversion.
             if NORMALIZE_KQ:
-                k_norm_sq = tl.sum(k_raw * k_raw, axis=1)
-                q_norm_sq = tl.sum(q_raw * q_raw, axis=1)
+                k_norm_sq = tl.sum(k_base * k_base, axis=1)
+                q_norm_sq = tl.sum(q_base * q_base, axis=1)
                 inv_k_norm = 1.0 / (tl.sqrt(k_norm_sq) + 1e-6)
                 inv_q_norm = 1.0 / (tl.sqrt(q_norm_sq) + 1e-6)
-                k_vec = k_raw * inv_k_norm[:, None]
-                q_vec = q_raw * inv_q_norm[:, None]
+                k_vec = k_base * inv_k_norm[:, None]
+                q_vec = q_base * inv_q_norm[:, None]
             else:
-                k_vec = k_raw
-                q_vec = q_raw
+                k_vec = k_base
+                q_vec = q_base
 
             do_off = (
                 t_i64 * sdo_t + b * sdo_b
@@ -346,6 +363,14 @@ def _e88_backward_kernel(
                 d_k = (d_k - k_vec * d_k_dot_kn[:, None]) * inv_k_norm[:, None]
                 d_q = (d_q - q_vec * d_q_dot_qn[:, None]) * inv_q_norm[:, None]
 
+            if APPLY_SILU_QKV:
+                silu_prime_k = sigmoid_k * (1.0 + k_raw * (1.0 - sigmoid_k))
+                silu_prime_q = sigmoid_q * (1.0 + q_raw * (1.0 - sigmoid_q))
+                silu_prime_v = sigmoid_v * (1.0 + v_raw * (1.0 - sigmoid_v))
+                d_k = d_k * silu_prime_k
+                d_q = d_q * silu_prime_q
+                d_v = d_v * silu_prime_v
+
             dk_off = (
                 t_i64 * sdk_t + b * sdk_b
                 + h_idx[:, None] * sdk_h
@@ -402,6 +427,7 @@ def e88_triton_backward(
     ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
     g: torch.Tensor = None,  # [T, B, H, V] gate; if None, no fused-gate handling
     normalize_kq: bool = False,
+    apply_silu_qkv: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 backward recurrence in Triton.
 
@@ -563,6 +589,7 @@ def e88_triton_backward(
         NUM_PROGS_H=num_progs_h,
         APPLY_GATE=apply_gate,
         NORMALIZE_KQ=bool(normalize_kq),
+        APPLY_SILU_QKV=bool(apply_silu_qkv),
         num_warps=num_warps,
     )
 
@@ -589,12 +616,14 @@ class E88TritonFunction(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, S0, k, v, q, decay, g=None, normalize_kq=False):
+    def forward(ctx, S0, k, v, q, decay, g=None, normalize_kq=False, apply_silu_qkv=False):
         from elman.triton.e88_triton_forward import e88_triton_forward
         out, S_final, S_ckpt = e88_triton_forward(
             S0, k, v, q, decay, g=g, normalize_kq=normalize_kq,
+            apply_silu_qkv=apply_silu_qkv,
         )
         ctx.normalize_kq = bool(normalize_kq)
+        ctx.apply_silu_qkv = bool(apply_silu_qkv)
         # Save for backward. Note: S0 isn't strictly required (it equals
         # S_ckpt[0]), but saving it is cheap and explicit. We must save
         # g if present because backward needs it for d_g and to scale d_out.
@@ -609,6 +638,7 @@ class E88TritonFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, d_out, d_S_final):
         nkq = ctx.normalize_kq
+        silu_qkv = ctx.apply_silu_qkv
         if ctx.has_gate:
             k, v, q, decay, S_ckpt, g = ctx.saved_tensors
             d_k, d_v, d_q, d_decay, d_g, d_S0 = e88_triton_backward(
@@ -617,9 +647,10 @@ class E88TritonFunction(torch.autograd.Function):
                 d_S_final=d_S_final.contiguous() if d_S_final is not None else None,
                 g=g,
                 normalize_kq=nkq,
+                apply_silu_qkv=silu_qkv,
             )
             # Match forward signature order (S0, k, v, q, decay, g, normalize_kq).
-            return d_S0, d_k, d_v, d_q, d_decay, d_g, None
+            return d_S0, d_k, d_v, d_q, d_decay, d_g, None, None
         else:
             k, v, q, decay, S_ckpt = ctx.saved_tensors
             d_k, d_v, d_q, d_decay, d_S0 = e88_triton_backward(
@@ -627,12 +658,13 @@ class E88TritonFunction(torch.autograd.Function):
                 d_out=d_out.contiguous(),
                 d_S_final=d_S_final.contiguous() if d_S_final is not None else None,
                 normalize_kq=nkq,
+                apply_silu_qkv=silu_qkv,
             )
             # Match forward signature order (S0, k, v, q, decay, g, normalize_kq).
-            return d_S0, d_k, d_v, d_q, d_decay, None, None
+            return d_S0, d_k, d_v, d_q, d_decay, None, None, None
 
 
-def e88_triton(S0, k, v, q, decay, g=None, normalize_kq=False):
+def e88_triton(S0, k, v, q, decay, g=None, normalize_kq=False, apply_silu_qkv=False):
     """Differentiable Triton E88 — returns (out, S_final).
 
     If ``g`` is provided, applies the fused output gate
@@ -644,4 +676,4 @@ def e88_triton(S0, k, v, q, decay, g=None, normalize_kq=False):
     `aten::div` per layer call). The backward applies the standard
     norm chain rule to recover gradients w.r.t. the raw k, q.
     """
-    return E88TritonFunction.apply(S0, k, v, q, decay, g, normalize_kq)
+    return E88TritonFunction.apply(S0, k, v, q, decay, g, normalize_kq, apply_silu_qkv)

@@ -60,6 +60,7 @@ E88_SUPPORTED_N_STATE = [16, 32]
 # Global compile settings (set from args in main())
 COMPILE_ENABLED = False
 COMPILE_MODE = 'max-autotune'
+USE_TRITON_E88 = False
 
 # Global sequence length setting (set from args in main())
 CHUNK_SIZE = 512
@@ -603,6 +604,8 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--use_gate', '1',  # Gate enabled - best result (0.8272) was WITH gate
             '--gate_activation', 'silu',  # SiLU gating
         ])
+        if USE_TRITON_E88:
+            cmd.extend(['--use_triton', '1'])
 
     elif model_type == 'e91':
         # E91 matrix-matrix nonlinear RNN — rank-r delta rule with tanh.
@@ -1749,6 +1752,8 @@ def main():
                         help='Enable gradient checkpointing (needed for long sequences)')
     parser.add_argument('--projection_chunk_size', type=int, default=0,
                         help='Projection chunk size for memory savings (0=disabled)')
+    parser.add_argument('--use_triton_e88', action='store_true',
+                        help='For canonical E88 searches, pass --use_triton 1 to train.py')
 
     # Progressive training (512→32K)
     parser.add_argument('--progressive', action='store_true',
@@ -1790,10 +1795,11 @@ def main():
             print(f"Using GPU file: {GPU_FILE} (current GPUs: {current})")
 
     # Set global compile and sequence settings
-    global COMPILE_ENABLED, COMPILE_MODE, CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
+    global COMPILE_ENABLED, COMPILE_MODE, USE_TRITON_E88, CHUNK_SIZE, GRADIENT_CHECKPOINTING, PROJECTION_CHUNK_SIZE
     global PROGRESSIVE, PHASE1_MINUTES, PHASE2_MINUTES, PHASE2_CHUNK_SIZE
     COMPILE_ENABLED = args.compile
     COMPILE_MODE = args.compile_mode
+    USE_TRITON_E88 = args.use_triton_e88
     GRADIENT_CHECKPOINTING = args.gradient_checkpointing
     PROJECTION_CHUNK_SIZE = args.projection_chunk_size
     CHUNK_SIZE = args.chunk_size
@@ -1844,6 +1850,8 @@ def main():
     if not PROGRESSIVE:
         print(f"Chunk size: {CHUNK_SIZE} (batch size auto-scaled)")
     print(f"torch.compile: {COMPILE_ENABLED} (mode: {COMPILE_MODE})")
+    if args.model == 'e88':
+        print(f"E88 Triton backend: {USE_TRITON_E88}")
     if args.phase in ['both', 'lhs']:
         print(f"LHS samples: {args.lhs_samples}")
     if args.phase in ['both', 'cmaes']:

@@ -106,6 +106,7 @@ def _e88_forward_kernel(
     CKPT_INTERVAL: tl.constexpr,
     APPLY_GATE: tl.constexpr,  # if True, output = silu(g) * S^T@q
     NORMALIZE_KQ: tl.constexpr,  # if True, L2-normalize k and q on load (per head, last dim)
+    APPLY_SILU_QKV: tl.constexpr,  # if True, apply silu to raw q/k/v projection loads
 ):
     """One program per (batch, head_block). Sequential time loop."""
     # 2D launch grid: (B, ceil(H / BLOCK_H))
@@ -179,6 +180,11 @@ def _e88_forward_kernel(
         q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
         v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)   # [BH, BV]
         d_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)    # [BH]
+
+        if APPLY_SILU_QKV:
+            k_vec = k_vec / (1.0 + tl.exp(-k_vec))
+            q_vec = q_vec / (1.0 + tl.exp(-q_vec))
+            v_vec = v_vec / (1.0 + tl.exp(-v_vec))
 
         # Optional fused L2 normalization on k and q (per head, last-dim).
         # Saves two PyTorch ops per (k, q) per layer call (norm, divide):
@@ -287,7 +293,7 @@ def _select_block_h_candidates(N: int, V: int):
     return _BLOCK_H_CANDIDATES  # up to 16 for small (N, V)
 
 
-def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
+def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval, normalize_kq, apply_silu_qkv):
     """Tiny in-process autotune. Tries (BLOCK_H, num_warps) and caches winner.
 
     Empirically, the "right" num_warps depends on BLOCK_H AND on H itself:
@@ -297,7 +303,7 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
     For H < 16 we just default to BLOCK_H=1 (no head-grouping helps when
     there are too few heads to begin with).
     """
-    cache_key = (B, T, H, N, Vsz, str(dtype), ckpt_interval)
+    cache_key = (B, T, H, N, Vsz, str(dtype), ckpt_interval, bool(normalize_kq), bool(apply_silu_qkv))
     if cache_key in _AUTOTUNE_CACHE:
         return _AUTOTUNE_CACHE[cache_key]
 
@@ -342,6 +348,8 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
                         BLOCK_H=bh,
                         CKPT_INTERVAL=ckpt_interval,
                         APPLY_GATE=apply_gate,
+                        NORMALIZE_KQ=bool(normalize_kq),
+                        APPLY_SILU_QKV=bool(apply_silu_qkv),
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -357,6 +365,8 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
                         BLOCK_H=bh,
                         CKPT_INTERVAL=ckpt_interval,
                         APPLY_GATE=apply_gate,
+                        NORMALIZE_KQ=bool(normalize_kq),
+                        APPLY_SILU_QKV=bool(apply_silu_qkv),
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -386,6 +396,7 @@ def e88_triton_forward(
     ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
     g: torch.Tensor = None,  # [T, B, H, V] gate; if None, no fused gate
     normalize_kq: bool = False,  # if True, kernel L2-normalizes k and q on load
+    apply_silu_qkv: bool = False,  # if True, kernel applies silu to raw q/k/v loads
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 forward recurrence in Triton.
 
@@ -516,7 +527,8 @@ def e88_triton_forward(
         else:
             launch_args = (k_c, v_c, q_c, d_c, s0_c, g_c, apply_gate, out, S_final, S_ckpt, strides)
             block_h_chosen, nw = _autotune_kernel(
-                launch_args, B, T, H, N, Vsz, out_dtype, ckpt_interval
+                launch_args, B, T, H, N, Vsz, out_dtype, ckpt_interval,
+                normalize_kq, apply_silu_qkv,
             )
     else:
         block_h_chosen = int(block_h)
@@ -534,6 +546,7 @@ def e88_triton_forward(
         CKPT_INTERVAL=ckpt_interval,
         APPLY_GATE=apply_gate,
         NORMALIZE_KQ=bool(normalize_kq),
+        APPLY_SILU_QKV=bool(apply_silu_qkv),
         num_warps=nw,
     )
     return out, S_final, S_ckpt

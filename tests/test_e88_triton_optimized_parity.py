@@ -126,6 +126,58 @@ def run_parity_case(name, apply_gate, normalize_kq, device, atol_fwd=5e-2, atol_
     return ok
 
 
+def run_fused_qkv_silu_case(device):
+    """Triton fused q/k/v SiLU must match CUDA fed by PyTorch-activated q/k/v."""
+    print("\n--- fused qkv SiLU + gate + L2-norm (production Triton path) ---")
+    B, T, H, N, V = 2, 64, 17, 32, 32
+    dtype = torch.bfloat16
+
+    k_raw, v_raw, q_raw, decay_raw, g_raw, S0 = _make_inputs(B, T, H, N, V, dtype, device, seed=11)
+
+    # Reference path: PyTorch owns q/k/v SiLU, then CUDA owns recurrence + fused gate/L2.
+    k_ref = k_raw.detach().clone().requires_grad_(True)
+    v_ref = v_raw.detach().clone().requires_grad_(True)
+    q_ref = q_raw.detach().clone().requires_grad_(True)
+    d_ref = decay_raw.detach().clone().requires_grad_(True)
+    g_ref = g_raw.detach().clone().requires_grad_(True)
+    S_ref, out_ref = E88OptimizedCUDAFunction.apply(
+        True,
+        torch.nn.functional.silu(k_ref),
+        torch.nn.functional.silu(v_ref),
+        torch.nn.functional.silu(q_ref),
+        d_ref, g_ref, S0, H, True, True, 16,
+    )
+
+    # Test path: Triton owns q/k/v SiLU and its backward derivative.
+    k_tri = k_raw.detach().clone().requires_grad_(True)
+    v_tri = v_raw.detach().clone().requires_grad_(True)
+    q_tri = q_raw.detach().clone().requires_grad_(True)
+    d_tri = decay_raw.detach().clone().requires_grad_(True)
+    g_tri = g_raw.detach().clone().requires_grad_(True)
+    S_tri, out_tri = e88_triton_optimized_apply(
+        True, k_tri, v_tri, q_tri, d_tri, g_tri, S0,
+        H, True, True, 16, apply_silu_qkv=True,
+    )
+
+    ok = True
+    ok &= _check("output (fwd)", out_tri, out_ref, 2e-2, 2e-2)
+    ok &= _check("S_final (fwd)", S_tri, S_ref, 2e-2, 2e-2)
+
+    g_out = torch.randn_like(out_ref)
+    out_ref.backward(g_out, retain_graph=False)
+    out_tri.backward(g_out, retain_graph=False)
+
+    for nm, tri, ref in [
+        ("d_k_raw", k_tri.grad, k_ref.grad),
+        ("d_v_raw", v_tri.grad, v_ref.grad),
+        ("d_q_raw", q_tri.grad, q_ref.grad),
+        ("d_decay", d_tri.grad, d_ref.grad),
+        ("d_g", g_tri.grad, g_ref.grad),
+    ]:
+        ok &= _check(nm, tri, ref, 2e-2, 2e-2)
+    return ok
+
+
 def main():
     if not torch.cuda.is_available():
         print("CUDA required")
@@ -158,6 +210,13 @@ def main():
             print(f"  ERROR: {type(e).__name__}: {e}")
             ok = False
         all_ok = all_ok and ok
+
+    try:
+        ok = run_fused_qkv_silu_case(device)
+    except Exception as e:
+        print(f"  ERROR: {type(e).__name__}: {e}")
+        ok = False
+    all_ok = all_ok and ok
 
     print()
     print("ALL PASS" if all_ok else "SOME FAILED")

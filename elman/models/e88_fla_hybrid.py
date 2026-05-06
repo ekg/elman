@@ -1109,10 +1109,12 @@ class E88FLAHybrid(nn.Module):
         # QKV projection
         if self.qkv_proj is not None:
             qkv = self.qkv_proj(x_chunk)
+            qkv_silu_in_kernel = self.use_triton and self.use_silu and not self.use_conv
             q = qkv[..., :self.key_dim]
             k = qkv[..., self.key_dim:2*self.key_dim]
             v = qkv[..., 2*self.key_dim:]
         else:
+            qkv_silu_in_kernel = False
             q = self.q_proj(x_chunk)
             k = self.k_proj(x_chunk)
             v = None
@@ -1123,7 +1125,7 @@ class E88FLAHybrid(nn.Module):
             k = self.k_conv(k.transpose(1, 2))[:, :, :C].transpose(1, 2)
 
         # SiLU activation
-        if self.use_silu:
+        if self.use_silu and not qkv_silu_in_kernel:
             q = F.silu(q)
             k = F.silu(k)
 
@@ -1137,7 +1139,7 @@ class E88FLAHybrid(nn.Module):
         if not self.tie_kv:
             if self.use_conv and self.v_conv is not None:
                 v = self.v_conv(v.transpose(1, 2))[:, :, :C].transpose(1, 2)
-            if self.use_silu:
+            if self.use_silu and not qkv_silu_in_kernel:
                 v = F.silu(v)
 
         # Reshape for per-head processing
@@ -1174,7 +1176,7 @@ class E88FLAHybrid(nn.Module):
         # Gate projection
         g = self.g_proj(x_chunk).view(B, C, H, self.head_v_dim).to(input_dtype)
 
-        return k, v.to(input_dtype), q, decay.to(input_dtype), g
+        return k, v.to(input_dtype), q, decay.to(input_dtype), g, qkv_silu_in_kernel
 
     def _process_chunk(self, x_chunk, S_prev, input_dtype, use_fused_l2):
         """Compute projections and run CUDA kernel for one time chunk.
@@ -1189,13 +1191,14 @@ class E88FLAHybrid(nn.Module):
             S_new: [B, H, n_state, head_v_dim] updated state
             output: [B, C, H, head_v_dim] output for this chunk
         """
-        k, v, q, decay, g = self._compute_projections(x_chunk, input_dtype, use_fused_l2)
+        k, v, q, decay, g, qkv_silu_in_kernel = self._compute_projections(x_chunk, input_dtype, use_fused_l2)
 
         if self.use_triton:
             from elman.triton.e88_triton_optimized import e88_triton_optimized_apply
             S_new, output = e88_triton_optimized_apply(
                 self.training, k, v, q, decay, g, S_prev,
                 self.n_heads, True, use_fused_l2, self.checkpoint_interval,
+                apply_silu_qkv=qkv_silu_in_kernel,
             )
         else:
             S_new, output = E88OptimizedCUDAFunction.apply(
@@ -1289,10 +1292,12 @@ class E88FLAHybrid(nn.Module):
                 if self.qkv_proj is not None:
                     # Single fused GEMM: [B, T, dim] @ [dim, 2*key_dim + value_dim]
                     qkv = self.qkv_proj(x)  # [B, T, 2*key_dim + value_dim]
+                    qkv_silu_in_kernel = _use_optimized and self.use_triton and self.use_silu and not self.use_conv
                     q = qkv[..., :self.key_dim]
                     k = qkv[..., self.key_dim:2*self.key_dim]
                     v = qkv[..., 2*self.key_dim:]
                 else:
+                    qkv_silu_in_kernel = False
                     q = self.q_proj(x)  # [B, T, key_dim]
                     k = self.k_proj(x)  # [B, T, key_dim]
                     v = None  # Set below
@@ -1304,7 +1309,7 @@ class E88FLAHybrid(nn.Module):
                     q = self.q_conv(q.transpose(1, 2))[:, :, :T].transpose(1, 2)
                     k = self.k_conv(k.transpose(1, 2))[:, :, :T].transpose(1, 2)
                 # Apply SiLU if enabled
-                if self.use_silu:
+                if self.use_silu and not qkv_silu_in_kernel:
                     q = F.silu(q)
                     k = F.silu(k)
 
@@ -1320,13 +1325,13 @@ class E88FLAHybrid(nn.Module):
                 if not self.tie_kv and self.qkv_proj is None:
                     if self.use_conv and self.v_conv is not None:
                         v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-                    if self.use_silu:
+                    if self.use_silu and not qkv_silu_in_kernel:
                         v = F.silu(v)
                 elif not self.tie_kv:
                     # Fused path: apply conv and SiLU to v
                     if self.use_conv and self.v_conv is not None:
                         v = self.v_conv(v.transpose(1, 2))[:, :, :T].transpose(1, 2)
-                    if self.use_silu:
+                    if self.use_silu and not qkv_silu_in_kernel:
                         v = F.silu(v)
 
                 # Compute decay
@@ -1501,6 +1506,7 @@ class E88FLAHybrid(nn.Module):
                         k_norm, v.to(input_dtype), q_norm, decay.to(input_dtype),
                         g, S0.to(input_dtype), H, True, use_fused_l2,
                         self.checkpoint_interval,
+                        apply_silu_qkv=qkv_silu_in_kernel,
                     )
                 else:
                     # Call optimized kernel (auto-selects warp vs coalesced based on n_state)
