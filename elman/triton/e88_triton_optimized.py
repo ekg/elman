@@ -54,11 +54,16 @@ def e88_triton_optimized_apply(
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
 
-    # Triton kernels expect [T, B, H, *].
-    k_t = k.transpose(0, 1).contiguous()
-    v_t = v.transpose(0, 1).contiguous()
-    q_t = q.transpose(0, 1).contiguous()
-    decay_t = decay.transpose(0, 1).contiguous()
+    # Triton kernels expect [T, B, H, *]. We use .transpose() WITHOUT
+    # .contiguous() — the kernel reads via explicit strides, and last-dim
+    # contiguity is preserved for these axes (transposing dims 0 and 1
+    # doesn't touch stride[-1]==1). Skipping the copy saves ~100 MB per
+    # tensor at production scale; 14 layers * 3 grad_ckpt invocations *
+    # 4 tensors = many GB of bandwidth per training step.
+    k_t = k.transpose(0, 1)
+    v_t = v.transpose(0, 1)
+    q_t = q.transpose(0, 1)
+    decay_t = decay.transpose(0, 1)
     if S0 is None:
         S0 = torch.zeros(
             (B, H, N, Vsz), dtype=k.dtype, device=k.device,
@@ -67,8 +72,9 @@ def e88_triton_optimized_apply(
     # Triton forward + backward (autograd-wrapped).
     out_t, S_final = e88_triton(S0, k_t, v_t, q_t, decay_t)
 
-    # Back to [B, T, H, V].
-    output = out_t.transpose(0, 1).contiguous()
+    # Back to [B, T, H, V] view (no copy — the layer downstream just
+    # reads via strides).
+    output = out_t.transpose(0, 1)
 
     # Post-gate: output = output * silu(g)
     if apply_gate and g is not None and getattr(g, "numel", lambda: 0)() > 0:

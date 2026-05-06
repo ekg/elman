@@ -407,12 +407,21 @@ def e88_triton_forward(
             f"be added by handling a shorter final segment in the backward replay."
         )
 
-    # Make everything contiguous so strides are predictable.
-    k_c = k.contiguous()
-    v_c = v.contiguous()
-    q_c = q.contiguous()
-    d_c = decay.contiguous()
-    s0_c = S0.contiguous()
+    # The kernel reads via explicit strides, so non-contiguous inputs
+    # (e.g. transposes from [B, T, H, *] -> [T, B, H, *]) work fine as
+    # long as the last dim is contiguous (stride[-1] == 1). We only
+    # call .contiguous() on the *last-dim* axis when needed; otherwise
+    # we keep the view to avoid expensive copies. At production scale
+    # (B=8, T=512, H=386, N=V=32) each .contiguous() is ~100 MB —
+    # 14 layers * 3 invocations (fwd+fwd_replay+bwd) * 4 tensors saved
+    # is tens of GB of bandwidth per training step.
+    def _strided_ok(x):
+        return x.stride(-1) == 1
+    k_c = k if _strided_ok(k) else k.contiguous()
+    v_c = v if _strided_ok(v) else v.contiguous()
+    q_c = q if _strided_ok(q) else q.contiguous()
+    d_c = decay if _strided_ok(decay) else decay.contiguous()
+    s0_c = S0 if _strided_ok(S0) else S0.contiguous()
 
     out_dtype = k_c.dtype
     out = torch.empty((T, B, H, Vsz), dtype=out_dtype, device=k.device)

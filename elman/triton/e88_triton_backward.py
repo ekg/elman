@@ -381,17 +381,24 @@ def e88_triton_backward(
             f"e88_triton_backward currently supports N, V <= 64 (got {N},{Vsz})"
         )
 
-    k_c = k.contiguous()
-    v_c = v.contiguous()
-    q_c = q.contiguous()
-    d_c = decay.contiguous()
-    sc_c = S_ckpt.contiguous()
-    do_c = d_out.contiguous()
+    # Avoid expensive .contiguous() copies for transposed views — kernel
+    # uses strides directly. Only force contiguous if last dim isn't
+    # unit-stride. At production scale each copy is ~100 MB; saving 4 of
+    # them per backward call across 14 layers x 3 grad_ckpt invocations
+    # is several GB of bandwidth per training step.
+    def _strided_ok(x):
+        return x.stride(-1) == 1
+    k_c = k if _strided_ok(k) else k.contiguous()
+    v_c = v if _strided_ok(v) else v.contiguous()
+    q_c = q if _strided_ok(q) else q.contiguous()
+    d_c = decay if _strided_ok(decay) else decay.contiguous()
+    sc_c = S_ckpt if _strided_ok(S_ckpt) else S_ckpt.contiguous()
+    do_c = d_out if _strided_ok(d_out) else d_out.contiguous()
 
     if d_S_final is None:
         dsf_c = torch.zeros((B, H, N, Vsz), dtype=k_c.dtype, device=k.device)
     else:
-        dsf_c = d_S_final.contiguous()
+        dsf_c = d_S_final if _strided_ok(d_S_final) else d_S_final.contiguous()
     assert dsf_c.shape == (B, H, N, Vsz)
 
     out_dtype = k_c.dtype
