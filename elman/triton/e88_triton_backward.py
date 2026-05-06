@@ -1,11 +1,22 @@
 """Triton backward kernel for E88 FLA-Hybrid recurrence.
 
-This is Phase 2 of the Triton port. Mirrors
-``elman/triton/e88_triton_forward.py`` (which produces output, S_final and
-the full S_checkpoints tensor) and walks the reverse-time chain rule to
-produce gradients with respect to k, v, q, decay, and S0.
+Sparse-checkpoint design (matches CUDA register-owned):
+  - The forward stores S only every CKPT_INTERVAL=K steps, into
+    ``S_ckpt`` of shape [num_ckpts, B, H, N, V] with num_ckpts = T/K + 1.
+    S_ckpt[seg] holds the state right BEFORE step seg*K (so S_ckpt[0]=S0
+    and S_ckpt[num_ckpts-1] = S after step T-1).
+  - The backward processes one segment at a time, in reverse order.
+    Per segment:
+      1. Load S_seg_start = S_ckpt[seg].
+      2. Forward-replay through the K steps of the segment, caching the
+         pre-update state at each step into a per-program scratch buffer.
+      3. Walk the K steps in reverse, using the scratched S_{t-1} and
+         re-derived S_t to apply the same chain rule as the dense
+         backward kernel. Update dS_carry across steps.
+  - After the outermost (seg=0) segment finishes, dS_carry is the
+    gradient w.r.t. S0.
 
-Forward recurrence (per (b, h), see e88_triton_forward.py for context):
+Forward recurrence (per (b, h)):
     r_t       = S_{t-1}.T @ k_t                     # [V]
     delta_t   = v_t - r_t
     pre_t     = decay_t * S_{t-1} + outer(k_t, delta_t)
@@ -26,15 +37,16 @@ Backward (let upstream gradient be d_out, d_S_final):
     dS_{t-1}_from_decay    = decay_t * d_pre_t
     dS_{t-1}_from_retrieve = outer(k_t, d_retrieve_t)
     carry        = dS_{t-1}_from_decay + dS_{t-1}_from_retrieve
-After the time loop, dS_carry is the gradient w.r.t. S0.
 
 Shapes (matching the forward kernel layout):
     k, q:         [T, B, H, N]  bf16 or fp32
     v:            [T, B, H, V]
     decay:        [T, B, H]
-    S_ckpt:       [T+1, B, H, N, V] from forward (reused as S_{t-1} reads).
+    S_ckpt:       [num_ckpts, B, H, N, V] sparse forward checkpoints.
     d_out:        [T, B, H, V]
-    d_S_final:    [B, H, N, V]  (often zero; included for completeness).
+    d_S_final:    [B, H, N, V]
+    seg_scratch:  [num_programs * (K+1) * BLOCK_H * N * V] flat fp32
+                  (per-program staging for replayed S history).
 Outputs:
     d_k:          [T, B, H, N]
     d_v:          [T, B, H, V]
@@ -50,6 +62,8 @@ import torch
 import triton
 import triton.language as tl
 
+from elman.triton.e88_triton_forward import DEFAULT_CKPT_INTERVAL
+
 
 # ---------------------------------------------------------------------------
 # Triton kernel
@@ -62,7 +76,9 @@ def _e88_backward_kernel(
     V_ptr,              # [T, B, H, V]
     Q_ptr,              # [T, B, H, N]
     D_ptr,              # [T, B, H]
-    Sckpt_ptr,          # [T+1, B, H, N, V]
+    Sckpt_ptr,          # [num_ckpts, B, H, N, V]  SPARSE
+    # Scratch staging buffer (per program × (K+1) × BLOCK_H × N × V, fp32).
+    Scratch_ptr,
     # Upstream grads.
     DOut_ptr,           # [T, B, H, V]
     DSfinal_ptr,        # [B, H, N, V]
@@ -90,10 +106,15 @@ def _e88_backward_kernel(
     N: tl.constexpr, V: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_V: tl.constexpr,
     BLOCK_H: tl.constexpr,
+    CKPT_INTERVAL: tl.constexpr,
+    NUM_PROGS_H: tl.constexpr,
 ):
-    """One program per (batch, head_block). Reverse-time loop."""
+    """One program per (batch, head_block). Reverse-segment loop."""
     b = tl.program_id(0).to(tl.int64)
     hg = tl.program_id(1).to(tl.int64)
+
+    # Linear program index for indexing into the per-program scratch buffer.
+    prog_id = b * NUM_PROGS_H + hg
 
     h_start = hg * BLOCK_H
     h_idx = h_start + tl.arange(0, BLOCK_H)
@@ -108,6 +129,21 @@ def _e88_backward_kernel(
     mask_hn = h_mask[:, None] & n_mask[None, :]
     mask_hv = h_mask[:, None] & v_mask[None, :]
 
+    # Per-program scratch base offset, in elements.
+    # Scratch layout: [num_programs, (K+1), BLOCK_H, BLOCK_N, BLOCK_V] fp32.
+    # We use BLOCK_N/BLOCK_V (rounded-up power-of-2) for stride, with
+    # masking on N/V loads/stores.
+    tile_size = BLOCK_H * BLOCK_N * BLOCK_V  # elements per S-slot
+    prog_scratch_size = (CKPT_INTERVAL + 1) * tile_size
+    prog_scratch_base = prog_id.to(tl.int64) * prog_scratch_size
+
+    # Pre-compute scratch index offsets for a single tile [BLOCK_H, BLOCK_N, BLOCK_V].
+    scratch_inner = (
+        tl.arange(0, BLOCK_H)[:, None, None] * (BLOCK_N * BLOCK_V)
+        + tl.arange(0, BLOCK_N)[None, :, None] * BLOCK_V
+        + tl.arange(0, BLOCK_V)[None, None, :]
+    )
+
     # Initialize dS_carry from upstream d_S_final.
     dsf_off = (
         b * sdsf_b
@@ -117,121 +153,152 @@ def _e88_backward_kernel(
     )
     dS_carry = tl.load(DSfinal_ptr + dsf_off, mask=mask_hnv, other=0.0).to(tl.float32)
 
-    # Reverse-time loop: t = T-1 .. 0.
-    # Cast t / (t+1) to int64 below for offset arithmetic on large tensors
-    # (S_ckpt at production T*B*H*N*V can exceed int32 range).
-    for ti in range(T):
-        t = T - 1 - ti
-        t_i64 = tl.full([1], t, dtype=tl.int64)
-        tp1_i64 = tl.full([1], t + 1, dtype=tl.int64)
+    num_segments = T // CKPT_INTERVAL  # T % CKPT_INTERVAL == 0 enforced by wrapper
 
-        # Load forward inputs.
-        k_off = (
-            t_i64 * sk_t + b * sk_b
-            + h_idx[:, None] * sk_h
-            + n_idx[None, :] * sk_n
-        )
-        q_off = (
-            t_i64 * sq_t + b * sq_b
-            + h_idx[:, None] * sq_h
-            + n_idx[None, :] * sq_n
-        )
-        v_off = (
-            t_i64 * sv_t + b * sv_b
-            + h_idx[:, None] * sv_h
-            + v_idx[None, :] * sv_v
-        )
-        d_off = t_i64 * sd_t + b * sd_b + h_idx * sd_h
+    # Reverse-segment loop: seg = num_segments - 1 .. 0.
+    for seg_rev in range(num_segments):
+        seg = num_segments - 1 - seg_rev
+        seg_i64 = tl.full([1], seg, dtype=tl.int64)
 
-        k_vec = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
-        q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
-        v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)   # [BH, BV]
-        decay_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)  # [BH]
-
-        # Load S_t (= ckpt[t+1]) and S_{t-1} (= ckpt[t]).
-        s_t_off = (
-            tp1_i64 * sc_t + b * sc_b
+        # ---- Phase 1: load S_seg_start = S_ckpt[seg] (state BEFORE step seg*K). ----
+        sc_off = (
+            seg_i64 * sc_t + b * sc_b
             + h_idx[:, None, None] * sc_h
             + n_idx[None, :, None] * sc_n
             + v_idx[None, None, :] * sc_v
         )
-        s_tm1_off = (
-            t_i64 * sc_t + b * sc_b
-            + h_idx[:, None, None] * sc_h
-            + n_idx[None, :, None] * sc_n
-            + v_idx[None, None, :] * sc_v
-        )
-        S_t = tl.load(Sckpt_ptr + s_t_off, mask=mask_hnv, other=0.0).to(tl.float32)
-        S_tm1 = tl.load(Sckpt_ptr + s_tm1_off, mask=mask_hnv, other=0.0).to(tl.float32)
+        S = tl.load(Sckpt_ptr + sc_off, mask=mask_hnv, other=0.0).to(tl.float32)
 
-        # Upstream d_out_t.
-        do_off = (
-            t_i64 * sdo_t + b * sdo_b
-            + h_idx[:, None] * sdo_h
-            + v_idx[None, :] * sdo_v
-        )
-        d_out = tl.load(DOut_ptr + do_off, mask=mask_hv, other=0.0).to(tl.float32)  # [BH, BV]
+        # Store S into scratch slot 0 (the "S_{t-1}" for the first step of
+        # this segment).
+        slot0_off = prog_scratch_base + 0 * tile_size + scratch_inner
+        tl.store(Scratch_ptr + slot0_off, S, mask=mask_hnv)
 
-        # dS_t = carry + outer(q_t, d_out_t)
-        dS_t = dS_carry + q_vec[:, :, None] * d_out[:, None, :]                     # [BH, BN, BV]
+        # ---- Phase 2: forward-replay K steps, caching post-step S. ----
+        for j in range(CKPT_INTERVAL):
+            t = seg * CKPT_INTERVAL + j
+            t_i64 = tl.full([1], t, dtype=tl.int64)
 
-        # d_q_t = sum_v S_t * d_out  -> reduce over V axis
-        d_q = tl.sum(S_t * d_out[:, None, :], axis=2)                                # [BH, BN]
+            k_off = (
+                t_i64 * sk_t + b * sk_b
+                + h_idx[:, None] * sk_h
+                + n_idx[None, :] * sk_n
+            )
+            v_off = (
+                t_i64 * sv_t + b * sv_b
+                + h_idx[:, None] * sv_h
+                + v_idx[None, :] * sv_v
+            )
+            d_off = t_i64 * sd_t + b * sd_b + h_idx * sd_h
 
-        # d_pre = dS_t * (1 - S_t^2)
-        d_pre = dS_t * (1.0 - S_t * S_t)                                             # [BH, BN, BV]
+            k_vec = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)
+            v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)
+            decay_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)
 
-        # d_decay_t = sum_{n,v} d_pre * S_{t-1}  (reduce over N then V)
-        d_decay = tl.sum(tl.sum(d_pre * S_tm1, axis=2), axis=1)                      # [BH]
+            # retrieve = S^T @ k:  [BH, BV]
+            retrieved = tl.sum(S * k_vec[:, :, None], axis=1)
+            delta = v_vec - retrieved
+            outer = k_vec[:, :, None] * delta[:, None, :]
+            pre = decay_val[:, None, None] * S + outer
+            e2x = tl.exp(2.0 * pre)
+            S = (e2x - 1.0) / (e2x + 1.0)
 
-        # Recompute retrieve_t and delta_t from S_{t-1} and k_t.
-        retrieved = tl.sum(S_tm1 * k_vec[:, :, None], axis=1)                        # [BH, BV]
-        delta = v_vec - retrieved                                                    # [BH, BV]
+            # Save S after step t into scratch slot j+1.
+            slot_off = prog_scratch_base + (j + 1) * tile_size + scratch_inner
+            tl.store(Scratch_ptr + slot_off, S, mask=mask_hnv)
 
-        # d_outer = d_pre. Recover d_k (outer term) and d_delta.
-        # outer[n,v] = k[n] * delta[v]
-        # d_k_outer[n] = sum_v delta[v] * d_pre[n, v]   -> reduce over V (axis=2)
-        d_k_outer = tl.sum(d_pre * delta[:, None, :], axis=2)                        # [BH, BN]
-        # d_delta[v] = sum_n k[n] * d_pre[n, v]         -> reduce over N (axis=1)
-        d_delta = tl.sum(d_pre * k_vec[:, :, None], axis=1)                          # [BH, BV]
+        # ---- Phase 3: backward through K steps in reverse. ----
+        for j_rev in range(CKPT_INTERVAL):
+            j = CKPT_INTERVAL - 1 - j_rev
+            t = seg * CKPT_INTERVAL + j
+            t_i64 = tl.full([1], t, dtype=tl.int64)
 
-        # delta = v - retrieve  =>  d_v = d_delta;  d_retrieve = -d_delta
-        d_v = d_delta
-        # d_k_retrieve[n] = sum_v S_{t-1}[n, v] * d_retrieve[v]
-        #                 = -sum_v S_{t-1}[n, v] * d_delta[v]
-        d_k_retrieve = -tl.sum(S_tm1 * d_delta[:, None, :], axis=2)                  # [BH, BN]
+            # Load S_t (slot j+1) and S_{t-1} (slot j) from scratch.
+            slot_t_off = prog_scratch_base + (j + 1) * tile_size + scratch_inner
+            slot_tm1_off = prog_scratch_base + j * tile_size + scratch_inner
+            S_t = tl.load(Scratch_ptr + slot_t_off, mask=mask_hnv, other=0.0)
+            S_tm1 = tl.load(Scratch_ptr + slot_tm1_off, mask=mask_hnv, other=0.0)
 
-        d_k = d_k_outer + d_k_retrieve
+            # Reload forward inputs.
+            k_off = (
+                t_i64 * sk_t + b * sk_b
+                + h_idx[:, None] * sk_h
+                + n_idx[None, :] * sk_n
+            )
+            q_off = (
+                t_i64 * sq_t + b * sq_b
+                + h_idx[:, None] * sq_h
+                + n_idx[None, :] * sq_n
+            )
+            v_off = (
+                t_i64 * sv_t + b * sv_b
+                + h_idx[:, None] * sv_h
+                + v_idx[None, :] * sv_v
+            )
+            d_off = t_i64 * sd_t + b * sd_b + h_idx * sd_h
 
-        # dS_{t-1}_from_decay     = decay_t * d_pre
-        # dS_{t-1}_from_retrieve  = outer(k_t, d_retrieve) = -k * d_delta
-        dS_carry = (
-            decay_val[:, None, None] * d_pre
-            - k_vec[:, :, None] * d_delta[:, None, :]
-        )
+            k_vec = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)
+            q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)
+            v_vec = tl.load(V_ptr + v_off, mask=mask_hv, other=0.0).to(tl.float32)
+            decay_val = tl.load(D_ptr + d_off, mask=h_mask, other=0.0).to(tl.float32)
 
-        # Store grads at this timestep.
-        dk_off = (
-            t_i64 * sdk_t + b * sdk_b
-            + h_idx[:, None] * sdk_h
-            + n_idx[None, :] * sdk_n
-        )
-        dv_off = (
-            t_i64 * sdv_t + b * sdv_b
-            + h_idx[:, None] * sdv_h
-            + v_idx[None, :] * sdv_v
-        )
-        dq_off = (
-            t_i64 * sdq_t + b * sdq_b
-            + h_idx[:, None] * sdq_h
-            + n_idx[None, :] * sdq_n
-        )
-        dd_off = t_i64 * sdd_t + b * sdd_b + h_idx * sdd_h
+            do_off = (
+                t_i64 * sdo_t + b * sdo_b
+                + h_idx[:, None] * sdo_h
+                + v_idx[None, :] * sdo_v
+            )
+            d_out = tl.load(DOut_ptr + do_off, mask=mask_hv, other=0.0).to(tl.float32)
 
-        tl.store(DK_ptr + dk_off, d_k.to(DK_ptr.dtype.element_ty), mask=mask_hn)
-        tl.store(DV_ptr + dv_off, d_v.to(DV_ptr.dtype.element_ty), mask=mask_hv)
-        tl.store(DQ_ptr + dq_off, d_q.to(DQ_ptr.dtype.element_ty), mask=mask_hn)
-        tl.store(DD_ptr + dd_off, d_decay.to(DD_ptr.dtype.element_ty), mask=h_mask)
+            # dS_t = carry + outer(q_t, d_out_t)
+            dS_t = dS_carry + q_vec[:, :, None] * d_out[:, None, :]
+
+            # d_q_t = sum_v S_t * d_out
+            d_q = tl.sum(S_t * d_out[:, None, :], axis=2)
+
+            # d_pre = dS_t * (1 - S_t^2)
+            d_pre = dS_t * (1.0 - S_t * S_t)
+
+            # d_decay_t = sum_{n,v} d_pre * S_{t-1}
+            d_decay = tl.sum(tl.sum(d_pre * S_tm1, axis=2), axis=1)
+
+            # Recompute retrieve_t and delta_t from S_{t-1} and k_t.
+            retrieved = tl.sum(S_tm1 * k_vec[:, :, None], axis=1)
+            delta = v_vec - retrieved
+
+            # outer[n,v] = k[n] * delta[v]
+            d_k_outer = tl.sum(d_pre * delta[:, None, :], axis=2)
+            d_delta = tl.sum(d_pre * k_vec[:, :, None], axis=1)
+
+            d_v = d_delta
+            d_k_retrieve = -tl.sum(S_tm1 * d_delta[:, None, :], axis=2)
+            d_k = d_k_outer + d_k_retrieve
+
+            dS_carry = (
+                decay_val[:, None, None] * d_pre
+                - k_vec[:, :, None] * d_delta[:, None, :]
+            )
+
+            dk_off = (
+                t_i64 * sdk_t + b * sdk_b
+                + h_idx[:, None] * sdk_h
+                + n_idx[None, :] * sdk_n
+            )
+            dv_off = (
+                t_i64 * sdv_t + b * sdv_b
+                + h_idx[:, None] * sdv_h
+                + v_idx[None, :] * sdv_v
+            )
+            dq_off = (
+                t_i64 * sdq_t + b * sdq_b
+                + h_idx[:, None] * sdq_h
+                + n_idx[None, :] * sdq_n
+            )
+            dd_off = t_i64 * sdd_t + b * sdd_b + h_idx * sdd_h
+
+            tl.store(DK_ptr + dk_off, d_k.to(DK_ptr.dtype.element_ty), mask=mask_hn)
+            tl.store(DV_ptr + dv_off, d_v.to(DV_ptr.dtype.element_ty), mask=mask_hv)
+            tl.store(DQ_ptr + dq_off, d_q.to(DQ_ptr.dtype.element_ty), mask=mask_hn)
+            tl.store(DD_ptr + dd_off, d_decay.to(DD_ptr.dtype.element_ty), mask=h_mask)
 
     # Write d_S0 = remaining carry.
     ds0_off = (
@@ -264,6 +331,7 @@ def e88_triton_backward(
     d_S_final: torch.Tensor = None,
     block_h: int = None,
     num_warps: int = None,
+    ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 backward recurrence in Triton.
 
@@ -271,11 +339,14 @@ def e88_triton_backward(
         k, q:      [T, B, H, N]  -- forward inputs.
         v:         [T, B, H, V]
         decay:     [T, B, H]
-        S_ckpt:    [T+1, B, H, N, V]   from forward (S_ckpt[0]=S0).
+        S_ckpt:    [num_ckpts, B, H, N, V]  SPARSE checkpoints from forward
+                                            (S_ckpt[0]=S0). num_ckpts must
+                                            equal T // ckpt_interval + 1.
         d_out:     [T, B, H, V]        upstream gradient w.r.t. output.
         d_S_final: [B, H, N, V] or None  upstream gradient w.r.t. S_final.
                                           Defaults to zero.
         block_h, num_warps: optional kernel tuning overrides.
+        ckpt_interval: must match the value used in the forward pass.
 
     Returns:
         d_k:    [T, B, H, N]
@@ -290,8 +361,18 @@ def e88_triton_backward(
     assert q.shape == (T, B, H, N)
     assert v.shape == (T, B, H, Vsz)
     assert decay.shape == (T, B, H)
-    assert S_ckpt.shape == (T + 1, B, H, N, Vsz)
     assert d_out.shape == (T, B, H, Vsz)
+
+    if T % ckpt_interval != 0:
+        raise NotImplementedError(
+            f"Sparse-checkpoint backward currently requires T % ckpt_interval == 0 "
+            f"(got T={T}, ckpt_interval={ckpt_interval})."
+        )
+    num_ckpts = T // ckpt_interval + 1
+    assert S_ckpt.shape == (num_ckpts, B, H, N, Vsz), (
+        f"S_ckpt shape {tuple(S_ckpt.shape)} != expected {(num_ckpts, B, H, N, Vsz)} "
+        f"(T={T}, ckpt_interval={ckpt_interval})"
+    )
 
     BLOCK_N = _next_pow2(N)
     BLOCK_V = _next_pow2(Vsz)
@@ -339,10 +420,23 @@ def e88_triton_backward(
     if num_warps is None:
         num_warps = 2 if block_h == 1 else (4 if block_h <= 4 else 8)
 
-    grid = (B, (H + block_h - 1) // block_h)
+    num_progs_h = (H + block_h - 1) // block_h
+    grid = (B, num_progs_h)
+
+    # Allocate the per-program scratch buffer. Layout:
+    #   [B * num_progs_h, K+1, BLOCK_H, BLOCK_N, BLOCK_V] fp32.
+    # We use fp32 for accuracy — bf16 scratch loses ~3 bits per re-load
+    # of S during the backward walk and is the main source of drift.
+    scratch_numel = (
+        B * num_progs_h
+        * (ckpt_interval + 1)
+        * block_h * BLOCK_N * BLOCK_V
+    )
+    seg_scratch = torch.empty(scratch_numel, dtype=torch.float32, device=k.device)
 
     _e88_backward_kernel[grid](
         k_c, v_c, q_c, d_c, sc_c,
+        seg_scratch,
         do_c, dsf_c,
         d_k, d_v, d_q, d_decay, d_S0,
         # k, v, q, d, ckpt, d_out, d_S_final, d_k, d_v, d_q, d_decay, d_S0 strides
@@ -362,6 +456,8 @@ def e88_triton_backward(
         T=T, B=B, H=H, N=N, V=Vsz,
         BLOCK_N=BLOCK_N, BLOCK_V=BLOCK_V,
         BLOCK_H=block_h,
+        CKPT_INTERVAL=ckpt_interval,
+        NUM_PROGS_H=num_progs_h,
         num_warps=num_warps,
     )
 

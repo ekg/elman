@@ -19,8 +19,25 @@ Shapes (matching the CUDA kernel layout — caller is responsible for the
     S0:        [B, H, N, V]
     output:    [T, B, H, V]
     S_final:   [B, H, N, V]
-    S_checkpoints: [T+1, B, H, N, V]   (S_checkpoints[0] = S0,
-                                        S_checkpoints[t+1] = S after step t)
+    S_checkpoints: [num_ckpts, B, H, N, V]   (sparse: every CKPT_INTERVAL steps)
+
+Sparse forward checkpointing
+----------------------------
+To shrink the S_checkpoints buffer from O(T) to O(T/K) tiles, we save S
+only every CKPT_INTERVAL steps (default K=16, mirroring CUDA reg-own).
+
+Layout:
+    S_ckpt[0]                    = initial S0
+    S_ckpt[k] for k >= 1         = S after step (k * CKPT_INTERVAL - 1)
+
+So segment ``seg`` (covering t in [seg*K, seg*K + K)) starts from
+S_ckpt[seg], i.e. S_ckpt[seg] is the state right BEFORE step seg*K.
+
+We currently REQUIRE T % CKPT_INTERVAL == 0 — the unaligned case can be
+added later (just needs a shorter final segment in the backward replay).
+
+Number of slots: ``num_ckpts = T // CKPT_INTERVAL + 1``  (e.g. T=512 K=16
+gives 33 slots vs 513 in the dense layout — ~16x memory shrink).
 
 The kernel currently supports N <= 64 and V <= 64 (sufficient for the
 E88 configurations actually used in benchmarks: n_state in {16, 32}).
@@ -45,6 +62,12 @@ import triton
 import triton.language as tl
 
 
+# Default checkpoint stride. Matches the CUDA register-owned kernel
+# (``E88_REG_CHECKPOINT_INTERVAL = 16``) so that the Python-allocated
+# S_checkpoints tensor has the same number of slots as the CUDA path.
+DEFAULT_CKPT_INTERVAL = 16
+
+
 # ---------------------------------------------------------------------------
 # Triton kernel
 # ---------------------------------------------------------------------------
@@ -60,7 +83,7 @@ def _e88_forward_kernel(
     # Outputs
     Out_ptr,          # [T, B, H, V]
     Sfinal_ptr,       # [B, H, N, V]
-    Sckpt_ptr,        # [T+1, B, H, N, V]
+    Sckpt_ptr,        # [num_ckpts, B, H, N, V]
     # Strides (in elements). All tensors are made contiguous before launch,
     # so we only need one stride argument set per tensor's outer dim, but we
     # pass the full set explicitly to keep the kernel self-documenting and
@@ -78,6 +101,7 @@ def _e88_forward_kernel(
     N: tl.constexpr, V: tl.constexpr,
     BLOCK_N: tl.constexpr, BLOCK_V: tl.constexpr,
     BLOCK_H: tl.constexpr,
+    CKPT_INTERVAL: tl.constexpr,
 ):
     """One program per (batch, head_block). Sequential time loop."""
     # 2D launch grid: (B, ceil(H / BLOCK_H))
@@ -120,8 +144,8 @@ def _e88_forward_kernel(
     # Sequential time loop.
     # NOTE: we cast (t+1) to int64 below for offset arithmetic on
     # potentially very large tensors (e.g. S_ckpt at T=4K B=2 H=386
-    # N=V=32 has 6.07B elements; int32 stride*timestep multiply
-    # overflows and corrupts memory).
+    # N=V=32 — even the SPARSE layout is large enough to need int64 once
+    # B*H*N*V exceeds ~500M elements).
     for t in range(T):
         # Load k_t, q_t, v_t, decay_t for all BLOCK_H heads in this block.
         # Use int64 for the t-stride product so we don't overflow at large
@@ -175,17 +199,21 @@ def _e88_forward_kernel(
         )
         tl.store(Out_ptr + out_off, out_vec.to(Out_ptr.dtype.element_ty), mask=mask_hv)
 
-        # Checkpoint S after this step (slot t+1). The S_ckpt tensor is
-        # the largest one — stride*(t+1) MUST be int64 to avoid overflow
-        # at T*B*H*N*V > 2^31.
-        tp1_i64 = tl.full([1], t + 1, dtype=tl.int64)
-        sc_off = (
-            tp1_i64 * sc_t + b * sc_b
-            + h_idx[:, None, None] * sc_h
-            + n_idx[None, :, None] * sc_n
-            + v_idx[None, None, :] * sc_v
-        )
-        tl.store(Sckpt_ptr + sc_off, S.to(Sckpt_ptr.dtype.element_ty), mask=mask_hnv)
+        # Sparse checkpoint write: only when (t+1) is a multiple of
+        # CKPT_INTERVAL. The wrapper enforces T % CKPT_INTERVAL == 0, so
+        # the last step (t = T-1) is always a checkpoint.
+        # Slot index: (t+1) // CKPT_INTERVAL — that is, S_ckpt[k] holds
+        # S after step (k*CKPT_INTERVAL - 1) for k>=1.
+        is_ckpt_step = ((t + 1) % CKPT_INTERVAL) == 0
+        if is_ckpt_step:
+            slot_i64 = tl.full([1], (t + 1) // CKPT_INTERVAL, dtype=tl.int64)
+            sc_off = (
+                slot_i64 * sc_t + b * sc_b
+                + h_idx[:, None, None] * sc_h
+                + n_idx[None, :, None] * sc_n
+                + v_idx[None, None, :] * sc_v
+            )
+            tl.store(Sckpt_ptr + sc_off, S.to(Sckpt_ptr.dtype.element_ty), mask=mask_hnv)
 
     # Write S_final.
     sf_off = (
@@ -229,7 +257,7 @@ def _select_block_h_candidates(N: int, V: int):
     return _BLOCK_H_CANDIDATES  # up to 16 for small (N, V)
 
 
-def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype):
+def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype, ckpt_interval):
     """Tiny in-process autotune. Tries (BLOCK_H, num_warps) and caches winner.
 
     Empirically, the "right" num_warps depends on BLOCK_H AND on H itself:
@@ -239,7 +267,7 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype):
     For H < 16 we just default to BLOCK_H=1 (no head-grouping helps when
     there are too few heads to begin with).
     """
-    cache_key = (B, T, H, N, Vsz, str(dtype))
+    cache_key = (B, T, H, N, Vsz, str(dtype), ckpt_interval)
     if cache_key in _AUTOTUNE_CACHE:
         return _AUTOTUNE_CACHE[cache_key]
 
@@ -282,6 +310,7 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype):
                         T=T, B=B, H=H, N=N, V=Vsz,
                         BLOCK_N=_next_pow2(N), BLOCK_V=_next_pow2(Vsz),
                         BLOCK_H=bh,
+                        CKPT_INTERVAL=ckpt_interval,
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -295,6 +324,7 @@ def _autotune_kernel(launch_args, B, T, H, N, Vsz, dtype):
                         T=T, B=B, H=H, N=N, V=Vsz,
                         BLOCK_N=_next_pow2(N), BLOCK_V=_next_pow2(Vsz),
                         BLOCK_H=bh,
+                        CKPT_INTERVAL=ckpt_interval,
                         num_warps=nw,
                     )
                 torch.cuda.synchronize()
@@ -321,6 +351,7 @@ def e88_triton_forward(
     head_v_dim: int = None,
     block_h: int = None,
     num_warps: int = None,
+    ckpt_interval: int = DEFAULT_CKPT_INTERVAL,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the E88 forward recurrence in Triton.
 
@@ -333,12 +364,17 @@ def e88_triton_forward(
         block_h: optional override for BLOCK_H (heads per program).
                  If None, autotune picks the best for this shape.
         num_warps: optional override; default chosen with block_h.
+        ckpt_interval: store S to S_checkpoints every K steps. Default 16
+                 (matches CUDA register-owned). Currently REQUIRES
+                 T % ckpt_interval == 0.
 
     Returns:
         out:           [T, B, H, V]
         S_final:       [B, H, N, V]
-        S_checkpoints: [T+1, B, H, N, V] — checkpoint[0] = S0,
-                                          checkpoint[t+1] = S after step t.
+        S_checkpoints: [num_ckpts, B, H, N, V] — sparse checkpoint
+                       layout. ``num_ckpts = T // ckpt_interval + 1``.
+                       S_ckpt[0] = S0,
+                       S_ckpt[k] = S after step (k*ckpt_interval - 1) for k>=1.
 
     The output dtype matches the input k/v/q dtype (bf16 -> bf16, fp32 ->
     fp32). All accumulation inside the kernel is fp32.
@@ -364,6 +400,13 @@ def e88_triton_forward(
             f"(got N={N}, V={Vsz}). Larger sizes need a tiled implementation."
         )
 
+    if T % ckpt_interval != 0:
+        raise NotImplementedError(
+            f"Sparse-checkpoint forward currently requires T % ckpt_interval == 0 "
+            f"(got T={T}, ckpt_interval={ckpt_interval}). The unaligned case can "
+            f"be added by handling a shorter final segment in the backward replay."
+        )
+
     # Make everything contiguous so strides are predictable.
     k_c = k.contiguous()
     v_c = v.contiguous()
@@ -374,7 +417,9 @@ def e88_triton_forward(
     out_dtype = k_c.dtype
     out = torch.empty((T, B, H, Vsz), dtype=out_dtype, device=k.device)
     S_final = torch.empty_like(s0_c)
-    S_ckpt = torch.empty((T + 1, B, H, N, Vsz), dtype=out_dtype, device=k.device)
+
+    num_ckpts = T // ckpt_interval + 1
+    S_ckpt = torch.empty((num_ckpts, B, H, N, Vsz), dtype=out_dtype, device=k.device)
 
     strides = (
         # k strides
@@ -407,7 +452,9 @@ def e88_triton_forward(
             block_h_chosen, nw = 1, 2
         else:
             launch_args = (k_c, v_c, q_c, d_c, s0_c, out, S_final, S_ckpt, strides)
-            block_h_chosen, nw = _autotune_kernel(launch_args, B, T, H, N, Vsz, out_dtype)
+            block_h_chosen, nw = _autotune_kernel(
+                launch_args, B, T, H, N, Vsz, out_dtype, ckpt_interval
+            )
     else:
         block_h_chosen = int(block_h)
         nw = int(num_warps) if num_warps is not None else (8 if block_h_chosen >= 8 else 4)
@@ -421,6 +468,7 @@ def e88_triton_forward(
         T=T, B=B, H=H, N=N, V=Vsz,
         BLOCK_N=BLOCK_N, BLOCK_V=BLOCK_V,
         BLOCK_H=block_h_chosen,
+        CKPT_INTERVAL=ckpt_interval,
         num_warps=nw,
     )
     return out, S_final, S_ckpt
@@ -440,6 +488,10 @@ def e88_torch_reference(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pure-PyTorch reference for parity testing.
 
+    Returns the DENSE checkpoint history (one slot per timestep, plus
+    initial). Tests that compare against this reference need to subsample
+    when comparing to the sparse kernel checkpoint.
+
     Inputs use the SAME [T, B, H, ...] convention as the Triton wrapper
     (i.e., the CUDA kernel convention), to keep the test simple. The
     PyTorch fallback inside e88_fla_hybrid.py uses [B, T, H, ...] but the
@@ -454,7 +506,10 @@ def e88_torch_reference(
                       in e88_fla_hybrid.py).
 
     Returns:
-        out, S_final, S_checkpoints   (same shapes as Triton wrapper).
+        out:           [T, B, H, V]
+        S_final:       [B, H, N, V]
+        ckpt:          [T+1, B, H, N, V] — DENSE per-step history.
+                       ckpt[0]=S0, ckpt[t+1]=S after step t.
     """
     T, B, H, N = k.shape
     Vsz = v.shape[-1]

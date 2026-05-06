@@ -23,6 +23,7 @@ import torch
 from elman.triton.e88_triton_forward import (
     e88_triton_forward,
     e88_torch_reference,
+    DEFAULT_CKPT_INTERVAL,
 )
 
 
@@ -73,6 +74,21 @@ def _check_close(name, a, b, atol, rtol):
     return ok, max_abs, max_rel
 
 
+def _subsample_dense_ckpt(ckpt_dense, ckpt_interval):
+    """Pick out the slots in a dense [T+1, ...] checkpoint that correspond
+    to the sparse kernel layout: slot 0 = S0, slot k = S after step
+    (k*ckpt_interval - 1) for k >= 1.
+
+    Returns a tensor shaped [num_ckpts, ...] matching the sparse layout.
+    """
+    T = ckpt_dense.shape[0] - 1
+    num_ckpts = T // ckpt_interval + 1
+    # Indices into the dense ckpt (which has T+1 slots, slot 0 = S0,
+    # slot t+1 = S after step t).
+    idxs = [0] + [k * ckpt_interval for k in range(1, num_ckpts)]
+    return ckpt_dense[idxs]
+
+
 # ---------------------------------------------------------------------------
 # Parametrized tests
 # ---------------------------------------------------------------------------
@@ -106,7 +122,15 @@ def test_e88_triton_forward_parity_bf16(device, N, V):
     atol, rtol = 1e-2, 1e-2
     ok_o, _, _ = _check_close(f"out  bf16 N={N} V={V}", out_tri, out_ref, atol, rtol)
     ok_s, _, _ = _check_close(f"Sfin bf16 N={N} V={V}", S_final_tri, S_final_ref, atol, rtol)
-    ok_c, _, _ = _check_close(f"ckpt bf16 N={N} V={V}", ckpt_tri, ckpt_ref, atol, rtol)
+    # Sparse-checkpoint: kernel only stores S every CKPT_INTERVAL steps.
+    # Compare against the equivalent slots from the dense reference.
+    ckpt_ref_sparse = _subsample_dense_ckpt(ckpt_ref, DEFAULT_CKPT_INTERVAL)
+    assert ckpt_tri.shape == ckpt_ref_sparse.shape, (
+        f"sparse ckpt shape mismatch: {ckpt_tri.shape} vs {ckpt_ref_sparse.shape}"
+    )
+    ok_c, _, _ = _check_close(
+        f"ckpt(sparse) bf16 N={N} V={V}", ckpt_tri, ckpt_ref_sparse, atol, rtol,
+    )
     assert ok_o and ok_s and ok_c, "bf16 parity failed"
 
 
@@ -126,7 +150,13 @@ def test_e88_triton_forward_parity_fp32(device, N, V):
     atol, rtol = 1e-5, 1e-4
     ok_o, _, _ = _check_close(f"out  fp32 N={N} V={V}", out_tri, out_ref, atol, rtol)
     ok_s, _, _ = _check_close(f"Sfin fp32 N={N} V={V}", S_final_tri, S_final_ref, atol, rtol)
-    ok_c, _, _ = _check_close(f"ckpt fp32 N={N} V={V}", ckpt_tri, ckpt_ref, atol, rtol)
+    ckpt_ref_sparse = _subsample_dense_ckpt(ckpt_ref, DEFAULT_CKPT_INTERVAL)
+    assert ckpt_tri.shape == ckpt_ref_sparse.shape, (
+        f"sparse ckpt shape mismatch: {ckpt_tri.shape} vs {ckpt_ref_sparse.shape}"
+    )
+    ok_c, _, _ = _check_close(
+        f"ckpt(sparse) fp32 N={N} V={V}", ckpt_tri, ckpt_ref_sparse, atol, rtol,
+    )
     assert ok_o and ok_s and ok_c, "fp32 parity failed"
 
 
@@ -193,7 +223,10 @@ def _run_all_as_script():
             out_tri, S_final_tri, ckpt_tri = e88_triton_forward(S0, k, v, q, decay)
             ok_o, _, _ = _check_close(f"out  bf16 N={N} V={V}", out_tri, out_ref, 1e-2, 1e-2)
             ok_s, _, _ = _check_close(f"Sfin bf16 N={N} V={V}", S_final_tri, S_final_ref, 1e-2, 1e-2)
-            ok_c, _, _ = _check_close(f"ckpt bf16 N={N} V={V}", ckpt_tri, ckpt_ref, 1e-2, 1e-2)
+            ckpt_ref_sparse = _subsample_dense_ckpt(ckpt_ref, DEFAULT_CKPT_INTERVAL)
+            ok_c, _, _ = _check_close(
+                f"ckpt(sparse) bf16 N={N} V={V}", ckpt_tri, ckpt_ref_sparse, 1e-2, 1e-2
+            )
             all_ok = all_ok and ok_o and ok_s and ok_c
         except AssertionError as e:
             print(f"  FAIL: {e}")
@@ -207,7 +240,10 @@ def _run_all_as_script():
         out_tri, S_final_tri, ckpt_tri = e88_triton_forward(S0, k, v, q, decay)
         ok_o, _, _ = _check_close(f"out  fp32 N={N} V={V}", out_tri, out_ref, 1e-5, 1e-4)
         ok_s, _, _ = _check_close(f"Sfin fp32 N={N} V={V}", S_final_tri, S_final_ref, 1e-5, 1e-4)
-        ok_c, _, _ = _check_close(f"ckpt fp32 N={N} V={V}", ckpt_tri, ckpt_ref, 1e-5, 1e-4)
+        ckpt_ref_sparse = _subsample_dense_ckpt(ckpt_ref, DEFAULT_CKPT_INTERVAL)
+        ok_c, _, _ = _check_close(
+            f"ckpt(sparse) fp32 N={N} V={V}", ckpt_tri, ckpt_ref_sparse, 1e-5, 1e-4
+        )
         all_ok = all_ok and ok_o and ok_s and ok_c
 
     print("\n--- timing ---")
