@@ -1,36 +1,43 @@
 #!/bin/bash
 # Parallel CMA-ES at 1.27B target params, ctx=512, 5min/eval.
-# Default: all 5 models, 1 GPU each, pop=4 internal. Use MODELS=e88 for
-# the Triton-specific E88 rerun without rerunning unchanged baselines.
+# Default: all 5 models, 1 GPU each. Use MODELS=e88 for the Triton-specific
+# E88 rerun; that mode defaults to GPUs 0-6 and popsize=7.
 
 set -e
 
 OUTDIR=${OUTDIR:-/tmp/cmaes_1B_triton_e88}
 MODELS=${MODELS:-"e88 fla-gdn mamba2 transformer e94"}
+if [ "$MODELS" = "e88" ]; then
+    E88_GPUS=${E88_GPUS:-"0,1,2,3,4,5,6"}
+    POPSIZE=${POPSIZE:-7}
+else
+    E88_GPUS=${E88_GPUS:-"0"}
+    POPSIZE=${POPSIZE:-4}
+fi
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
 
-COMMON="--params 1270M --train_minutes 5 --popsize 4 \
+COMMON="--params 1270M --train_minutes 5 --popsize $POPSIZE \
         --chunk_size 512 --tokenizer p50k_base \
         --data $PILE --phase both \
         --lhs_samples 16 --min_generations 8"
 
 launch() {
-    local gpu=$1; local model=$2; shift 2
+    local gpus=$1; local model=$2; shift 2
     local extra="$@"
     setsid nohup python3 -u /home/erikg/elman/cmaes_search_v2.py \
-        --model $model --gpus $gpu \
+        --model $model --gpus $gpus \
         --output $OUTDIR/$model \
         $COMMON $extra \
         > $OUTDIR/${model}.log 2>&1 &
-    echo "GPU $gpu: $model -> $OUTDIR/${model}.log (pid $!)"
+    echo "GPUs $gpus: $model -> $OUTDIR/${model}.log (pid $!)"
 }
 
 launched=0
 for model in $MODELS; do
     case "$model" in
         e88)
-            launch 0 e88 --fixed_n_state 32 --use_triton_e88
+            launch "$E88_GPUS" e88 --fixed_n_state 32 --use_triton_e88
             ;;
         fla-gdn)
             launch 1 fla-gdn
@@ -53,5 +60,5 @@ for model in $MODELS; do
 done
 
 echo
-echo "$launched CMA-ES search(es) launched. MODELS=$MODELS"
+echo "$launched CMA-ES search(es) launched. MODELS=$MODELS POPSIZE=$POPSIZE"
 echo "Monitor: tail -f $OUTDIR/*.log"
