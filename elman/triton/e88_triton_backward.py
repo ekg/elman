@@ -170,9 +170,9 @@ def _e88_backward_kernel(
         S = tl.load(Sckpt_ptr + sc_off, mask=mask_hnv, other=0.0).to(tl.float32)
 
         # Store S into scratch slot 0 (the "S_{t-1}" for the first step of
-        # this segment).
+        # this segment). Scratch is bf16 — store auto-casts fp32 -> bf16.
         slot0_off = prog_scratch_base + 0 * tile_size + scratch_inner
-        tl.store(Scratch_ptr + slot0_off, S, mask=mask_hnv)
+        tl.store(Scratch_ptr + slot0_off, S.to(Scratch_ptr.dtype.element_ty), mask=mask_hnv)
 
         # ---- Phase 2: forward-replay K steps, caching post-step S. ----
         for j in range(CKPT_INTERVAL):
@@ -203,9 +203,9 @@ def _e88_backward_kernel(
             e2x = tl.exp(2.0 * pre)
             S = (e2x - 1.0) / (e2x + 1.0)
 
-            # Save S after step t into scratch slot j+1.
+            # Save S after step t into scratch slot j+1 (bf16-cast).
             slot_off = prog_scratch_base + (j + 1) * tile_size + scratch_inner
-            tl.store(Scratch_ptr + slot_off, S, mask=mask_hnv)
+            tl.store(Scratch_ptr + slot_off, S.to(Scratch_ptr.dtype.element_ty), mask=mask_hnv)
 
         # ---- Phase 3: backward through K steps in reverse. ----
         for j_rev in range(CKPT_INTERVAL):
@@ -216,8 +216,9 @@ def _e88_backward_kernel(
             # Load S_t (slot j+1) and S_{t-1} (slot j) from scratch.
             slot_t_off = prog_scratch_base + (j + 1) * tile_size + scratch_inner
             slot_tm1_off = prog_scratch_base + j * tile_size + scratch_inner
-            S_t = tl.load(Scratch_ptr + slot_t_off, mask=mask_hnv, other=0.0)
-            S_tm1 = tl.load(Scratch_ptr + slot_tm1_off, mask=mask_hnv, other=0.0)
+            # Loads from scratch (allocated bf16 in wrapper) -> cast to fp32 for compute.
+            S_t = tl.load(Scratch_ptr + slot_t_off, mask=mask_hnv, other=0.0).to(tl.float32)
+            S_tm1 = tl.load(Scratch_ptr + slot_tm1_off, mask=mask_hnv, other=0.0).to(tl.float32)
 
             # Reload forward inputs.
             k_off = (
@@ -439,7 +440,10 @@ def e88_triton_backward(
         * (ckpt_interval + 1)
         * block_h * BLOCK_N * BLOCK_V
     )
-    seg_scratch = torch.empty(scratch_numel, dtype=torch.float32, device=k.device)
+    # Scratch dtype matches input dtype — bf16 for production (halves
+    # bandwidth, matches CUDA reg-own's segment_cache); fp32 for fp32
+    # inputs (preserves test parity). The kernel auto-casts on load/store.
+    seg_scratch = torch.empty(scratch_numel, dtype=k.dtype, device=k.device)
 
     _e88_backward_kernel[grid](
         k_c, v_c, q_c, d_c, sc_c,
