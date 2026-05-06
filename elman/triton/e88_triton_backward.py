@@ -118,26 +118,30 @@ def _e88_backward_kernel(
     dS_carry = tl.load(DSfinal_ptr + dsf_off, mask=mask_hnv, other=0.0).to(tl.float32)
 
     # Reverse-time loop: t = T-1 .. 0.
+    # Cast t / (t+1) to int64 below for offset arithmetic on large tensors
+    # (S_ckpt at production T*B*H*N*V can exceed int32 range).
     for ti in range(T):
         t = T - 1 - ti
+        t_i64 = tl.full([1], t, dtype=tl.int64)
+        tp1_i64 = tl.full([1], t + 1, dtype=tl.int64)
 
         # Load forward inputs.
         k_off = (
-            t * sk_t + b * sk_b
+            t_i64 * sk_t + b * sk_b
             + h_idx[:, None] * sk_h
             + n_idx[None, :] * sk_n
         )
         q_off = (
-            t * sq_t + b * sq_b
+            t_i64 * sq_t + b * sq_b
             + h_idx[:, None] * sq_h
             + n_idx[None, :] * sq_n
         )
         v_off = (
-            t * sv_t + b * sv_b
+            t_i64 * sv_t + b * sv_b
             + h_idx[:, None] * sv_h
             + v_idx[None, :] * sv_v
         )
-        d_off = t * sd_t + b * sd_b + h_idx * sd_h
+        d_off = t_i64 * sd_t + b * sd_b + h_idx * sd_h
 
         k_vec = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
         q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
@@ -146,13 +150,13 @@ def _e88_backward_kernel(
 
         # Load S_t (= ckpt[t+1]) and S_{t-1} (= ckpt[t]).
         s_t_off = (
-            (t + 1) * sc_t + b * sc_b
+            tp1_i64 * sc_t + b * sc_b
             + h_idx[:, None, None] * sc_h
             + n_idx[None, :, None] * sc_n
             + v_idx[None, None, :] * sc_v
         )
         s_tm1_off = (
-            t * sc_t + b * sc_b
+            t_i64 * sc_t + b * sc_b
             + h_idx[:, None, None] * sc_h
             + n_idx[None, :, None] * sc_n
             + v_idx[None, None, :] * sc_v
@@ -162,7 +166,7 @@ def _e88_backward_kernel(
 
         # Upstream d_out_t.
         do_off = (
-            t * sdo_t + b * sdo_b
+            t_i64 * sdo_t + b * sdo_b
             + h_idx[:, None] * sdo_h
             + v_idx[None, :] * sdo_v
         )
@@ -208,21 +212,21 @@ def _e88_backward_kernel(
 
         # Store grads at this timestep.
         dk_off = (
-            t * sdk_t + b * sdk_b
+            t_i64 * sdk_t + b * sdk_b
             + h_idx[:, None] * sdk_h
             + n_idx[None, :] * sdk_n
         )
         dv_off = (
-            t * sdv_t + b * sdv_b
+            t_i64 * sdv_t + b * sdv_b
             + h_idx[:, None] * sdv_h
             + v_idx[None, :] * sdv_v
         )
         dq_off = (
-            t * sdq_t + b * sdq_b
+            t_i64 * sdq_t + b * sdq_b
             + h_idx[:, None] * sdq_h
             + n_idx[None, :] * sdq_n
         )
-        dd_off = t * sdd_t + b * sdd_b + h_idx * sdd_h
+        dd_off = t_i64 * sdd_t + b * sdd_b + h_idx * sdd_h
 
         tl.store(DK_ptr + dk_off, d_k.to(DK_ptr.dtype.element_ty), mask=mask_hn)
         tl.store(DV_ptr + dv_off, d_v.to(DV_ptr.dtype.element_ty), mask=mask_hv)

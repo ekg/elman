@@ -118,27 +118,34 @@ def _e88_forward_kernel(
     tl.store(Sckpt_ptr + sc0_off, S.to(Sckpt_ptr.dtype.element_ty), mask=mask_hnv)
 
     # Sequential time loop.
+    # NOTE: we cast (t+1) to int64 below for offset arithmetic on
+    # potentially very large tensors (e.g. S_ckpt at T=4K B=2 H=386
+    # N=V=32 has 6.07B elements; int32 stride*timestep multiply
+    # overflows and corrupts memory).
     for t in range(T):
         # Load k_t, q_t, v_t, decay_t for all BLOCK_H heads in this block.
+        # Use int64 for the t-stride product so we don't overflow at large
+        # T*B*H*N (input tensors can be ~6 GB at production scale).
+        t_i64 = tl.full([1], t, dtype=tl.int64)
         # k, q: [BLOCK_H, BLOCK_N]
         k_off = (
-            t * sk_t + b * sk_b
+            t_i64 * sk_t + b * sk_b
             + h_idx[:, None] * sk_h
             + n_idx[None, :] * sk_n
         )
         q_off = (
-            t * sq_t + b * sq_b
+            t_i64 * sq_t + b * sq_b
             + h_idx[:, None] * sq_h
             + n_idx[None, :] * sq_n
         )
         # v: [BLOCK_H, BLOCK_V]
         v_off = (
-            t * sv_t + b * sv_b
+            t_i64 * sv_t + b * sv_b
             + h_idx[:, None] * sv_h
             + v_idx[None, :] * sv_v
         )
         # decay: [BLOCK_H]
-        d_off = t * sd_t + b * sd_b + h_idx * sd_h
+        d_off = t_i64 * sd_t + b * sd_b + h_idx * sd_h
 
         k_vec = tl.load(K_ptr + k_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
         q_vec = tl.load(Q_ptr + q_off, mask=mask_hn, other=0.0).to(tl.float32)   # [BH, BN]
@@ -162,15 +169,18 @@ def _e88_forward_kernel(
         out_vec = tl.sum(S * q_vec[:, :, None], axis=1)     # [BH, BV]
 
         out_off = (
-            t * so_t + b * so_b
+            t_i64 * so_t + b * so_b
             + h_idx[:, None] * so_h
             + v_idx[None, :] * so_v
         )
         tl.store(Out_ptr + out_off, out_vec.to(Out_ptr.dtype.element_ty), mask=mask_hv)
 
-        # Checkpoint S after this step (slot t+1).
+        # Checkpoint S after this step (slot t+1). The S_ckpt tensor is
+        # the largest one — stride*(t+1) MUST be int64 to avoid overflow
+        # at T*B*H*N*V > 2^31.
+        tp1_i64 = tl.full([1], t + 1, dtype=tl.int64)
         sc_off = (
-            (t + 1) * sc_t + b * sc_b
+            tp1_i64 * sc_t + b * sc_b
             + h_idx[:, None, None] * sc_h
             + n_idx[None, :, None] * sc_n
             + v_idx[None, None, :] * sc_v
