@@ -40,3 +40,13 @@ The kernel-swap path that looked clean at 12M is not yet ready at production sca
 - **B:** Spend the kernel-engineering time first (estimated 1-3 days for sparse-ckpt + per-H autotune), then re-bench, then decide.
 
 The 12M-scale wins remain real and the parity story is solid — the kernel just hasn't been tuned for the H~400 regime that production E88 lives in.
+
+## Update (May 6, after kernel work)
+
+Two kernel fixes landed:
+1. **BLOCK_H autotune at high H**: empirical sweep at H=386 N=V=32 showed BLOCK_H=1 num_warps=2 is the fastest config — 2× kernel-only speedup vs the previous default. Committed.
+2. **int64 offset arithmetic**: T=4K bs=2 H=386 was crashing with illegal memory access due to int32 stride×timestep overflow at >2B-element tensors. Fixed by casting `t` and `t+1` to int64 in the kernel time loops. Now T=4K bs=2 trains cleanly at ~3700 tok/s. Parity tests still pass (fp32 max_rel ~1e-7, bf16 ~5e-3).
+
+End-to-end 1.27B T=512 bs=8 with both fixes: **3578 tok/s** vs CUDA's 4746 (Triton 25% slower, was 28% slower before). Kernel-only 2× wins don't fully translate because at depth=14 the S_ckpt allocation overhead per layer call dominates. **Sparse forward checkpointing** (save S every K=16 steps, recompute in backward) would shrink S_ckpt 16×, and is the remaining work needed to make Triton beat CUDA at production scale.
+
+Recommendation: stay on CUDA for the 1.27B 32K/64K campaign for now; revisit Triton after the sparse-ckpt rewrite (~1-2 hours focused work).
