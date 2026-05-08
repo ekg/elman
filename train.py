@@ -98,6 +98,28 @@ def parse_args():
                         help='Number of tape memory slots for E23 DualMemoryElman (default=64)')
     parser.add_argument('--n_heads', type=int, default=None,
                         help='Number of heads for E88 FLA Hybrid')
+    parser.add_argument('--m2rnn_paper_shape', action='store_true',
+                        help='For M2RNN: use grouped paper-style heads (q/k=1, v/f/g/W=n_heads, K=64, V=n_state)')
+    parser.add_argument('--m2rnn_k_head_dim', type=int, default=None,
+                        help='For M2RNN: key/query head dimension override')
+    parser.add_argument('--m2rnn_v_head_dim', type=int, default=None,
+                        help='For M2RNN: value head dimension override')
+    parser.add_argument('--m2rnn_q_heads', type=int, default=None,
+                        help='For M2RNN: query head count override')
+    parser.add_argument('--m2rnn_k_heads', type=int, default=None,
+                        help='For M2RNN: key head count override')
+    parser.add_argument('--m2rnn_v_heads', type=int, default=None,
+                        help='For M2RNN: value head count override')
+    parser.add_argument('--m2rnn_f_heads', type=int, default=None,
+                        help='For M2RNN: forget head count override')
+    parser.add_argument('--m2rnn_g_heads', type=int, default=None,
+                        help='For M2RNN: output gate head count override')
+    parser.add_argument('--m2rnn_weight_heads', type=int, default=None,
+                        help='For M2RNN: recurrent weight head count override')
+    parser.add_argument('--m2rnn_output_norm', type=int, default=0,
+                        help='For M2RNN: RMSNorm recurrent output before output projection')
+    parser.add_argument('--m2rnn_state_grad_clip', type=float, default=None,
+                        help='For M2RNN/XMA: clip recurrent state gradients inside the custom op')
     parser.add_argument('--top_k', type=int, default=None,
                         help='Number of active heads per token for MoM E88 (sparse routing)')
     parser.add_argument('--k_fast', type=int, default=None,
@@ -351,6 +373,37 @@ def train(args):
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
             model = create_mamba2_model(target_params=args.params, vocab_size=vocab_size, expand=args.mamba_expand)
+    elif args.level == 'm2rnn':
+        # M2RNN baseline: nonlinear matrix-to-matrix RNN with matrix-valued state.
+        from elman.models.m2rnn_baseline import M2RNNLM, create_m2rnn_model
+        if args.dim is not None and args.depth is not None:
+            model = M2RNNLM(
+                vocab_size=vocab_size,
+                dim=args.dim,
+                depth=args.depth,
+                n_heads=args.n_heads,
+                n_state=args.n_state,
+                expansion=args.expansion,
+                paper_shape=args.m2rnn_paper_shape,
+                k_head_dim=args.m2rnn_k_head_dim,
+                v_head_dim=args.m2rnn_v_head_dim,
+                num_q_heads=args.m2rnn_q_heads,
+                num_k_heads=args.m2rnn_k_heads,
+                num_v_heads=args.m2rnn_v_heads,
+                num_f_heads=args.m2rnn_f_heads,
+                num_g_heads=args.m2rnn_g_heads,
+                num_weight_heads=args.m2rnn_weight_heads,
+                use_gate=bool(args.use_gate),
+                use_conv=bool(args.use_conv),
+                d_conv=args.d_conv,
+                output_norm=bool(args.m2rnn_output_norm),
+                dropout=args.dropout,
+                gradient_clipping=args.m2rnn_state_grad_clip,
+                gradient_checkpointing=args.gradient_checkpointing,
+                loss_chunk_size=args.loss_chunk_size,
+            )
+        else:
+            model = create_m2rnn_model(target_params=args.params, vocab_size=vocab_size)
     elif args.level == 'gru':
         # GRU baseline
         if args.dim is not None and args.depth is not None:

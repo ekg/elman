@@ -51,7 +51,8 @@ from calc_dim import (
     calc_e88_params, calc_fla_gdn_params, calc_mamba2_params, find_dim_for_params,
     calc_transformer_params, calc_gru_params, calc_lstm_params,
     calc_mingru_params, calc_minlstm_params, calc_mom_e88_params, calc_e90_params,
-    calc_e1_params, calc_e1h_params, calc_e23_params, calc_e42_params, calc_e75_params
+    calc_e1_params, calc_e1h_params, calc_e23_params, calc_e42_params, calc_e75_params,
+    calc_m2rnn_params
 )
 
 # Supported n_state values for E88
@@ -68,6 +69,7 @@ CHUNK_SIZE = 512
 # Global long-sequence settings (set from args in main())
 GRADIENT_CHECKPOINTING = False
 PROJECTION_CHUNK_SIZE = 0
+PROBE_TIMEOUT_SECONDS = int(os.environ.get('CMAES_PROBE_TIMEOUT_SECONDS', '600'))
 
 # Progressive training settings (set from args in main())
 PROGRESSIVE = False
@@ -145,6 +147,8 @@ SEARCH_SPACES = {
     'e88_fused': _E88_SEARCH_SPACE,  # E88 with fused CUDA kernel (faster training)
     'e91': _E88_SEARCH_SPACE,  # E91 matrix-matrix variant (rank-r delta rule, default rank=n_state)
     'e92': _E88_SEARCH_SPACE,  # E92 matrix-matrix variant with learned W_h per-layer transform
+    'm2rnn': _E88_SEARCH_SPACE,  # M2RNN matrix-to-matrix nonlinear RNN baseline
+    'm2rnn-paper': _E88_SEARCH_SPACE,  # M2RNN with released grouped-head paper geometry
     'e93': {
         'dim': (1024, 4096, 'int_mult128', 'Model dimension'),
         'n_state': (16, 64, 'e88_n_state', 'State row dim N'),
@@ -270,6 +274,8 @@ DISCRETE_SWEEP_PARAMS = {
     'e88': {'n_state': [16, 32]},
     'e88_fused': {'n_state': [16, 32]},  # fused CUDA kernel variant
     'e91': {'n_state': [16, 32]},  # E91 — rank=n_state by default
+    'm2rnn': {'n_state': [16, 32]},
+    'm2rnn-paper': {'n_state': [16]},
     'e88-linear': {'n_state': [16, 32]},  # ablation: remove tanh
     'e88-nogate': {'n_state': [16, 32]},  # ablation: remove gating
     'e88-minimal': {'n_state': [16, 32]},  # ablation: remove both
@@ -287,7 +293,7 @@ def get_search_space(model_type, fixed_params=None):
     fixed_params = fixed_params or {}
 
     # Adjust n_heads range for E88 based on n_state
-    if model_type.startswith('e88') and 'n_heads' in space:
+    if (model_type.startswith('e88') or model_type in ('m2rnn', 'm2rnn-paper')) and 'n_heads' in space:
         n_state = fixed_params.get('n_state')
         if n_state == 16:
             # n_state=16: push to 2000 (1B winners hit H=940 ceiling at 1000)
@@ -441,6 +447,18 @@ def estimate_params_for_config(params, model_type):
         return calc_e88_params(dim, depth=depth, n_heads=params.get('n_heads', 96),
                                n_state=params.get('n_state', 32),
                                expansion=params.get('expansion', 1.0), use_gate=use_gate)
+    elif model_type == 'm2rnn':
+        return calc_m2rnn_params(dim, depth=depth, n_heads=params.get('n_heads', 128),
+                                 n_state=params.get('n_state', 16),
+                                 expansion=params.get('expansion', 1.0),
+                                 use_gate=True, use_conv=False)
+    elif model_type == 'm2rnn-paper':
+        return calc_m2rnn_params(dim, depth=depth, n_heads=params.get('n_heads', 128),
+                                 n_state=params.get('n_state', 16),
+                                 expansion=1.0, use_gate=True, use_conv=True,
+                                 d_conv=4, paper_shape=True, k_head_dim=64,
+                                 v_head_dim=params.get('n_state', 16),
+                                 output_norm=True)
     elif model_type == 'e91':
         # E91 rank-r matrix-matrix: K, V projections are dim×(H·N·R), Q is dim×(H·N).
         # Default rank = n_state (full rank). Compute approximate per-layer params.
@@ -627,6 +645,33 @@ def build_train_command(params, model_type, train_minutes, output_dir):
             '--n_heads', str(params['n_heads']),
             '--n_state', str(params['n_state']),
             '--expansion', '1.0',
+        ])
+
+    elif model_type == 'm2rnn':
+        # M2RNN: matrix-to-matrix nonlinear RNN from Mishra/Tan/Stoica/Gonzalez/Dao.
+        cmd.extend([
+            '--level', 'm2rnn',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+        ])
+
+    elif model_type == 'm2rnn-paper':
+        # Paper-shaped M2RNN: grouped q/k heads, many v/f/g/W heads, K=64, V=16.
+        cmd.extend([
+            '--level', 'm2rnn',
+            '--n_heads', str(params['n_heads']),
+            '--n_state', str(params['n_state']),
+            '--expansion', '1.0',
+            '--use_gate', '1',
+            '--use_conv', '1',
+            '--d_conv', '4',
+            '--m2rnn_paper_shape',
+            '--m2rnn_k_head_dim', '64',
+            '--m2rnn_v_head_dim', str(params['n_state']),
+            '--m2rnn_output_norm', '1',
+            '--m2rnn_state_grad_clip', '1.0',
         ])
 
     elif model_type == 'e93':
@@ -910,7 +955,7 @@ def _probe_memory(cmd_no_bs, bs, env, cwd):
     # Remove --train_minutes since probe exits after 1 step
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=120, env=env, cwd=cwd)
+                                timeout=PROBE_TIMEOUT_SECONDS, env=env, cwd=cwd)
     except (subprocess.TimeoutExpired, Exception):
         return None
 

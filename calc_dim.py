@@ -60,6 +60,78 @@ def calc_mamba2_params(dim, depth, expand=2, d_state=128, vocab_size=256):
     return layers_total + embed
 
 
+def calc_m2rnn_params(
+    dim,
+    depth,
+    n_heads=128,
+    n_state=16,
+    expansion=1.0,
+    vocab_size=256,
+    use_gate=True,
+    use_conv=False,
+    d_conv=4,
+    paper_shape=False,
+    k_head_dim=None,
+    v_head_dim=None,
+    num_q_heads=None,
+    num_k_heads=None,
+    num_v_heads=None,
+    num_f_heads=None,
+    num_g_heads=None,
+    num_weight_heads=None,
+    output_norm=False,
+):
+    """Calculate M2RNN parameters.
+
+    The default tied-head variant uses K=n_state key/query width and
+    V=n_state*expansion value width:
+      input_proj: dim -> q + k + v + forget + gate
+      state_weight: H learned VxV right-transition matrices
+      D: residual value path
+      output_proj: H*V -> dim
+
+    With paper_shape=True, n_heads means the value/forget/gate/weight head
+    count while query/key heads default to 1, K defaults to 64, and V defaults
+    to n_state, matching the released M2RNN-family config geometry.
+    """
+    if paper_shape:
+        K = 64 if k_head_dim is None else k_head_dim
+        V = n_state if v_head_dim is None else v_head_dim
+        Nq = 1 if num_q_heads is None else num_q_heads
+        Nk = 1 if num_k_heads is None else num_k_heads
+        Nv = n_heads if num_v_heads is None else num_v_heads
+        Nf = n_heads if num_f_heads is None else num_f_heads
+        Ng = n_heads if num_g_heads is None else num_g_heads
+        Nw = n_heads if num_weight_heads is None else num_weight_heads
+    else:
+        K = n_state if k_head_dim is None else k_head_dim
+        V = max(1, int(round(n_state * expansion))) if v_head_dim is None else v_head_dim
+        Nq = n_heads if num_q_heads is None else num_q_heads
+        Nk = n_heads if num_k_heads is None else num_k_heads
+        Nv = n_heads if num_v_heads is None else num_v_heads
+        Nf = n_heads if num_f_heads is None else num_f_heads
+        Ng = n_heads if num_g_heads is None else num_g_heads
+        Nw = n_heads if num_weight_heads is None else num_weight_heads
+
+    N = max(Nq, Nk, Nv, Nf, Nw, Ng if use_gate else 1)
+    qkv_width = Nq * K + Nk * K + Nv * V
+    qkv = dim * qkv_width
+    forget = dim * Nf
+    gate = dim * Ng * V if use_gate else 0
+    conv = qkv_width * d_conv if use_conv else 0
+    state_weight = Nw * V * V
+    residual = N * V
+    recurrent_norm = N * V if output_norm else 0
+    out_proj = N * V * dim
+    norm = dim
+    per_layer = qkv + forget + gate + conv + state_weight + residual + recurrent_norm + out_proj + norm
+
+    layers_total = per_layer * depth
+    embed = vocab_size * dim
+    final_norm = dim
+    return layers_total + embed + final_norm
+
+
 def calc_fla_gdn_params(dim, depth, expansion=2.0, vocab_size=256):
     """Calculate FLA GatedDeltaNet parameters (approximate)."""
     d_inner = int(dim * expansion)
@@ -450,6 +522,12 @@ def print_standard_configs():
     dim, params = find_dim_for_params(calc_fla_gdn_params, target, depth=20, expansion=2.0)
     print(f"{'fla-gdn':<12} {dim:<6} {20:<6} {'expansion=2.0':<20} {params/1e6:.1f}M")
 
+    # M2RNN
+    dim, params = find_dim_for_params(
+        calc_m2rnn_params, target, depth=20, n_heads=128, n_state=16
+    )
+    print(f"{'m2rnn':<12} {dim:<6} {20:<6} {'H=128, n=16':<20} {params/1e6:.1f}M")
+
     # E75 variants
     e75_configs = [
         (4, 16), (4, 24), (4, 32), (4, 48),
@@ -507,6 +585,44 @@ def main():
     if model == 'mamba2':
         dim, params = find_dim_for_params(calc_mamba2_params, target, depth=args.depth)
         config = {'model': 'mamba2', 'dim': dim, 'depth': args.depth, 'params': params}
+
+    elif model == 'm2rnn':
+        # Default tied-head M2RNN baseline.
+        dim, params = find_dim_for_params(
+            calc_m2rnn_params, target, depth=args.depth,
+            n_heads=128, n_state=16, expansion=args.expansion
+        )
+        config = {
+            'model': 'm2rnn',
+            'dim': dim,
+            'depth': args.depth,
+            'n_heads': 128,
+            'n_state': 16,
+            'expansion': args.expansion,
+            'params': params,
+            'state_per_layer': 128 * 16 * int(round(16 * args.expansion)),
+        }
+
+    elif model == 'm2rnn-paper':
+        dim, params = find_dim_for_params(
+            calc_m2rnn_params, target, depth=args.depth,
+            n_heads=128, n_state=16, expansion=1.0,
+            use_conv=True, paper_shape=True, k_head_dim=64,
+            v_head_dim=16, output_norm=True,
+        )
+        config = {
+            'model': 'm2rnn-paper',
+            'dim': dim,
+            'depth': args.depth,
+            'n_heads': 128,
+            'n_state': 16,
+            'k_head_dim': 64,
+            'v_head_dim': 16,
+            'q_heads': 1,
+            'k_heads': 1,
+            'params': params,
+            'state_per_layer': 128 * 64 * 16,
+        }
 
     elif model.startswith('fla') or model == 'gdn':
         dim, params = find_dim_for_params(

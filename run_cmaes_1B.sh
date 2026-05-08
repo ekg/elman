@@ -10,12 +10,26 @@ MODELS=${MODELS:-"e88 fla-gdn mamba2 transformer e94"}
 if [ "$MODELS" = "e88" ]; then
     E88_GPUS=${E88_GPUS:-"0,1,2,3,4,5,6"}
     POPSIZE=${POPSIZE:-7}
+elif [ "$MODELS" = "m2rnn" ] || [ "$MODELS" = "m2rnn-paper" ]; then
+    M2RNN_GPUS=${M2RNN_GPUS:-"0,4,5,6"}
+    POPSIZE=${POPSIZE:-4}
 else
     E88_GPUS=${E88_GPUS:-"0"}
+    M2RNN_GPUS=${M2RNN_GPUS:-"5"}
     POPSIZE=${POPSIZE:-4}
 fi
 mkdir -p "$OUTDIR"
 PILE=/home/erikg/elman/data/pile.txt
+
+if [[ " $MODELS " == *" m2rnn "* || " $MODELS " == *" m2rnn-paper "* ]]; then
+    XMA_PATH=${XMA_PATH:-/tmp/m2rnn_xma}
+    if [ ! -d "$XMA_PATH/xma" ]; then
+        echo "M2RNN requires XMA. Set XMA_PATH to accelerated-model-architectures checkout." >&2
+        exit 1
+    fi
+    export XMA_PATH
+    export PYTHONPATH="$XMA_PATH:${PYTHONPATH:-}"
+fi
 
 COMMON="--params 1270M --train_minutes 5 --popsize $POPSIZE \
         --chunk_size 512 --tokenizer p50k_base \
@@ -45,6 +59,12 @@ for model in $MODELS; do
         mamba2)
             launch 2 mamba2
             ;;
+        m2rnn)
+            launch "$M2RNN_GPUS" m2rnn --fixed_n_state 16
+            ;;
+        m2rnn-paper)
+            launch "$M2RNN_GPUS" m2rnn-paper --fixed_n_state 16
+            ;;
         transformer)
             launch 3 transformer
             ;;
@@ -52,7 +72,7 @@ for model in $MODELS; do
             launch 4 e94 --fixed_n_state 16
             ;;
         *)
-            echo "Unknown model '$model'. Valid: e88 fla-gdn mamba2 transformer e94" >&2
+            echo "Unknown model '$model'. Valid: e88 fla-gdn mamba2 m2rnn m2rnn-paper transformer e94" >&2
             exit 1
             ;;
     esac
