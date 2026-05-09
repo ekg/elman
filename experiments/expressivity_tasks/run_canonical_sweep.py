@@ -16,6 +16,10 @@ PATTERNS = {
     'pure_E88':       (['E88'], {}),
     'pure_FLA':       (['fla-gdn'], {}),
     'hybrid_AABB':    (['E88', 'E88', 'fla-gdn', 'fla-gdn'], {}),
+    'pure_M2RNN':     (['m2rnn'], {}),
+    'pure_M2RNN_paper': (['m2rnn-paper'], {}),
+    'hybrid_GDN_M2RNN_single': (['fla-gdn', 'fla-gdn', 'fla-gdn', 'm2rnn-paper'], {}),
+    'hybrid_GDN_E88_single':   (['fla-gdn', 'fla-gdn', 'fla-gdn', 'E88'], {}),
     # Mamba-2 + Transformer not in HybridLadderLM (separate LM classes); cite Délétang/Grazzi numbers
 }
 

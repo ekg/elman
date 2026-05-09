@@ -27,7 +27,8 @@ def evaluate(model, task, B, T, n_batches, rng, device):
             x = torch.from_numpy(inp).to(device)
             y = torch.from_numpy(tgt).to(device)
             m = torch.from_numpy(mask).to(device)
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            use_autocast = device == 'cuda' and not getattr(model, 'disable_autocast', False)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
                 logits = model(x)
             preds = logits.argmax(dim=-1)
             correct += ((preds == y) & m).sum().item()
@@ -119,7 +120,8 @@ def main():
         x = torch.from_numpy(inp).to(device)
         y = torch.from_numpy(tgt).to(device)
         m = torch.from_numpy(mask).to(device)
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        use_autocast = device == 'cuda' and not getattr(model, 'disable_autocast', False)
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             logits = model(x)
         loss_per = F.cross_entropy(logits.view(-1, logits.size(-1)).float(),
                                     y.view(-1), reduction='none').view_as(m)

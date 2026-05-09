@@ -20,6 +20,38 @@ import torch.nn as nn
 from .ladder_lm import RMSNorm, get_ladder_level
 
 
+def _is_m2rnn_level(level: str) -> bool:
+    return level in ('m2rnn', 'm2rnn-paper')
+
+
+def _build_m2rnn_layer(level: str, dim: int, kwargs: Dict[str, Any]) -> nn.Module:
+    from .m2rnn_baseline import M2RNNLayer
+
+    paper_shape = level == 'm2rnn-paper'
+    n_state = kwargs.get('n_state', 16)
+    return M2RNNLayer(
+        dim=dim,
+        n_heads=kwargs.get('n_heads', 4),
+        n_state=n_state,
+        expansion=kwargs.get('expansion', 1.0),
+        paper_shape=paper_shape,
+        k_head_dim=kwargs.get('k_head_dim', 64 if paper_shape else None),
+        v_head_dim=kwargs.get('v_head_dim', n_state if paper_shape else None),
+        num_q_heads=kwargs.get('num_q_heads', 1 if paper_shape else None),
+        num_k_heads=kwargs.get('num_k_heads', 1 if paper_shape else None),
+        num_v_heads=kwargs.get('num_v_heads', None),
+        num_f_heads=kwargs.get('num_f_heads', None),
+        num_g_heads=kwargs.get('num_g_heads', None),
+        num_weight_heads=kwargs.get('num_weight_heads', None),
+        use_gate=kwargs.get('use_gate', True),
+        use_conv=kwargs.get('use_conv', paper_shape),
+        d_conv=kwargs.get('d_conv', 4),
+        output_norm=kwargs.get('output_norm', paper_shape),
+        dropout=kwargs.get('dropout', 0.0),
+        gradient_clipping=kwargs.get('gradient_clipping', 1.0 if paper_shape else None),
+    )
+
+
 class HybridLadderLM(nn.Module):
     def __init__(
         self,
@@ -50,6 +82,7 @@ class HybridLadderLM(nn.Module):
         self.dim = dim
         self.depth = depth
         self.layer_pattern = layer_pattern
+        self.disable_autocast = any(_is_m2rnn_level(level) for level in layer_pattern)
 
         self.embed = nn.Embedding(vocab_size, dim)
 
@@ -62,7 +95,6 @@ class HybridLadderLM(nn.Module):
             kw = layer_kwargs[i % len(layer_kwargs)]
             actual_pattern.append(level)
 
-            LayerClass = get_ladder_level(level)
             base_kwargs = {
                 'dim': dim,
                 'n_state': n_state,
@@ -76,6 +108,11 @@ class HybridLadderLM(nn.Module):
                 base_kwargs['rank'] = rank
             base_kwargs.update(kw)
 
+            if _is_m2rnn_level(level):
+                layers.append(_build_m2rnn_layer(level, dim, base_kwargs))
+                continue
+
+            LayerClass = get_ladder_level(level)
             try:
                 layer = LayerClass(**base_kwargs)
             except TypeError as e:

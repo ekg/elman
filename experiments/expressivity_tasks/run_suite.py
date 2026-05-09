@@ -14,11 +14,15 @@ ALL_TASKS = ['parity', 'modular_counter', 'dyck', 'fsm_tracking', 'selective_cop
 
 # Model → (level_name, model-specific kwargs)
 MODELS = {
-    'E88_n16':  {'level': 'E88',     'kwargs': {'n_heads': 4, 'n_state': 16}},
-    'E88_n32':  {'level': 'E88',     'kwargs': {'n_heads': 4, 'n_state': 32}},
-    'fla-gdn':  {'level': 'fla-gdn', 'kwargs': {'n_heads': 4, 'expansion': 2}},
-    'llama':    {'level': 'llama',   'kwargs': {'n_heads': 4, 'expansion': 4}},
-    'mamba2':   {'level': 'mamba2',  'kwargs': {}},
+    'E88_n16':       {'level': 'E88',           'kwargs': {'n_heads': 4, 'n_state': 16}},
+    'E88_n32':       {'level': 'E88',           'kwargs': {'n_heads': 4, 'n_state': 32}},
+    'E93':           {'level': 'E93',           'kwargs': {'n_state': 16}},
+    'E93_no_decay':  {'level': 'E93a_no_decay', 'kwargs': {'n_state': 16}},
+    'm2rnn_tied':    {'level': 'm2rnn',         'kwargs': {'n_heads': 4, 'n_state': 16}},
+    'm2rnn_paper':   {'level': 'm2rnn-paper',   'kwargs': {'n_heads': 4, 'n_state': 16}},
+    'fla-gdn':       {'level': 'fla-gdn',       'kwargs': {'n_heads': 4, 'expansion': 2}},
+    'llama':         {'level': 'llama',         'kwargs': {'n_heads': 4, 'expansion': 4}},
+    'mamba2':        {'level': 'mamba2',        'kwargs': {}},
 }
 
 # Per-task config (steps, seq_len, K, lr); tuned for "should-be-solvable in K steps"

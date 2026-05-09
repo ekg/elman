@@ -22,7 +22,34 @@ from experiments.expressivity_tasks.tasks import ALL_TASKS
 
 
 def build_model(level, dim, depth, vocab_size, **kwargs):
-    """Build a small LadderLM model for the given level."""
+    """Build a small model for the given level."""
+    if level in ('m2rnn', 'm2rnn-paper'):
+        from elman.models.m2rnn_baseline import M2RNNLM
+
+        n_state = kwargs.get('n_state', 16)
+        paper_shape = level == 'm2rnn-paper'
+        model = M2RNNLM(
+            vocab_size=vocab_size,
+            dim=dim,
+            depth=depth,
+            n_heads=kwargs.get('n_heads', 4),
+            n_state=n_state,
+            expansion=kwargs.get('expansion', 1.0),
+            paper_shape=paper_shape,
+            k_head_dim=kwargs.get('k_head_dim', 64 if paper_shape else None),
+            v_head_dim=kwargs.get('v_head_dim', n_state if paper_shape else None),
+            num_q_heads=kwargs.get('num_q_heads', 1 if paper_shape else None),
+            num_k_heads=kwargs.get('num_k_heads', 1 if paper_shape else None),
+            use_conv=kwargs.get('use_conv', paper_shape),
+            d_conv=kwargs.get('d_conv', 4),
+            output_norm=kwargs.get('output_norm', paper_shape),
+            gradient_clipping=kwargs.get('gradient_clipping', 1.0 if paper_shape else None),
+        )
+        # XMA's Triton M2RNN path currently has a bf16-autocast compile edge
+        # case in this small harness. Keep these expressivity runs in fp32.
+        model.disable_autocast = True
+        return model
+
     from elman.models import LadderLM
     # Common kwargs
     common = dict(
@@ -57,6 +84,10 @@ def build_model(level, dim, depth, vocab_size, **kwargs):
             n_state=kwargs.get('n_state', 16),
             # m_state defaults to dim if not specified; user can override via n_heads*n_state convention
         )
+    elif level == 'E93a_no_decay':
+        common.update(
+            n_state=kwargs.get('n_state', 16),
+        )
     elif level == 'fla-gdn':
         common.update(
             expansion=kwargs.get('expansion', 2),
@@ -88,7 +119,8 @@ def evaluate_accuracy(model, task, B, T, n_batches, rng, device):
             x = torch.from_numpy(inputs_np).to(device)
             y = torch.from_numpy(targets_np).to(device)
             m = torch.from_numpy(mask_np).to(device)
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            use_autocast = device == 'cuda' and not getattr(model, 'disable_autocast', False)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
                 logits = model(x)  # [B, T, V]
             preds = logits.argmax(dim=-1)
             correct += ((preds == y) & m).sum().item()
@@ -154,7 +186,8 @@ def train(args):
         y = torch.from_numpy(targets_np).to(device)
         m = torch.from_numpy(mask_np).to(device)
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        use_autocast = device == 'cuda' and not getattr(model, 'disable_autocast', False)
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_autocast):
             logits = model(x)
         loss_per = F.cross_entropy(
             logits.view(-1, logits.size(-1)).float(),

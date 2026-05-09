@@ -15,9 +15,13 @@ ROOT = os.path.dirname(os.path.dirname(THIS))
 PATTERNS = {
     'pure_E88':       (['E88'], {}),
     'pure_FLA':       (['fla-gdn'], {}),
+    'pure_M2RNN':     (['m2rnn'], {}),
+    'pure_M2RNN_paper': (['m2rnn-paper'], {}),
     'hybrid_AB':      (['E88', 'fla-gdn'], {}),       # alternating
     'hybrid_AABB':    (['E88', 'E88', 'fla-gdn', 'fla-gdn'], {}),
     'hybrid_BABA':    (['fla-gdn', 'E88'], {}),       # alternating, FLA first
+    'hybrid_GDN_M2RNN_single': (['fla-gdn', 'fla-gdn', 'fla-gdn', 'm2rnn-paper'], {}),
+    'hybrid_GDN_E88_single':   (['fla-gdn', 'fla-gdn', 'fla-gdn', 'E88'], {}),
 }
 
 # Per-task config (steps, seq_len, K, lr)
