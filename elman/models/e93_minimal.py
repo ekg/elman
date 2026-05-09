@@ -70,7 +70,11 @@ class E93Minimal(nn.Module):
         use_delta: bool = True,      # delta rule subtraction; False => raw outer product
         nonlinearity: str = 'tanh',  # 'tanh' | 'silu' | 'linear'
         use_l2_norm_k: bool = True,  # L2 normalize k along N
-        # Compatibility kwargs (ignored): n_heads, expansion, use_gate, etc.
+        # Output-side ablations
+        use_gate: bool = False,      # E88-style output gate: out *= silu(g_proj(x))
+        gate_activation: str = 'silu',  # 'silu' | 'sigmoid'
+        tanh_out: bool = False,      # apply tanh to layer output (bounds residual contribution)
+        # Compatibility kwargs (ignored): n_heads, expansion, etc.
         **kwargs,
     ):
         super().__init__()
@@ -86,6 +90,11 @@ class E93Minimal(nn.Module):
         self.use_delta = use_delta
         self.nonlinearity = nonlinearity
         self.use_l2_norm_k = use_l2_norm_k
+        self.use_gate = use_gate
+        self.gate_activation = gate_activation
+        self.tanh_out = tanh_out
+        if self.gate_activation not in ('silu', 'sigmoid'):
+            raise ValueError(f"Unknown gate_activation: {self.gate_activation}")
 
         self.k_proj = nn.Linear(dim, self.N, bias=False)
         self.v_proj = nn.Linear(dim, self.M, bias=False)
@@ -94,6 +103,10 @@ class E93Minimal(nn.Module):
         else:
             self.decay_proj = None
         self.out_proj = nn.Linear(self.N * self.M, dim, bias=False)
+        if use_gate:
+            self.g_proj = nn.Linear(dim, dim, bias=False)
+        else:
+            self.g_proj = None
 
         # W_h: per-layer learned [N, N], initialized near identity (or fixed identity)
         if use_w_h:
@@ -171,7 +184,17 @@ class E93Minimal(nn.Module):
                     S = pre
                 out_list.append(S.reshape(B, N * M))
             out = torch.stack(out_list, dim=1)
+        out = out.to(self.out_proj.weight.dtype)
         out = self.out_proj(out)
+        if self.g_proj is not None:
+            gate = self.g_proj(x)
+            if self.gate_activation == 'sigmoid':
+                gate = torch.sigmoid(gate)
+            else:
+                gate = F.silu(gate)
+            out = out * gate
+        if self.tanh_out:
+            out = torch.tanh(out)
         out = self.dropout(out)
         return out, S
 
