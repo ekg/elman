@@ -120,6 +120,11 @@ def parse_args():
                         help='For M2RNN: RMSNorm recurrent output before output projection')
     parser.add_argument('--m2rnn_state_grad_clip', type=float, default=None,
                         help='For M2RNN/XMA: clip recurrent state gradients inside the custom op')
+    parser.add_argument('--hybrid_pattern', type=str, default=None,
+                        help='For --level hybrid: comma-separated layer pattern, '
+                             'e.g. fla-gdn,fla-gdn,fla-gdn,m2rnn-paper')
+    parser.add_argument('--hybrid_m2rnn_heads', type=int, default=None,
+                        help='For --level hybrid: override n_heads only for m2rnn/m2rnn-paper layers')
     parser.add_argument('--top_k', type=int, default=None,
                         help='Number of active heads per token for MoM E88 (sparse routing)')
     parser.add_argument('--k_fast', type=int, default=None,
@@ -373,6 +378,53 @@ def train(args):
         else:
             from elman.models.mamba2_baseline import create_mamba2_model
             model = create_mamba2_model(target_params=args.params, vocab_size=vocab_size, expand=args.mamba_expand)
+    elif args.level == 'hybrid':
+        if args.dim is None or args.depth is None:
+            raise ValueError("--level hybrid requires explicit --dim and --depth")
+        if not args.hybrid_pattern:
+            raise ValueError("--level hybrid requires --hybrid_pattern")
+        from elman.models.hybrid_ladder import HybridLadderLM
+
+        layer_pattern = [part.strip() for part in args.hybrid_pattern.split(',') if part.strip()]
+        layer_kwargs = []
+        for level in layer_pattern:
+            kw = {}
+            if args.hybrid_m2rnn_heads is not None and level in ('m2rnn', 'm2rnn-paper'):
+                kw['n_heads'] = args.hybrid_m2rnn_heads
+            if level in ('m2rnn', 'm2rnn-paper'):
+                kw.update(
+                    k_head_dim=args.m2rnn_k_head_dim,
+                    v_head_dim=args.m2rnn_v_head_dim,
+                    num_q_heads=args.m2rnn_q_heads,
+                    num_k_heads=args.m2rnn_k_heads,
+                    num_v_heads=args.m2rnn_v_heads,
+                    num_f_heads=args.m2rnn_f_heads,
+                    num_g_heads=args.m2rnn_g_heads,
+                    num_weight_heads=args.m2rnn_weight_heads,
+                    use_conv=bool(args.use_conv) or level == 'm2rnn-paper',
+                    d_conv=args.d_conv,
+                    output_norm=bool(args.m2rnn_output_norm) or level == 'm2rnn-paper',
+                    gradient_clipping=(
+                        args.m2rnn_state_grad_clip
+                        if args.m2rnn_state_grad_clip is not None
+                        else (1.0 if level == 'm2rnn-paper' else None)
+                    ),
+                )
+            layer_kwargs.append(kw)
+
+        model = HybridLadderLM(
+            vocab_size=vocab_size,
+            dim=args.dim,
+            depth=args.depth,
+            layer_pattern=layer_pattern,
+            layer_kwargs=layer_kwargs,
+            n_state=args.n_state,
+            n_heads=args.n_heads,
+            expansion=args.expansion,
+            use_gate=bool(args.use_gate),
+            gate_activation=args.gate_activation,
+            dropout=args.dropout,
+        )
     elif args.level == 'm2rnn':
         # M2RNN baseline: nonlinear matrix-to-matrix RNN with matrix-valued state.
         from elman.models.m2rnn_baseline import M2RNNLM, create_m2rnn_model

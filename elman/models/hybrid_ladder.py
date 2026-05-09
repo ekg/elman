@@ -155,6 +155,9 @@ class HybridLadderLM(nn.Module):
                                     tgt[:, 1:].reshape(-1))
         return logits
 
+    def get_num_params(self):
+        return sum(p.numel() for p in self.parameters())
+
 
 # ============================================================================
 # Self-test
