@@ -205,11 +205,9 @@ def _e88_forward_kernel(
         # Update: S = tanh(decay * S + outer(k, delta))
         outer = k_vec[:, :, None] * delta[:, None, :]       # [BH, BN, BV]
         pre = d_val[:, None, None] * S + outer
-        # Manual tanh via expm1 trick — slightly more numerically stable
-        # than (e2x - 1) / (e2x + 1) and matches CUDA's tanhf reasonably
-        # within bf16 tolerance.
-        e2x = tl.exp(2.0 * pre)
-        S = (e2x - 1.0) / (e2x + 1.0)
+        # Stable tanh. The raw exp formula overflows for pre > ~44 in fp32,
+        # yielding inf/inf = NaN. sigmoid saturates without forming inf/inf.
+        S = 2.0 * tl.sigmoid(2.0 * pre) - 1.0
 
         # Output: out[h, v] = sum_n S[h, n, v] * q[h, n]   (reduce over N axis=1)
         out_vec = tl.sum(S * q_vec[:, :, None], axis=1)     # [BH, BV]

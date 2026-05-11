@@ -217,8 +217,9 @@ def _e88_backward_kernel(
             delta = v_vec - retrieved
             outer = k_vec[:, :, None] * delta[:, None, :]
             pre = decay_val[:, None, None] * S + outer
-            e2x = tl.exp(2.0 * pre)
-            S = (e2x - 1.0) / (e2x + 1.0)
+            # Match forward's stable tanh path. The raw exp formula can
+            # overflow and turn saturation into inf/inf = NaN.
+            S = 2.0 * tl.sigmoid(2.0 * pre) - 1.0
 
             # Save S after step t into scratch slot j+1 (bf16-cast).
             slot_off = prog_scratch_base + (j + 1) * tile_size + scratch_inner
