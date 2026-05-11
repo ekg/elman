@@ -652,6 +652,10 @@ def train(args):
     if args.resume:
         print(f"Resuming from {args.resume}")
         start_step, _ = load_checkpoint(args.resume, model, optimizer)
+        # Optimizer state dicts carry their original param-group LR. For
+        # continuation runs we want the explicit CLI LR to be authoritative.
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.lr
         print(f"Resumed at step {start_step}")
 
     # Create dataset - use BatchedStreamDataset for TBPTT (persistent per-batch streams)
@@ -752,6 +756,8 @@ def train(args):
             return time.time() < train_end_time
         return step < args.steps
 
+    stopped_nonfinite = False
+
     # Prefetch data function
     import threading
     import queue
@@ -815,6 +821,11 @@ def train(args):
                 loss = result
                 next_hidden = None
 
+        if not torch.isfinite(loss):
+            print(f"Non-finite loss at step {step}: {loss.item()}. Stopping before optimizer step.")
+            stopped_nonfinite = True
+            break
+
         # Add orthogonality regularization for E79 if enabled
         if args.orth_reg > 0:
             orth_loss = 0.0
@@ -846,6 +857,13 @@ def train(args):
             else:
                 grad_norm = sum(p.grad.norm().item() ** 2 for p in model.parameters() if p.grad is not None) ** 0.5
 
+            if not torch.isfinite(torch.as_tensor(grad_norm)):
+                grad_value = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
+                print(f"Non-finite grad norm at step {step}: {grad_value}. Stopping before optimizer step.")
+                optimizer.zero_grad(set_to_none=True)
+                stopped_nonfinite = True
+                break
+
             # Learning rate schedule (only for standard AdamW)
             if args.optimizer == 'adamw':
                 lr = get_lr(step, args.warmup_steps, args.lr)
@@ -864,10 +882,13 @@ def train(args):
             if step % args.log_every == 0:
                 avg_loss = running_loss / args.log_every
                 elapsed = time.time() - start_time
+                elapsed_total_h = (time.time() - train_start_time) / 3600.0
+                wall_time = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
                 tokens_per_sec = tokens_processed / elapsed
 
                 print(f"step {step:6d} | loss {avg_loss:.4f} | lr {lr:.2e} | "
-                      f"grad {grad_norm:.2f} | tok/s {tokens_per_sec:.0f}")
+                      f"grad {grad_norm:.2f} | tok/s {tokens_per_sec:.0f} | "
+                      f"elapsed_h {elapsed_total_h:.3f} | time {wall_time}")
 
                 # Track for last-100 average (each entry covers log_every steps)
                 last_100_losses.append(avg_loss)
@@ -911,9 +932,12 @@ def train(args):
         last_100_avg = avg_loss  # Fallback if no logging happened
 
     # Final checkpoint - use last-100 average for reliable metric
-    if args.optimizer == 'schedulefree':
-        optimizer.eval()  # Get averaged params for final checkpoint
-    save_checkpoint(model, optimizer, step, last_100_avg, output_dir, args.keep_checkpoints)
+    if stopped_nonfinite:
+        print("Skipping final checkpoint because training stopped on non-finite loss/gradient.")
+    else:
+        if args.optimizer == 'schedulefree':
+            optimizer.eval()  # Get averaged params for final checkpoint
+        save_checkpoint(model, optimizer, step, last_100_avg, output_dir, args.keep_checkpoints)
 
     # Print final metrics in parseable format
     print(f"\nTraining complete! Final step: {step}")
