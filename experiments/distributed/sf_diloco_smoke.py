@@ -60,6 +60,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bf16", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--eval_every", type=int, default=0)
+    p.add_argument("--eval_batches", type=int, default=0)
+    p.add_argument("--eval_batch_size", type=int, default=1)
+    p.add_argument("--eval_seed", type=int, default=12345)
     p.add_argument("--resume", default=None)
     p.add_argument("--resume_optimizer", action="store_true")
     p.add_argument("--save_final", action="store_true")
@@ -180,6 +184,43 @@ def load_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Op
     return int(ckpt.get("step", 0)), float(ckpt.get("loss", float("inf")))
 
 
+def make_fixed_eval_batches(args: argparse.Namespace) -> list[torch.Tensor]:
+    dataset = TokenizedStreamDataset(
+        data_path=args.data,
+        chunk_size=args.chunk_size + 1,
+        rank=0,
+        world_size=1,
+        seed=args.eval_seed,
+        tokenizer_name=args.tokenizer,
+    )
+    batches = []
+    for _ in range(args.eval_batches):
+        batch, _, _ = dataset.get_batch(args.eval_batch_size)
+        batches.append(batch.clone())
+    return batches
+
+
+@torch.no_grad()
+def evaluate_fixed_batches(
+    model: torch.nn.Module,
+    optimizer: schedulefree.AdamWScheduleFree,
+    batches: list[torch.Tensor],
+    args: argparse.Namespace,
+    device: torch.device,
+) -> float:
+    optimizer.eval()
+    model.eval()
+    total = 0.0
+    for batch_cpu in batches:
+        batch = batch_cpu.to(device, non_blocking=True)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=args.bf16):
+            loss = model(batch, return_loss=True)
+        total += float(loss.item())
+    model.train()
+    optimizer.train()
+    return total / max(1, len(batches))
+
+
 def main() -> None:
     args = parse_args()
     rank, world, local_rank, device = setup_distributed()
@@ -198,6 +239,7 @@ def main() -> None:
         seed=args.seed,
         tokenizer_name=args.tokenizer,
     )
+    eval_batches = make_fixed_eval_batches(args) if rank == 0 and args.eval_batches > 0 else []
 
     model = make_model(args, dataset.vocab_size).to(device)
     if args.bf16:
@@ -255,6 +297,7 @@ def main() -> None:
     total_tokens_local = 0
     sync_records = []
     log_records = []
+    eval_records = []
     grad_sync_s_total = 0.0
     grad_sync_count = 0
     completed_steps = 0
@@ -324,8 +367,37 @@ def main() -> None:
             running_tokens = 0
             log_start = time.time()
 
+            if args.eval_every > 0 and args.eval_batches > 0 and step % args.eval_every == 0:
+                dist.barrier()
+                eval_t0 = time.time()
+                if rank == 0:
+                    eval_loss = evaluate_fixed_batches(model, optimizer, eval_batches, args, device)
+                    eval_bpb = eval_loss / math.log(2.0) / args.bytes_per_token
+                    eval_s = time.time() - eval_t0
+                    wall = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+                    print(
+                        f"eval {step:6d} | loss {eval_loss:.4f} | bpb {eval_bpb:.4f} | "
+                        f"eval_s {eval_s:.1f} | time {wall}",
+                        flush=True,
+                    )
+                    eval_records.append(
+                        {
+                            "step": step,
+                            "elapsed_s": time.time() - start,
+                            "loss": eval_loss,
+                            "bpb": eval_bpb,
+                            "eval_s": eval_s,
+                            "batches": args.eval_batches,
+                            "batch_size": args.eval_batch_size,
+                            "time": wall,
+                        }
+                    )
+                dist.barrier()
+                log_start = time.time()
+
     dist.barrier()
-    final_loss = all_reduce_mean(running_loss / max(1, args.steps % args.log_every), device, world) if running_loss else None
+    partial_steps = completed_steps % args.log_every
+    final_loss = all_reduce_mean(running_loss / max(1, partial_steps), device, world) if running_loss else None
     elapsed_total = time.time() - start
     total_tokens = torch.tensor(float(total_tokens_local), device=device)
     dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
@@ -354,6 +426,7 @@ def main() -> None:
             "grad_sync_count": grad_sync_count,
             "sync_records": sync_records,
             "log_records": log_records,
+            "eval_records": eval_records,
             "final_partial_loss": final_loss,
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
