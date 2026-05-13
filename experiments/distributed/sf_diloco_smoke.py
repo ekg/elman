@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_batches", type=int, default=0)
     p.add_argument("--eval_batch_size", type=int, default=1)
     p.add_argument("--eval_seed", type=int, default=12345)
+    p.add_argument("--eval_schedulefree_average", action="store_true")
     p.add_argument("--resume", default=None)
     p.add_argument("--resume_optimizer", action="store_true")
     p.add_argument("--save_final", action="store_true")
@@ -208,7 +209,8 @@ def evaluate_fixed_batches(
     args: argparse.Namespace,
     device: torch.device,
 ) -> float:
-    optimizer.eval()
+    if args.eval_schedulefree_average:
+        optimizer.eval()
     model.eval()
     total = 0.0
     for batch_cpu in batches:
@@ -217,7 +219,8 @@ def evaluate_fixed_batches(
             loss = model(batch, return_loss=True)
         total += float(loss.item())
     model.train()
-    optimizer.train()
+    if args.eval_schedulefree_average:
+        optimizer.train()
     return total / max(1, len(batches))
 
 
