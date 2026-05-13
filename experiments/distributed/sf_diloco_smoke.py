@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--chunk_size", type=int, default=512)
     p.add_argument("--steps", type=int, default=200)
+    p.add_argument("--max_seconds", type=float, default=0.0)
     p.add_argument("--local_steps", type=int, default=50)
     p.add_argument("--mode", choices=["ddp", "sync_sgd", "local_sgd", "diloco"], default="diloco")
     p.add_argument("--outer_lr", type=float, default=1.0)
@@ -59,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bf16", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--log_every", type=int, default=10)
+    p.add_argument("--resume", default=None)
+    p.add_argument("--resume_optimizer", action="store_true")
     p.add_argument("--save_final", action="store_true")
     return p.parse_args()
 
@@ -169,6 +172,14 @@ def all_reduce_mean(value: float, device: torch.device, world: int) -> float:
     return (t / world).item()
 
 
+def load_checkpoint(path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None) -> tuple[int, float]:
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state_dict"])
+    if optimizer is not None and "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    return int(ckpt.get("step", 0)), float(ckpt.get("loss", float("inf")))
+
+
 def main() -> None:
     args = parse_args()
     rank, world, local_rank, device = setup_distributed()
@@ -210,6 +221,21 @@ def main() -> None:
     )
     optimizer.train()
 
+    resume_step = 0
+    resume_loss = float("inf")
+    if args.resume:
+        resume_step, resume_loss = load_checkpoint(
+            args.resume,
+            model,
+            optimizer if args.resume_optimizer else None,
+        )
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = args.lr
+        optimizer.train()
+        if rank == 0:
+            what = "model+optimizer" if args.resume_optimizer else "model"
+            print(f"resumed {what} from {args.resume} at step={resume_step} loss={resume_loss}", flush=True)
+
     anchors = [p.detach().float().clone() for p in model.parameters()]
     velocity = [torch.zeros_like(a) for a in anchors]
 
@@ -228,11 +254,14 @@ def main() -> None:
     running_tokens = 0
     total_tokens_local = 0
     sync_records = []
+    log_records = []
     grad_sync_s_total = 0.0
     grad_sync_count = 0
     completed_steps = 0
 
     for step in range(1, args.steps + 1):
+        if args.max_seconds > 0 and time.time() - start >= args.max_seconds:
+            break
         completed_steps = step
         batch, _, lengths = dataset.get_batch(args.batch_size, device=device)
         batch_tokens = int(lengths.sum().item())
@@ -279,6 +308,18 @@ def main() -> None:
                     f"grad {float(grad_norm):.2f} | global_tok/s {tok_s:.0f} | time {wall}",
                     flush=True,
                 )
+                log_records.append(
+                    {
+                        "step": step,
+                        "elapsed_s": time.time() - start,
+                        "loss": mean_loss,
+                        "bpb": bpb,
+                        "global_tok_s": tok_s,
+                        "tokens": int(total_tokens.item()),
+                        "grad_norm": float(grad_norm),
+                        "time": wall,
+                    }
+                )
             running_loss = 0.0
             running_tokens = 0
             log_start = time.time()
@@ -293,7 +334,12 @@ def main() -> None:
             "mode": args.mode,
             "world_size": world,
             "steps": args.steps,
+            "max_seconds": args.max_seconds,
             "completed_steps": completed_steps,
+            "resume": args.resume,
+            "resume_step": resume_step,
+            "resume_loss": resume_loss,
+            "resume_optimizer": args.resume_optimizer,
             "local_steps": args.local_steps,
             "batch_size": args.batch_size,
             "chunk_size": args.chunk_size,
@@ -307,6 +353,7 @@ def main() -> None:
             "grad_sync_s_total": grad_sync_s_total,
             "grad_sync_count": grad_sync_count,
             "sync_records": sync_records,
+            "log_records": log_records,
             "final_partial_loss": final_loss,
         }
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
