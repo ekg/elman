@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_batches", type=int, default=0)
     p.add_argument("--eval_batch_size", type=int, default=1)
     p.add_argument("--eval_seed", type=int, default=12345)
+    p.add_argument("--eval_at_start", action="store_true")
     p.add_argument("--eval_schedulefree_average", action="store_true")
     p.add_argument("--resume", default=None)
     p.add_argument("--resume_optimizer", action="store_true")
@@ -292,15 +293,41 @@ def main() -> None:
             flush=True,
         )
 
+    sync_records = []
+    log_records = []
+    eval_records = []
     dist.barrier()
+    if args.eval_at_start and args.eval_batches > 0:
+        eval_t0 = time.time()
+        if rank == 0:
+            eval_loss = evaluate_fixed_batches(model, optimizer, eval_batches, args, device)
+            eval_bpb = eval_loss / math.log(2.0) / args.bytes_per_token
+            eval_s = time.time() - eval_t0
+            wall = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+            print(
+                f"eval {0:6d} | loss {eval_loss:.4f} | bpb {eval_bpb:.4f} | "
+                f"eval_s {eval_s:.1f} | time {wall}",
+                flush=True,
+            )
+            eval_records.append(
+                {
+                    "step": 0,
+                    "elapsed_s": 0.0,
+                    "loss": eval_loss,
+                    "bpb": eval_bpb,
+                    "eval_s": eval_s,
+                    "batches": args.eval_batches,
+                    "batch_size": args.eval_batch_size,
+                    "time": wall,
+                }
+            )
+        dist.barrier()
+
     start = time.time()
     log_start = start
     running_loss = 0.0
     running_tokens = 0
     total_tokens_local = 0
-    sync_records = []
-    log_records = []
-    eval_records = []
     grad_sync_s_total = 0.0
     grad_sync_count = 0
     completed_steps = 0
