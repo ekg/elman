@@ -19,6 +19,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 import schedulefree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--chunk_size", type=int, default=512)
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--local_steps", type=int, default=50)
-    p.add_argument("--mode", choices=["local_sgd", "diloco"], default="diloco")
+    p.add_argument("--mode", choices=["ddp", "sync_sgd", "local_sgd", "diloco"], default="diloco")
     p.add_argument("--outer_lr", type=float, default=1.0)
     p.add_argument("--outer_beta", type=float, default=0.9)
     p.add_argument("--sync_optimizer_state", action="store_true")
@@ -148,6 +149,20 @@ def sync_model(
     return drift, time.time() - t0
 
 
+@torch.no_grad()
+def sync_gradients(model: torch.nn.Module, world: int) -> float:
+    """Average gradients across ranks, equivalent to DDP all-reduce."""
+
+    t0 = time.time()
+    for p in model.parameters():
+        if p.grad is None:
+            continue
+        dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+        p.grad.div_(world)
+    torch.cuda.synchronize()
+    return time.time() - t0
+
+
 def all_reduce_mean(value: float, device: torch.device, world: int) -> float:
     t = torch.tensor(float(value), device=device)
     dist.all_reduce(t, op=dist.ReduceOp.SUM)
@@ -158,7 +173,7 @@ def main() -> None:
     args = parse_args()
     rank, world, local_rank, device = setup_distributed()
 
-    torch.manual_seed(args.seed + rank)
+    torch.manual_seed(args.seed)
     out = Path(args.output)
     if rank == 0:
         out.mkdir(parents=True, exist_ok=True)
@@ -177,6 +192,15 @@ def main() -> None:
     if args.bf16:
         model = model.bfloat16()
     model.train()
+    torch.manual_seed(args.seed + rank)
+    train_model: torch.nn.Module = model
+    if args.mode == "ddp":
+        train_model = DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            broadcast_buffers=False,
+        )
 
     optimizer = schedulefree.AdamWScheduleFree(
         model.parameters(),
@@ -189,9 +213,10 @@ def main() -> None:
     anchors = [p.detach().float().clone() for p in model.parameters()]
     velocity = [torch.zeros_like(a) for a in anchors]
 
+    model_params = sum(p.numel() for p in model.parameters())
     if rank == 0:
         print(
-            f"mode={args.mode} world={world} model_params={sum(p.numel() for p in model.parameters()):,} "
+            f"mode={args.mode} world={world} model_params={model_params:,} "
             f"local_steps={args.local_steps} sync_optimizer_state={args.sync_optimizer_state}",
             flush=True,
         )
@@ -203,18 +228,25 @@ def main() -> None:
     running_tokens = 0
     total_tokens_local = 0
     sync_records = []
+    grad_sync_s_total = 0.0
+    grad_sync_count = 0
+    completed_steps = 0
 
     for step in range(1, args.steps + 1):
+        completed_steps = step
         batch, _, lengths = dataset.get_batch(args.batch_size, device=device)
         batch_tokens = int(lengths.sum().item())
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=args.bf16):
-            loss = model(batch, return_loss=True)
+            loss = train_model(batch, return_loss=True)
 
         if not torch.isfinite(loss):
             print(f"rank={rank} nonfinite loss at step={step}: {loss.item()}", flush=True)
             break
 
         loss.backward()
+        if args.mode == "sync_sgd":
+            grad_sync_s_total += sync_gradients(model, world)
+            grad_sync_count += 1
         if args.grad_clip > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         else:
@@ -226,7 +258,7 @@ def main() -> None:
         running_tokens += batch_tokens
         total_tokens_local += batch_tokens
 
-        if step % args.local_steps == 0:
+        if args.mode != "sync_sgd" and step % args.local_steps == 0:
             drift, sync_s = sync_model(model, anchors, velocity, args, world)
             if args.sync_optimizer_state:
                 sync_optimizer_state(optimizer, world)
@@ -261,10 +293,19 @@ def main() -> None:
             "mode": args.mode,
             "world_size": world,
             "steps": args.steps,
+            "completed_steps": completed_steps,
             "local_steps": args.local_steps,
+            "batch_size": args.batch_size,
+            "chunk_size": args.chunk_size,
+            "model_params": model_params,
+            "sync_optimizer_state": args.sync_optimizer_state,
+            "outer_lr": args.outer_lr,
+            "outer_beta": args.outer_beta,
             "total_tokens": int(total_tokens.item()),
             "elapsed_s": elapsed_total,
             "effective_tok_s": total_tokens.item() / elapsed_total,
+            "grad_sync_s_total": grad_sync_s_total,
+            "grad_sync_count": grad_sync_count,
             "sync_records": sync_records,
             "final_partial_loss": final_loss,
         }

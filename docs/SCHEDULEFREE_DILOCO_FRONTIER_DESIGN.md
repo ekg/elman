@@ -2,18 +2,23 @@
 
 ## Goal
 
-Train E88/NDM at scale on Frontier-style allocations where large, short jobs
-are easier to schedule than long single-node jobs. The target use case is
-bursty training such as:
+Train E88/NDM at scale on Frontier-style allocations without forcing the
+optimizer into an enormous global-batch regime. The concrete near-term target
+is sustained multi-node training, for example:
 
-- 64 nodes for 24 hours
-- 500 nodes for 2 hours
-- larger bursts if queue pressure favors them
+- 16 nodes for 24 hours as the first realistic production shape
+- 64 nodes for 24 hours once the one-node island design is trusted
+- larger bursts only after the communication and optimizer behavior are clear
+
+Short queued jobs may become useful later, but they are not the central design
+point. The first question is whether hierarchical local training scales
+efficiently for normal multi-node allocations.
 
 The core problem is that plain synchronous DDP across all ranks makes the
 global batch enormous. At ctx2k, even per-GPU batch size 1 gives:
 
 ```text
+16 nodes  * 8 GCDs/node * 2048 tokens = ~262K tokens/update
 64 nodes  * 8 GCDs/node * 2048 tokens = ~1.05M tokens/update
 500 nodes * 8 GCDs/node * 2048 tokens = ~8.19M tokens/update
 ```
@@ -64,6 +69,41 @@ ScheduleFree local-SGD with periodic model averaging
 Outer-momentum DiLoCo remains worth studying, but it should not be the first
 production path until we find a stable beta/outer-lr regime.
 
+### Scale-Matched E88 Smoke
+
+The first scale-matched smoke used the production 1.27B E88 geometry:
+
+```text
+level:             E88 / NDM
+params:            1,273,191,856
+dim/depth:         1664 / 12
+heads/state:       370 / 32
+context:           2048
+per-rank batch:    1
+optimizer:         ScheduleFree AdamW
+Triton:            enabled
+GPUs:              0,5,6,7
+```
+
+At this scale, full model averaging across four local GPUs costs about 9s per
+sync. The `H` sweep over 1000 local steps showed:
+
+```text
+H=100:  8.196M tokens, 436s, 18.8K tok/s, final drift 0.123
+H=250:  8.196M tokens, 384s, 21.3K tok/s, final drift 0.275
+H=500:  8.196M tokens, 368s, 22.3K tok/s, final drift 0.467
+```
+
+Short-window loss is noisy this early, but the qualitative behavior is clear:
+
+- `H=100` is the safest setting.
+- `H=250` gives most of the throughput gain with tolerable recovery.
+- `H=500` is faster but produces a large post-sync loss shock.
+
+Current scale-matched recommendation: use `H=250` as the first serious
+candidate and keep `H=100` as the conservative fallback. Do not push beyond
+`H=500` until longer runs show recovery without compounding drift.
+
 ## Recommended Training Shape
 
 Use hierarchical ScheduleFree-DiLoCo:
@@ -82,17 +122,23 @@ between islands:
 For example:
 
 ```text
+16-node job:
+  16 islands
+  8 ranks/island
+  local batch: per-GPU bs=1 or 2
+  inter-island averaging every K=250-1000 local steps
+
 64-node job:
   64 islands
   8 ranks/island
   local batch: per-GPU bs=1 or 2
-  inter-island DiLoCo every K=500-2000 local steps
+  inter-island averaging every K=500-2000 local steps
 
 500-node job:
   500 islands
   8 ranks/island
   local batch: per-GPU bs=1
-  inter-island DiLoCo every K=250-1000 local steps
+  only after 16/64-node behavior is understood
 ```
 
 This gives each island a sane local batch:
@@ -194,7 +240,8 @@ is equivalent.
 
 Independent mode is the filesystem/checkpoint version. It is useful when jobs
 cannot communicate during the allocation or when separate queued jobs finish at
-different times.
+different times. It is not the first production path because it does not answer
+whether sustained multi-node training scales efficiently.
 
 Protocol:
 
@@ -214,9 +261,9 @@ Protocol:
 6. Next wave launches from W_{r+1}.
 ```
 
-This is less efficient than in-job hierarchical DiLoCo because each wave pays
-queue/startup overhead and cannot synchronize mid-job. But it is operationally
-simple and can be valuable for very bursty queue access.
+This is less efficient than in-job hierarchical local-SGD/DiLoCo because each
+wave pays queue/startup overhead and cannot synchronize mid-job. Treat it as a
+later operational mechanism, not the core scaling strategy.
 
 ## Hogwild ScheduleFree-DiLoCo
 
@@ -354,30 +401,19 @@ impossible.
 
 ## Required Repo Work
 
-### Phase 1: Offline Independent DiLoCo
+### Phase 1: Local Distributed Controls
 
-Minimal code:
+Use the 4-GPU harness to establish:
 
-- `scripts/diloco_merge.py`
-- `--data_rank` / `--data_world_size` in `train.py`
-- checkpoint metadata with `base_id`
+- DDP/global-batch baseline
+- local-SGD at `H=100/250/500/1000`
+- optimizer-state sync vs model-only sync
+- fixed initialization across ranks
+- same-token and same-wallclock summaries
 
-Local test:
+This is the current active phase.
 
-```text
-N=4 workers
-K=100 or 250
-ctx=512 first, then ctx=2048
-E88 100M or 480M first, then 1.27B
-```
-
-Compare:
-
-- one continuous baseline
-- synchronous DDP if available
-- independent DiLoCo with same total tokens
-
-### Phase 2: In-Job Hierarchical DiLoCo
+### Phase 2: In-Job Hierarchical Local-SGD/DiLoCo
 
 Implement real distributed launch:
 
@@ -386,12 +422,29 @@ Implement real distributed launch:
 - DDP process group per island
 - global inter-island process group for merge boundaries
 - local ScheduleFree optimizer per island
-- periodic model-delta all-reduce across island leaders
+- periodic model-weight or model-delta all-reduce across island leaders
 - broadcast merged weights to ranks in each island
 
 This is the main Frontier path.
 
-### Phase 3: Hogwild/Async DiLoCo
+### Phase 3: 16-Node Frontier Pilot
+
+Run one production-shaped job:
+
+```text
+16 nodes
+8 ranks/node
+16 one-node islands
+ctx2k
+per-GPU bs=1 initially
+H=100/250 first, then H=500 if stable
+model-only averaging first
+```
+
+Compare against the current single-GPU 1.27B E88 run by wallclock, tokens, and
+loss trajectory.
+
+### Phase 4: Offline / Hogwild Modes
 
 Add:
 
@@ -401,8 +454,9 @@ Add:
 - worker restart from latest checkpoint
 - merge audit logs
 
-This is for continuous progress across many short allocations or uneven worker
-completion.
+This is for operational flexibility across separate allocations or uneven
+worker completion. It should wait until the synchronous island design is
+trusted.
 
 ## Initial Hyperparameter Proposal
 
@@ -422,13 +476,13 @@ merge interval:    every K local steps
 checkpoint:        every DiLoCo round + periodic local emergency checkpoint
 ```
 
-For 500 nodes x 2 hours:
+For 16 nodes x 24 hours:
 
 ```text
-500 islands
+16 islands
 8 ranks/island
-K=250-500
-expect several DiLoCo rounds per job if startup is controlled
+K=100-500
+primary first production-shaped scaling test
 ```
 
 For 64 nodes x 24 hours:
