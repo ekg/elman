@@ -258,6 +258,7 @@ def main() -> None:
             device_ids=[local_rank],
             output_device=local_rank,
             broadcast_buffers=False,
+            gradient_as_bucket_view=True,
         )
 
     optimizer = schedulefree.AdamWScheduleFree(
