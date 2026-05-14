@@ -361,7 +361,7 @@ def main() -> None:
         running_tokens += batch_tokens
         total_tokens_local += batch_tokens
 
-        if args.mode != "sync_sgd" and step % args.local_steps == 0:
+        if args.mode in {"local_sgd", "diloco"} and step % args.local_steps == 0:
             drift, sync_s = sync_model(model, anchors, velocity, args, world)
             if args.sync_optimizer_state:
                 sync_optimizer_state(optimizer, world)
