@@ -9,6 +9,7 @@ unchanged.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import json
 import math
@@ -45,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gate_activation", default="silu")
     p.add_argument("--use_triton", type=int, default=1)
     p.add_argument("--batch_size", type=int, default=4)
+    p.add_argument("--grad_accum", type=int, default=1)
     p.add_argument("--chunk_size", type=int, default=512)
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--max_seconds", type=float, default=0.0)
@@ -291,7 +293,8 @@ def main() -> None:
     if rank == 0:
         print(
             f"mode={args.mode} world={world} model_params={model_params:,} "
-            f"local_steps={args.local_steps} sync_optimizer_state={args.sync_optimizer_state}",
+            f"local_steps={args.local_steps} grad_accum={args.grad_accum} "
+            f"sync_optimizer_state={args.sync_optimizer_state}",
             flush=True,
         )
 
@@ -338,16 +341,32 @@ def main() -> None:
         if args.max_seconds > 0 and time.time() - start >= args.max_seconds:
             break
         completed_steps = step
-        batch, _, lengths = dataset.get_batch(args.batch_size, device=device)
-        batch_tokens = int(lengths.sum().item())
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=args.bf16):
-            loss = train_model(batch, return_loss=True)
+        update_loss = 0.0
+        update_tokens = 0
+        nonfinite = False
+        for accum_idx in range(args.grad_accum):
+            batch, _, lengths = dataset.get_batch(args.batch_size, device=device)
+            batch_tokens = int(lengths.sum().item())
+            sync_context = (
+                train_model.no_sync()
+                if args.mode == "ddp" and accum_idx < args.grad_accum - 1
+                else contextlib.nullcontext()
+            )
+            with sync_context:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=args.bf16):
+                    loss = train_model(batch, return_loss=True)
 
-        if not torch.isfinite(loss):
-            print(f"rank={rank} nonfinite loss at step={step}: {loss.item()}", flush=True)
+                if not torch.isfinite(loss):
+                    print(f"rank={rank} nonfinite loss at step={step}: {loss.item()}", flush=True)
+                    nonfinite = True
+                    break
+
+                (loss / args.grad_accum).backward()
+            update_loss += float(loss.item())
+            update_tokens += batch_tokens
+
+        if nonfinite:
             break
-
-        loss.backward()
         if args.mode == "sync_sgd":
             grad_sync_s_total += sync_gradients(model, world)
             grad_sync_count += 1
@@ -358,9 +377,9 @@ def main() -> None:
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
-        running_loss += float(loss.item())
-        running_tokens += batch_tokens
-        total_tokens_local += batch_tokens
+        running_loss += update_loss / args.grad_accum
+        running_tokens += update_tokens
+        total_tokens_local += update_tokens
 
         if args.mode in {"local_sgd", "diloco"} and step % args.local_steps == 0:
             drift, sync_s = sync_model(model, anchors, velocity, args, world)
@@ -475,6 +494,7 @@ def main() -> None:
             "resume_optimizer": args.resume_optimizer,
             "local_steps": args.local_steps,
             "batch_size": args.batch_size,
+            "grad_accum": args.grad_accum,
             "chunk_size": args.chunk_size,
             "model_params": model_params,
             "sync_optimizer_state": args.sync_optimizer_state,
