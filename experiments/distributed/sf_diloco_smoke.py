@@ -65,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval_batch_size", type=int, default=1)
     p.add_argument("--eval_seed", type=int, default=12345)
     p.add_argument("--eval_at_start", action="store_true")
+    p.add_argument("--eval_at_end", action="store_true")
     p.add_argument("--eval_schedulefree_average", action="store_true")
     p.add_argument("--resume", default=None)
     p.add_argument("--resume_optimizer", action="store_true")
@@ -431,6 +432,35 @@ def main() -> None:
     elapsed_total = time.time() - start
     total_tokens = torch.tensor(float(total_tokens_local), device=device)
     dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
+    if args.eval_at_end and args.eval_batches > 0:
+        dist.barrier()
+        eval_elapsed = time.time() - start
+        eval_t0 = time.time()
+        if rank == 0:
+            last_eval_step = eval_records[-1]["step"] if eval_records else None
+            if last_eval_step != completed_steps:
+                eval_loss = evaluate_fixed_batches(model, optimizer, eval_batches, args, device)
+                eval_bpb = eval_loss / math.log(2.0) / args.bytes_per_token
+                eval_s = time.time() - eval_t0
+                wall = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+                print(
+                    f"eval {completed_steps:6d} | loss {eval_loss:.4f} | bpb {eval_bpb:.4f} | "
+                    f"eval_s {eval_s:.1f} | time {wall}",
+                    flush=True,
+                )
+                eval_records.append(
+                    {
+                        "step": completed_steps,
+                        "elapsed_s": eval_elapsed,
+                        "loss": eval_loss,
+                        "bpb": eval_bpb,
+                        "eval_s": eval_s,
+                        "batches": args.eval_batches,
+                        "batch_size": args.eval_batch_size,
+                        "time": wall,
+                    }
+                )
+        dist.barrier()
     if rank == 0:
         summary = {
             "mode": args.mode,
