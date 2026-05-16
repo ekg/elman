@@ -44,9 +44,12 @@ def _build_m2rnn_layer(level: str, dim: int, kwargs: Dict[str, Any]) -> nn.Modul
         num_g_heads=kwargs.get('num_g_heads', None),
         num_weight_heads=kwargs.get('num_weight_heads', None),
         use_gate=kwargs.get('use_gate', True),
+        use_residual=kwargs.get('use_residual', True),
+        state_weight_trainable=kwargs.get('state_weight_trainable', True),
         use_conv=kwargs.get('use_conv', paper_shape),
         d_conv=kwargs.get('d_conv', 4),
         output_norm=kwargs.get('output_norm', paper_shape),
+        normalize_qk=kwargs.get('normalize_qk', False),
         dropout=kwargs.get('dropout', 0.0),
         gradient_clipping=kwargs.get('gradient_clipping', 1.0 if paper_shape else None),
     )
@@ -67,6 +70,7 @@ class HybridLadderLM(nn.Module):
         rank: Optional[int] = None,
         use_gate: bool = True,
         gate_activation: str = 'silu',
+        use_triton_e88: bool = False,
         dropout: float = 0.0,
         **extra_kwargs,
     ):
@@ -104,6 +108,8 @@ class HybridLadderLM(nn.Module):
                 'gate_activation': gate_activation,
                 'dropout': dropout,
             }
+            if isinstance(level, str) and level.startswith('E88'):
+                base_kwargs['use_triton'] = use_triton_e88
             if rank is not None:
                 base_kwargs['rank'] = rank
             base_kwargs.update(kw)

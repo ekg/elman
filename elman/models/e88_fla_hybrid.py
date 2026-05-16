@@ -840,6 +840,8 @@ class E88FLAHybrid(nn.Module):
         use_gate: bool = False,  # E88 optimal: no output gating (gating hurts E88)
         use_write_gate: bool = False,  # Set True to gate the delta write (like FLA-GDN beta)
         simple_decay: bool = False,  # Set True to use simple sigmoid decay instead of Mamba2
+        decay_mode: str = 'mamba',  # mamba, simple, none, or constant
+        use_value_residual: bool = False,  # Add direct D*v residual before output gating
         use_silu: bool = True,  # Set False to skip SiLU on projections
         use_l2_norm: bool = True,  # Set False to skip L2 normalization on k/q
         use_output_norm: bool = False,  # E88 optimal: no output RMSNorm
@@ -859,6 +861,10 @@ class E88FLAHybrid(nn.Module):
         # Validate gate activation
         if gate_activation not in ['sigmoid', 'silu', 'swish']:
             raise ValueError(f"gate_activation must be 'sigmoid', 'silu', or 'swish', got {gate_activation}")
+        if simple_decay:
+            decay_mode = 'simple'
+        if decay_mode not in ['mamba', 'simple', 'none', 'constant']:
+            raise ValueError(f"decay_mode must be 'mamba', 'simple', 'none', or 'constant', got {decay_mode}")
 
         self.dim = dim
         self.n_state = n_state
@@ -873,8 +879,10 @@ class E88FLAHybrid(nn.Module):
         self.linear_state = linear_state
         self.use_gate = use_gate
         self.use_write_gate = use_write_gate
+        self.use_value_residual = use_value_residual
         self.gate_activation = gate_activation
-        self.simple_decay = simple_decay
+        self.decay_mode = decay_mode
+        self.simple_decay = decay_mode == 'simple'
         self.use_silu = use_silu
         self.use_l2_norm = use_l2_norm
         self.use_output_norm = use_output_norm
@@ -913,7 +921,12 @@ class E88FLAHybrid(nn.Module):
                 self.v_proj = None  # v = k when tied
 
         # === Decay parameters ===
-        if not simple_decay:
+        self.a_proj = None
+        self.A_log = None
+        self.dt_bias = None
+        self.beta_proj = None
+        self.decay_logit = None
+        if self.decay_mode == 'mamba':
             # Mamba2-style exponential decay
             # a_proj: input-dependent alpha (maps to num_heads scalars)
             self.a_proj = nn.Linear(dim, n_heads, bias=False)
@@ -933,11 +946,14 @@ class E88FLAHybrid(nn.Module):
             inv_dt = dt + torch.log(-torch.expm1(-dt))  # Inverse softplus
             self.dt_bias = nn.Parameter(inv_dt)
             self.dt_bias._no_weight_decay = True
-        else:
+        elif self.decay_mode == 'simple':
             # Simple sigmoid decay (ablation)
-            self.a_proj = None
-            self.A_log = None
-            self.dt_bias = None
+            self.beta_proj = nn.Linear(dim, n_heads, bias=False)
+        elif self.decay_mode == 'constant':
+            # Learned per-head constant decay. Init near 0.98 so it starts in
+            # the same high-retention regime as the input-dependent decay.
+            self.decay_logit = nn.Parameter(torch.full((n_heads,), 4.0, dtype=torch.float32))
+            self.decay_logit._no_weight_decay = True
 
         # === Short convolutions (FLA-GDN style, bias=False) ===
         if use_conv and d_conv > 1:
@@ -968,18 +984,17 @@ class E88FLAHybrid(nn.Module):
         else:
             self.g_proj = None
 
+        if use_value_residual:
+            self.value_residual = nn.Parameter(torch.ones(n_heads, self.head_v_dim))
+        else:
+            self.value_residual = None
+
         # === Write gating (FLA-GDN beta style) ===
         # Gates the delta before writing to memory: S += beta * outer(delta, k)
         if use_write_gate:
             self.write_gate_proj = nn.Linear(dim, n_heads, bias=False)
         else:
             self.write_gate_proj = None
-
-        # === Simple decay option (replaces Mamba2-style) ===
-        if simple_decay:
-            self.beta_proj = nn.Linear(dim, n_heads, bias=False)
-        else:
-            self.beta_proj = None
 
         # === Output projection (depends on head_mix strategy) ===
         if head_mix == 'concat':
@@ -1034,7 +1049,7 @@ class E88FLAHybrid(nn.Module):
             E88_FUSED_PROJECTION_AVAILABLE and
             self.qkv_proj is not None and
             use_conv and
-            not simple_decay and
+            self.decay_mode == 'mamba' and
             not tie_kv
         )
 
@@ -1061,6 +1076,8 @@ class E88FLAHybrid(nn.Module):
             nn.init.xavier_uniform_(self.a_proj.weight)
         if self.beta_proj is not None:
             nn.init.xavier_uniform_(self.beta_proj.weight)
+        if self.value_residual is not None:
+            self.value_residual.data.fill_(1)
 
     def _get_fused_projection_weights(self):
         """Construct combined W_qkva weight and conv weights for fused kernel.
@@ -1153,8 +1170,8 @@ class E88FLAHybrid(nn.Module):
             q = q.to(input_dtype)
         elif self.use_l2_norm:
             if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
-                k = triton_l2_norm(k)
-                q = triton_l2_norm(q)
+                k = triton_l2_norm(k.contiguous())
+                q = triton_l2_norm(q.contiguous())
             else:
                 k = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
                 q = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
@@ -1163,7 +1180,11 @@ class E88FLAHybrid(nn.Module):
             q = q.to(input_dtype)
 
         # Compute decay
-        if self.simple_decay:
+        if self.decay_mode == 'none':
+            decay = torch.ones(B, C, H, device=x_chunk.device, dtype=x_chunk.dtype)
+        elif self.decay_mode == 'constant':
+            decay = torch.sigmoid(self.decay_logit).view(1, 1, H).expand(B, C, H).to(x_chunk.dtype).contiguous()
+        elif self.decay_mode == 'simple':
             decay = torch.sigmoid(self.beta_proj(x_chunk))
         else:
             alpha = self.a_proj(x_chunk)
@@ -1335,7 +1356,11 @@ class E88FLAHybrid(nn.Module):
                         v = F.silu(v)
 
                 # Compute decay
-                if self.simple_decay:
+                if self.decay_mode == 'none':
+                    decay = torch.ones(B, T, H, device=x.device, dtype=x.dtype)
+                elif self.decay_mode == 'constant':
+                    decay = torch.sigmoid(self.decay_logit).view(1, 1, H).expand(B, T, H).to(x.dtype).contiguous()
+                elif self.decay_mode == 'simple':
                     # Simple sigmoid decay (ablation: replaces Mamba2-style)
                     decay = torch.sigmoid(self.beta_proj(x))  # [B, T, H]
                 else:
@@ -1387,7 +1412,8 @@ class E88FLAHybrid(nn.Module):
             x.is_cuda and
             x.dtype == torch.bfloat16 and
             n == self.head_v_dim and
-            not self.use_write_gate
+            not self.use_write_gate and
+            not self.use_value_residual
         )
         if use_step_kernel:
             from .e88_step_kernel import e88_step
@@ -1428,7 +1454,8 @@ class E88FLAHybrid(nn.Module):
             self.gate_activation == 'silu' and
             not self.use_output_norm and
             not self._use_fused_norm_gate and
-            not self.use_write_gate  # Optimized kernels don't support write gate yet
+            not self.use_write_gate and  # Optimized kernels don't support write gate yet
+            not self.use_value_residual  # Fused path gates before we can add D*v
         )
 
         # Track whether fused gating was used (to skip separate gating later)
@@ -1487,8 +1514,8 @@ class E88FLAHybrid(nn.Module):
                 elif self.use_l2_norm and not use_fused_proj:
                     # Fallback: separate L2 norm kernel launches
                     if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
-                        k_norm = triton_l2_norm(k)
-                        q_norm = triton_l2_norm(q)
+                        k_norm = triton_l2_norm(k.contiguous())
+                        q_norm = triton_l2_norm(q.contiguous())
                     else:
                         k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
                         q_norm = (q / (q.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
@@ -1530,8 +1557,8 @@ class E88FLAHybrid(nn.Module):
             if self.use_l2_norm and not use_fused_proj:
                 if USE_TRITON_OPS and TRITON_OPS_AVAILABLE and k.dtype == torch.bfloat16:
                     # Use fused Triton kernel (36% faster)
-                    k_norm = triton_l2_norm(k)
-                    q_norm = triton_l2_norm(q)
+                    k_norm = triton_l2_norm(k.contiguous())
+                    q_norm = triton_l2_norm(q.contiguous())
                 else:
                     # Fallback: PyTorch ops
                     k_norm = (k / (k.norm(dim=-1, keepdim=True) + 1e-6)).to(input_dtype)
@@ -1558,7 +1585,8 @@ class E88FLAHybrid(nn.Module):
                 self.g_proj is not None and
                 self.gate_activation == 'silu' and
                 not self.use_output_norm and
-                not self._use_fused_norm_gate
+                not self._use_fused_norm_gate and
+                not self.use_value_residual
             )
 
             if use_fused_gate:
@@ -1634,6 +1662,9 @@ class E88FLAHybrid(nn.Module):
             # Materialize S_list for downstream code paths that expect it
             S_list = [S[:, h] for h in range(H)]
 
+        if self.use_value_residual and self.value_residual is not None:
+            output = output + v.to(output.dtype) * self.value_residual.to(output.dtype).view(1, 1, H, self.head_v_dim)
+
         # === Output normalization and gating ===
         # NOTE: Per-head norm hurts E88 (tanh-bounded state doesn't need it)
         # Only applied when use_output_norm=True (default False)
@@ -1676,7 +1707,7 @@ class E88FLAHybrid(nn.Module):
         # Head mixing (output is [B, T, H, head_v_dim])
         if self.head_mix == 'concat':
             # Standard: concat all heads, project to dim
-            output = output.view(B, T, self.value_dim)
+            output = output.reshape(B, T, self.value_dim)
             output = self.o_proj(output)
         elif self.head_mix == 'weighted_sum':
             # Learnable scalar per head, then project
@@ -1711,8 +1742,10 @@ class E88FLAHybrid(nn.Module):
             ablation_str.append('linear_state')
         if not self.use_gate:
             ablation_str.append('no_gate')
-        if self.simple_decay:
-            ablation_str.append('simple_decay')
+        if self.decay_mode != 'mamba':
+            ablation_str.append(f'decay={self.decay_mode}')
+        if self.use_value_residual:
+            ablation_str.append('value_residual')
         if not self.use_silu:
             ablation_str.append('no_silu')
         if not self.use_l2_norm:

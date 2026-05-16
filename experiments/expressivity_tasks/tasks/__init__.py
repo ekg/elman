@@ -18,6 +18,8 @@ from .dyck2 import Dyck2Task
 from .fsm_tracking import FSMTrackingTask
 from .selective_copy import SelectiveCopyTask
 from .assoc_recall import AssocRecallTask
+from .delta_memory import OverwriteRecallTask, ResetRecallTask
+from .keyed_fsm_memory import KeyedFSMMemoryTask
 
 ALL_TASKS = {
     'parity': ParityTask,
@@ -27,4 +29,7 @@ ALL_TASKS = {
     'fsm_tracking': FSMTrackingTask,
     'selective_copy': SelectiveCopyTask,
     'assoc_recall': AssocRecallTask,
+    'overwrite_recall': OverwriteRecallTask,
+    'reset_recall': ResetRecallTask,
+    'keyed_fsm_memory': KeyedFSMMemoryTask,
 }

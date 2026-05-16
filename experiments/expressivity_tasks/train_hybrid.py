@@ -50,6 +50,20 @@ def main():
     ap.add_argument('--n_state', type=int, default=16)
     ap.add_argument('--rank', type=int, default=None)
     ap.add_argument('--expansion', type=float, default=1.0)
+    ap.add_argument('--use_triton_e88', action='store_true',
+                    help='Route E88 layers through the Triton fwd/bwd kernels.')
+    ap.add_argument('--m2rnn_q_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_k_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_v_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_f_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_g_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_weight_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_normalize_qk', action='store_true',
+                    help='L2-normalize M2RNN query/key vectors before recurrence')
+    ap.add_argument('--m2rnn_no_residual', action='store_true',
+                    help='Disable M2RNN D*v direct residual path')
+    ap.add_argument('--m2rnn_freeze_state_weight', action='store_true',
+                    help='Keep M2RNN state_weight fixed at identity')
     ap.add_argument('--steps', type=int, default=2000)
     ap.add_argument('--seq_len', type=int, default=128)
     ap.add_argument('--batch_size', type=int, default=32)
@@ -66,6 +80,10 @@ def main():
                          "accuracy under log['length_extrap'].")
     ap.add_argument('--eval_lengths_n_batches', type=int, default=8,
                     help='Number of eval batches per length in --eval_lengths.')
+    ap.add_argument('--disable_autocast', action='store_true',
+                    help='Run forward passes without bf16 autocast. Useful for '
+                         'exact algorithmic tasks and fair comparison to M2RNN, '
+                         'whose current expressivity path already disables autocast.')
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -80,18 +98,41 @@ def main():
     elif args.task == 'fsm_tracking':         task_kwargs['n_states'] = args.K
     elif args.task == 'selective_copy':       task_kwargs['n_to_copy'] = args.K
     elif args.task == 'assoc_recall':         task_kwargs['n_pairs'] = args.K
+    elif args.task in ('overwrite_recall', 'reset_recall'):
+        task_kwargs['n_keys'] = args.K
+    elif args.task == 'keyed_fsm_memory':
+        task_kwargs['n_keys'] = args.K
+        task_kwargs['n_states'] = args.K
     task = ALL_TASKS[args.task](**task_kwargs)
     print(f"Task: {task.name}, vocab_size={task.vocab_size}", flush=True)
 
     # Build hybrid model
+    m2_kwargs = {}
+    if args.m2rnn_q_heads is not None: m2_kwargs['num_q_heads'] = args.m2rnn_q_heads
+    if args.m2rnn_k_heads is not None: m2_kwargs['num_k_heads'] = args.m2rnn_k_heads
+    if args.m2rnn_v_heads is not None: m2_kwargs['num_v_heads'] = args.m2rnn_v_heads
+    if args.m2rnn_f_heads is not None: m2_kwargs['num_f_heads'] = args.m2rnn_f_heads
+    if args.m2rnn_g_heads is not None: m2_kwargs['num_g_heads'] = args.m2rnn_g_heads
+    if args.m2rnn_weight_heads is not None: m2_kwargs['num_weight_heads'] = args.m2rnn_weight_heads
+    if args.m2rnn_normalize_qk: m2_kwargs['normalize_qk'] = True
+    if args.m2rnn_no_residual: m2_kwargs['use_residual'] = False
+    if args.m2rnn_freeze_state_weight: m2_kwargs['state_weight_trainable'] = False
+    layer_kwargs = [
+        dict(m2_kwargs) if level in ('m2rnn', 'm2rnn-paper') else {}
+        for level in args.layer_pattern
+    ]
     model = HybridLadderLM(
         vocab_size=task.vocab_size,
         dim=args.dim, depth=args.depth,
         layer_pattern=args.layer_pattern,
+        layer_kwargs=layer_kwargs,
         n_state=args.n_state, n_heads=args.n_heads,
         expansion=args.expansion,
         rank=args.rank,
+        use_triton_e88=args.use_triton_e88,
     ).to(device)
+    if args.disable_autocast:
+        model.disable_autocast = True
     print(f"Pattern: {model.actual_pattern}", flush=True)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Params: {n_params:,}", flush=True)
@@ -108,6 +149,8 @@ def main():
     log = {'task': task.name, 'pattern': model.actual_pattern, 'dim': args.dim, 'depth': args.depth,
            'seq_len': args.seq_len, 'batch_size': args.batch_size, 'lr': args.lr,
            'seed': args.seed, 'params': n_params,
+           'disable_autocast': bool(args.disable_autocast),
+           'use_triton_e88': bool(args.use_triton_e88),
            'random_baseline_acc': task.random_baseline_acc(),
            'steps': []}
 

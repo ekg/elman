@@ -10,7 +10,10 @@ import os, sys, json, argparse, subprocess, time
 THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(THIS))
 
-ALL_TASKS = ['parity', 'modular_counter', 'dyck', 'fsm_tracking', 'selective_copy', 'assoc_recall']
+ALL_TASKS = [
+    'parity', 'modular_counter', 'dyck', 'fsm_tracking', 'selective_copy',
+    'assoc_recall', 'overwrite_recall', 'reset_recall', 'keyed_fsm_memory',
+]
 
 # Model → (level_name, model-specific kwargs)
 MODELS = {
@@ -33,6 +36,9 @@ TASK_CONFIG = {
     'fsm_tracking':     {'steps': 3000, 'seq_len': 256, 'K': 4,  'lr': 3e-4},
     'selective_copy':   {'steps': 4000, 'seq_len': 256, 'K': 8,  'lr': 3e-4},
     'assoc_recall':     {'steps': 4000, 'seq_len': 64,  'K': 8,  'lr': 3e-4},
+    'overwrite_recall': {'steps': 4000, 'seq_len': 64,  'K': 16, 'lr': 3e-4},
+    'reset_recall':     {'steps': 4000, 'seq_len': 64,  'K': 16, 'lr': 3e-4},
+    'keyed_fsm_memory': {'steps': 6000, 'seq_len': 128, 'K': 8,  'lr': 3e-4},
 }
 
 

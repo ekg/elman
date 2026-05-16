@@ -823,6 +823,8 @@ class LadderLM(nn.Module):
         gate_activation='sigmoid',  # For E88 FLA Hybrid: gate activation ('sigmoid' or 'silu')
         linear_state=False,  # For E88 FLA Hybrid: linear state update (no tanh)
         use_write_gate=False,  # For E88 FLA Hybrid: write gate (beta) for delta
+        e88_decay_mode='mamba',  # For E88 FLA Hybrid: mamba, simple, none, or constant
+        e88_value_residual=False,  # For E88 FLA Hybrid: add D*v residual before output gate
         rank=None,
         delta_init=-2.0,
         dropout=0.0,
@@ -855,6 +857,8 @@ class LadderLM(nn.Module):
         self.gate_activation = gate_activation
         self.linear_state = linear_state
         self.use_write_gate = use_write_gate
+        self.e88_decay_mode = e88_decay_mode
+        self.e88_value_residual = e88_value_residual
         self.rank = rank
         self.r_h_mode = r_h_mode
         self.use_conv = use_conv
@@ -891,6 +895,8 @@ class LadderLM(nn.Module):
                 gate_activation=gate_activation,  # For E88 FLA Hybrid: gate activation
                 linear_state=linear_state,  # For E88 FLA Hybrid: linear state
                 use_write_gate=use_write_gate,  # For E88 FLA Hybrid: write gate
+                decay_mode=e88_decay_mode,  # For E88 FLA Hybrid: decay mode
+                use_value_residual=e88_value_residual,  # For E88 FLA Hybrid: D*v residual
                 rank=rank,
                 delta_init=delta_init,
                 dropout=dropout,

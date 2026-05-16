@@ -118,6 +118,12 @@ def parse_args():
                         help='For M2RNN: recurrent weight head count override')
     parser.add_argument('--m2rnn_output_norm', type=int, default=0,
                         help='For M2RNN: RMSNorm recurrent output before output projection')
+    parser.add_argument('--m2rnn_normalize_qk', type=int, default=0,
+                        help='For M2RNN: L2-normalize query/key vectors before the recurrent update')
+    parser.add_argument('--m2rnn_use_residual', type=int, default=1,
+                        help='For M2RNN: include D*v direct residual in recurrent output')
+    parser.add_argument('--m2rnn_freeze_state_weight', type=int, default=0,
+                        help='For M2RNN: keep recurrent state_weight fixed at identity')
     parser.add_argument('--m2rnn_state_grad_clip', type=float, default=None,
                         help='For M2RNN/XMA: clip recurrent state gradients inside the custom op')
     parser.add_argument('--hybrid_pattern', type=str, default=None,
@@ -141,6 +147,11 @@ def parse_args():
                         help='Use linear state update for E88 (0=tanh, 1=linear)')
     parser.add_argument('--use_write_gate', type=int, default=0,
                         help='Use write gate (beta) for E88 (0=no, 1=yes). Gates delta before writing to memory.')
+    parser.add_argument('--e88_decay_mode', type=str, default='mamba',
+                        choices=['mamba', 'simple', 'none', 'constant'],
+                        help='E88 decay mode: mamba=input-dependent exponential, simple=sigmoid, none=1, constant=learned per-head constant')
+    parser.add_argument('--e88_value_residual', type=int, default=0,
+                        help='Add direct D*v value residual to E88 output before output gating (0=no, 1=yes)')
     parser.add_argument('--r_h_mode', type=str, default='auto',
                         help='W_h constraint mode (spectral_norm, learned, none, auto)')
     # auto: spectral_norm for models with full W_h (1,33,42,51,52,53,56), none for diagonal/scalar
@@ -404,6 +415,9 @@ def train(args):
                     use_conv=bool(args.use_conv) or level == 'm2rnn-paper',
                     d_conv=args.d_conv,
                     output_norm=bool(args.m2rnn_output_norm) or level == 'm2rnn-paper',
+                    normalize_qk=bool(args.m2rnn_normalize_qk),
+                    use_residual=bool(args.m2rnn_use_residual),
+                    state_weight_trainable=not bool(args.m2rnn_freeze_state_weight),
                     gradient_clipping=(
                         args.m2rnn_state_grad_clip
                         if args.m2rnn_state_grad_clip is not None
@@ -446,9 +460,12 @@ def train(args):
                 num_g_heads=args.m2rnn_g_heads,
                 num_weight_heads=args.m2rnn_weight_heads,
                 use_gate=bool(args.use_gate),
+                use_residual=bool(args.m2rnn_use_residual),
+                state_weight_trainable=not bool(args.m2rnn_freeze_state_weight),
                 use_conv=bool(args.use_conv),
                 d_conv=args.d_conv,
                 output_norm=bool(args.m2rnn_output_norm),
+                normalize_qk=bool(args.m2rnn_normalize_qk),
                 dropout=args.dropout,
                 gradient_clipping=args.m2rnn_state_grad_clip,
                 gradient_checkpointing=args.gradient_checkpointing,
@@ -597,6 +614,8 @@ def train(args):
             gate_activation=args.gate_activation,
             linear_state=bool(args.linear_state),
             use_write_gate=bool(args.use_write_gate),
+            e88_decay_mode=args.e88_decay_mode,
+            e88_value_residual=bool(args.e88_value_residual),
             state_expansion=args.state_expansion,
             r_h_mode=r_h_mode,
             use_conv=bool(args.use_conv),

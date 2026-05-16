@@ -40,15 +40,33 @@ def build_model(level, dim, depth, vocab_size, **kwargs):
             v_head_dim=kwargs.get('v_head_dim', n_state if paper_shape else None),
             num_q_heads=kwargs.get('num_q_heads', 1 if paper_shape else None),
             num_k_heads=kwargs.get('num_k_heads', 1 if paper_shape else None),
+            num_v_heads=kwargs.get('num_v_heads', None),
+            num_f_heads=kwargs.get('num_f_heads', None),
+            num_g_heads=kwargs.get('num_g_heads', None),
+            num_weight_heads=kwargs.get('num_weight_heads', None),
+            use_residual=kwargs.get('use_residual', True),
+            state_weight_trainable=kwargs.get('state_weight_trainable', True),
             use_conv=kwargs.get('use_conv', paper_shape),
             d_conv=kwargs.get('d_conv', 4),
             output_norm=kwargs.get('output_norm', paper_shape),
+            normalize_qk=kwargs.get('normalize_qk', False),
             gradient_clipping=kwargs.get('gradient_clipping', 1.0 if paper_shape else None),
         )
         # XMA's Triton M2RNN path currently has a bf16-autocast compile edge
         # case in this small harness. Keep these expressivity runs in fp32.
         model.disable_autocast = True
         return model
+
+    if level == 'mamba2':
+        from elman.models.mamba2_baseline import Mamba2LM
+
+        return Mamba2LM(
+            vocab_size=vocab_size,
+            dim=dim,
+            depth=depth,
+            d_state=kwargs.get('mamba_d_state', 64),
+            expand=kwargs.get('mamba_expand', 2),
+        )
 
     from elman.models import LadderLM
     # Common kwargs
@@ -92,11 +110,6 @@ def build_model(level, dim, depth, vocab_size, **kwargs):
         common.update(
             expansion=kwargs.get('expansion', 2),
             n_heads=kwargs.get('n_heads', 4),
-        )
-    elif level == 'mamba2':
-        common.update(
-            mamba_d_state=kwargs.get('mamba_d_state', 64),
-            mamba_expand=kwargs.get('mamba_expand', 2),
         )
     elif level == 'llama':
         common.update(
@@ -153,6 +166,11 @@ def train(args):
         task_kwargs['n_to_copy'] = args.K
     elif args.task == 'assoc_recall':
         task_kwargs['n_pairs'] = args.K
+    elif args.task in ('overwrite_recall', 'reset_recall'):
+        task_kwargs['n_keys'] = args.K
+    elif args.task == 'keyed_fsm_memory':
+        task_kwargs['n_keys'] = args.K
+        task_kwargs['n_states'] = args.K
 
     task = ALL_TASKS[args.task](**task_kwargs)
     print(f"Task: {task.name}, vocab_size={task.vocab_size}", flush=True)
@@ -163,6 +181,18 @@ def train(args):
     if args.n_state is not None: extra_model_kwargs['n_state'] = args.n_state
     if args.expansion is not None: extra_model_kwargs['expansion'] = args.expansion
     if args.rank is not None: extra_model_kwargs['rank'] = args.rank
+    if args.m2rnn_q_heads is not None: extra_model_kwargs['num_q_heads'] = args.m2rnn_q_heads
+    if args.m2rnn_k_heads is not None: extra_model_kwargs['num_k_heads'] = args.m2rnn_k_heads
+    if args.m2rnn_v_heads is not None: extra_model_kwargs['num_v_heads'] = args.m2rnn_v_heads
+    if args.m2rnn_f_heads is not None: extra_model_kwargs['num_f_heads'] = args.m2rnn_f_heads
+    if args.m2rnn_g_heads is not None: extra_model_kwargs['num_g_heads'] = args.m2rnn_g_heads
+    if args.m2rnn_weight_heads is not None: extra_model_kwargs['num_weight_heads'] = args.m2rnn_weight_heads
+    if args.m2rnn_normalize_qk:
+        extra_model_kwargs['normalize_qk'] = True
+    if args.m2rnn_no_residual:
+        extra_model_kwargs['use_residual'] = False
+    if args.m2rnn_freeze_state_weight:
+        extra_model_kwargs['state_weight_trainable'] = False
     model = build_model(args.model, args.dim, args.depth, task.vocab_size, **extra_model_kwargs)
     model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -237,6 +267,18 @@ if __name__ == '__main__':
     ap.add_argument('--n_state', type=int, default=None)
     ap.add_argument('--expansion', type=float, default=None)
     ap.add_argument('--rank', type=int, default=None, help='Rank for E91 matrix-matrix update')
+    ap.add_argument('--m2rnn_q_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_k_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_v_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_f_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_g_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_weight_heads', type=int, default=None)
+    ap.add_argument('--m2rnn_normalize_qk', action='store_true',
+                    help='L2-normalize M2RNN query/key vectors before recurrence')
+    ap.add_argument('--m2rnn_no_residual', action='store_true',
+                    help='Disable M2RNN D*v direct residual path')
+    ap.add_argument('--m2rnn_freeze_state_weight', action='store_true',
+                    help='Keep M2RNN state_weight fixed at identity')
     ap.add_argument('--steps', type=int, default=5000)
     ap.add_argument('--seq_len', type=int, default=256)
     ap.add_argument('--batch_size', type=int, default=64)

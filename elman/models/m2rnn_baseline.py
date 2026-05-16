@@ -56,9 +56,11 @@ class M2RNNLayer(nn.Module):
         num_weight_heads: Optional[int] = None,
         use_gate: bool = True,
         use_residual: bool = True,
+        state_weight_trainable: bool = True,
         use_conv: bool = False,
         d_conv: int = 4,
         output_norm: bool = False,
+        normalize_qk: bool = False,
         dropout: float = 0.0,
         gradient_clipping: Optional[float] = None,
         **kwargs,
@@ -121,9 +123,11 @@ class M2RNNLayer(nn.Module):
         self.v_head_dim = int(v_head_dim)
         self.use_gate = use_gate
         self.use_residual = use_residual
+        self.state_weight_trainable = state_weight_trainable
         self.use_conv = use_conv and d_conv > 1
         self.d_conv = d_conv
         self.output_norm_enabled = output_norm
+        self.normalize_qk = normalize_qk
         self.gradient_clipping = gradient_clipping
 
         q_shape = self.num_q_heads * self.k_head_dim
@@ -157,6 +161,8 @@ class M2RNNLayer(nn.Module):
 
         state_weight = torch.eye(self.v_head_dim).unsqueeze(0).repeat(self.num_weight_heads, 1, 1)
         self.state_weight = nn.Parameter(state_weight)
+        if not state_weight_trainable:
+            self.state_weight.requires_grad_(False)
 
         if use_residual:
             self.D = nn.Parameter(torch.ones(self.num_heads, self.v_head_dim))
@@ -226,6 +232,9 @@ class M2RNNLayer(nn.Module):
         q = q_raw.view(B, T, Nq, K)
         k = k_raw.view(B, T, Nk, K)
         v = v_raw.view(B, T, Nv, V)
+        if self.normalize_qk:
+            q = F.normalize(q.float(), dim=-1).to(dtype=q.dtype)
+            k = F.normalize(k.float(), dim=-1).to(dtype=k.dtype)
 
         f = F.softplus(f_raw.float() + self.dt_bias.float().view(1, 1, Nf))
         f = torch.exp(-torch.exp(self.A_log.float()).view(1, 1, Nf) * f)
@@ -336,9 +345,12 @@ class M2RNNLM(nn.Module):
         num_g_heads: Optional[int] = None,
         num_weight_heads: Optional[int] = None,
         use_gate: bool = True,
+        use_residual: bool = True,
+        state_weight_trainable: bool = True,
         use_conv: bool = False,
         d_conv: int = 4,
         output_norm: bool = False,
+        normalize_qk: bool = False,
         dropout: float = 0.0,
         gradient_clipping: Optional[float] = None,
         gradient_checkpointing: bool = False,
@@ -352,6 +364,9 @@ class M2RNNLM(nn.Module):
         self.n_state = n_state
         self.expansion = expansion
         self.paper_shape = paper_shape
+        self.normalize_qk = normalize_qk
+        self.use_residual = use_residual
+        self.state_weight_trainable = state_weight_trainable
         self.gradient_checkpointing = gradient_checkpointing
         self.loss_chunk_size = loss_chunk_size
 
@@ -373,10 +388,12 @@ class M2RNNLM(nn.Module):
                 num_g_heads=num_g_heads,
                 num_weight_heads=num_weight_heads,
                 use_gate=use_gate,
-                use_residual=True,
+                use_residual=use_residual,
+                state_weight_trainable=state_weight_trainable,
                 use_conv=use_conv,
                 d_conv=d_conv,
                 output_norm=output_norm,
+                normalize_qk=normalize_qk,
                 dropout=dropout,
                 gradient_clipping=gradient_clipping,
             )

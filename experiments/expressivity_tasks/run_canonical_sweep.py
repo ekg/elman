@@ -30,7 +30,10 @@ TASK_CONFIG = {
     'fsm_tracking':     {'steps': 10000, 'seq_len': 256, 'K': 4,  'lr': 3e-4},
     'selective_copy':   {'steps': 10000, 'seq_len': 256, 'K': 8,  'lr': 3e-4},
     'assoc_recall':     {'steps': 10000, 'seq_len': 64,  'K': 8,  'lr': 3e-4},
+    'overwrite_recall': {'steps': 10000, 'seq_len': 128, 'K': 16, 'lr': 3e-4},
+    'reset_recall':     {'steps': 10000, 'seq_len': 128, 'K': 16, 'lr': 3e-4},
     'dyck':             {'steps': 10000, 'seq_len': 256, 'K': 8,  'lr': 3e-4},
+    'keyed_fsm_memory': {'steps': 10000, 'seq_len': 128, 'K': 8,  'lr': 3e-4},
 }
 
 
@@ -78,7 +81,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Order: hardest tasks first so we get critical answers fastest
-    PRIORITY = ['modular_counter', 'fsm_tracking', 'dyck', 'parity', 'assoc_recall', 'selective_copy']
+    PRIORITY = [
+        'keyed_fsm_memory', 'overwrite_recall', 'reset_recall',
+        'modular_counter', 'fsm_tracking', 'dyck', 'parity',
+        'assoc_recall', 'selective_copy',
+    ]
     task_order = [t for t in PRIORITY if t in args.tasks] + [t for t in args.tasks if t not in PRIORITY]
 
     jobs = []
